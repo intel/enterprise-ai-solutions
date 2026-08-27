@@ -30,7 +30,7 @@ Enterprise AI requires more than a model server.
 
 Teams also need Kubernetes, networking, storage, TLS, identity, model routing, observability, and workload placement. Building and integrating those layers individually can take significant engineering effort — weeks to months.
 
-AI Solutions deploys them through one environment-based workflow:
+AI for Enterprise Solutions deploys them through one environment-based workflow:
 
 ```bash
 ./es_auto_installer.sh install --all --env <name>

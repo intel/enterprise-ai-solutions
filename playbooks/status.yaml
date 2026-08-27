@@ -73,7 +73,7 @@
       ansible.builtin.debug:
         msg: |
           ══════════════════════════════════════════════════════════════════════════
-           Intel AI Enterprise Solutions — Deployment Status
+           Intel AI for Enterprise Solutions — Deployment Status
           ══════════════════════════════════════════════════════════════════════════
 
           Cluster Nodes: {{ _st_nodes_info.resources | length }}
