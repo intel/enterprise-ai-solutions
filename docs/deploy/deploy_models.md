@@ -244,7 +244,7 @@ spec:
 kubectl apply -f my-sklearn-model.yaml
 ```
 
-These models are served via the Open Inference Protocol at `/v2/models/<name>/infer` — same gateway, same JWT. See [Integration Guide](../customize/integration.md#traditional-ml-models) for details.
+These models are served via the Open Inference Protocol at `/v2/models/<name>/infer` — same gateway, same JWT. See [Integration Guide](../customize/integration.md#traditional-ml-models-sklearn-xgboost-pytorch-tensorflow-onnx) for details.
 
 ---
 
