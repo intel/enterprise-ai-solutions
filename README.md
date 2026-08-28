@@ -62,7 +62,7 @@ For a full list of configurable options, see [Configuration Reference](docs/cust
 
 ```bash
 git clone https://github.com/intel/enterprise-ai-solutions.git
-cd applications.ai.enterprise.ai-solutions
+cd enterprise-ai-solutions
 
 ./es_auto_installer.sh configure          # one-time machine prep (installs Python 3.11+, yq, kubectl, helm)
 ./es_auto_installer.sh init local         # create the "local" environment

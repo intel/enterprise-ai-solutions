@@ -21,7 +21,7 @@ The stack is built on open standards. Anything that speaks them works:
 
 ---
 
-## The 30-second integration
+## Quick start: get a token and call a model
 
 ### 1. Get the gateway address and a token
 

@@ -19,7 +19,7 @@ Check [Prerequisites](prerequisites.md). At minimum you need:
 
 ```bash
 git clone https://github.com/intel/enterprise-ai-solutions.git
-cd applications.ai.enterprise.ai-solutions
+cd enterprise-ai-solutions
 
 ./es_auto_installer.sh configure    # one-time machine prep — installs Python 3.11+, yq, kubectl, helm
 ```
