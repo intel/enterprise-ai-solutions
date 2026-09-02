@@ -328,6 +328,8 @@ _arch() {
 _download() {
     local url="$1" dest="$2" use_sudo="${3:-}"
     local -a pre=()
+    # The commas are sudo's own --preserve-env list syntax, not array separators.
+    # shellcheck disable=SC2054
     [[ "$use_sudo" == "--sudo" ]] && pre=(sudo --preserve-env=http_proxy,https_proxy,no_proxy)
 
     command -v wget &>/dev/null \
