@@ -1,6 +1,11 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
+# Deliberately has no shebang: this file is never executed directly, it is read
+# with `lookup('file', ...)` and piped into a pod's own shell. The directive
+# below tells ShellCheck which dialect to check it against.
+# shellcheck shell=sh
+#
 # POSIX-sh node topology probe. Reads ONLY /sys and /proc — no lscpu, no
 # Python, no root, no writable filesystem, no network. Runs inside a minimal
 # (busybox/alpine) unprivileged pod via `k8s_exec`, or standalone on a host.
