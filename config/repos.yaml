@@ -8,7 +8,13 @@
 # Fields:
 #   url:              Git clone URL
 #   dest:             Directory name (created under ext/)
-#   branch:           Branch or tag to checkout (default: main)
+#   branch:           What to check out (default: main). Accepts a branch name,
+#                     a tag, or a full ref (refs/pull/N/head). Prefer a release
+#                     tag over a branch so the same installer commit always
+#                     produces the same tree.
+#                     NOT accepted: a bare commit SHA. `git clone --branch`
+#                     takes only branch and tag names, so a SHA would fail the
+#                     clone and silently fall back to the default branch.
 #   deployment_subdir: Optional sub-path where roles/, components.yaml, and
 #                     config.yaml live relative to the repo root. Defaults to
 #                     "" (roles/ at the repo root). Set to "deployment" for
@@ -28,7 +34,7 @@
 repos:
   - url: "https://github.com/intel/enterprise-inference"
     dest: "enterprise.ai-inference"
-    branch: "main"
+    branch: "v1.0.0"
     deployment_subdir: ""
     solution: "inference"
     always: true
