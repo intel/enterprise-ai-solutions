@@ -34,7 +34,7 @@
 repos:
   - url: "https://github.com/intel/enterprise-inference"
     dest: "enterprise.ai-inference"
-    branch: "v1.0.0"
+    branch: "main"
     deployment_subdir: ""
     solution: "inference"
     always: true
