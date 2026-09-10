@@ -20,25 +20,15 @@ nfs_storageclass_name: "nfs-client"
 nfs_storageclass_default: true
 nfs_wait_timeout: "300s"
 
-# --- NFS export security ---
-# Which hosts may mount the export. When empty, auto-resolved from the
-# kube_node and kube_control_plane inventory groups (one entry per node IP).
-# Accepts a CIDR (e.g. "10.1.1.0/24") or space-separated IPs/hostnames.
-# NEVER set to "*" — that exports the share to every reachable host without
-# any authentication, giving unauthenticated remote root access to all
-# PersistentVolumes on the cluster (CWE-306).
+# Hosts allowed to mount the export. Auto-resolved from inventory when empty.
+# Accepts a CIDR or space-separated IPs. NEVER set to "*" (CWE-306).
 nfs_export_clients: ""
 
-# --- NFS export options ---
-# root_squash remaps remote uid 0 to nobody, preventing a compromised NFS
-# client from writing as server root. Most Kubernetes workloads (PostgreSQL
-# runs as uid 999, not root) are unaffected. Override to no_root_squash
+# root_squash remaps remote uid 0 to nobody. Override to no_root_squash
 # only if a workload genuinely requires remote root writes.
 nfs_export_options: "rw,sync,no_subtree_check,root_squash"
 
-# Permissions and ownership applied to the export directory on the NFS server.
-# 0775 + nogroup is sufficient for non-root pods; raise to 0777 only when
-# strictly necessary.
+# Permissions on the export directory. 0775 + nogroup suits most workloads.
 nfs_dir_mode: "0775"
 nfs_dir_owner: "nobody"
 nfs_dir_group: "nogroup"
