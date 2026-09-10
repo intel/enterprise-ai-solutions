@@ -27,10 +27,8 @@ spec:
     httpEnabled: {{ keycloak_http_enabled | lower }}
   proxy:
     headers: {{ keycloak_proxy_headers }}
-{% if istio_enabled | default(false) | bool %}
   networkPolicy:
-    enabled: false
-{% endif %}
+    enabled: true
   db:
     vendor: {{ keycloak_db_vendor }}
 {% if keycloak_db_vendor == 'postgres' %}

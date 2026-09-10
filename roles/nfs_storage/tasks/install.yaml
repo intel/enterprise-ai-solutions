@@ -198,6 +198,46 @@
       ansible.builtin.debug:
         msg: "{{ _nfs_verify_exports.stdout_lines }}"
 
+    # Restrict NFS ports to cluster nodes via iptables.
+
+    - name: "nfs_storage | Collect cluster node IPs for firewall"
+      when: nfs_firewall_restrict | default(true) | bool
+      ansible.builtin.set_fact:
+        _nfs_allowed_ips: >-
+          {{ ((groups['kube_node'] | default([])) + (groups['kube_control_plane'] | default([])))
+             | unique
+             | map('extract', hostvars, 'ansible_host')
+             | select('defined')
+             | unique
+             | list }}
+
+    - name: "nfs_storage | Allow NFS traffic from cluster nodes"
+      when: nfs_firewall_restrict | default(true) | bool
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "{{ item.1 }}"
+        source: "{{ item.0 }}"
+        jump: ACCEPT
+        comment: "nfs_storage: allow {{ item.1 }}/tcp from {{ item.0 }}"
+      loop: "{{ _nfs_allowed_ips | product(['2049', '111']) | list }}"
+      loop_control:
+        label: "{{ item.0 }}:{{ item.1 }}"
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    - name: "nfs_storage | Drop NFS traffic from all other sources"
+      when: nfs_firewall_restrict | default(true) | bool
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "{{ item }}"
+        jump: DROP
+        comment: "nfs_storage: deny {{ item }}/tcp from non-cluster hosts"
+      loop: ['2049', '111']
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
     # Wait for nfsd to bind :2049 before smoke-testing the mount.
 
     - name: "nfs_storage | Wait for nfsd to listen on :2049"

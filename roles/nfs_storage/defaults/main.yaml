@@ -28,6 +28,9 @@ nfs_export_clients: ""
 # only if a workload genuinely requires remote root writes.
 nfs_export_options: "rw,sync,no_subtree_check,root_squash"
 
+# Restrict NFS ports (2049, 111) on the server to cluster nodes via iptables.
+nfs_firewall_restrict: true
+
 # Permissions on the export directory. 0775 + nogroup suits most workloads.
 nfs_dir_mode: "0775"
 nfs_dir_owner: "nobody"
