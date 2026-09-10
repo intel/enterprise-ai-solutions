@@ -1,0 +1,75 @@
+name: Backport to release branches
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  backport:
+    if: github.event.pull_request.merged == true && contains(toJSON(github.event.pull_request.labels), 'backport/')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        label:
+          - backport/release-1.0
+    steps:
+      - name: Check label applies
+        id: check
+        run: |
+          if echo '${{ toJSON(github.event.pull_request.labels.*.name) }}' | grep -q '${{ matrix.label }}'; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "match=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.check.outputs.match == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract target branch
+        if: steps.check.outputs.match == 'true'
+        id: target
+        run: echo "branch=${{ matrix.label }}" | sed 's|backport/||' >> "$GITHUB_OUTPUT"
+
+      - name: Cherry-pick and create backport PR
+        if: steps.check.outputs.match == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          TARGET: ${{ steps.target.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BACKPORT_BRANCH="backport/${PR_NUMBER}-to-${TARGET}"
+          git checkout -b "$BACKPORT_BRANCH" "origin/${TARGET}"
+
+          if ! git cherry-pick --strategy=recursive -X theirs "$MERGE_SHA"; then
+            echo "::warning::Cherry-pick had conflicts — resolved with -X theirs. Review carefully."
+            git cherry-pick --continue --no-edit || true
+          fi
+
+          git push origin "$BACKPORT_BRANCH"
+
+          gh pr create \
+            --base "$TARGET" \
+            --head "$BACKPORT_BRANCH" \
+            --title "[backport ${TARGET}] ${PR_TITLE}" \
+            --body "$(cat <<EOF
+          Automated backport of #${PR_NUMBER} to \`${TARGET}\`.
+
+          Cherry-picked from merge commit ${MERGE_SHA}.
+
+          > **Review carefully** — if conflicts were resolved automatically,
+          > verify the result before merging.
+          EOF
+          )"
