@@ -117,11 +117,42 @@
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
+    - name: "nfs_storage | Resolve NFS export client list"
+      ansible.builtin.set_fact:
+        _nfs_export_clients: >-
+          {%- if nfs_export_clients | default('', true) | trim | length > 0 -%}
+            {{ nfs_export_clients | trim }}
+          {%- else -%}
+            {%- set ns = namespace(clients=[]) -%}
+            {%- for host in ((groups['kube_node'] | default([])) + (groups['kube_control_plane'] | default([]))) | unique -%}
+              {%- set _ = ns.clients.append(hostvars[host]['ansible_host'] | default(host)) -%}
+            {%- endfor -%}
+            {{ ns.clients | unique | join(' ') }}
+          {%- endif -%}
+
+    - name: "nfs_storage | Validate NFS export clients"
+      ansible.builtin.assert:
+        that:
+          - _nfs_export_clients | trim | length > 0
+          - "'*' not in _nfs_export_clients"
+        fail_msg: >-
+          nfs_export_clients resolved to '{{ _nfs_export_clients | trim }}'.
+          A wildcard ('*') exports the share to every reachable host without
+          authentication (CWE-306). Set nfs_export_clients to a CIDR or host
+          list, or ensure the kube_node / kube_control_plane inventory groups
+          are populated.
+
+    - name: "nfs_storage | Build NFS export line"
+      ansible.builtin.set_fact:
+        _nfs_exports_line: >-
+          {{ nfs_path }}
+          {% for c in (_nfs_export_clients | trim).split() %}{{ c }}({{ nfs_export_options }}){% if not loop.last %} {% endif %}{% endfor %}
+
     - name: "nfs_storage | Configure /etc/exports"
       ansible.builtin.lineinfile:
         path: /etc/exports
         regexp: "^{{ nfs_path | regex_escape }}\\s"
-        line: "{{ nfs_path }} *({{ nfs_export_options }})"
+        line: "{{ _nfs_exports_line | trim }}"
         create: true
         mode: "0644"
       delegate_to: "{{ _nfs_target | trim }}"
