@@ -117,35 +117,61 @@
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
+    - name: "nfs_storage | Resolve NFS export client list"
+      ansible.builtin.set_fact:
+        _nfs_export_clients: >-
+          {%- if nfs_export_clients | default('', true) | trim | length > 0 -%}
+            {{ nfs_export_clients | trim }}
+          {%- else -%}
+            {%- set ns = namespace(clients=[]) -%}
+            {%- for host in ((groups['kube_node'] | default([])) + (groups['kube_control_plane'] | default([]))) | unique -%}
+              {%- set _ = ns.clients.append(hostvars[host]['ansible_host'] | default(host)) -%}
+            {%- endfor -%}
+            {{ ns.clients | unique | join(' ') }}
+          {%- endif -%}
+
+    - name: "nfs_storage | Validate NFS export clients"
+      ansible.builtin.assert:
+        that:
+          - _nfs_export_clients | trim | length > 0
+          - "'*' not in _nfs_export_clients"
+        fail_msg: >-
+          nfs_export_clients resolved to '{{ _nfs_export_clients | trim }}'.
+          A wildcard ('*') exports the share to every reachable host without
+          authentication (CWE-306). Set nfs_export_clients to a CIDR or host
+          list, or ensure the kube_node / kube_control_plane inventory groups
+          are populated.
+
+    - name: "nfs_storage | Build NFS export line"
+      ansible.builtin.set_fact:
+        _nfs_exports_line: >-
+          {{ nfs_path }}
+          {% for c in (_nfs_export_clients | trim).split() %}{{ c }}({{ nfs_export_options }}){% if not loop.last %} {% endif %}{% endfor %}
+
     - name: "nfs_storage | Configure /etc/exports"
       ansible.builtin.lineinfile:
         path: /etc/exports
         regexp: "^{{ nfs_path | regex_escape }}\\s"
-        line: "{{ nfs_path }} *({{ nfs_export_options }})"
+        line: "{{ _nfs_exports_line | trim }}"
         create: true
         mode: "0644"
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
-    # ── Ensure the nfsd control filesystem is mounted ────────────────────
-    # rpc.nfsd cannot spawn kernel threads (and therefore never listens on
-    # :2049) unless /proc/fs/nfsd is mounted. When the NFS server shares a
-    # host with the Kubernetes control plane, a `kubeadm reset` / node wipe
-    # unmounts it, leaving nfs-server.service reporting active(exited) while
-    # no nfsd is actually running. Mount it explicitly before (re)starting.
+    # nfsd needs /proc/fs/nfsd mounted; a kubeadm reset can unmount it,
+    # leaving nfs-server.service active(exited) with no nfsd threads.
 
     - name: "nfs_storage | Ensure nfsd filesystem is mounted"
-      ansible.builtin.command: mount -t nfsd nfsd /proc/fs/nfsd
-      args:
-        creates: /proc/fs/nfsd/threads
+      ansible.posix.mount:
+        path: /proc/fs/nfsd
+        src: nfsd
+        fstype: nfsd
+        state: mounted
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
-    # ── (Re)start NFS and always re-export ───────────────────────────────
-    # Use state=restarted (not started): the service is oneshot and reports
-    # active(exited) even when nfsd threads never came up, so `started` is a
-    # no-op that cannot recover a broken server. A restart forces rpc.nfsd to
-    # re-run now that /proc/fs/nfsd is present.
+    # Restart (not start): the oneshot service reports active(exited) even
+    # when nfsd threads never came up, so `started` cannot recover it.
 
     - name: "nfs_storage | Enable and restart NFS service"
       ansible.builtin.service:
@@ -172,10 +198,47 @@
       ansible.builtin.debug:
         msg: "{{ _nfs_verify_exports.stdout_lines }}"
 
-    # ── Wait until nfsd is actually listening before smoke-testing ───────
-    # Guards against the race where the mount succeeds but rpc.nfsd has not
-    # yet bound :2049, and turns a silent "connection refused" into a clear,
-    # fast failure on the server itself rather than a 2-minute mount timeout.
+    # Restrict NFS ports to cluster nodes via iptables.
+
+    - name: "nfs_storage | Collect cluster node IPs for firewall"
+      when: nfs_firewall_restrict | default(true) | bool
+      ansible.builtin.set_fact:
+        _nfs_allowed_ips: >-
+          {{ ((groups['kube_node'] | default([])) + (groups['kube_control_plane'] | default([])))
+             | unique
+             | map('extract', hostvars, 'ansible_host')
+             | select('defined')
+             | unique
+             | list }}
+
+    - name: "nfs_storage | Allow NFS traffic from cluster nodes"
+      when: nfs_firewall_restrict | default(true) | bool
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "{{ item.1 }}"
+        source: "{{ item.0 }}"
+        jump: ACCEPT
+        comment: "nfs_storage: allow {{ item.1 }}/tcp from {{ item.0 }}"
+      loop: "{{ _nfs_allowed_ips | product(['2049', '111']) | list }}"
+      loop_control:
+        label: "{{ item.0 }}:{{ item.1 }}"
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    - name: "nfs_storage | Drop NFS traffic from all other sources"
+      when: nfs_firewall_restrict | default(true) | bool
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "{{ item }}"
+        jump: DROP
+        comment: "nfs_storage: deny {{ item }}/tcp from non-cluster hosts"
+      loop: ['2049', '111']
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    # Wait for nfsd to bind :2049 before smoke-testing the mount.
 
     - name: "nfs_storage | Wait for nfsd to listen on :2049"
       ansible.builtin.wait_for:
@@ -185,27 +248,36 @@
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
-    # ── Smoke-test: verify a worker can mount the export ─────────────────
+    # Smoke-test: verify a worker can mount the export.
 
-    - name: "nfs_storage | Test NFS mount from first worker"
-      ansible.builtin.shell: |
-        set -e
-        MNT=$(mktemp -d /tmp/nfs-test.XXXXXX)
-        trap "umount -f '$MNT' 2>/dev/null; rmdir '$MNT' 2>/dev/null" EXIT
-        mount -t nfs {{ nfs_server | trim }}:{{ nfs_path }} "$MNT"
-        touch "$MNT/.nfs-test-$$"
-        rm -f "$MNT/.nfs-test-$$"
-        echo "NFS mount test passed"
-      args:
-        executable: /bin/bash
+    - name: "nfs_storage | Mount NFS export on first worker"
+      ansible.posix.mount:
+        path: /tmp/nfs-smoke-test
+        src: "{{ nfs_server | trim }}:{{ nfs_path }}"
+        fstype: nfs
+        state: mounted
+      delegate_to: "{{ groups['kube_node'] | first }}"
+      become: true
+
+    - name: "nfs_storage | Write and remove test file"
+      ansible.builtin.file:
+        path: /tmp/nfs-smoke-test/.nfs-test-probe
+        state: "{{ item }}"
+      loop: [touch, absent]
       delegate_to: "{{ groups['kube_node'] | first }}"
       become: true
       changed_when: false
-      register: _nfs_mount_test
+
+    - name: "nfs_storage | Unmount NFS smoke test"
+      ansible.posix.mount:
+        path: /tmp/nfs-smoke-test
+        state: absent
+      delegate_to: "{{ groups['kube_node'] | first }}"
+      become: true
 
     - name: "nfs_storage | Mount test result"
       ansible.builtin.debug:
-        msg: "{{ _nfs_mount_test.stdout | trim }}"
+        msg: "NFS mount test passed"
 
     # ── Install Helm provisioner (runs on localhost, talks to k8s API) ────
 

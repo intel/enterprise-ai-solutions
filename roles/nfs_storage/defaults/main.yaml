@@ -20,15 +20,18 @@ nfs_storageclass_name: "nfs-client"
 nfs_storageclass_default: true
 nfs_wait_timeout: "300s"
 
-# --- NFS export options ---
-# Kubernetes pods typically run as root (uid 0). With root_squash, NFS maps
-# remote root to nobody — breaking PVC writes for PostgreSQL, model storage,
-# etc. no_root_squash is required for Kubernetes NFS volumes.
-nfs_export_options: "rw,sync,no_subtree_check,no_root_squash"
+# Hosts allowed to mount the export. Auto-resolved from inventory when empty.
+# Accepts a CIDR or space-separated IPs. NEVER set to "*" (CWE-306).
+nfs_export_clients: ""
 
-# Permissions and ownership applied to the export directory on the NFS server.
-# 0775 + nogroup is sufficient for non-root pods; raise to 0777 only when
-# strictly necessary.
+# root_squash remaps remote uid 0 to nobody. Override to no_root_squash
+# only if a workload genuinely requires remote root writes.
+nfs_export_options: "rw,sync,no_subtree_check,root_squash"
+
+# Restrict NFS ports (2049, 111) on the server to cluster nodes via iptables.
+nfs_firewall_restrict: true
+
+# Permissions on the export directory. 0775 + nogroup suits most workloads.
 nfs_dir_mode: "0775"
 nfs_dir_owner: "nobody"
 nfs_dir_group: "nogroup"

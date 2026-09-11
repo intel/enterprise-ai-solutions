@@ -195,6 +195,12 @@
             adminUser: "{{ observability_grafana_admin_user }}"
             adminPassword: "{{ observability_grafana_admin_password }}"
             affinity: "{{ _platform_affinity | default({}) }}"
+            initChownData:
+              enabled: false
+            securityContext:
+              fsGroup: 472
+              runAsUser: 472
+              runAsGroup: 472
             env:
               http_proxy: "{{ http_proxy | default('') }}"
               https_proxy: "{{ https_proxy | default('') }}"
