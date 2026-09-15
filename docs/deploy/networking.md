@@ -564,9 +564,23 @@ iptables -A FORWARD -s 10.1.1.1 -j ACCEPT
 # Masquerade
 iptables -t nat -A POSTROUTING -s 10.1.1.0/24 -j MASQUERADE
 
+# Restrict NFS (port 2049) and rpcbind (port 111) to cluster nodes only.
+# Replace 10.1.1.2 and 10.1.1.3 with your actual node IPs.
+iptables -A INPUT -p tcp --dport 2049 -s 10.1.1.2 -j ACCEPT
+iptables -A INPUT -p tcp --dport 2049 -s 10.1.1.3 -j ACCEPT
+iptables -A INPUT -p tcp --dport 2049 -j DROP
+iptables -A INPUT -p tcp --dport 111 -s 10.1.1.2 -j ACCEPT
+iptables -A INPUT -p tcp --dport 111 -s 10.1.1.3 -j ACCEPT
+iptables -A INPUT -p tcp --dport 111 -j DROP
+
 # Persist
 iptables-save > /etc/iptables/rules.v4
 ```
+
+> **Security note:** When using `storage_backend: nfs`, restrict NFS port 2049
+> and rpcbind port 111 on the storage node to cluster nodes only. The installer
+> does this automatically when `nfs_firewall_restrict: true` (the default).
+> Never expose port 2049 to untrusted networks.
 
 **External HAProxy (multi-master HA):**
 ```
