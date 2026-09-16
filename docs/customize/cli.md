@@ -1,8 +1,14 @@
-# Intel® AI for Enterprise Solutions CLI Reference
+# CLI Reference
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-All `es_auto_installer.sh` and `model-manager` commands for Intel® AI for Enterprise Solutions run from the repo root.
+`es_auto_installer.sh` is the installer CLI. It creates environments, installs
+and tears down layers and components, validates health, and reports status.
+`model-manager` is the CLI for the inference toolkit: deploy, undeploy, list,
+and scale models.
+
+Run both from the repository root. `--env` selects which `env/<name>/` directory
+a command acts on. If you omit it, the installer uses `local`.
 
 ```
 ./es_auto_installer.sh <action> [target] [--env <name>] [options]
@@ -30,14 +36,14 @@ Create a new environment directory at `env/<name>/` and seed it with default con
 
 ```bash
 ./es_auto_installer.sh init local           # standard environment
-./es_auto_installer.sh init prod --rag      # seed with RAG config as well
+./es_auto_installer.sh init prod --rag      # seed an additional toolkit config
 ```
 
 Creates:
-- `env/<name>/global_config.yaml` — edit this before installing
-- `env/<name>/nodes.yaml` — node IPs and SSH credentials (edit for multi-node)
-- `env/<name>/inventory/hosts.yaml` — targets localhost by default; edit for multi-node
-- `env/<name>/models.yaml` — model catalog, pre-seeded from the inference repo defaults
+- `env/<name>/global_config.yaml`, edit this before installing
+- `env/<name>/nodes.yaml`, node IPs and SSH credentials (edit for multi-node)
+- `env/<name>/inventory/hosts.yaml`, targets localhost by default; edit for multi-node
+- `env/<name>/models.yaml`, model catalog, pre-seeded from the inference repo defaults
 
 ---
 
@@ -59,13 +65,13 @@ Deploy components. Dependencies are resolved automatically.
 # A single component, skipping dependencies
 ./es_auto_installer.sh install metallb --only --env local
 
-# Opt-in application layer (RAG, eRAG UI)
+# Opt-in application layer (other Intel® enterprise AI toolkits)
 ./es_auto_installer.sh install application --env local
 
 # Override a config value at runtime (no file edit needed)
 ./es_auto_installer.sh install kserve --env local -- -e kserve_version=0.15.0
 
-# Dry run — show what would happen without making changes
+# Dry run: show what would happen without making changes
 ./es_auto_installer.sh install --all --env local -- --check
 
 # Pass additional Ansible flags (use -- to separate)
@@ -80,7 +86,7 @@ Deploy components. Dependencies are resolved automatically.
 | `infrastructure` | kubernetes, storage |
 | `platform` | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak, object_store, minio, observability |
 | `inference` | keycloak_config, envoy_ai_gateway, kserve, litellm, langfuse, llm_services, nri_cpu_balloons |
-| `application` | RAG pipeline, UI, vector DBs (opt-in, from ext repo) |
+| `application` | Other Intel® enterprise AI toolkits (opt-in, from ext repos) |
 | `<component>` | Any individual component name (e.g. `kserve`, `grafana`, `metallb`) |
 
 ---
@@ -141,7 +147,7 @@ List all available layers and components, including which are opt-in.
 |---|---|
 | `--env <name>` | Target environment (default: `local`) |
 | `--all` | Select the full stack (infra + platform + inference) |
-| `--only` | Skip dependency auto-inclusion — run the named target alone |
+| `--only` | Skip dependency auto-inclusion, run the named target alone |
 | `-- <ansible-flags>` | Pass remaining args directly to `ansible-playbook` (e.g. `-- -vvv`, `-- --check`, `-- -e key=value`) |
 
 ---
@@ -211,4 +217,4 @@ For more Ansible detail, append `-- -vvv` to any command.
 | Look up what each `global_config.yaml` field controls | [Configuration Reference](configuration.md) |
 | Deploy, access, and manage LLM inference with `model-manager` | [Deploy an LLM](../deploy/deploy_models.md) |
 | Set up multi-node or bring-your-own-cluster installs | [Deployment Guide](../deploy/install_platform.md) |
-| See the full command dispatch flow this CLI triggers | [Architecture & Design Document](../reference/architecture.md) |
+| See the full command dispatch flow this CLI triggers | [Architecture & Design](../meet/architecture.md) |

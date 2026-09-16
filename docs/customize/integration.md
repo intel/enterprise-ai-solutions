@@ -1,10 +1,14 @@
-# Integrating Applications with Intel® AI for Enterprise Solutions
+# Integration Guide
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-How to integrate **your tool, framework, or application** with the Intel® AI for Enterprise Solutions inference stack — without modifying the stack itself.
+Point any OpenAI-compatible client at the inference endpoint and pass a Bearer
+token. You do not modify the stack, and you do not need a vendor-specific
+protocol. The URL and the kind of token depend on `auth_provider` in
+`global_config.yaml`.
 
-> **TL;DR** — point any OpenAI-compatible client at the inference endpoint and pass a Bearer token. With `auth_provider=litellm`: use `https://${LITELLM_DOMAIN}/v1/chat/completions` with a LiteLLM virtual key. With `auth_provider=keycloak`: use `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1/chat/completions` with a Keycloak JWT.
+- `auth_provider=keycloak` (default): `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1/chat/completions` with a Keycloak JWT
+- `auth_provider=litellm`: `https://${LITELLM_DOMAIN}/v1/chat/completions` with a LiteLLM virtual key
 
 ---
 
@@ -17,7 +21,7 @@ The stack is built on open standards. Anything that speaks them works:
 | **OpenAI REST API** (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) | vLLM behind KServe + LiteLLM proxy (or Envoy AI Gateway) | Drop-in compatibility with the entire OpenAI ecosystem |
 | **Open Inference Protocol** / KFServing v2 (`/v2/models/<m>/infer`) | KServe predictors (sklearn, XGBoost, PyTorch, TF, ONNX, Triton, custom) | Serve **traditional ML** models on the same stack |
 | **Bearer token auth** | LiteLLM virtual keys (`auth_provider=litellm`) or Keycloak OIDC JWT (`auth_provider=keycloak`) | Standard `Authorization: Bearer <token>` works with any HTTP client |
-| **Gateway API + Kubernetes CRDs** | Envoy Gateway, KServe, cert-manager, Istio ambient | Add models / routes / policies declaratively — no stack edits |
+| **Gateway API + Kubernetes CRDs** | Envoy Gateway, KServe, cert-manager, Istio ambient | Add models / routes / policies declaratively, no stack edits |
 
 ---
 
@@ -62,7 +66,7 @@ CLIENT_ID=$(kubectl get secret keycloak-client-secret -n keycloak \
 CLIENT_SECRET=$(kubectl get secret keycloak-client-secret -n keycloak \
   -o jsonpath='{.data.client-secret}' | base64 -d)
 
-# Get a JWT (client-credentials flow — service-to-service)
+# Get a JWT (client-credentials flow: service-to-service)
 TOKEN=$(curl -sk --noproxy '*' --resolve ${KEYCLOAK_DOMAIN}:443:${GATEWAY_IP} \
   https://${KEYCLOAK_DOMAIN}/realms/${REALM}/protocol/openid-connect/token \
   -d "grant_type=client_credentials" \
@@ -89,7 +93,7 @@ curl -sk --noproxy '*' --resolve ${LITELLM_DOMAIN}:443:${GATEWAY_IP} \
   }'
 ```
 
-LiteLLM handles model routing — all models share the same base URL (`/v1/...`). Specify the model name in the request body.
+LiteLLM handles model routing, all models share the same base URL (`/v1/...`). Specify the model name in the request body.
 
 #### With `auth_provider=keycloak` (default)
 
@@ -138,19 +142,19 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-> Streaming, function-calling, and embeddings work via the standard OpenAI SDK calls — vLLM implements them. Note: TLS verification may need `verify=False` (or trusting the cert-manager CA) when using the default `selfsigned` TLS mode.
+> Streaming, function-calling, and embeddings work via the standard OpenAI SDK calls, vLLM implements them. Note: TLS verification may need `verify=False` (or trusting the cert-manager CA) when using the default `selfsigned` TLS mode.
 
 ---
 
 ## Integration recipes
 
-Pick your tool. Each one needs only **base URL + API key** — both already provided above.
+Pick your tool. Each one needs only **base URL + API key**, both already provided above.
 
 > **Note on base URL:** All examples below use `BASE_URL` which is:
 > - With `auth_provider=litellm`: `https://${LITELLM_DOMAIN}/v1` (LiteLLM routes to the model)
 > - With `auth_provider=keycloak`: `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1` (direct KServe path)
 
-### RAG — LangChain
+### RAG: LangChain
 
 ```python
 import os
@@ -164,7 +168,7 @@ llm = ChatOpenAI(
 # Use any LangChain chain / retriever / vectorstore on top.
 ```
 
-### RAG — LlamaIndex
+### RAG: LlamaIndex
 
 ```python
 import os
@@ -178,7 +182,7 @@ llm = OpenAILike(
 )
 ```
 
-### Agents — LangGraph
+### Agents: LangGraph
 
 ```python
 import os
@@ -193,7 +197,7 @@ llm = ChatOpenAI(
 agent = create_react_agent(llm, tools=[...])
 ```
 
-### Agents — CrewAI
+### Agents: CrewAI
 
 ```python
 import os
@@ -207,7 +211,7 @@ llm = LLM(
 agent = Agent(role="Researcher", llm=llm, ...)
 ```
 
-### Agents — OpenAI Agents SDK
+### Agents: OpenAI Agents SDK
 
 ```python
 import os
@@ -236,7 +240,7 @@ API Key:  <LiteLLM virtual key or Keycloak JWT>
 
 ### Vector DBs (RAG storage)
 
-These run **alongside** the stack — your app talks to them directly. Recommended deployments:
+These run **alongside** the stack, your app talks to them directly. Recommended deployments:
 
 | Vector DB | Notes |
 |---|---|
@@ -246,13 +250,13 @@ These run **alongside** the stack — your app talks to them directly. Recommend
 | **Weaviate** | `helm install weaviate weaviate/weaviate -n weaviate --create-namespace` |
 | **Chroma** | `helm install chromadb chromadb/chromadb` |
 
-The stack does **not** need to know about them — they're consumed by your application code.
+The stack does **not** need to know about them, they're consumed by your application code.
 
 ### Eval & Observability
 
 | Tool | How it integrates |
 |---|---|
-| **Langfuse** | ✅ Bundled with the stack when `auth_provider=litellm`. LiteLLM auto-sends traces to the in-cluster Langfuse instance — no client-side instrumentation needed. Access at `https://langfuse.<base_domain_name>`. |
+| **Langfuse** | ✅ Bundled with the stack when `auth_provider=litellm`. LiteLLM auto-sends traces to the in-cluster Langfuse instance, no client-side instrumentation needed. Access at `https://langfuse.<base_domain_name>`. |
 | **Phoenix / Arize** | Use the OpenInference instrumentor for OpenAI; spans are emitted to your Phoenix collector. |
 | **Ragas / DeepEval** | Pass the same `ChatOpenAI` / `OpenAILike` LLM into the eval harness. |
 | **Promptfoo** | Use provider `openai:chat:llama-3-2-1b` with `apiBaseUrl` + `apiKey` in `promptfoo.yaml`. |
@@ -292,7 +296,7 @@ Pick the model that fits your client:
 | Option | Status | When to use | How |
 |---|---|---|---|
 | **Client-credentials JWT** (default) | ✅ shipped | Service-to-service, batch jobs, agents | `grant_type=client_credentials` against Keycloak token endpoint (see top of guide) |
-| **Password JWT** | ✅ supported by Keycloak | User-facing apps with login | `grant_type=password` — issue per-user tokens (enable Direct Access Grants on the client first) |
+| **Password JWT** | ✅ supported by Keycloak | User-facing apps with login | `grant_type=password`, issue per-user tokens (enable Direct Access Grants on the client first) |
 | **Authorization Code Flow** | ✅ supported by Keycloak | Web apps with full SSO | Standard OIDC redirect flow against Keycloak (configure `redirectUris`) |
 | **LiteLLM virtual key** | ✅ shipped | Multi-tenant SaaS, per-key budgets/limits | Set `auth_provider: litellm` in `global_config.yaml`. LiteLLM issues virtual keys with per-key budgets, rate limits, and model access controls. Langfuse observability auto-enabled. |
 | **No auth** | ✅ shipped | Local dev only | `auth_provider: "none"` in `global_config.yaml` |
@@ -304,19 +308,19 @@ Pick the model that fits your client:
   - **Issuer**: `https://${KEYCLOAK_HOSTNAME}/realms/inference`
   - **Audience**: `inference-client`
   - **JWKS URI**: `http://keycloak-service.keycloak.svc.cluster.local:8080/realms/inference/protocol/openid-connect/certs`
-  - Match those claims and any IdP works — the policy can be reconfigured to point at Auth0, Okta, Azure AD, etc.
+  - Match those claims and any IdP works, the policy can be reconfigured to point at Auth0, Okta, Azure AD, etc.
 
 ---
 
 ## Adding a new model
 
-You don't have to write Ansible — use the Model Manager:
+You don't have to write Ansible, use the Model Manager:
 
 ```bash
 ./model-manager deploy <model-name>
 ```
 
-Behind the scenes it creates a KServe `InferenceService` (or `LLMInferenceService`) and KServe auto-creates the `HTTPRoute` so the new model is reachable at `/llm-inference/<model-name>/v1/...` — same gateway, same JWT.
+Behind the scenes it creates a KServe `InferenceService` (or `LLMInferenceService`) and KServe auto-creates the `HTTPRoute` so the new model is reachable at `/llm-inference/<model-name>/v1/...`, same gateway, same JWT.
 
 To declare models in Git instead, drop CRDs into your role/values and run:
 
@@ -328,7 +332,7 @@ To declare models in Git instead, drop CRDs into your role/values and run:
 
 ## Traditional ML models (sklearn, XGBoost, PyTorch, TensorFlow, ONNX, …)
 
-KServe is a **general-purpose model server** — LLMs are just one workload. You can deploy classic ML models on the same stack with the same auth, gateway, and routing.
+KServe is a **general-purpose model server**, LLMs are just one workload. You can deploy classic ML models on the same stack with the same auth, gateway, and routing.
 
 ### What's supported out of the box
 
@@ -397,7 +401,7 @@ curl -sk --noproxy '*' --resolve ${GATEWAY_DOMAIN}:443:${GATEWAY_IP} \
   }'
 ```
 
-Same gateway, same JWT, same `HTTPRoute` mechanism — only the **path** and **payload format** differ from the OpenAI-style LLM endpoints.
+Same gateway, same JWT, same `HTTPRoute` mechanism, only the **path** and **payload format** differ from the OpenAI-style LLM endpoints.
 
 ### Python client example
 
@@ -427,7 +431,7 @@ For richer clients, the [`kserve` Python SDK](https://kserve.github.io/website/)
 
 ### Custom model servers (any framework)
 
-If KServe doesn't ship a predictor for your framework — or you have a custom inference container — use a **custom predictor**:
+If KServe doesn't ship a predictor for your framework, or you have a custom inference container, use a **custom predictor**:
 
 ```yaml
 spec:
@@ -481,7 +485,7 @@ Each `HTTPRoute` then claims the exact hostnames + paths it owns.
 
 So the stack is already exercising **pure host routing** (Keycloak) and **host + path routing combined** (inference).
 
-### Patterns you can add with `kubectl apply` — no stack changes
+### Patterns you can add with `kubectl apply`: no stack changes
 
 #### 1. Subdomain per tenant
 
@@ -572,7 +576,7 @@ rules:
 
 #### 8. Combine everything
 
-A single rule can require host + path + headers + method + query params **all at once** — match semantics are AND within a `matches` entry, OR between entries.
+A single rule can require host + path + headers + method + query params **all at once**, match semantics are AND within a `matches` entry, OR between entries.
 
 ### Cross-namespace routing
 
@@ -621,11 +625,11 @@ spec:
 
 Create a Keycloak client + a routing policy without touching the stack code:
 
-1. **New Keycloak client** — log into `https://${KEYCLOAK_DOMAIN}` and add `clientId: my-app` (service-accounts enabled, audience mapper for `my-app`). Or declare it via a `KeycloakRealmImport` CR (see `ext/enterprise.ai-inference/roles/keycloak_config/tasks/install.yaml` for a template).
-2. **Per-app rate limit (optional)** — apply an Envoy Gateway `BackendTrafficPolicy` targeting the route(s) the new client should hit.
-3. **Per-client SecurityPolicy (optional)** — to require a different audience claim, add a second `SecurityPolicy` targeting only the new client's `HTTPRoute`.
+1. **New Keycloak client**, log into `https://${KEYCLOAK_DOMAIN}` and add `clientId: my-app` (service-accounts enabled, audience mapper for `my-app`). Or declare it via a `KeycloakRealmImport` CR (see `ext/enterprise.ai-inference/roles/keycloak_config/tasks/install.yaml` for a template).
+2. **Per-app rate limit (optional)**, apply an Envoy Gateway `BackendTrafficPolicy` targeting the route(s) the new client should hit.
+3. **Per-client SecurityPolicy (optional)**, to require a different audience claim, add a second `SecurityPolicy` targeting only the new client's `HTTPRoute`.
 
-Your app then uses its own `client_id` / `client_secret` to fetch tokens — same endpoint, different identity.
+Your app then uses its own `client_id` / `client_secret` to fetch tokens, same endpoint, different identity.
 
 > Per-key budgets and quotas are available via LiteLLM virtual keys when `auth_provider: litellm` is configured.
 
@@ -651,8 +655,8 @@ These are the rare cases:
 |---|---|---|
 | `401 Unauthorized` | Missing/expired JWT, wrong audience | Re-fetch token; verify `aud` claim matches `inference-client` |
 | `403 Forbidden` | Token valid but issuer mismatch | Confirm Keycloak hostname in JWT `iss` matches `SecurityPolicy` |
-| `404 Not Found` on `/llm-inference/<model>` | Model not deployed | `kubectl get inferenceservice -A` — deploy via Model Manager |
-| `503` / `upstream connect error` | Model pod not ready | `kubectl get pods -n llm-inference` — check vLLM container logs |
+| `404 Not Found` on `/llm-inference/<model>` | Model not deployed | `kubectl get inferenceservice -A`, deploy via Model Manager |
+| `503` / `upstream connect error` | Model pod not ready | `kubectl get pods -n llm-inference`, check vLLM container logs |
 | TLS verification failure | Self-signed cert | Use `--insecure` / `verify=False` in dev, or trust the CA from cert-manager |
 | Connection hangs from outside cluster | Hostname not resolving to LoadBalancer IP | Add a DNS record (or `--resolve` for curl) → `${GATEWAY_IP}` |
 
@@ -662,7 +666,7 @@ These are the rare cases:
 
 | If you want to… | Go to |
 |---|---|
-| See where the gateway and auth boundary you just integrated with fit in the full stack | [Architecture & Design Document](../reference/architecture.md) |
+| See where the gateway and auth boundary you just integrated with fit in the full stack | [Architecture & Design](../meet/architecture.md) |
 | Trace exactly how a request flows through MetalLB, the gateway, and ingress | [Network Architecture](../deploy/networking.md) |
 | Deploy, list, or undeploy the model you're pointing your app at | [Deploy an LLM](../deploy/deploy_models.md) |
 | Dig into the underlying inference-serving repo (`model-manager`, vLLM/OVMS configs) | [Model Manager (Enterprise Inference) on GitHub](https://github.com/intel/enterprise-inference) |

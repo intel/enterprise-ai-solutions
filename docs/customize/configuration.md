@@ -1,10 +1,10 @@
-# Intel® AI for Enterprise Solutions Configuration Reference
+# Configuration Reference
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-## What Does global_config.yaml Control?
+## What does global_config.yaml control?
 
-An Intel® AI for Enterprise Solutions deployment is described by **one file**:
+Every deployment is described by one file:
 
 ```
 env/<name>/global_config.yaml
@@ -12,7 +12,7 @@ env/<name>/global_config.yaml
 
 Domain names, TLS, authentication, storage, compute, and which components get
 installed all come from this file. There is no other place you need to look, and
-no YAML you have to write from scratch — `init` generates the file for you with
+no YAML you have to write from scratch, `init` generates the file for you with
 working defaults.
 
 ### How it fits together
@@ -24,7 +24,7 @@ vi env/local/global_config.yaml        # 2. (optional) change what you need
 ```
 
 Step 2 is optional. The defaults deploy a complete, working stack on a single
-node — that is exactly what the [Quick Start](../../README.md#quick-start) runs.
+node, that is exactly what the [Quick Start](../../README.md#quick-start) runs.
 
 Every later command (`install <component>`, `teardown`, …) reads the same file,
 so the file stays the source of truth for the life of the environment.
@@ -32,7 +32,7 @@ so the file stays the source of truth for the life of the environment.
 ### One file per environment
 
 Each environment is a directory under `env/` with its own config, kubeconfig, and
-logs — they are fully independent:
+logs, they are fully independent:
 
 ```
 env/local/global_config.yaml     # your laptop / dev box
@@ -43,7 +43,7 @@ env/prod/global_config.yaml      # the real cluster
 
 > [!WARNING]
 > Install and teardown are environment-scoped. If you installed with `--env prod`,
-> you must teardown with `--env prod` — running teardown against a different
+> you must teardown with `--env prod`, running teardown against a different
 > environment will not touch the one you meant.
 
 ### Do I Need to Change global_config.yaml Before My First Deploy?
@@ -56,7 +56,7 @@ You need to edit the file when one of these is true:
 
 | If you… | Change |
 |---|---|
-| Have more than one node | `storage_backend` → `nfs` or `ceph` (**required** — the installer aborts otherwise) |
+| Have more than one node | `storage_backend` → `nfs` or `ceph` (**required**, the installer aborts otherwise) |
 | Own a real domain | `base_domain_name` |
 | Have real certificates | `gateway_tls_mode` → `custom` |
 | Already run Kubernetes | `existing_kubernetes` → path to your kubeconfig |
@@ -67,10 +67,10 @@ You need to edit the file when one of these is true:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `base_domain_name` | `solutions.ai` | Every service URL derives from this — `grafana.<domain>`, `keycloak.<domain>`, `inference.<domain>` |
-| `auth_provider` | `keycloak` | Which auth stack deploys and how API calls are authorized — see [Auth provider](#auth-provider) |
-| `storage_backend` | `local-path` | Where persistent data lives — see [Storage](#storage) |
-| `gateway_tls_mode` | `selfsigned` | Auto-generated CA, or bring your own — see [TLS](#tls) |
+| `base_domain_name` | `solutions.ai` | Every service URL derives from this, `grafana.<domain>`, `keycloak.<domain>`, `inference.<domain>` |
+| `auth_provider` | `keycloak` | Which auth stack deploys and how API calls are authorized, see [Auth provider](#auth-provider) |
+| `storage_backend` | `local-path` | Where persistent data lives, see [Storage](#storage) |
+| `gateway_tls_mode` | `selfsigned` | Auto-generated CA, or bring your own, see [TLS](#tls) |
 | `kubernetes_accelerator` | `cpu` | Compute target for inference (Intel® Xeon®) |
 | `observability_enabled` | `true` | Deploy Prometheus + Grafana + Loki + Tempo |
 
@@ -110,7 +110,7 @@ the default, so this doubles as a reference for what you can set:
 
 ```yaml
 # =============================================================================
-# global_config.yaml — Main configuration for your deployment
+# global_config.yaml: Main configuration for your deployment
 # =============================================================================
 
 # --- Networking & Domain ---
@@ -171,9 +171,9 @@ minio_storage_size: "10Gi"
 | Field | What it controls |
 |---|---|
 | `base_domain_name` | All service URLs derive from this (e.g. `grafana.<domain>`, `litellm.<domain>`) |
-| `gateway_tls_mode` | How TLS certs are provisioned — auto-generated CA or bring your own |
+| `gateway_tls_mode` | How TLS certs are provisioned, auto-generated CA or bring your own |
 | `auth_provider` | Which auth stack deploys and how API requests are authorized |
-| `storage_backend` | Where persistent data lives — must be shared storage for multi-node |
+| `storage_backend` | Where persistent data lives, must be shared storage for multi-node |
 | `kubernetes_accelerator` | Compute target for inference workloads (Intel® Xeon® CPU) |
 | `kubernetes_cpu_policy` | CPU pinning strategy for inference workloads |
 | `observability_enabled` | Whether the full monitoring stack (Prometheus/Grafana/Loki/Tempo) is deployed |
@@ -191,7 +191,7 @@ The gateway terminates all external HTTPS. There is no plaintext mode.
 
 | `gateway_tls_mode` | What happens |
 |---|---|
-| `selfsigned` (default) | cert-manager creates an internal root CA that signs a wildcard certificate for `*.<base_domain_name>`. The CA is exported to `env/<name>/logs/ai-solutions-ca.crt` after install — import it once to remove browser warnings. |
+| `selfsigned` (default) | cert-manager creates an internal root CA that signs a wildcard certificate for `*.<base_domain_name>`. The CA is exported to `env/<name>/logs/ai-solutions-ca.crt` after install, import it once to remove browser warnings. |
 | `custom` | You supply the certificate and key. |
 
 **Custom TLS:**
@@ -231,7 +231,7 @@ Switching `auth_provider` changes which components deploy and how the gateway `S
 | `storage_backend` | Description | When to use |
 |---|---|---|
 | `local-path` (default) | Node-local storage (ReadWriteOnce) | Single-node only |
-| `nfs` | NFS server auto-provisioned on the first control-plane node at `/data/nfs` (ReadWriteMany) | **Required for multi-node** — model weights must be accessible from every node |
+| `nfs` | NFS server auto-provisioned on the first control-plane node at `/data/nfs` (ReadWriteMany) | **Required for multi-node**, model weights must be accessible from every node |
 | `ceph` | Replicated block storage via Rook-Ceph (ReadWriteMany + redundancy) | Multi-node with raw block devices, production durability |
 
 > **Multi-node warning:** the installer aborts if `storage_backend: local-path` is detected on a multi-node cluster. Change it to `nfs` before running.
@@ -270,13 +270,13 @@ no_proxy: "localhost,127.0.0.1,10.233.0.0/18,10.233.64.0/18,.svc,.cluster.local,
 
 ## CPU policy
 
-`kubernetes_cpu_policy` is the single switch for CPU pinning. Everything downstream — NRI plugin installation, kubelet configuration, and model manifest rendering — is derived from it.
+`kubernetes_cpu_policy` is the single switch for CPU pinning. Everything downstream, NRI plugin installation, kubelet configuration, and model manifest rendering, is derived from it.
 
 | Value | What it does | When to use |
 |---|---|---|
-| `nri-balloons` (default) | Installs the NRI balloons plugin. NUMA-aware pinning with hyperthread isolation. Pods use normal (Burstable) QoS. | Recommended — best performance on multi-NUMA Xeon nodes |
+| `nri-balloons` (default) | Installs the NRI balloons plugin. NUMA-aware pinning with hyperthread isolation. Pods use normal (Burstable) QoS. | Recommended, best performance on multi-NUMA Xeon nodes |
 | `kubelet-static` | Configures kubelet's static CPU manager (`full-pcpus-only`). Pods become Guaranteed QoS. No NRI plugin. | Clusters that cannot run NRI |
-| `best-effort` | No pinning — default scheduler placement | Development or small clusters where pinning isn't needed |
+| `best-effort` | No pinning, default scheduler placement | Development or small clusters where pinning isn't needed |
 
 See [NRI CPU Balloons](nri_cpu_balloons.md) for per-node balloon configuration and sizing.
 
@@ -300,7 +300,7 @@ postgresql_enabled: false       # using an external PostgreSQL
 
 | Setting | Default | Description |
 |---|---|---|
-| `gateway_request_timeout` | `600s` | Envoy request timeout — raised from the 15s default for long LLM responses |
+| `gateway_request_timeout` | `600s` | Envoy request timeout, raised from the 15s default for long LLM responses |
 | `kubernetes_cluster_name` | `cluster.local` | Kubernetes cluster DNS suffix |
 | `kubernetes_kube_proxy_mode` | `nftables` | `nftables` \| `iptables` \| `ipvs` |
 | `node_topology_enabled` | `true` | Soft affinity: platform pods prefer control-plane nodes, inference pods prefer workers. See [Node Topology](node_topology.md). |
@@ -324,7 +324,7 @@ Keycloak and Grafana admin passwords are **auto-generated** (24 random
 characters) on first install and stored in Kubernetes secrets. Re-running the
 install preserves the existing password rather than rotating it.
 
-Retrieve them after install — the username is `admin` in both cases:
+Retrieve them after install, the username is `admin` in both cases:
 
 ```bash
 # Grafana
@@ -336,7 +336,7 @@ kubectl get secret -n keycloak keycloak-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
-To choose the passwords yourself, set them before the first install — either in
+To choose the passwords yourself, set them before the first install, either in
 `global_config.yaml`:
 
 ```yaml

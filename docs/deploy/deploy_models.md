@@ -1,8 +1,11 @@
-# Deploy an LLM on Intel® Silicon with model-manager
+# Deploy a Model
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-How to deploy, access, and manage self-hosted LLM inference on Intel® AI for Enterprise Solutions using the `model-manager` CLI.
+`./model-manager` is the CLI for the inference toolkit. It downloads model
+weights, sizes the serving pod, starts it, and prints an endpoint you can call.
+This page covers the built-in catalog, gated Hugging Face models, how you
+authenticate a request, and how you scale or undeploy.
 
 ---
 
@@ -44,7 +47,7 @@ export HF_TOKEN="hf_your_token_here"
 
 > [!NOTE]
 > With `auth_provider: litellm`, the host that `model-manager` prints
-> (`inference.<base_domain_name>`) is **not** the one that serves requests — that
+> (`inference.<base_domain_name>`) is **not** the one that serves requests, that
 > host returns `404` in this mode. Use `litellm.<base_domain_name>` instead, as
 > shown under [Access the model](#access-the-model).
 
@@ -63,14 +66,14 @@ Key flags:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--id` | — | Hugging Face repo ID |
+| `--id` |, | Hugging Face repo ID |
 | `--cpu` | from catalog | CPU cores for the serving pod |
 | `--memory` | from catalog | Memory limit (e.g. `24Gi`) |
 | `--replicas` | `1` | Number of serving replicas |
-| `--tp` | `1` | Tensor parallelism — splits across NUMA nodes |
+| `--tp` | `1` | Tensor parallelism, splits across NUMA nodes |
 | `--runtime` | `vllm` | Serving runtime: `vllm` \| `openvino` |
-| `--wait` | — | Wait for model to be ready |
-| `--dry-run` | — | Print the manifest without applying |
+| `--wait` |, | Wait for model to be ready |
+| `--dry-run` |, | Print the manifest without applying |
 
 ---
 
@@ -137,7 +140,7 @@ curl -sk --noproxy '*' \
   -d '{"model":"qwen3-0-6b","messages":[{"role":"user","content":"Hello!"}],"max_tokens":64}'
 ```
 
-Create a scoped virtual key via the LiteLLM UI (`https://litellm.${DOMAIN}/ui/` — the
+Create a scoped virtual key via the LiteLLM UI (`https://litellm.${DOMAIN}/ui/`, the
 trailing slash is required) or API for per-key budgets and rate limits. See
 [Deploying and Accessing Models](install_platform.md#deploying-and-accessing-models)
 for minting, listing, and revoking keys.
@@ -199,7 +202,7 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-For LangChain, LlamaIndex, CrewAI, Cursor, n8n, and others → see [Integration Guide](../customize/integration.md).
+For LangChain, LlamaIndex, CrewAI, Cursor, n8n, and others, see [Integration Guide](../customize/integration.md).
 
 ---
 
@@ -221,7 +224,7 @@ kubectl logs -n llm-inference -l serving.kserve.io/inferenceservice=qwen3-0-6b -
 
 ## Traditional ML models (sklearn, XGBoost, PyTorch, TF, ONNX, Triton)
 
-KServe is a general-purpose model server — LLMs are just one workload. Deploy classical ML models on the same stack with the same auth and gateway.
+KServe is a general-purpose model server, LLMs are just one workload. Deploy classical ML models on the same stack with the same auth and gateway.
 
 ```yaml
 # my-sklearn-model.yaml
@@ -244,7 +247,7 @@ spec:
 kubectl apply -f my-sklearn-model.yaml
 ```
 
-These models are served via the Open Inference Protocol at `/v2/models/<name>/infer` — same gateway, same JWT. See [Integration Guide](../customize/integration.md#traditional-ml-models-sklearn-xgboost-pytorch-tensorflow-onnx) for details.
+These models are served via the Open Inference Protocol at `/v2/models/<name>/infer`, same gateway, same JWT. See [Integration Guide](../customize/integration.md#traditional-ml-models-sklearn-xgboost-pytorch-tensorflow-onnx) for details.
 
 ---
 
