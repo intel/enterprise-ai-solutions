@@ -1,136 +1,128 @@
 # Meet Intel® AI for Enterprise Solutions
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-> **One automated workflow connecting Intel's enterprise AI portfolio — self-hosted, on-premises, and ready to deploy.**
+Intel® AI for Enterprise Solutions is the installer for Intel® enterprise
+AI toolkits. It is not a toolkit of its own, and it does not replace those
+products. It is the shared install path that puts them on the same Kubernetes
+foundation.
 
-Intel® AI for Enterprise Solutions is an open source, Kubernetes-based platform that removes the complexity of deploying self-hosted enterprise AI on Intel® Xeon® processors — on-premises, air-gapped, or in your own private cloud, with no GPU required and no data leaving your infrastructure.
+You run one command. The installer stands up that foundation (a cluster, or a
+cluster you already run, plus storage, TLS, identity, a gateway, and
+observability) and then deploys the Intel® enterprise AI toolkits onto it. The stack runs
+on Intel® Xeon® processors, on your own infrastructure. You do not install each
+toolkit by hand, and you do not rebuild Kubernetes, certificates, identity, and
+observability for every toolkit.
 
-The repository acts as the integration and automation layer across Intel's enterprise AI portfolio. It connects the infrastructure, inference engines, models, retrieval services, security, and observability required to deploy complete AI solutions — through a consistent, automated workflow.
+## What it is
 
-Instead of requiring teams to manually assemble and configure each component, the platform takes them from bare metal or an existing Kubernetes cluster to a secured, observable, OpenAI-compatible AI environment. Because inference could run entirely locally — a meaningful advantage for regulated or data-sovereignty-sensitive environments that need to keep inference in-house.
+**One installer for the portfolio.** `./es_auto_installer.sh` is the entry
+point. It creates a named environment, installs, validates, reports status, and
+tears down. Each Intel® enterprise AI toolkit lives in its own repository. The installer
+clones those repos and runs them in the same workflow, so you are not learning a
+different toolchain per toolkit.
 
-The platform brings together:
+**A shared foundation.** Every toolkit needs the same base: a cluster, persistent
+storage, TLS, identity, ingress, and observability. The installer deploys that
+base once. Toolkits then plug into it instead of each bringing their own cluster
+and certificates.
 
-- Automated infrastructure deployment and lifecycle management via Ansible + Kubespray
-- Model serving through vLLM and OpenVINO™ Model Server
-- OpenAI-compatible endpoints (drop-in for any OpenAI SDK client)
-- TLS, authentication, and access control (Keycloak OIDC or LiteLLM virtual keys)
-- AI-aware inference routing via Envoy AI Gateway
-- Persistent model storage (NFS, local-path, Ceph)
-- NUMA-aware CPU optimization via NRI CPU Balloons
-- Retrieval-augmented generation services (eRAG — opt-in)
-- Metrics, logs, traces, and LLM observability (Prometheus, Grafana, Loki, Tempo, Langfuse)
+**Intel® enterprise AI toolkits on top.** Inference is included when you pass `--all`.
+Other Intel® enterprise AI toolkits are opt-in: you add them when you need them, without
+rebuilding the foundation underneath.
 
----
+**CPU, on-premises.** The stack is designed for Intel® Xeon® processors. You do
+not need a discrete GPU. Workloads stay on your infrastructure, which matters
+when data cannot leave the building.
 
-## Why Choose Intel® AI for Enterprise Solutions Instead of Building It Yourself?
+**Modular.** Every component can be enabled, disabled, or replaced. If you
+already run cert-manager, a load balancer, or a service mesh, set the matching
+flag to `false` in `global_config.yaml` and the installer skips the built-in
+one.
 
-Enterprise AI requires more than a model server.
+**Isolated environments.** Each `env/<name>/` has its own config, inventory,
+kubeconfig, and model catalog. You can run development, staging, and production
+from one machine without those environments sharing state.
 
-Teams also need Kubernetes, networking, storage, TLS, identity, model routing, observability, and workload placement. Building and integrating those layers individually can take significant engineering effort — weeks to months.
+## Why assembling this yourself is hard
 
-AI for Enterprise Solutions deploys them through one environment-based workflow:
+Each toolkit still needs a cluster, storage, TLS, identity, a gateway, and
+observability. If you install those pieces once per toolkit, and try to keep
+versions and certificates consistent by hand, the integration work usually takes
+weeks.
+
+This installer deploys the shared foundation first, then the toolkits, in
+dependency order, from one command:
 
 ```bash
 ./es_auto_installer.sh install --all --env <name>
 ```
 
-The installer deploys enabled layers in dependency order:
-
 ```
 Infrastructure  (Kubernetes, storage)
       ↓
-Platform services  (cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, Observability)
+Platform        (cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, observability)
       ↓
-Inference  (KServe, Envoy AI Gateway, LiteLLM, Langfuse, model runtimes)
+Inference       (KServe, Envoy AI Gateway, LiteLLM, Langfuse, model runtimes)
       ↓
-Applications  (RAG pipelines, vector DBs, chat UI — opt-in)
+Applications    (other Intel® enterprise AI toolkits, opt-in)
 ```
-
----
-
-## What Makes Intel® AI for Enterprise Solutions Different?
-
-### One entry point
-
-`es_auto_installer.sh` manages environment initialization, installation, validation, status, and teardown. There is no separate toolchain to learn for each layer.
-
-### OpenAI-compatible API
-
-Applications and frameworks connect through a familiar API — the same `base_url` + `api_key` pattern used by the OpenAI SDK, LangChain, LlamaIndex, Cursor, n8n, and thousands of other tools.
-
-### GPU-Free Inference on Intel® Silicon
-
-The platform is designed for AI inference on Intel® silicon, with NUMA-aware CPU placement (NRI Balloons) and AMX instruction acceleration on Intel® Xeon® — delivering high-throughput, GPU-free inference without a specialized accelerator supply chain.
-
-### Modular by design
-
-Every platform component can be enabled, disabled, or replaced without rebuilding the complete architecture. Bring your own cert-manager, load balancer, identity provider, or service mesh — disable the built-in one with a single config flag.
-
-### Multi-environment from one bastion
-
-Each named environment under `env/<name>/` is fully isolated — its own config, inventory, kubeconfig, and model catalog. Run dev, staging, and prod from one machine.
-
-### Built-in operations
-
-Prometheus, Grafana, Loki, Tempo, OpenTelemetry, and Langfuse provide infrastructure and AI-workload visibility. Grafana dashboards are pre-wired; no manual datasource setup required.
-
----
 
 ## Solution layers
 
 | Layer | What it provides | Included in `--all` |
 |---|---|---|
-| **Inference** | Model serving, routing, authentication, OpenAI-compatible endpoints | Yes |
-| **RAG (eRAG)** | Document ingestion, vector search, grounded chat, chat history, UI | No — opt-in via `install application` |
-| **Agentic AI** | Agent orchestration, tool calling, sandboxed execution, multi-agent workflows | Planned |
+| **Infrastructure** | Kubernetes and storage, the cluster everything else runs on | Yes |
+| **Platform** | TLS, service mesh, gateway, identity, and observability | Yes |
+| **Inference** | Model serving, routing, and OpenAI-compatible endpoints | Yes |
+| **Applications** | Other Intel® enterprise AI toolkits that plug into the foundation | Opt-in |
 
-Each layer builds on the one below it. Deploy what you need today and add layers as your use case evolves.
+Deploy the foundation and inference today. Add another toolkit later without
+rebuilding the layers below it.
 
----
+## What gets installed
 
-## Platform components
+These are the components the installer deploys for the shared foundation and for
+inference. Other Intel® enterprise AI toolkits add their own components when you opt in.
 
-| # | Component | Purpose |
-|---|---|---|
-| 1 | **Kubernetes** | Container orchestration — foundation for all workloads |
-| 2 | **Storage** | Shared persistent volumes for model weights (local-path / NFS / Ceph) |
-| 3 | **Cert-Manager** | Automated TLS certificate issuance and rotation |
-| 4 | **Istio (Ambient)** | Zero-sidecar service mesh — mTLS, traffic policies, no pod restarts |
-| 5 | **MetalLB** | Bare-metal load balancer — assigns external IPs from real node addresses |
-| 6 | **Envoy Gateway** | Kubernetes Gateway API — HTTPS ingress, TLS termination, JWT auth |
-| 7 | **PostgreSQL (CNPG)** | Managed database for Keycloak, LiteLLM, Langfuse |
-| 8 | **Keycloak** | OIDC/OAuth2 identity provider — SSO, RBAC, API keys |
-| 9 | **MinIO** | S3-compatible object store for model weights and log storage |
-| 10 | **Observability** | Prometheus + Grafana + Loki + Tempo + OpenTelemetry + Prometheus Adapter |
-| 11 | **Envoy AI Gateway** | AI-aware routing — token-based load balancing, model-level rate limiting |
-| 12 | **KServe** | Model serving platform — InferenceService & LLMInferenceService CRDs |
-| 13 | **LiteLLM** | OpenAI-compatible proxy — unified endpoint, virtual key management |
-| 14 | **Valkey** | In-memory cache (Redis-compatible) for LiteLLM and Langfuse |
-| 15 | **Langfuse** | LLM observability — traces, token usage, cost tracking, prompt management |
-| 16 | **NRI CPU Balloons** | NUMA-aware CPU pinning for vLLM — eliminates noisy-neighbor interference |
+| Component | Purpose |
+|---|---|
+| **Kubernetes** | Orchestration for every workload |
+| **Storage** | Persistent volumes for model weights (local-path, NFS, or Ceph) |
+| **Cert-Manager** | Issues and rotates TLS certificates |
+| **Istio (Ambient)** | mTLS service mesh without sidecars |
+| **MetalLB** | LoadBalancer IPs on bare metal |
+| **Envoy Gateway** | HTTPS ingress, TLS termination, and JWT auth |
+| **PostgreSQL (CNPG)** | Database for Keycloak, LiteLLM, and Langfuse |
+| **Keycloak** | OIDC identity, including SSO and RBAC |
+| **MinIO** | S3-compatible object store |
+| **Observability** | Prometheus, Grafana, Loki, Tempo, and OpenTelemetry |
+| **Envoy AI Gateway** | Model-aware routing and rate limiting |
+| **KServe** | Model serving (InferenceService and LLMInferenceService) |
+| **LiteLLM** | OpenAI-compatible proxy and virtual keys |
+| **Valkey** | In-memory cache for LiteLLM and Langfuse |
+| **Langfuse** | LLM traces, token usage, and cost |
+| **NRI CPU Balloons** | NUMA-aware CPU pinning for vLLM |
 
----
+How those pieces are wired, and how a request flows, is in
+[Architecture & Design](architecture.md) and
+[Network Architecture](../deploy/networking.md).
 
 ## Deployment options
 
-| Option | How | Best for |
+| Path | How | Best for |
 |---|---|---|
-| **Single-node** | Installs Kubernetes on localhost | Development, evaluation, compact environments |
-| **Multi-node** | Provisions Kubernetes across remote nodes via SSH | Production, scale-out, higher availability |
-| **Existing Kubernetes** | Skips Kubespray; deploys onto your cluster | Managed clusters, brownfield environments |
+| **Single node** | Installs Kubernetes on localhost | First trial, evaluation |
+| **Multi-node** | Provisions Kubernetes on remote nodes over SSH | Production and scale-out |
+| **Existing Kubernetes** | Skips Kubespray and deploys onto your cluster | Managed or brownfield clusters |
 
----
+## Next steps
 
-## Start here
+1. **[Prerequisites](../quickstart/prerequisites.md)**: OS, hardware, sudo, and network.
+2. **[Getting Started](../quickstart/quickstart.md)**: pick a path and install.
+3. **[Deploy a Model](../deploy/deploy_models.md)**: serve an LLM with `model-manager`.
 
-| Goal | Link |
-|---|---|
-| Run the platform in 3 steps | [Quick Start](../quickstart/quickstart.md) |
-| All deployment options (multi-node, BYO, config) | [Getting Started](../quickstart/quickstart.md) |
-| Deploy models | [Deploy a Model](../deploy/deploy_models.md) |
-| Multi-node or BYO cluster | [Multi-Node & BYO Cluster](../deploy/topologies.md) |
-| Connect your app or framework | [Integration Guide](../customize/integration.md) |
-| Architecture deep-dive | [Architecture](../reference/architecture.md) |
-| Configuration reference | [Configuration](../customize/configuration.md) |
+Also see the [FAQ](../quickstart/faq.md),
+[Integration Guide](../customize/integration.md),
+[Configuration Reference](../customize/configuration.md), and
+[Architecture & Design](architecture.md).

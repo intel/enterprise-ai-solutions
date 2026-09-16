@@ -1,8 +1,11 @@
-# Prerequisites for Intel® AI for Enterprise Solutions
+# Prerequisites
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-Everything needed before running the Intel® AI for Enterprise Solutions installer, whether you're deploying on-premises, air-gapped, or on a single bare-metal box.
+Complete these checks once, on the machine that will run the installer, before
+the first `./es_auto_installer.sh install`. They apply whether you are
+installing on one box, across several nodes, or onto a cluster you already
+run. When they are done, go to [Getting Started](quickstart.md).
 
 ---
 
@@ -21,8 +24,8 @@ Everything needed before running the Intel® AI for Enterprise Solutions install
 | Deployment | CPU cores | RAM | Disk |
 |---|---|---|---|
 | Platform + Observability only | 16 | 32 GB | 200 GB |
-| Inference — 3B parameter model | 32 | 64 GB | 300 GB |
-| Inference — 8B parameter model | 64 | 128 GB | 400 GB |
+| Inference, 3B parameter model | 32 | 64 GB | 300 GB |
+| Inference, 8B parameter model | 64 | 128 GB | 400 GB |
 
 Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pinning (NRI Balloons) and AMX acceleration are built into the platform for Xeon workloads.
 
@@ -33,8 +36,8 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 | Requirement | Single-node | Multi-node |
 |---|---|---|
 | Passwordless sudo on installer host | Required | Required |
-| Passwordless SSH from installer host to all nodes | — | Required |
-| Passwordless sudo on all target nodes | — | Required |
+| Passwordless SSH from installer host to all nodes |, | Required |
+| Passwordless sudo on all target nodes |, | Required |
 
 ---
 
@@ -53,7 +56,7 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 | Tool | Version | Notes |
 |---|---|---|
 | Python | ≥ 3.11 | Also installs the matching `python<ver>-venv` package |
-| yq | v4.53.2 | [mikefarah/yq](https://github.com/mikefarah/yq) — YAML processor used by the installer |
+| yq | v4.53.2 | [mikefarah/yq](https://github.com/mikefarah/yq), YAML processor used by the installer |
 | kubectl | v1.34.3 | |
 | helm | v3.20.2 | |
 
@@ -63,17 +66,17 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 
 ## Credentials
 
-- **Hugging Face token** — required only for gated models (Llama, Mistral, Gemma, etc.). Get one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (free account). Export as `HF_TOKEN=hf_...` before deploying those models.
-- **Keycloak admin password** — auto-generated if not set. Override by exporting `KEYCLOAK_ADMIN_PASSWORD` before install.
-- **Grafana admin password** — auto-generated if not set. Override by exporting `GRAFANA_ADMIN_PASSWORD` before install.
+- **Hugging Face token**, required only for gated models (Llama, Mistral, Gemma, etc.). Get one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (free account). Export as `HF_TOKEN=hf_...` before deploying those models.
+- **Keycloak admin password**, auto-generated if not set. Override by exporting `KEYCLOAK_ADMIN_PASSWORD` before install.
+- **Grafana admin password**, auto-generated if not set. Override by exporting `GRAFANA_ADMIN_PASSWORD` before install.
 
 ---
 
 ## What `configure` does not do
 
-- Install `git` — must already be present
-- Configure proxy settings — edit `env/<name>/global_config.yaml` yourself
-- Set up SSH keys — you must distribute them to target nodes for multi-node installs
+- Install `git`, must already be present
+- Configure proxy settings, edit `env/<name>/global_config.yaml` yourself
+- Set up SSH keys, you must distribute them to target nodes for multi-node installs
 
 ---
 
@@ -83,5 +86,6 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 |---|---|
 | Start the actual install now that prerequisites are met | [Getting Started](quickstart.md) |
 | Understand what you're installing and why, before running anything | [Meet Intel® AI for Enterprise Solutions](../meet/meet.md) |
+| Look up a common question before installing | [FAQ](faq.md) |
 | Plan hardware for a multi-node or bring-your-own-cluster setup | [Multi-Node & BYO Cluster](../deploy/topologies.md) |
 | Set proxy, TLS, or other options `configure` doesn't handle | [Configuration Reference](../customize/configuration.md) |

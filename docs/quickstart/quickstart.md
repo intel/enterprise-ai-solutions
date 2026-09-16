@@ -1,8 +1,10 @@
-# Getting Started with Intel® AI for Enterprise Solutions
+# Getting Started
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-Three ways to deploy Intel® AI for Enterprise Solutions — single node, multi-node, or an existing (bring-your-own) Kubernetes cluster — depending on your setup. Pick one and follow it end to end.
+Pick one path (single node, several machines, or a cluster you already run) and
+follow it to the end. The installer is the same on every path. After inference
+is up, your app calls the same OpenAI-compatible API.
 
 ---
 
@@ -15,54 +17,55 @@ Check [Prerequisites](prerequisites.md). At minimum you need:
 
 ---
 
-## Step 1 — Get the code
+## Step 1: Get the code
 
 ```bash
 git clone https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
 
-./es_auto_installer.sh configure    # one-time machine prep — installs Python 3.11+, yq, kubectl, helm
+./es_auto_installer.sh configure    # one-time machine prep, installs Python 3.11+, yq, kubectl, helm
 ```
 
 ---
 
-## Step 2 — Create an environment
+## Step 2: Create an environment
 
-Every deployment lives in a named environment under `env/<name>/`. The name is arbitrary — use `local` for a single-node dev setup, `prod` for production, or anything you like.
+Every deployment lives in a named environment under `env/<name>/`. The name is arbitrary, use `local` for a single-node dev setup, `prod` for production, or anything you like.
 
 ```bash
 ./es_auto_installer.sh init local
 ```
 
 This creates `env/local/` with:
-- `global_config.yaml` — all platform settings
-- `nodes.yaml` — node IPs and SSH credentials (edit for multi-node)
-- `inventory/hosts.yaml` — Kubespray-compatible inventory (auto-generated from nodes.yaml)
-- `models.yaml` — your model catalog (pre-seeded with defaults)
+- `global_config.yaml`, all platform settings
+- `nodes.yaml`, node IPs and SSH credentials (edit for multi-node)
+- `inventory/hosts.yaml`, Kubespray-compatible inventory (auto-generated from nodes.yaml)
+- `models.yaml`, your model catalog (pre-seeded with defaults)
 
 ---
 
-## Step 3 — Configure
+## Step 3: Configure
 
 Open `env/local/global_config.yaml` and set:
 
 ```yaml
-# Required — base domain for all service URLs and TLS certificates
+# Required: base domain for all service URLs and TLS certificates
 base_domain_name: "solutions.ai"
 
-# Optional — uncomment and set if behind a corporate proxy
+# Optional: uncomment and set if behind a corporate proxy
 # http_proxy:  "http://proxy.example.com:8080"
 # https_proxy: "http://proxy.example.com:8080"
 # no_proxy: "localhost,127.0.0.1,.svc,.cluster.local,.monitoring,10.233.0.0/18,10.233.64.0/18,<node-subnet>"
 ```
 
-Everything else uses safe defaults. Full option reference → [Configuration](../customize/configuration.md).
+Everything else uses safe defaults. Every setting:
+[Configuration Reference](../customize/configuration.md).
 
 ---
 
-## Step 4 — Choose your deployment mode
+## Step 4: Choose your deployment mode
 
-### Option A — Single node (simplest)
+### Option A: Single node (simplest)
 
 Everything runs on the machine you're sitting on. No SSH configuration needed.
 
@@ -81,26 +84,26 @@ kubectl get nodes
 # master1   Ready    control-plane   10m   v1.34.3
 ```
 
-→ Continue to [Deploy a Model](../deploy/deploy_models.md).
+Next: [Deploy a Model](../deploy/deploy_models.md).
 
 ---
 
-### Option B — Multi-node
+### Option B: Multi-node
 
 Provisions Kubernetes across multiple machines via SSH. Best for production and scale-out.
 
-See the full guide → [Multi-Node & BYO Cluster](../deploy/topologies.md).
+Full steps: [Multi-Node & BYO Cluster](../deploy/topologies.md).
 
 Quick overview:
 
 1. Set up passwordless SSH from the installer host to every node.
 2. Edit `env/local/inventory/hosts.yaml` with your node IPs.
-3. Set `storage_backend: nfs` (or `ceph`) in `global_config.yaml` — `local-path` only works for single-node.
+3. Set `storage_backend: nfs` (or `ceph`) in `global_config.yaml`, `local-path` only works for single-node.
 4. Run `./es_auto_installer.sh install --all --env local`.
 
 ---
 
-### Option C — Bring your own Kubernetes
+### Option C: Bring your own Kubernetes
 
 Deploy the platform on a cluster you already manage. Kubespray is skipped entirely.
 
@@ -173,12 +176,13 @@ cat env/local/logs/ai-solutions-ca.crt
 
 ## Next steps
 
-- [Deploy a Model](../deploy/deploy_models.md) — serve your first LLM
-- [Integration Guide](../customize/integration.md) — connect Python, LangChain, Cursor, n8n, and more
-- [Configuration Reference](../customize/configuration.md) — all available settings
-- [Architecture & Design Document](../reference/architecture.md) — how the layers you just installed fit together
-- [Multi-Node & BYO Cluster](../deploy/topologies.md) — scale beyond the single-node path above
-- [Teardown](../customize/cli.md#teardown) — remove everything cleanly
+- [Deploy a Model](../deploy/deploy_models.md), serve your first LLM
+- [Integration Guide](../customize/integration.md), connect Python, LangChain, Cursor, n8n, and more
+- [Configuration Reference](../customize/configuration.md), all available settings
+- [Architecture & Design](../meet/architecture.md), how the layers you just installed fit together
+- [FAQ](faq.md), short answers to common questions
+- [Multi-Node & BYO Cluster](../deploy/topologies.md), scale beyond the single-node path above
+- [Teardown](../customize/cli.md#teardown), remove everything cleanly
 
 ---
 

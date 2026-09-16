@@ -1,16 +1,18 @@
 # Node Topology & Workload Placement
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-Soft affinity-based workload placement for multi-node Intel® AI for Enterprise Solutions clusters, separating platform components from inference workloads without hard enforcement.
+On a multi-node cluster, platform pods prefer control-plane nodes and inference
+pods prefer workers. Those preferences are soft: the scheduler can place a pod
+on the other class of node if resources are tight. The installer does not use
+taints, so a shortage of workers will not leave inference pods unschedulable.
 
-## Overview
+## When it is on
 
-When `node_topology_enabled: true` (default) in multi-node deployments:
+`node_topology_enabled: true` is the default on multi-node installs.
+
 - **Platform components** (Keycloak, PostgreSQL, Envoy Gateway, cert-manager, MetalLB, KServe controller, AI Gateway controller) prefer control-plane nodes
 - **Inference workloads** (vLLM pods, model serving) prefer worker nodes
-- Scheduler uses **soft preferences** — can override if resources constrained
-- **No taints** — flexible scheduling, no hard failures
 
 ## Configuration
 
@@ -50,7 +52,7 @@ kubectl label node worker2 workload-class=inference
 
 ### 2. Pod Affinity (Component Roles)
 
-Affinity rules are defined **once** in [`playbooks/includes/preflight.yaml`](../../playbooks/includes/preflight.yaml) as shared facts (`_platform_affinity`, `_inference_affinity`) and referenced by every component. This keeps the placement policy in a single source of truth — changing the rule updates every component.
+Affinity rules are defined **once** in [`playbooks/includes/preflight.yaml`](../../playbooks/includes/preflight.yaml) as shared facts (`_platform_affinity`, `_inference_affinity`) and referenced by every component. This keeps the placement policy in a single source of truth, changing the rule updates every component.
 
 When `node_topology_enabled: false`, the facts resolve to `{}` and Helm charts receive empty affinity (no effect).
 
@@ -89,7 +91,7 @@ nodeAffinity:
 
 > **Envoy data-plane pinning**: The actual Envoy proxy pods (which handle external
 > HTTPS traffic, not just the controller) are pinned via an `EnvoyProxy` CRD
-> referenced from the `GatewayClass` — see `eg-proxy-config` / `ai-gateway-proxy-config`.
+> referenced from the `GatewayClass`, see `eg-proxy-config` / `ai-gateway-proxy-config`.
 
 #### Inference Workloads (prefer workers)
 
@@ -112,7 +114,7 @@ affinity:
               operator: DoesNotExist
 ```
 
-**Affected templates** (static YAML — processed by model_manager at runtime, not Ansible):
+**Affected templates** (static YAML, processed by model_manager at runtime, not Ansible):
 - LLMInferenceService ([`ext/enterprise.ai-inference/model_manager/templates/llm-inference-service.yaml`](https://github.com/intel/enterprise-inference/blob/main/model_manager/templates/llm-inference-service.yaml))
 - InferenceService ([`ext/enterprise.ai-inference/model_manager/templates/inference-service.yaml`](https://github.com/intel/enterprise-inference/blob/main/model_manager/templates/inference-service.yaml))
 
@@ -234,7 +236,7 @@ kubectl label nodes --all workload-class-
 - Complicates DaemonSet deployments (CNI, monitoring)
 - Inflexible for mixed workloads
 
-**Soft affinity** balances separation with flexibility — scheduler respects preferences but can override when needed.
+**Soft affinity** balances separation with flexibility, scheduler respects preferences but can override when needed.
 
 ### Weight Values
 
@@ -245,7 +247,7 @@ Higher weight = stronger preference. Scheduler sums weights across all rules.
 
 ### Label Stability
 
-Labels are applied **idempotently** — re-running installer won't duplicate or conflict. Safe to re-apply after node addition/replacement.
+Labels are applied **idempotently**, re-running installer won't duplicate or conflict. Safe to re-apply after node addition/replacement.
 
 ## Related Docs
 
@@ -254,9 +256,9 @@ Labels are applied **idempotently** — re-running installer won't duplicate or 
 | Enable/disable node topology and set related flags in `global_config.yaml` | [Configuration Reference](configuration.md) |
 | Pin model pods to specific CPUs/NUMA domains once they land on the right node | [NRI CPU Balloons](nri_cpu_balloons.md) |
 | Deploy across multiple nodes in the first place | [Multi-Node & BYO Cluster](../deploy/topologies.md) |
-| See where node-level placement fits in the overall design | [Architecture & Design Document](../reference/architecture.md) |
+| See where node-level placement fits in the overall design | [Architecture & Design](../meet/architecture.md) |
 
 ## External References
 
-- [Kubernetes Node Affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity) — official docs on the `preferredDuringSchedulingIgnoredDuringExecution` rules this feature uses
-- [Taints and Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) — the hard-enforcement alternative this design deliberately avoids (see [Why Does Intel® AI for Enterprise Solutions Use Soft Affinity Instead of Taints?](#why-does-intel-ai-for-enterprise-solutions-use-soft-affinity-instead-of-taints) above)
+- [Kubernetes Node Affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity), official docs on the `preferredDuringSchedulingIgnoredDuringExecution` rules this feature uses
+- [Taints and Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/), the hard-enforcement alternative this design deliberately avoids (see [Why Does Intel® AI for Enterprise Solutions Use Soft Affinity Instead of Taints?](#why-does-intel-ai-for-enterprise-solutions-use-soft-affinity-instead-of-taints) above)

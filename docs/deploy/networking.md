@@ -1,8 +1,10 @@
-# Network Architecture — External Access & Request Flow
+# Network Architecture
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-Complete guide to network topology, IP allocation, and request routing in the Intel® AI for Enterprise Solutions stack.
+This page explains how an external request reaches a model: how MetalLB assigns
+an IP, how Envoy Gateway terminates TLS and routes, and how traffic moves
+through the mesh to the serving pod.
 
 ---
 
@@ -24,7 +26,7 @@ KServe Predictor Pod (vLLM inference)
 
 ---
 
-## Layer 1: MetalLB — LoadBalancer IP Assignment
+## Layer 1: MetalLB: LoadBalancer IP Assignment
 
 MetalLB is the component that gives Intel® AI for Enterprise Solutions LoadBalancer IPs on bare-metal, on-premises clusters that have no cloud load balancer to call.
 
@@ -88,10 +90,10 @@ metallb_ip_range: "10.1.1.1/32"  # GOOD (master node IP)
 MetalLB operates in **Layer 2 mode** by default:
 
 1. **Controller** allocates IP from pool → Service gets external IP
-2. **Leader election** — One Speaker pod becomes leader for that IP
-3. **ARP announcement** — Leader responds to ARP requests with node's MAC address
-4. **Traffic ingress** — Packets arrive at the elected node's interface
-5. **Kubernetes routing** — kube-proxy/IPVS forwards to Service ClusterIP
+2. **Leader election**, One Speaker pod becomes leader for that IP
+3. **ARP announcement**, Leader responds to ARP requests with node's MAC address
+4. **Traffic ingress**, Packets arrive at the elected node's interface
+5. **Kubernetes routing**, kube-proxy/IPVS forwards to Service ClusterIP
 
 **Characteristics:**
 - ✅ Simple setup (no BGP configuration needed)
@@ -101,7 +103,7 @@ MetalLB operates in **Layer 2 mode** by default:
 
 ---
 
-## Layer 2: Envoy Gateway — Ingress & Routing
+## Layer 2: Envoy Gateway: Ingress & Routing
 
 Envoy Gateway is the ingress and auth-enforcement point for every request Intel® AI for Enterprise Solutions serves.
 
@@ -199,7 +201,7 @@ spec:
 
 ---
 
-## Layer 3: KServe — Model Serving
+## Layer 3: KServe: Model Serving
 
 KServe is the model-serving layer Intel® AI for Enterprise Solutions uses to run vLLM and OpenVINO™ Model Server workloads on Kubernetes.
 
@@ -253,21 +255,21 @@ spec:
 
 ---
 
-## Layer 4: Istio Ambient — Service Mesh (mTLS)
+## Layer 4: Istio Ambient: Service Mesh (mTLS)
 
-In Intel® AI for Enterprise Solutions, all workload namespaces are enrolled in **Istio ambient mode**. This provides transparent mutual TLS (mTLS) between pods via the `ztunnel` DaemonSet — no sidecars injected.
+In Intel® AI for Enterprise Solutions, all workload namespaces are enrolled in **Istio ambient mode**. This provides transparent mutual TLS (mTLS) between pods via the `ztunnel` DaemonSet, no sidecars injected.
 
 - **L4 (ztunnel)**: Automatic mTLS for all east-west pod traffic. Zero config, zero application changes.
 - **Enforcement is STRICT**: a mesh-wide `PeerAuthentication` named `default` in `istio-system` (`mtls.mode: STRICT`) makes ztunnel **reject any plaintext inbound** to a mesh workload. Configurable via `istio_mtls_mode`; applied by the core `istio` role.
 - **Exceptions are owned by the component that creates the workload**, not centralized in the istio role: each role applies its own `PeerAuthentication` right after its ambient-label task. The istio role owns only the mesh-wide default and the `cert-manager` exception (istio-csr is its own dependency). This way nothing pre-defines a namespace/port for a component that may not be installed.
-- **Mesh-edge exceptions** — namespaces/workloads that receive traffic from *outside* the mesh get a `PeerAuthentication: PERMISSIVE` overriding STRICT for them only:
-  - `cert-manager` (namespace-wide, **istio role**) — the trust root (istio-csr CA + cert-manager webhook); STRICT here deadlocks cert bootstrap.
-  - `eg-gateway` (selector-scoped, **envoy_gateway role**) — the north-south ingress edge proxy; external clients present no mesh identity. The internal `ai-gateway` proxy in the same namespace stays STRICT (reached in-mesh via passthrough).
-- **Admission-webhook exceptions** — the kube-apiserver is host-network with **no mesh identity**, so STRICT rejects its calls to any in-mesh admission webhook (symptom: `failed calling webhook … EOF` at admission time). Each owning role gives its operator a `PeerAuthentication` with `portLevelMtls` opening **only** the webhook container port (`9443` for CNPG/KServe/LWS/AI-gateway/envoy-gateway controllers; `10250`/`6443` for the Prometheus operator/adapter) as PERMISSIVE — every other port (e.g. metrics scrape) stays STRICT.
+- **Mesh-edge exceptions**, namespaces/workloads that receive traffic from *outside* the mesh get a `PeerAuthentication: PERMISSIVE` overriding STRICT for them only:
+  - `cert-manager` (namespace-wide, **istio role**), the trust root (istio-csr CA + cert-manager webhook); STRICT here deadlocks cert bootstrap.
+  - `eg-gateway` (selector-scoped, **envoy_gateway role**), the north-south ingress edge proxy; external clients present no mesh identity. The internal `ai-gateway` proxy in the same namespace stays STRICT (reached in-mesh via passthrough).
+- **Admission-webhook exceptions**, the kube-apiserver is host-network with **no mesh identity**, so STRICT rejects its calls to any in-mesh admission webhook (symptom: `failed calling webhook … EOF` at admission time). Each owning role gives its operator a `PeerAuthentication` with `portLevelMtls` opening **only** the webhook container port (`9443` for CNPG/KServe/LWS/AI-gateway/envoy-gateway controllers; `10250`/`6443` for the Prometheus operator/adapter) as PERMISSIVE, every other port (e.g. metrics scrape) stays STRICT.
 - **Calico handles L3 routing** (pod-to-pod IP, VXLAN or direct), Istio handles **L4 identity and encryption** on top.
 - Namespaces excluded from the mesh: `metallb-system` (raw ARP), `kube-system`.
 
-The ambient mesh is transparent to the request flow described below — it adds ~0.1-0.3ms per hop for encryption/decryption but does not change the routing topology.
+The ambient mesh is transparent to the request flow described below, it adds ~0.1-0.3ms per hop for encryption/decryption but does not change the routing topology.
 
 ---
 
@@ -297,7 +299,7 @@ Here is every hop an inference request takes through Intel® AI for Enterprise S
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [4] Network Layer 2 — ARP Resolution                                   │
+│ [4] Network Layer 2, ARP Resolution                                   │
 │     Switch: "Who has 10.1.1.1?"                                        │
 │     MetalLB Speaker on master: "I do! MAC: aa:bb:cc:..."               │
 │     Packet delivered to master node's network interface                │
@@ -305,7 +307,7 @@ Here is every hop an inference request takes through Intel® AI for Enterprise S
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [5] Master Node (10.1.1.1) — Kernel Routing                            │
+│ [5] Master Node (10.1.1.1), Kernel Routing                            │
 │     iptables/IPVS: 10.1.1.1:443 → ClusterIP 10.96.10.50:443           │
 │     Service: envoy-eg-gateway-<hash>                                   │
 │     kube-proxy load-balances to Envoy Gateway pod                      │
@@ -348,7 +350,7 @@ Here is every hop an inference request takes through Intel® AI for Enterprise S
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [7] Pod Network — Calico CNI                                           │
+│ [7] Pod Network, Calico CNI                                           │
 │     Envoy pod (worker2: 10.1.1.3)                                      │
 │       → vLLM pod (worker1: 10.1.1.2)                                   │
 │     Calico direct routing (if same subnet) OR VXLAN overlay            │
@@ -693,10 +695,10 @@ Intel® AI for Enterprise Solutions networking follows a small set of principles
 
 **Key Principles:**
 
-1. **Use real node IPs** — Not synthetic `.240-.250` ranges
-2. **Handle external routing at edge** — NAT/LB at firewall, not inside cluster
-3. **Trust Kubernetes CNI** — Already optimized for pod-to-pod routing
-4. **Network overhead is negligible** — <1% of inference latency
+1. **Use real node IPs**, Not synthetic `.240-.250` ranges
+2. **Handle external routing at edge**, NAT/LB at firewall, not inside cluster
+3. **Trust Kubernetes CNI**, Already optimized for pod-to-pod routing
+4. **Network overhead is negligible**, <1% of inference latency
 
 **Result:**
 - Zero additional hops inside cluster
@@ -710,7 +712,7 @@ Intel® AI for Enterprise Solutions networking follows a small set of principles
 
 | If you want to… | Go to |
 |---|---|
-| See how this networking layer fits with platform, inference, and application layers | [Architecture & Design Document](../reference/architecture.md) |
+| See how this networking layer fits with platform, inference, and application layers | [Architecture & Design](../meet/architecture.md) |
 | Set up the multi-node or HA cluster this topology assumes | [Multi-Node & BYO Cluster](topologies.md) |
 | Change `gateway_request_timeout`, TLS mode, or other gateway settings | [Configuration Reference](../customize/configuration.md) |
-| Route additional tenants, versions, or canaries through the gateway | [Integration Guide — Routing Patterns](../customize/integration.md#routing-patterns-host--path) |
+| Route additional tenants, versions, or canaries through the gateway | [Integration Guide, Routing Patterns](../customize/integration.md#routing-patterns-host--path) |

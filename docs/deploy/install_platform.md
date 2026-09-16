@@ -1,8 +1,11 @@
-# Deployment Guide — Install Intel® AI for Enterprise Solutions On-Premises
+# Deployment Guide
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-This guide walks you through installing Intel® AI for Enterprise Solutions on-premises, step by step, from bare metal to a running self-hosted AI stack. No Kubernetes experience needed.
+This page walks through a full on-premises install, from a fresh machine to a
+running inference endpoint. You do not need Kubernetes experience. The installer
+provisions the cluster (unless you already have one), deploys the shared
+foundation, and installs the inference toolkit.
 
 ---
 
@@ -11,10 +14,10 @@ This guide walks you through installing Intel® AI for Enterprise Solutions on-p
 The installer sets up these layers automatically, in dependency order:
 
 ```
-1. Infrastructure  — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
-2. Platform        — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, Observability
-3. Inference       — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
-4. Application     — opt-in layers (e.g. eRAG) — not included in --all by default
+1. Infrastructure , Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
+2. Platform       , cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, Observability
+3. Inference      , NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
+4. Application    , opt-in Intel® enterprise AI toolkits, not included in --all by default
 ```
 
 You run **one command** and everything is installed.
@@ -26,7 +29,7 @@ You run **one command** and everything is installed.
 **Your machine needs:**
 
 - Ubuntu 22.04 (or newer) or RHEL/Rocky 8+
-- Internet access (proxy is fine — see Step 2)
+- Internet access (proxy is fine, see Step 2)
 - Python 3.11+ (installer will check and install if needed)
 
 **Tooling installed by `configure`.** `./es_auto_installer.sh configure`
@@ -43,7 +46,7 @@ already present). You can install them manually instead:
 
 > **Multi-node / remote setups:** configure an NTP server (or
 > `chrony`/`systemd-timesyncd`) on **every** node before installing. Kubernetes,
-> etcd, TLS certificates, and token auth all depend on synchronized clocks —
+> etcd, TLS certificates, and token auth all depend on synchronized clocks , 
 > clock skew between nodes surfaces as intermittent, hard-to-diagnose cert and
 > etcd errors. Not required for a single localhost node.
 
@@ -73,10 +76,10 @@ cd enterprise-ai-solutions
 ```
 
 This creates an environment at `env/local/` with:
-- `global_config.yaml` — your settings
-- `inventory/hosts.yaml` — where your machines are
-- `kubeconfig.yaml` — cluster credentials (generated during install)
-- `logs/` — installer logs
+- `global_config.yaml`, your settings
+- `inventory/hosts.yaml`, where your machines are
+- `kubeconfig.yaml`, cluster credentials (generated during install)
+- `logs/`, installer logs
 
 ---
 
@@ -105,7 +108,7 @@ gateway_tls_cert_file: "/path/to/your/cert.pem"
 gateway_tls_key_file: "/path/to/your/key.pem"
 ```
 
-Otherwise, leave the defaults — a self-signed certificate is generated automatically.
+Otherwise, leave the defaults, a self-signed certificate is generated automatically.
 
 **Everything else can stay as-is for now.** Save and close the file.
 
@@ -123,7 +126,7 @@ The installer reads machine details from `env/local/inventory/hosts.yaml`. Pick 
 
 Everything runs on one machine. No SSH setup needed.
 
-**Nothing to configure** — the default inventory created by `init` already does this (localhost deployment).
+**Nothing to configure**, the default inventory created by `init` already does this (localhost deployment).
 
 **Install:**
 
@@ -157,7 +160,7 @@ Done. Skip to [Step 4](#step-4-verify-everything-works).
 - 2 or more machines that can reach each other over the network
 - You'll run the installer from one of them (usually the first master)
 
-#### B.1 — Set up SSH access
+#### B.1: Set up SSH access
 
 Pick one machine to run the installer from. On that machine, run:
 
@@ -170,7 +173,7 @@ ssh-copy-id -i ~/.ssh/cluster_key ubuntu@10.0.1.10
 ssh-copy-id -i ~/.ssh/cluster_key ubuntu@10.0.1.20
 ssh-copy-id -i ~/.ssh/cluster_key ubuntu@10.0.1.21
 
-# Test — each should print the hostname
+# Test: each should print the hostname
 ssh -i ~/.ssh/cluster_key ubuntu@10.0.1.10 "hostname"
 ssh -i ~/.ssh/cluster_key ubuntu@10.0.1.20 "hostname"
 ssh -i ~/.ssh/cluster_key ubuntu@10.0.1.21 "hostname"
@@ -182,7 +185,7 @@ On every target machine, make sure the user can run commands as root without a p
 echo "ubuntu ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/ubuntu
 ```
 
-#### B.2 — Edit your inventory
+#### B.2: Edit your inventory
 
 Open `env/local/inventory/hosts.yaml`. The template has three examples pre-commented. Uncomment and customize the **multi-node** section:
 
@@ -309,7 +312,7 @@ all:
     ansible_ssh_private_key_file: ~/.ssh/cluster_key
 ```
 
-#### B.3 — Install
+#### B.3: Install
 
 ```bash
 ./es_auto_installer.sh install --all --env local
@@ -332,14 +335,14 @@ Done. Skip to [Step 4](#step-4-verify-everything-works).
 
 **Best for:** When your cluster machines are in a private network and you can only reach them through a gateway machine.
 
-This is the same as Option B, except you run the installer on the bastion (gateway) machine — which does NOT become part of the cluster.
+This is the same as Option B, except you run the installer on the bastion (gateway) machine, which does NOT become part of the cluster.
 
 ```
  You → SSH → [Bastion] → SSH → [master1, worker1, worker2, ...]
               (runs installer)    (become the cluster)
 ```
 
-#### C.1 — On the bastion: get the code and set up SSH
+#### C.1: On the bastion: get the code and set up SSH
 
 ```bash
 # Get the code
@@ -357,9 +360,9 @@ ssh-copy-id -i ~/.ssh/cluster_key ubuntu@10.0.1.20
 ssh-copy-id -i ~/.ssh/cluster_key ubuntu@10.0.1.21
 ```
 
-#### C.2 — Configure
+#### C.2: Configure
 
-Edit `env/local/inventory/hosts.yaml` — same structure as Option B. For example:
+Edit `env/local/inventory/hosts.yaml`, same structure as Option B. For example:
 
 ```yaml
 all:
@@ -403,15 +406,15 @@ all:
     ansible_ssh_common_args: '-o ProxyJump=jumpuser@10.0.0.5'
 ```
 
-Most of the time you won't need this — only if there's a double-hop.
+Most of the time you won't need this, only if there's a double-hop.
 
-#### C.3 — Install
+#### C.3: Install
 
 ```bash
 ./es_auto_installer.sh install --all --env local
 ```
 
-#### C.4 — Get kubectl working on the bastion
+#### C.4: Get kubectl working on the bastion
 
 After install, the kubeconfig is already created at `env/local/kubeconfig.yaml`:
 
@@ -491,7 +494,7 @@ Already have a running cluster and want to add workers? Easy.
        ansible_ssh_private_key_file: ~/.ssh/cluster_key
    ```
 
-3. Re-run the installer — it detects new nodes and adds them:
+3. Re-run the installer, it detects new nodes and adds them:
 
    ```bash
    ./es_auto_installer.sh install --all --env local
@@ -534,7 +537,7 @@ Check the log:
 tail -50 env/local/logs/install.log
 ```
 
-Then just re-run — the installer is safe to run multiple times:
+Then just re-run, the installer is safe to run multiple times:
 
 ```bash
 ./es_auto_installer.sh install --all --env local
@@ -664,7 +667,7 @@ Import this into your browser or OS trust store to access web UIs (Keycloak, Gra
 
 ### 2. Deploy a Model
 
-Deploy a model — this works the same regardless of auth mode:
+Deploy a model, this works the same regardless of auth mode:
 
 ```bash
 # Deploy from the model catalog (downloads weights + creates serving pod)
@@ -685,11 +688,11 @@ The `--wait` flag blocks until the model is ready to serve requests (typically 2
 
 Choose the section matching your `auth_provider`.
 
-#### Option A — Keycloak JWT (`auth_provider: "keycloak"`, default)
+#### Option A: Keycloak JWT (`auth_provider: "keycloak"`, default)
 
 When `auth_provider=keycloak` (the default), the platform deploys Keycloak for full OIDC identity management. Models are accessed through the Envoy AI Gateway at a single inference endpoint. Authentication uses the **client credentials** flow (no user passwords needed).
 
-**Quick method — use the helper script:**
+**Quick method, use the helper script:**
 
 ```bash
 source ./ext/enterprise.ai-inference/model_manager/scripts/get-keycloak-token.sh
@@ -699,7 +702,7 @@ source ./ext/enterprise.ai-inference/model_manager/scripts/get-keycloak-token.sh
 
 The token is valid for 15 minutes. For longer sessions, pass `--lifespan 3600` (1 hour).
 
-**Manual method — step by step:**
+**Manual method, step by step:**
 
 ```bash
 # 1. Get the gateway IP
@@ -754,9 +757,9 @@ curl -sk --noproxy '*' \
 
 A request with a missing, malformed, or expired JWT is rejected with `401` at the gateway before it reaches a model.
 
-#### Option B — LiteLLM virtual keys (`auth_provider: "litellm"`)
+#### Option B: LiteLLM virtual keys (`auth_provider: "litellm"`)
 
-When `auth_provider=litellm`, Keycloak is **not deployed**. LiteLLM acts as both the auth layer and model proxy. All models are auto-registered with LiteLLM at deploy time — you access them through a single endpoint and specify the model name in the request body.
+When `auth_provider=litellm`, Keycloak is **not deployed**. LiteLLM acts as both the auth layer and model proxy. All models are auto-registered with LiteLLM at deploy time, you access them through a single endpoint and specify the model name in the request body.
 
 **1. Get the master key:**
 
@@ -767,7 +770,7 @@ MASTER_KEY=$(kubectl get secret litellm-master-key -n litellm \
 LITELLM_DOMAIN="litellm.$(yq '.base_domain_name' env/<env>/global_config.yaml)"
 ```
 
-**2. Get a token** — use the master key directly, or mint a scoped virtual key (recommended for applications):
+**2. Get a token**, use the master key directly, or mint a scoped virtual key (recommended for applications):
 
 ```bash
 # Create a virtual key with a model allow-list, budget cap, and expiry
@@ -821,17 +824,17 @@ curl -sk --noproxy '*' \
   -d '{"keys":["sk-..."]}'
 ```
 
-Keys can also be managed in the LiteLLM UI at `https://${LITELLM_DOMAIN}/ui/` (trailing slash required — bare `/ui` 307-redirects to `http://`). Log in with username `admin` and the master key as the password. Request traces land in Langfuse at `https://langfuse.<domain>`.
+Keys can also be managed in the LiteLLM UI at `https://${LITELLM_DOMAIN}/ui/` (trailing slash required, bare `/ui` 307-redirects to `http://`). Log in with username `admin` and the master key as the password. Request traces land in Langfuse at `https://langfuse.<domain>`.
 
 <p align="center">
   <img src="../assets/screenshots/litellm-langfuse.png" alt="LiteLLM virtual keys and Langfuse traces" />
 </p>
 
-More views of both UIs are in [docs/assets/screenshots/](../assets/screenshots/) —
+More views of both UIs are in [docs/assets/screenshots/](../assets/screenshots/) , 
 `litellm-models.png`, `litellm-virtual-keys.png`, `litellm-usage.png`,
 `litellm-logs.png`, `langfuse-dashboard.png`, and `langfuse-traces.png`.
 
-### 4. Access the Model — curl
+### 4. Access the Model: curl
 
 #### With `auth_provider: "keycloak"` (default)
 
@@ -896,7 +899,7 @@ curl -sk --noproxy '*' \
 Add `"stream": true` to the request body for server-sent events. A missing or invalid
 key is rejected with `401` by LiteLLM before anything reaches the model.
 
-**List models registered in LiteLLM** — every model registered by `model-manager deploy`
+**List models registered in LiteLLM**, every model registered by `model-manager deploy`
 appears here:
 
 ```bash
@@ -906,7 +909,7 @@ curl -sk --noproxy '*' \
   -H "Authorization: Bearer ${TOKEN}"
 ```
 
-### 5. Access the Model — Python (OpenAI Client)
+### 5. Access the Model: Python (OpenAI Client)
 
 #### With `auth_provider: "keycloak"` (default)
 
@@ -964,7 +967,7 @@ print(response.choices[0].message.content)
 | `litellm` | Configurable per key (default: no expiry, or set `duration` at creation) | Create a new virtual key |
 | `keycloak` | 15 minutes (configurable via `--lifespan`) | Re-run the helper script |
 
-**Keycloak — re-source the helper to get a fresh token:**
+**Keycloak, re-source the helper to get a fresh token:**
 
 ```bash
 source ./ext/enterprise.ai-inference/model_manager/scripts/get-keycloak-token.sh

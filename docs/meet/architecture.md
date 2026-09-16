@@ -1,24 +1,26 @@
-# Intel® AI for Enterprise Solutions — Architecture & Design Document
+# Architecture & Design
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
 ## Overview
 
-Intel® AI for Enterprise Solutions is a modular, extensible deployment framework for a self-hosted Kubernetes cluster, LLM inference serving stack, and opt-in applications — deployable on-premises, air-gapped, or in a private cloud.
+Intel® AI for Enterprise Solutions is a modular installer for a shared
+Kubernetes foundation and the Intel® enterprise AI toolkits that plug into it.
+You can deploy it on-premises, air-gapped, or in a private cloud.
 
 The core repository (`applications.ai.enterprise.ai-solutions`) provides:
-- **Infrastructure layer** — Kubernetes (via Kubespray), NFS storage
-- **Platform layer** — Cert-manager, Istio (ambient), MetalLB, Envoy Gateway, PostgreSQL, Keycloak, Object Store (Minio), Observability
-- **Multi-environment support** — Isolated configs under `env/<name>/`
-- **Cross-repo orchestration** — Auto-discovers and integrates external solution repos
+- **Infrastructure layer**: Kubernetes (via Kubespray) and NFS storage
+- **Platform layer**: Cert-manager, Istio (ambient), MetalLB, Envoy Gateway, PostgreSQL, Keycloak, Object Store (Minio), Observability
+- **Multi-environment support**: isolated configs under `env/<name>/`
+- **Cross-repo orchestration**: auto-discovers and integrates external toolkit repos
 
-External solution repositories (e.g., `applications.ai.enterprise.ai-inference`, `applications.ai.enterprise.ai-erag`) contribute additional layers:
-- **Inference layer** — KServe, LiteLLM (proxy + auth), Langfuse (observability), LLM services, Envoy AI Gateway, NRI CPU balloons
-- **Application layer** — RAG pipelines, UI, vector databases (opt-in)
+External toolkit repositories contribute additional layers:
+- **Inference layer**: KServe, LiteLLM (proxy and auth), Langfuse (observability), LLM services, Envoy AI Gateway, NRI CPU balloons
+- **Application layer**: other Intel® enterprise AI toolkits (opt-in)
 
 **Auth modes:** The stack supports two authentication providers (set via `auth_provider` in `global_config.yaml`):
-- `litellm` — LiteLLM virtual keys; Keycloak is not deployed; LiteLLM acts as both auth (extAuth `/key/verify`) and model proxy
-- `keycloak` — Keycloak OIDC JWT; LiteLLM/Langfuse are not deployed; direct KServe path-based routing
+- `litellm`, LiteLLM virtual keys; Keycloak is not deployed; LiteLLM acts as both auth (extAuth `/key/verify`) and model proxy
+- `keycloak`, Keycloak OIDC JWT; LiteLLM/Langfuse are not deployed; direct KServe path-based routing
 
 ---
 
@@ -86,7 +88,7 @@ playbooks/site.yaml (universal dispatcher)
 │
 ├─ [Platform Layer]
 │   ├─ role: cert_manager         → tasks/install.yaml (helm install)
-│   ├─ role: istio                → tasks/install.yaml (ambient mesh — all workload namespaces enrolled)
+│   ├─ role: istio                → tasks/install.yaml (ambient mesh, all workload namespaces enrolled)
 │   ├─ role: metallb              → tasks/install.yaml (LoadBalancer services)
 │   ├─ role: envoy_gateway        → tasks/install.yaml (helm install + TLS)
 │   ├─ role: postgresql           → tasks/install.yaml (CNPG operator + clusters)
@@ -96,16 +98,16 @@ playbooks/site.yaml (universal dispatcher)
 │   └─ role: observability        → tasks/install.yaml (prometheus/grafana/loki/tempo)
 │
 ├─ [Inference Layer]
-│   ├─ role: keycloak_config      → tasks/install.yaml (realm + client — skipped when auth_provider=litellm)
+│   ├─ role: keycloak_config      → tasks/install.yaml (realm + client, skipped when auth_provider=litellm)
 │   ├─ role: envoy_ai_gateway     → tasks/install.yaml (apply manifests)
 │   ├─ role: kserve               → tasks/install.yaml (CRDs + controller + deploy mode)
-│   ├─ role: litellm              → tasks/install.yaml (proxy + extAuth — only when auth_provider=litellm)
-│   ├─ role: langfuse             → tasks/install.yaml (observability — only when auth_provider=litellm)
+│   ├─ role: litellm              → tasks/install.yaml (proxy + extAuth, only when auth_provider=litellm)
+│   ├─ role: langfuse             → tasks/install.yaml (observability, only when auth_provider=litellm)
 │   ├─ role: llm_services         → tasks/install.yaml (runtimes + default models)
-│   └─ role: nri_cpu_balloons     → tasks/install.yaml (CPU pinning — only when cpu_policy=nri-balloons)
+│   └─ role: nri_cpu_balloons     → tasks/install.yaml (CPU pinning, only when cpu_policy=nri-balloons)
 │
 └─ [Application Layer] (opt-in, not in --all)
-    └─ roles from ext repos (e.g., applications.ai.enterprise.ai-erag)
+    └─ roles from ext repos (other Intel® enterprise AI toolkits)
 ```
 
 ---
@@ -263,7 +265,7 @@ applications.ai.enterprise.ai-inference/
 
 ## Key Design Patterns
 
-These patterns are what let Intel® AI for Enterprise Solutions stay modular — new components, repos, and actions plug in without touching the core dispatcher.
+These patterns are what let Intel® AI for Enterprise Solutions stay modular, new components, repos, and actions plug in without touching the core dispatcher.
 
 ### Action Dispatch
 
@@ -290,8 +292,8 @@ repos:
   - url: "https://github.com/intel/enterprise-inference"
     dest: "enterprise.ai-inference"
     deployment_subdir: ""          # roles/, components.yaml, config.yaml at repo root
-  - url: "https://github.com/intel-innersource/applications.ai.enterprise.ai-erag"
-    dest: "enterprise.ai-erag"
+  - url: "https://github.com/intel/<enterprise-toolkit>"
+    dest: "enterprise.<toolkit>"
     deployment_subdir: "deployment" # Ansible tree lives under deployment/
 ```
 
@@ -317,7 +319,7 @@ Config files are loaded and passed as extra-vars. This uses native Ansible varia
 
 Components are defined in `components.yaml` files (core + ext repos). Each component specifies:
 - `layer` (infrastructure, platform, inference, application)
-- Position in the YAML list (registry order — determines execution sequence within layer)
+- Position in the YAML list (registry order, determines execution sequence within layer)
 - `depends_on` (same-layer dependencies, auto-pulled when component is targeted)
 
 **Four layers** (executed in order):
@@ -327,7 +329,7 @@ Components are defined in `components.yaml` files (core + ext repos). Each compo
 | infrastructure | kubernetes, storage | Yes |
 | platform | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak*, object_store, minio, observability | Yes |
 | inference | keycloak_config*, envoy_ai_gateway, kserve, litellm**, langfuse**, llm_services, nri_cpu_balloons*** | Yes |
-| application | (ext repo components like RAG pipeline, UI, etc.) | No (opt-in) |
+| application | (ext repo components, other Intel® enterprise AI toolkits) | No (opt-in) |
 
 \* Keycloak + keycloak_config are auto-disabled when `auth_provider=litellm`
 \*\* LiteLLM + Langfuse are auto-enabled when `auth_provider=litellm`
@@ -358,15 +360,15 @@ vim env/prod/inventory/hosts.yaml
 ```
 
 **Environment state**:
-- `env/<name>/kubeconfig.yaml` — generated after cluster install
-- `env/<name>/logs/` — per-run Ansible logs (timestamped)
-- `env/<name>/config.<solution>.yaml` — presence marks a solution active (seeded by `init --<solution>`)
+- `env/<name>/kubeconfig.yaml`, generated after cluster install
+- `env/<name>/logs/`, per-run Ansible logs (timestamped)
+- `env/<name>/config.<solution>.yaml`, presence marks a solution active (seeded by `init --<solution>`)
 
 **Multiple environments on one bastion**: Each environment uses its own inventory and kubeconfig, so you can manage dev/staging/prod from a single machine.
 
 ### Auto-Discovery of Models and Runtimes
 
-The `llm_services` role uses `ansible.builtin.find` to auto-discover all YAML files in its `files/catalog/` and `files/runtimes/` directories. To deploy a new model or runtime, drop a YAML file — no code changes needed.
+The `llm_services` role uses `ansible.builtin.find` to auto-discover all YAML files in its `files/catalog/` and `files/runtimes/` directories. To deploy a new model or runtime, drop a YAML file, no code changes needed.
 
 
 ### Kubernetes Installation
@@ -397,7 +399,7 @@ The kubernetes role supports two deployment modes, derived entirely from the inv
 When the inventory contains only `localhost` hosts, Kubespray installs on this machine. Edit `env/<name>/inventory/hosts.yaml`:
 
 ```yaml
-# Option A — Localhost (uncommented by default in init)
+# Option A: Localhost (uncommented by default in init)
 all:
   hosts:
     localhost:
@@ -423,7 +425,7 @@ all:
 When the inventory contains remote hosts, Kubespray installs over SSH. Edit `env/<name>/inventory/hosts.yaml`:
 
 ```yaml
-# Option C — Multi-node cluster
+# Option C: Multi-node cluster
 all:
   hosts:
     master1:
@@ -454,7 +456,7 @@ all:
 
 #### 3. Existing Kubernetes Cluster (skip Kubespray)
 
-To deploy components on an existing cluster without running Kubespray, set `existing_kubernetes: /path/to/kubeconfig` in `env/<name>/global_config.yaml`. The installer uses this kubeconfig directly — no need to copy it into the env dir.
+To deploy components on an existing cluster without running Kubespray, set `existing_kubernetes: /path/to/kubeconfig` in `env/<name>/global_config.yaml`. The installer uses this kubeconfig directly, no need to copy it into the env dir.
 
 ### Running from a Bastion Node
 
@@ -497,7 +499,7 @@ https_proxy: "http://proxy:8080"
 
 A file-level map of the Intel® AI for Enterprise Solutions core repository and the external inference repo it composes with.
 
-### applications.ai.enterprise.ai-solutions — Top Level
+### applications.ai.enterprise.ai-solutions: Top Level
 
 | File | Purpose |
 |------|---------|
@@ -507,15 +509,15 @@ A file-level map of the Intel® AI for Enterprise Solutions core repository and 
 | `env/<name>/inventory/hosts.yaml` | Kubespray-compatible inventory. Defines control-plane, workers, etcd groups. Copied from `inventory/hosts.yaml` by `init`. |
 | `inventory/hosts.yaml` | Inventory template with three options (localhost, single remote, multi-node). Used by `init` to seed new environments and as `ansible.cfg` default. |
 
-### applications.ai.enterprise.ai-solutions — Playbooks
+### applications.ai.enterprise.ai-solutions: Playbooks
 
 | File | Purpose |
 |------|---------|
 | `playbooks/site.yaml` | Universal dispatcher. Accepts `component_action` (install/teardown/validate) and `target` as extra-vars. Includes `preflight.yaml`, then runs resolved components with the specified action. |
 | `playbooks/includes/preflight.yaml` | Component resolution logic. Loads ext repo configs, merges env-specific configs, resolves component dependencies, sorts by layer and registry order. Also verifies kubectl connectivity for non-teardown/validate actions. |
-| `playbooks/status.yaml` | Cluster status reporting — shows installed namespaces, pods, helm releases, and endpoints. |
+| `playbooks/status.yaml` | Cluster status reporting, shows installed namespaces, pods, helm releases, and endpoints. |
 
-### applications.ai.enterprise.ai-solutions — Roles
+### applications.ai.enterprise.ai-solutions: Roles
 
 #### kubernetes
 
@@ -550,7 +552,7 @@ All roles follow the same pattern: `defaults/main.yaml` for config, `tasks/main.
 | `observability` | Prometheus + Grafana + Loki + Tempo stack. |
 | `nri_cpu_balloons` | NRI CPU-balloons plugin. Generates per-node `BalloonsPolicy` CRs based on NUMA topology. Enabled only when `kubernetes_cpu_policy=nri-balloons`. |
 
-### applications.ai.enterprise.ai-inference — External Repo
+### applications.ai.enterprise.ai-inference: External Repo
 
 External repos live under `ext/<dest>/` and are cloned on first run based on `config/repos.yaml`.
 
@@ -559,7 +561,7 @@ External repos live under `ext/<dest>/` and are cloned on first run based on `co
 | `config.yaml` | Baseline for inference components. Seed source for `init` (copied to `env/<name>/config.inference.yaml`); not read at install time. |
 | `components.yaml` | Component definitions for this repo (kserve, llm_services, etc.). |
 
-### applications.ai.enterprise.ai-inference — Roles
+### applications.ai.enterprise.ai-inference: Roles
 
 #### kserve
 
@@ -668,7 +670,7 @@ All Intel® AI for Enterprise Solutions commands run from the core repo root:
 
 ## Version Updates
 
-Every Intel® AI for Enterprise Solutions component version is pinned in config, not hardcoded — to update one:
+Every Intel® AI for Enterprise Solutions component version is pinned in config, not hardcoded, to update one:
 
 1. Edit **one line** in `env/<name>/global_config.yaml`:
    ```yaml
@@ -689,7 +691,7 @@ Alternatively, override at runtime without editing files:
 
 ## Extensibility
 
-Intel® AI for Enterprise Solutions is designed to grow without core changes — add roles, repos, models, runtimes, or actions using the patterns below.
+Intel® AI for Enterprise Solutions is designed to grow without core changes, add roles, repos, models, runtimes, or actions using the patterns below.
 
 ### Adding a New Role
 
@@ -734,7 +736,7 @@ The installer auto-composes `ANSIBLE_ROLES_PATH` at runtime to include all ext r
 
 ### Moving Roles Between Repos
 
-Just `mv` the role directory. Ansible resolves roles by name from `roles_path` — no path coupling.
+Just `mv` the role directory. Ansible resolves roles by name from `roles_path`, no path coupling.
 
 ### Adding a New Model (No Code Changes)
 
@@ -766,7 +768,7 @@ Intel® AI for Enterprise Solutions builds these safeguards into every install a
 
 | Feature | How |
 |---------|-----|
-| **Fail-fast** | `any_errors_fatal: true` in ansible.cfg — stops entire run on any failure |
+| **Fail-fast** | `any_errors_fatal: true` in ansible.cfg, stops entire run on any failure |
 | **Idempotent** | Tasks use `failed_when: ... and 'already exists' not in stderr` patterns |
 | **Dry-run** | Pass `-- --check` to forward Ansible's check mode |
 | **Selective execution** | `--only` flag runs a single target without dependency auto-inclusion |
@@ -781,5 +783,6 @@ Intel® AI for Enterprise Solutions builds these safeguards into every install a
 |---|---|
 | Walk through installing the layers described here, step by step | [Deployment Guide](../deploy/install_platform.md) |
 | See how a request actually flows through the gateway and inference layers | [Network Architecture](../deploy/networking.md) |
+| Look up PSA and Istio labels applied to each namespace | [Namespace Security Labels](../deploy/labels.md) |
 | Look up every setting that drives this architecture | [Configuration Reference](../customize/configuration.md) |
 | Connect your own app or framework to the inference layer | [Integration Guide](../customize/integration.md) |

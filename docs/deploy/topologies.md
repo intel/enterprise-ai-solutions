@@ -1,8 +1,10 @@
 # Multi-Node & BYO Cluster
 
-[← Docs Index](../README.md)
+[← Docs index](../README.md)
 
-How to deploy on multiple machines, or bring an existing Kubernetes cluster.
+Use this page when one machine is not enough, or when you already run Kubernetes
+and only want the installer to deploy the foundation and toolkits onto that
+cluster. Single-node localhost is covered in [Getting Started](../quickstart/quickstart.md).
 
 ---
 
@@ -14,14 +16,14 @@ Before starting, ensure the following are in place on every target node:
 
 - [ ] Passwordless SSH from the installer host to every target node
 - [ ] Passwordless sudo on every target node
-- [ ] Clocks synchronized (NTP/chrony) — skew causes etcd and TLS failures
+- [ ] Clocks synchronized (NTP/chrony), skew causes etcd and TLS failures
 - [ ] All nodes reachable on the same network from the installer host
 
 Once the above are met, configure the node list and SSH credentials using [Option A](#option-a--configure-via-nodesyaml-simple) (recommended) or [Option B](#option-b--configure-via-inventoryhostsyaml-advanced).
 
 ---
 
-### Step 1 — Create the environment
+### Step 1: Create the environment
 
 ```bash
 ./es_auto_installer.sh configure
@@ -30,7 +32,7 @@ Once the above are met, configure the node list and SSH credentials using [Optio
 
 ---
 
-### Step 2 — Set global_config.yaml for multi-node
+### Step 2: Set global_config.yaml for multi-node
 
 Open `env/prod/global_config.yaml` and set the following before installing:
 
@@ -51,25 +53,25 @@ base_domain_name: "solutions.ai"
 
 > The installer aborts if `storage_backend: local-path` is detected on a multi-node cluster.
 
-For redundant block storage instead, use `ceph` — see [Configuration](../customize/configuration.md#storage).
+For redundant block storage instead, use `ceph`, see [Configuration](../customize/configuration.md#storage).
 
 ---
 
-### Step 3 — Configure nodes
+### Step 3: Configure nodes
 
 Choose one option:
 
-#### Option A — Configure via `nodes.yaml` (simple)
+#### Option A: Configure via `nodes.yaml` (simple)
 
 The installer auto-generates the Kubespray inventory from `env/prod/nodes.yaml`. Edit it:
 
 ```yaml
-# Control-plane node(s) — use 1 for basic clusters, 3 for HA.
+# Control-plane node(s): use 1 for basic clusters, 3 for HA.
 nodes_control_plane:
   - ip: 10.0.1.10
     hostname: master1
 
-# Worker node(s) — optional. Omit to make the control-plane schedulable for workloads.
+# Worker node(s): optional. Omit to make the control-plane schedulable for workloads.
 nodes_workers:
   - ip: 10.0.1.20
     hostname: worker1
@@ -81,9 +83,9 @@ nodes_ssh_user: "ubuntu"
 nodes_ssh_key: "/home/ubuntu/.ssh/cluster_key"   # chmod 600
 ```
 
-#### Option B — Configure via `inventory/hosts.yaml` (advanced)
+#### Option B: Configure via `inventory/hosts.yaml` (advanced)
 
-For fine-grained control — jump hosts, per-node SSH settings, custom Kubespray groups. Edit `env/prod/inventory/hosts.yaml`:
+For fine-grained control, jump hosts, per-node SSH settings, custom Kubespray groups. Edit `env/prod/inventory/hosts.yaml`:
 
 ```yaml
 all:
@@ -127,7 +129,7 @@ all:
 
 ---
 
-### Step 4 — Install
+### Step 4: Install
 
 ```bash
 ./es_auto_installer.sh install --all --env prod
@@ -144,7 +146,7 @@ kubectl get nodes   # should show all nodes Ready
 
 ---
 
-## HA — 3 control-plane nodes
+## HA: 3 control-plane nodes
 
 In `env/prod/nodes.yaml`:
 
@@ -177,7 +179,7 @@ When `node_topology_enabled: true` (default), the installer labels nodes and app
 | Platform components (Keycloak, PostgreSQL, Envoy, KServe controller, etc.) | Control-plane nodes | `workload-class=platform` |
 | Inference workloads (vLLM pods) | Worker nodes | `workload-class=inference` |
 
-These are **soft preferences** — the scheduler can override if resources are constrained. No taints are applied. See [Node Topology](../customize/node_topology.md) for details.
+These are **soft preferences**, the scheduler can override if resources are constrained. No taints are applied. See [Node Topology](../customize/node_topology.md) for details.
 
 ---
 
