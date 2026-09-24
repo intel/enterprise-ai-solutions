@@ -22,7 +22,7 @@
     that: _inv_stat.stat.exists
     fail_msg: >-
       Inventory not found: {{ _kubespray_inventory }}
-      Run: ./es_auto_installer.sh init <env>
+      Run: ./es_auto_installer.sh init <layer> --env {{ env_name | default('local') }}
 
 - name: "kubernetes | inventory | Mode"
   ansible.builtin.debug:

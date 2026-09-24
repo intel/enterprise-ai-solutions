@@ -1,17 +1,15 @@
+# Python tooling
 .venv/
-ext/
 __pycache__/
 *.pyc
-*.retry
-*.log
-collections/ansible_collections/
-# Helm chart packages
-*.tgz
-# User-specific config (edit locally, never commit — see config/defaults/)
-global_config.yaml
-nodes.yaml
-# Repo-local runtime state (H5 — no host-side footprint)
-.kubespray/
-.logs/
+
+# Runtime state — repo-local, never committed
+# ext/    external repos, cloned by `init <layer>`
+# env/    per-environment configs, inventory, kubeconfig, logs
+ext/
 env/
-linux-amd64/
+.kubespray/
+*.log
+
+# Helm subchart packages — rebuilt from Chart.lock by dependency_update
+*.tgz

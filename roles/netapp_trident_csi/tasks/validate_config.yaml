@@ -1,0 +1,104 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - Configuration validation (OFFLINE)
+# =============================================================================
+# Variable-level checks only: no cluster calls, no ONTAP contact, nothing that
+# needs SSH to a node. Safe under --check and on a machine with no array.
+#
+# Failures are accumulated and reported once, numbered, so an operator with
+# three misconfigurations sees three rather than one per round trip.
+#
+# roles/storage/tasks/resolve.yaml asserts the same variable presence during
+# preflight (seconds after launch, before Kubespray runs). Re-checking here is
+# what makes `validate storage` and a standalone role run meaningful.
+# =============================================================================
+
+- name: "netapp_trident_csi | validate_config | Collect missing required variables"
+  ansible.builtin.set_fact:
+    _trident_cfg_missing: >-
+      {{ [
+        ('ontap_management_lif' if (ontap_management_lif | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_data_lif' if (ontap_data_lif | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_svm' if (ontap_svm | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_username' if (ontap_username | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_password' if (ontap_password | default('', true) | string | trim | length == 0) else '')
+      ] | reject('equalto', '') | list }}
+  # The task echoes variable *names*, never values, but ontap_password is in
+  # scope here and the default callback dumps the whole task result on failure.
+  no_log: true
+
+- name: "netapp_trident_csi | validate_config | Normalize the driver name"
+  ansible.builtin.set_fact:
+    _trident_driver: "{{ ontap_driver | default('', true) | string | trim | lower }}"
+
+- name: "netapp_trident_csi | validate_config | Build issue list"
+  ansible.builtin.set_fact:
+    _trident_cfg_issues: >-
+      {{ _missing_msgs
+       + ([_msg_driver] if _trident_driver not in trident_supported_drivers else [])
+       + ([_msg_reclaim] if trident_reclaim_policy not in ['Retain', 'Delete'] else [])
+       + ([_msg_binding] if trident_volume_binding_mode not in ['Immediate', 'WaitForFirstConsumer'] else [])
+       + ([_msg_mgmt_shape] if not (_mgmt_shape_ok | bool) else [])
+       + ([_msg_data_shape] if not (_data_shape_ok | bool) else [])
+       + ([_msg_prefix] if not (_prefix_ok | bool) else []) }}
+  vars:
+    # product + join rather than regex_replace: a '\1' backreference passes
+    # through YAML and the Jinja lexer as a literal and renders as "\1 is empty".
+    _missing_msgs: >-
+      {{ _trident_cfg_missing | product([' is empty.']) | map('join', '') | list }}
+    # Value shape only. Whether a hostname actually resolves is a node-side
+    # question and lives in preflight_nodes.yaml, because Trident resolves LIFs
+    # from the node, not from the installer host.
+    _lif_re: '^([0-9]{1,3}(\.[0-9]{1,3}){3}|[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)$'
+    _mgmt_shape_ok: >-
+      {{ (ontap_management_lif | default('', true) | string | trim | length == 0)
+         or (ontap_management_lif | string | trim | regex_search(_lif_re) is not none) }}
+    _data_shape_ok: >-
+      {{ (ontap_data_lif | default('', true) | string | trim | length == 0)
+         or (ontap_data_lif | string | trim | regex_search(_lif_re) is not none) }}
+    # ONTAP FlexVol names accept letters, digits and underscore only.
+    _prefix_ok: >-
+      {{ (ontap_storage_prefix | default('', true) | string | length == 0)
+         or (ontap_storage_prefix | string | regex_search('^[A-Za-z_][A-Za-z0-9_]*$') is not none) }}
+    _msg_driver: >-
+      ontap_driver='{{ ontap_driver }}' is not a supported Trident driver. Valid:
+      {{ trident_supported_drivers | join(', ') }}.
+    _msg_reclaim: >-
+      trident_reclaim_policy='{{ trident_reclaim_policy }}' is invalid.
+      Valid: Retain (default, keeps the ONTAP FlexVol) or Delete.
+    _msg_binding: >-
+      trident_volume_binding_mode='{{ trident_volume_binding_mode }}' is invalid.
+      Valid: Immediate (default) or WaitForFirstConsumer.
+    _msg_mgmt_shape: >-
+      ontap_management_lif='{{ ontap_management_lif }}' is neither an IPv4
+      address nor a valid hostname.
+    _msg_data_shape: >-
+      ontap_data_lif='{{ ontap_data_lif }}' is neither an IPv4 address nor a
+      valid hostname.
+    _msg_prefix: >-
+      ontap_storage_prefix='{{ ontap_storage_prefix }}' is not a valid ONTAP
+      volume-name prefix. Use letters, digits and underscore, starting with a
+      letter or underscore.
+
+- name: "netapp_trident_csi | validate_config | Report configuration issues"
+  ansible.builtin.fail:
+    msg: |
+      NetApp ONTAP configuration is not usable ({{ _trident_cfg_issues | length }} issue(s)):
+      {% for issue in _trident_cfg_issues %}
+        {{ loop.index }}. {{ issue | trim }}
+      {% endfor %}
+      Every value above is set in env/<env>/global_config.yaml. The "NetApp ONTAP"
+      block in configs/defaults/global_config.yaml lists the full set.
+  when: _trident_cfg_issues | length > 0
+
+- name: "netapp_trident_csi | validate_config | Configuration accepted"
+  ansible.builtin.debug:
+    msg:
+      - "ONTAP configuration OK."
+      - "  driver:        {{ _trident_driver }} (NFS, ReadWriteMany capable)"
+      - "  SVM:           {{ ontap_svm }}"
+      - "  StorageClass:  {{ trident_storage_class }} (default={{ trident_storageclass_default }}, reclaim={{ trident_reclaim_policy }}, binding={{ trident_volume_binding_mode }})"
+      - "  chart:         trident-operator {{ trident_chart_version }} in namespace {{ trident_namespace }}"
+      - "  online checks: {{ 'enabled' if (ontap_preflight_online | bool) else 'DISABLED (ontap_preflight_online=false)' }}"

@@ -2,21 +2,19 @@
 # =============================================================================
 # Master Install Playbook - Dynamically includes roles from components.yaml
 # =============================================================================
-# Usage:
-#   ansible-playbook playbooks/site.yaml                       # all components
-#   ansible-playbook playbooks/site.yaml -e target=kserve      # specific component
-#   ansible-playbook playbooks/site.yaml -e target=platform    # tag group
+# Usage: target is required — name a layer or a component, there is no "all".
+#   ansible-playbook playbooks/site.yaml -e target=platform    # layer + its deps
+#   ansible-playbook playbooks/site.yaml -e target=kserve      # component + its deps
 #   ansible-playbook playbooks/site.yaml -e key=value          # override vars
 # =============================================================================
 
-- name: "Platform Installation"
+- name: "AI-solutions"
   hosts: localhost
   connection: local
   gather_facts: true
   vars:
     component_action: install
-    target: all
-    # Shared vars for application-layer roles dispatched via site.yaml
+    # Shared vars for solution-layer roles dispatched via site.yaml
     log_dir: "{{ env_dir | default(playbook_dir + '/../env/local') }}/logs"
     tmp_dir: "{{ log_dir }}/tmp"
     secure_logs: false

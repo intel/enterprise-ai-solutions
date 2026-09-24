@@ -51,10 +51,30 @@ spec:
       value: "{{ keycloak_metrics_enabled | lower }}"
     - name: hostname-strict
       value: "false"
-{% if _platform_affinity | default({}) | length > 0 %}
+{% set _keycloak_proxy = (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0) %}
+{% if _platform_affinity | default({}) | length > 0 or _keycloak_proxy %}
   unsupported:
     podTemplate:
       spec:
+{% if _keycloak_proxy %}
+        # Identity brokering is a backchannel call: Keycloak itself fetches the
+        # external IdP's token and userinfo endpoints, so it needs the proxy.
+        containers:
+          - name: keycloak
+            env:
+{% if http_proxy | default('') | length > 0 %}
+              - name: HTTP_PROXY
+                value: "{{ http_proxy }}"
+{% endif %}
+{% if https_proxy | default('') | length > 0 %}
+              - name: HTTPS_PROXY
+                value: "{{ https_proxy }}"
+{% endif %}
+              - name: NO_PROXY
+                value: "{{ ([no_proxy | default('')] | select | list + [keycloak_hostname]) | join(',') }}"
+{% endif %}
+{% if _platform_affinity | default({}) | length > 0 %}
         affinity:
 {{ _platform_affinity | to_nice_yaml(indent=2) | indent(10, True) }}
+{% endif %}
 {% endif %}

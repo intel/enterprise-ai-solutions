@@ -5,33 +5,56 @@
 
 - name: "nfs_storage | Check Helm release"
   kubernetes.core.helm_info:
-    name: nfs-subdir-external-provisioner
-    release_namespace: "{{ nfs_provisioner_namespace }}"
+    name: "{{ nfs_csi_chart_repo_name }}"
+    release_namespace: "{{ nfs_csi_namespace }}"
   register: _nfs_val_release
   failed_when: false
 
 - name: "nfs_storage | Helm release present"
   ansible.builtin.assert:
     that: (_nfs_val_release.status | default({}) | length) > 0
-    success_msg: "NFS provisioner Helm release found"
-    fail_msg: "NFS provisioner Helm release NOT found in {{ nfs_provisioner_namespace }}"
+    success_msg: "csi-driver-nfs Helm release found"
+    fail_msg: "csi-driver-nfs Helm release NOT found in {{ nfs_csi_namespace }}"
 
-- name: "nfs_storage | Check provisioner pod"
+- name: "nfs_storage | Check CSI controller pod"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Pod
-    namespace: "{{ nfs_provisioner_namespace }}"
+    namespace: "{{ nfs_csi_namespace }}"
     label_selectors:
-      - "app=nfs-subdir-external-provisioner"
+      - "app=csi-nfs-controller"
   register: _nfs_val_pods
 
-- name: "nfs_storage | Provisioner pod running"
+- name: "nfs_storage | CSI controller running"
   ansible.builtin.assert:
     that:
       - _nfs_val_pods.resources | length > 0
       - _nfs_val_pods.resources[0].status.phase == 'Running'
-    success_msg: "NFS provisioner pod is running"
-    fail_msg: "NFS provisioner pod is NOT running"
+    success_msg: "csi-nfs-controller is running"
+    fail_msg: "csi-nfs-controller is NOT running in {{ nfs_csi_namespace }}"
+
+- name: "nfs_storage | Check node plugin"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: "{{ nfs_csi_namespace }}"
+    name: csi-nfs-node
+  register: _nfs_val_node
+
+- name: "nfs_storage | Node plugin ready on every node"
+  ansible.builtin.assert:
+    that:
+      - _nfs_val_node.resources | length > 0
+      - (_nfs_val_node.resources[0].status.numberReady | default(0))
+        == (_nfs_val_node.resources[0].status.desiredNumberScheduled | default(-1))
+    success_msg: >-
+      csi-nfs-node ready on
+      {{ _nfs_val_node.resources[0].status.numberReady | default(0) }} node(s)
+    fail_msg: >-
+      csi-nfs-node is not ready on every node — volumes will fail to mount where
+      it is missing.
+      Ready {{ _nfs_val_node.resources[0].status.numberReady | default(0) }}
+      of {{ _nfs_val_node.resources[0].status.desiredNumberScheduled | default('?') }}.
 
 - name: "nfs_storage | Check StorageClass"
   kubernetes.core.k8s_info:
@@ -45,6 +68,229 @@
     that: _nfs_val_sc.resources | length > 0
     success_msg: "StorageClass '{{ nfs_storageclass_name }}' exists"
     fail_msg: "StorageClass '{{ nfs_storageclass_name }}' NOT found"
+
+# A claim that names no class is admitted even when several are marked default,
+# and gets the most recently created one — so this is not a state the cluster
+# reports on its own, and it decides where volumes land. The install leaves one
+# default; anything else was marked by hand or by another component.
+- name: "nfs_storage | List StorageClasses claiming to be default"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: _nfs_val_all_sc
+
+# The annotation key contains dots, so it cannot be reached through a selectattr
+# path — Jinja splits such a path on every dot. Subscript it instead.
+- name: "nfs_storage | Collect the default ones"
+  ansible.builtin.set_fact:
+    _nfs_val_defaults: >-
+      {%- set found = [] -%}
+      {%- for sc in _nfs_val_all_sc.resources | default([]) -%}
+      {%-   if ((sc.metadata.annotations | default({}, true))
+                ['storageclass.kubernetes.io/is-default-class'] | default('')) == 'true' -%}
+      {%-     set _ = found.append(sc.metadata.name) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ found }}
+
+- name: "nfs_storage | Exactly one default StorageClass"
+  ansible.builtin.assert:
+    that: _nfs_val_defaults | length == 1
+    success_msg: "Default StorageClass: {{ _nfs_val_defaults | first | default('none') }}"
+    fail_msg: >-
+      {{ ('No StorageClass is marked default. A claim that names no class will not bind. Mark one: '
+          ~ 'kubectl annotate sc ' ~ nfs_storageclass_name
+          ~ ' storageclass.kubernetes.io/is-default-class=true --overwrite')
+         if _nfs_val_defaults | length == 0
+         else ('More than one StorageClass is marked default: ' ~ (_nfs_val_defaults | join(', '))
+               ~ '. A claim that names no class is still admitted and gets the most recently created '
+               ~ 'one, so volumes for one export end up split across classes. Demote the ones you do '
+               ~ 'not want: kubectl annotate sc <name> '
+               ~ 'storageclass.kubernetes.io/is-default-class=false --overwrite') }}
+
+# The whole point of moving to the CSI driver: volumes can be snapshotted. The
+# class is what a VolumeSnapshot names to reach this driver, and its absence is
+# silent — snapshot requests are simply rejected — so assert it here.
+- name: "nfs_storage | Check VolumeSnapshotClass"
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+    name: "{{ nfs_snapshot_class_name }}"
+  register: _nfs_val_vsc
+  failed_when: false
+  when: nfs_install_snapshot_class | default(true) | bool
+
+- name: "nfs_storage | VolumeSnapshotClass exists for this driver"
+  ansible.builtin.assert:
+    that:
+      - _nfs_val_vsc.resources | default([]) | length > 0
+      - _nfs_val_vsc.resources[0].driver == 'nfs.csi.k8s.io'
+    success_msg: "VolumeSnapshotClass '{{ nfs_snapshot_class_name }}' exists and points at nfs.csi.k8s.io"
+    fail_msg: >-
+      VolumeSnapshotClass '{{ nfs_snapshot_class_name }}' is missing, or exists
+      for a different driver. Snapshots of volumes on
+      '{{ nfs_storageclass_name }}' will be rejected. Check what is there with
+      kubectl get volumesnapshotclass -o wide
+  when: nfs_install_snapshot_class | default(true) | bool
+
+# A snapshot class with no controller behind it is worse than none: the objects
+# are accepted and simply never become ready.
+- name: "nfs_storage | Check the snapshot controller"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ nfs_csi_namespace }}"
+    name: "{{ nfs_csi_snapshotter_name }}"
+  register: _nfs_val_snapshotter
+  failed_when: false
+  when: nfs_csi_manage_snapshotter | default(true) | bool
+
+- name: "nfs_storage | Snapshot controller available"
+  ansible.builtin.assert:
+    that:
+      - _nfs_val_snapshotter.resources | default([]) | length > 0
+      - (_nfs_val_snapshotter.resources[0].status.readyReplicas | default(0)) > 0
+    success_msg: "{{ nfs_csi_snapshotter_name }} is running in {{ nfs_csi_namespace }}"
+    fail_msg: >-
+      {{ nfs_csi_snapshotter_name }} is missing or has no ready replica in
+      {{ nfs_csi_namespace }}. VolumeSnapshots will be created and stay
+      permanently not-ready, so backups complete while capturing no volume data.
+  when: nfs_csi_manage_snapshotter | default(true) | bool
+
+# ── The driver's permissions ───────────────────────────────────────────
+#
+# The chart's ClusterRoles and ClusterRoleBindings carry fixed names — they are
+# not suffixed with the release namespace — while their subjects name the
+# namespace the release went into. So a binding left behind by an earlier release
+# in another namespace satisfies Helm and still points somewhere else, and the
+# controller then runs with no permissions at all: provisioning fails with a 403
+# on persistentvolumes, which reads as an API problem rather than as RBAC.
+- name: "nfs_storage | Note which ClusterRoleBindings must follow the namespace"
+  ansible.builtin.set_fact:
+    _nfs_val_crb_names: >-
+      {{ ['nfs-csi-provisioner-binding', 'nfs-csi-resizer-role']
+         + (['snapshot-controller-role'] if nfs_csi_manage_snapshotter | default(true) | bool else []) }}
+
+- name: "nfs_storage | Read the driver's ClusterRoleBindings"
+  kubernetes.core.k8s_info:
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    name: "{{ item }}"
+  loop: "{{ _nfs_val_crb_names }}"
+  register: _nfs_val_crb
+  failed_when: false
+
+- name: "nfs_storage | The ClusterRoleBindings name this namespace"
+  ansible.builtin.assert:
+    that:
+      - _nfs_val_crb_bindings | length == _nfs_val_crb_names | length
+      - _nfs_val_crb_bindings | map(attribute='subjects') | flatten
+        | selectattr('kind', 'equalto', 'ServiceAccount')
+        | rejectattr('namespace', 'eq', nfs_csi_namespace) | list | length == 0
+    success_msg: >-
+      {{ _nfs_val_crb_names | join(', ') }} all bind ServiceAccounts in
+      {{ nfs_csi_namespace }}
+    fail_msg: >-
+      One of {{ _nfs_val_crb_names | join(', ') }} is missing, or binds a
+      ServiceAccount in a namespace other than {{ nfs_csi_namespace }}. The
+      driver would run without permissions. Check with
+      kubectl get clusterrolebinding {{ _nfs_val_crb_names | join(' ') }}
+      -o custom-columns=NAME:.metadata.name,SUBJECT_NS:.subjects[0].namespace
+  vars:
+    _nfs_val_crb_bindings: "{{ _nfs_val_crb.results | map(attribute='resources') | flatten }}"
+
+# A binding can be present and still ineffective — the ClusterRole it points at
+# may have been replaced by another release. Ask the API server what it would
+# actually allow instead of inferring it from the objects.
+#
+# One call per (ServiceAccount, verb) the driver cannot work without, and no more:
+# the provisioner sidecar creates the PersistentVolume, the snapshotter sidecar
+# only ever updates a VolumeSnapshotContent — creating one is the snapshot
+# controller's job, under its own ServiceAccount. Asking the wrong account for the
+# wrong verb is how such a check comes to report a working driver as broken.
+- name: "nfs_storage | Note which permissions the driver cannot work without"
+  ansible.builtin.set_fact:
+    _nfs_val_perms: >-
+      {{ [{'sa': 'csi-nfs-controller-sa', 'group': '', 'resource': 'persistentvolumes', 'verb': 'create'},
+          {'sa': 'csi-nfs-controller-sa', 'group': 'snapshot.storage.k8s.io',
+           'resource': 'volumesnapshotcontents', 'verb': 'update'}]
+         + ([{'sa': nfs_csi_snapshotter_name, 'group': 'snapshot.storage.k8s.io',
+              'resource': 'volumesnapshotcontents', 'verb': 'create'}]
+            if nfs_csi_manage_snapshotter | default(true) | bool else []) }}
+
+- name: "nfs_storage | Ask the API what the driver may do"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: authorization.k8s.io/v1
+      kind: SubjectAccessReview
+      spec:
+        user: "system:serviceaccount:{{ nfs_csi_namespace }}:{{ item.sa }}"
+        resourceAttributes:
+          group: "{{ item.group }}"
+          resource: "{{ item.resource }}"
+          verb: "{{ item.verb }}"
+  loop: "{{ _nfs_val_perms }}"
+  loop_control:
+    label: "{{ item.sa }}: {{ item.verb }} {{ item.resource }}"
+  register: _nfs_val_sar
+  changed_when: false
+  failed_when: false
+
+- name: "nfs_storage | Every permission the driver needs is granted"
+  ansible.builtin.assert:
+    that:
+      - _nfs_val_sar.results | map(attribute='result.status.allowed')
+        | select('defined') | list | length == _nfs_val_perms | length
+      - _nfs_val_sar.results | map(attribute='result.status.allowed')
+        | reject('equalto', true) | list | length == 0
+    success_msg: >-
+      In {{ nfs_csi_namespace }}:
+      {% for p in _nfs_val_perms %}
+      {{ p.sa }} may {{ p.verb }} {{ p.resource }}{{ '; ' if not loop.last else '' }}
+      {%- endfor %}
+    fail_msg: >-
+      The API server refuses a permission the driver cannot work without in
+      {{ nfs_csi_namespace }}:
+      {% for p in _nfs_val_refused %}
+      {{ p.sa }} may not {{ p.verb }} {{ p.resource }}{{ '; ' if not loop.last else '' }}
+      {%- endfor %}.
+      The bindings exist, so one of the ClusterRoles behind them is not the
+      chart's — check
+      kubectl describe clusterrole {{ _nfs_val_crb_names | join(' ') }}
+  vars:
+    _nfs_val_refused: >-
+      {{ (_nfs_val_sar.results | rejectattr('result.status.allowed', 'defined') | list)
+         + (_nfs_val_sar.results | selectattr('result.status.allowed', 'equalto', false) | list)
+         | map(attribute='item') | list }}
+
+# The flag that decides whether a snapshot archive records file ownership. It is
+# invisible until a restore, at which point every file belongs to root and the
+# workloads that own the data refuse to start on it — so check it here instead.
+- name: "nfs_storage | Read the controller's arguments"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ nfs_csi_namespace }}"
+    name: csi-nfs-controller
+  register: _nfs_val_ctrl
+  failed_when: false
+  when: nfs_csi_use_tar_in_snapshot | default(true) | bool
+
+- name: "nfs_storage | Snapshots are written with the tar command"
+  ansible.builtin.assert:
+    that:
+      - _nfs_val_ctrl.resources | default([]) | length > 0
+      - _nfs_val_ctrl.resources[0].spec.template.spec.containers
+        | selectattr('name', 'equalto', 'nfs') | map(attribute='args') | flatten
+        | select('search', '^--use-tar-command-in-snapshot=(true|True)$') | list | length > 0
+    success_msg: "csi-nfs-controller writes snapshots with the external tar — ownership is preserved"
+    fail_msg: >-
+      csi-nfs-controller is not running with --use-tar-command-in-snapshot=true.
+      Snapshots taken in this state lose file ownership, and volumes restored from
+      them come back owned by root. Re-run the storage component, or set
+      nfs_csi_use_tar_in_snapshot=false if that is deliberate.
+  when: nfs_csi_use_tar_in_snapshot | default(true) | bool
 
 # ── End-to-end smoke test: actually provision a PVC ───────────────────
 # This catches misconfigurations the resource checks above can't see:
@@ -108,15 +354,18 @@
         fail_msg: >-
           Probe PVC did NOT bind within {{ nfs_validate_pvc_timeout_seconds }}s.
           The provisioner pod is running but cannot create PVs. Check the
-          provisioner logs (kubectl logs -n {{ nfs_provisioner_namespace }}
-          -l app=nfs-subdir-external-provisioner) and verify NFS server
+          driver logs (kubectl logs -n {{ nfs_csi_namespace }}
+          -l app=csi-nfs-controller) and verify NFS server
           {{ nfs_server }}:{{ nfs_path }} is reachable from worker nodes.
 
 - name: "nfs_storage | Validation summary"
   ansible.builtin.debug:
     msg:
       - "NFS Storage validation PASSED"
-      - "  Provisioner: running in {{ nfs_provisioner_namespace }}"
+      - "  CSI driver:  csi-driver-nfs in {{ nfs_csi_namespace }}"
       - "  StorageClass: {{ nfs_storageclass_name }}"
       - "  NFS Server:   {{ nfs_server }}:{{ nfs_path }}"
+      - "  Snapshots:    {{ nfs_snapshot_class_name if (nfs_install_snapshot_class | default(true) | bool) else 'not installed' }}"
+      - "  Snapshot tar: {{ 'verified' if (nfs_csi_use_tar_in_snapshot | default(true) | bool) else 'disabled — restores lose ownership' }}"
+      - "  RBAC:         {{ _nfs_val_crb_names | join(', ') }} bind into {{ nfs_csi_namespace }}, and the API grants all {{ _nfs_val_perms | length }} permissions the driver needs"
       - "  PVC bind:     {{ 'verified' if (nfs_validate_pvc_bind | default(true) | bool) else 'skipped' }}"

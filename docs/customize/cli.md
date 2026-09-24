@@ -1,4 +1,4 @@
-# Intel® AI for Enterprise Solutions CLI Reference
+# CLI Reference
 
 [← Docs Index](../README.md)
 
@@ -24,20 +24,25 @@ One-time machine setup. Installs Python 3.11+, yq, kubectl, and helm into `/usr/
 
 ---
 
-### `init <name>`
+### `init <layer>`
 
-Create a new environment directory at `env/<name>/` and seed it with default configuration files.
+Create a new environment directory and seed it with configuration for the specified layer. The layer name (e.g., `inference`, `erag`) determines which repositories are cloned and which configs are seeded.
 
 ```bash
-./es_auto_installer.sh init local           # standard environment
-./es_auto_installer.sh init prod --rag      # seed with RAG config as well
+./es_auto_installer.sh init inference                    # standard inference stack
+./es_auto_installer.sh init erag                         # inference + Intel AI for Enterprise RAG (default chatqna flavour)
+./es_auto_installer.sh init erag --flavour docsum        # Intel AI for Enterprise RAG with docsum pipeline preset
+./es_auto_installer.sh init erag --env prod              # seed env/prod/ instead of env/local/
+./es_auto_installer.sh init inference --upgrade          # move already-cloned repos to pinned revs
 ```
 
 Creates:
 - `env/<name>/global_config.yaml` — edit this before installing
 - `env/<name>/nodes.yaml` — node IPs and SSH credentials (edit for multi-node)
 - `env/<name>/inventory/hosts.yaml` — targets localhost by default; edit for multi-node
-- `env/<name>/models.yaml` — model catalog, pre-seeded from the inference repo defaults
+- `env/<name>/config.<layer>.yaml` — layer-specific config (e.g., `config.inference.yaml`, `config.erag.yaml`)
+- `env/<name>/models.yaml` — model catalog, pre-seeded from the layer's model_catalog
+- `env/<name>/.solutions.yaml` — records which layers this env was inited for
 
 ---
 
@@ -46,8 +51,8 @@ Creates:
 Deploy components. Dependencies are resolved automatically.
 
 ```bash
-# Full stack (infrastructure + platform + inference)
-./es_auto_installer.sh install --all --env local
+# Infrastructure + platform + inference (via dependency auto-pull)
+./es_auto_installer.sh install inference --env local
 
 # A single layer
 ./es_auto_installer.sh install platform --env local
@@ -59,28 +64,27 @@ Deploy components. Dependencies are resolved automatically.
 # A single component, skipping dependencies
 ./es_auto_installer.sh install metallb --only --env local
 
-# Opt-in application layer (RAG, eRAG UI)
-./es_auto_installer.sh install application --env local
+# Opt-in Intel AI for Enterprise RAG layer (requires init erag first)
+./es_auto_installer.sh install erag --env local
 
 # Override a config value at runtime (no file edit needed)
 ./es_auto_installer.sh install kserve --env local -- -e kserve_version=0.15.0
 
 # Dry run — show what would happen without making changes
-./es_auto_installer.sh install --all --env local -- --check
+./es_auto_installer.sh install inference --env local -- --check
 
 # Pass additional Ansible flags (use -- to separate)
-./es_auto_installer.sh install --all --env local -- -vvv
+./es_auto_installer.sh install inference --env local -- -vvv
 ```
 
 **Targets for `install` / `teardown`:**
 
 | Target | What it covers |
 |---|---|
-| `--all` | infrastructure + platform + inference |
 | `infrastructure` | kubernetes, storage |
 | `platform` | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak, object_store, minio, observability |
 | `inference` | keycloak_config, envoy_ai_gateway, kserve, litellm, langfuse, llm_services, nri_cpu_balloons |
-| `application` | RAG pipeline, UI, vector DBs (opt-in, from ext repo) |
+| `erag` | app_inference_models, app_pre_install, app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats, app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher, app_post_install (opt-in, from ext repo) |
 | `<component>` | Any individual component name (e.g. `kserve`, `grafana`, `metallb`) |
 
 ---
@@ -90,14 +94,17 @@ Deploy components. Dependencies are resolved automatically.
 Remove components in reverse dependency order. Configuration files and environment state are preserved.
 
 ```bash
-# Remove everything
-./es_auto_installer.sh teardown --all --env local
+# Remove everything (cluster included)
+./es_auto_installer.sh teardown infrastructure --env local
 
 # Remove a single component
 ./es_auto_installer.sh teardown keycloak --env local
 
-# Remove the application layer (keeps platform and inference)
-./es_auto_installer.sh teardown application --env local
+# Remove the Intel AI for Enterprise RAG layer (keeps platform and inference)
+./es_auto_installer.sh teardown erag --env local
+
+# Remove a layer but skip dependencies (e.g., tear down cluster without uninstalling erag first)
+./es_auto_installer.sh teardown infrastructure --skip erag --env local
 ```
 
 ---
@@ -107,8 +114,9 @@ Remove components in reverse dependency order. Configuration files and environme
 Run post-install health checks.
 
 ```bash
-./es_auto_installer.sh validate --all --env local
+./es_auto_installer.sh validate inference --env local
 ./es_auto_installer.sh validate kserve --env local
+./es_auto_installer.sh validate erag --env local
 ```
 
 Checks are implemented per-component as `tasks/validate.yaml` (asserts, connectivity, replica counts).
@@ -140,8 +148,11 @@ List all available layers and components, including which are opt-in.
 | Flag | Description |
 |---|---|
 | `--env <name>` | Target environment (default: `local`) |
-| `--all` | Select the full stack (infra + platform + inference) |
+| `--flavour <name>` | (init only) Select a pipeline preset for the layer being inited (e.g., `chatqna`, `docsum`, `audioqna`) |
+| `--upgrade` | (init only) Move already-cloned ext/ repos onto the revs the manifests pin now. Refuses on local changes; never rewrites your configs. |
 | `--only` | Skip dependency auto-inclusion — run the named target alone |
+| `--skip <names>` | Comma-separated layers or components to leave out of the plan (e.g., `--skip erag` to tear down the cluster without uninstalling erag first) |
+| `--force` | Skip the confirmation prompt (required in CI, where there is no terminal to answer it) |
 | `-- <ansible-flags>` | Pass remaining args directly to `ansible-playbook` (e.g. `-- -vvv`, `-- --check`, `-- -e key=value`) |
 
 ---

@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Envoy Gateway — Install via Helm + Gateway resource
@@ -31,6 +33,22 @@
           deployment:
             envoyGateway:
               affinity: "{{ _platform_affinity | default({}) }}"
+          # The Backend extension API (gateway.envoyproxy.io/v1alpha1 Backend) is
+          # off by default. It is how a route reaches an endpoint outside the
+          # cluster with upstream TLS settings of its own - the ONTAP S3 reverse
+          # proxy uses one. The inference layer later helm-upgrades this release
+          # with the same flag (ext/enterprise.ai-inference/roles/kserve/
+          # templates/envoy-gateway-ai-values.yaml.j2), so enabling it here only
+          # means a platform-only install already has it, instead of leaving
+          # every Backend-backed HTTPRoute at ResolvedRefs=False.
+          config:
+            envoyGateway:
+              extensionApis:
+                enableBackend: true
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "envoy_gateway | Wait for controller deployment"
       kubernetes.core.k8s_info:
@@ -108,9 +126,11 @@
       metadata:
         name: "{{ envoy_gateway_namespace }}"
         labels:
-          pod-security.kubernetes.io/enforce: "privileged"
-          pod-security.kubernetes.io/audit: "privileged"
-          pod-security.kubernetes.io/warn: "privileged"
+          # The chart ships a full restricted securityContext and the generated
+          # dataplane maps :80/:443 to unprivileged ports, so no NET_BIND_SERVICE.
+          pod-security.kubernetes.io/enforce: "restricted"
+          pod-security.kubernetes.io/audit: "restricted"
+          pod-security.kubernetes.io/warn: "restricted"
   when: enforce_pss | default(false) | bool
 
 - name: "envoy_gateway | Create gateway namespace (if different)"
@@ -147,9 +167,9 @@
       metadata:
         name: "{{ gateway_namespace }}"
         labels:
-          pod-security.kubernetes.io/enforce: "privileged"
-          pod-security.kubernetes.io/audit: "privileged"
-          pod-security.kubernetes.io/warn: "privileged"
+          pod-security.kubernetes.io/enforce: "restricted"
+          pod-security.kubernetes.io/audit: "restricted"
+          pod-security.kubernetes.io/warn: "restricted"
   when:
     - gateway_create
     - gateway_namespace != envoy_gateway_namespace
@@ -233,6 +253,165 @@
   retries: 60
   delay: 5
   when: gateway_create
+
+# ── Plaintext HTTP:80 → HTTPS redirect ───────────────────────────────────────
+# The HTTP:80 listener exists so browsers hitting http:// still land on the
+# stack, but it must never SERVE anything in cleartext. This catch-all route
+# (no hostname, so it matches every host on the http listener via sectionName)
+# 301-redirects all plaintext traffic to HTTPS. Service routes are pinned to
+# sectionName: https so they never bind :80; anything that reaches :80 gets
+# bounced here before a request body or credential is forwarded upstream.
+- name: "envoy_gateway | Redirect all plaintext HTTP:80 traffic to HTTPS"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: http-to-https-redirect
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        parentRefs:
+          - name: "{{ gateway_name }}"
+            namespace: "{{ gateway_namespace }}"
+            sectionName: http
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            filters:
+              - type: RequestRedirect
+                requestRedirect:
+                  scheme: https
+                  statusCode: 301
+  when: gateway_create
+
+# The gateway-level JWT SecurityPolicy targets the whole Gateway, so without an
+# override the redirect route answers 401 before it can 301. Exempt it so a
+# plaintext client is bounced to HTTPS instead of being rejected. Only needed
+# when an auth provider is attached; with auth_provider: none there is no
+# gateway policy to override.
+- name: "envoy_gateway | Exempt the HTTP→HTTPS redirect route from gateway auth"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: SecurityPolicy
+      metadata:
+        name: http-to-https-redirect-no-auth
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: http-to-https-redirect
+  when: gateway_create and auth_provider in ['keycloak', 'litellm']
+
+# ── Protected hostname ownership (cross-namespace route takeover) ─────────────
+# Reserve each platform hostname to its owning namespace so a route in another
+# namespace cannot claim it with a more specific match and hijack the traffic.
+# See gateway_protected_hostnames in defaults/main.yaml.
+- name: "envoy_gateway | Reserve platform hostnames to their owning namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'route-hostname-admission-policy.yaml.j2') | from_yaml_all | list }}"
+  when:
+    - gateway_create
+    - gateway_route_admission_enabled | bool
+    - gateway_protected_hostnames | length > 0
+
+# ── ClientTrafficPolicy - S3 API path handling ───────────────────────────────
+
+- name: "envoy_gateway | Apply S3 listener ClientTrafficPolicy (SigV4 path handling)"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'client-traffic-policy.yaml.j2') | from_yaml }}"
+  when:
+    - gateway_create
+    - gateway_s3_listener_enabled | bool
+
+# Turning ontap_s3_data_lif off (or switching to routing_mode: path) removes the
+# listener the policy targets, and a ClientTrafficPolicy with a dangling
+# sectionName stays on the Gateway status as an unresolved policy. Prune it.
+- name: "envoy_gateway | Remove the S3 listener ClientTrafficPolicy when the listener is gone"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    name: "{{ gateway_name }}-s3-path"
+    namespace: "{{ gateway_namespace }}"
+  # The CRD is absent on a platform that never installed the Backend/policy
+  # extension APIs, and the policy is absent on every install that never had an
+  # S3 listener - neither is an error.
+  failed_when: false
+  when: not (gateway_s3_listener_enabled | bool)
+
+# Gateway API resolves overlapping listener hostnames by specificity, so the
+# moment 'https-s3' claims s3.<base_domain> exactly, the '*.<base_domain>'
+# wildcard listener stops covering that name. Any pre-existing route that claims
+# the S3 hostname while pinning sectionName: https therefore flips to
+# Accepted=False / NoMatchingListenerHostname - in practice the SeaweedFS S3
+# route from a deployment that used the in-cluster object store. That route is
+# exactly what the ONTAP S3 proxy replaces, and the RAG layer removes it when it
+# activates, but the platform layer runs first so the operator is told here.
+- name: "envoy_gateway | Find routes still pinned to 'https' for the S3 hostname"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+  register: _eg_s3_routes
+  # Read-only; a cluster without the Gateway API HTTPRoute CRD is not this task's
+  # problem, and the report below simply has nothing to say.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - gateway_create
+    - gateway_s3_listener_enabled | bool
+
+- name: "envoy_gateway | Report routes claiming the S3 hostname"
+  vars:
+    _claimants: >-
+      {{ _eg_s3_routes.resources | default([])
+         | selectattr('spec.hostnames', 'defined')
+         | selectattr('spec.hostnames', 'contains', gateway_s3_hostname) | list }}
+  ansible.builtin.debug:
+    msg: |
+      The '{{ gateway_s3_listener_name }}' listener now owns
+      {{ gateway_s3_hostname }} exclusively. {{ _claimants | length }} HTTPRoute(s)
+      claim that hostname:
+      {% for r in _claimants %}
+      {% set _secs = r.spec.parentRefs | default([]) | selectattr('name', 'equalto', gateway_name) | map(attribute='sectionName', default='(unpinned)') | list %}
+        {{ r.metadata.namespace }}/{{ r.metadata.name }} sectionName={{ _secs | join(',') | default('(not this gateway)', true) }}{{ '  <-- OK' if gateway_s3_listener_name in _secs else '  <-- now Accepted=False' }}
+      {% endfor %}
+      Gateway API resolves overlapping listener hostnames by specificity, so a route
+      pinned to sectionName: https no longer intersects {{ gateway_s3_hostname }} and
+      goes Accepted=False with reason NoMatchingListenerHostname. The ONTAP S3
+      reverse proxy in the RAG layer binds to '{{ gateway_s3_listener_name }}' and
+      removes the in-cluster object store's S3 route, so the marker above is
+      expected to be OK once that layer is installed. If you are not deploying it,
+      set ontap_s3_data_lif back to empty, or re-pin the route with
+      sectionName: {{ gateway_s3_listener_name }}.
+  when:
+    - gateway_create
+    - gateway_s3_listener_enabled | bool
+    - _claimants | length > 0
+
+- name: "envoy_gateway | S3 path normalization not relaxed (routing_mode: path)"
+  ansible.builtin.debug:
+    msg: >-
+      routing_mode is 'path', so the ONTAP S3 API shares the apex hostname
+      {{ base_domain_name }} with the UI and cannot have a listener of its own.
+      Envoy's default path normalization therefore still applies to S3 requests:
+      an object key containing '//' or '%2F' will reach the object store with a
+      different canonical URI than the client signed, and the store will answer
+      SignatureDoesNotMatch. The data-prep service rejects such keys before
+      signing. Use routing_mode 'subdomain' to get the dedicated
+      '{{ gateway_s3_listener_name }}' listener and its ClientTrafficPolicy.
+  when:
+    - gateway_create
+    - ontap_s3_data_lif | default('', true) | string | trim | length > 0
+    - (routing_mode | default('subdomain')) == 'path'
 
 # ── BackendTrafficPolicy — default request timeout ───────────────────────────
 

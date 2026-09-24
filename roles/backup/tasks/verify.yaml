@@ -1,0 +1,252 @@
+---
+# =============================================================================
+# backup | Verify a usable backup exists — the pre-upgrade gate
+# =============================================================================
+# Reusable from a solution's pre-install upgrade path:
+#
+#   - name: "app_pre_install | Upgrade — require a fresh backup"
+#     ansible.builtin.include_role:
+#       name: backup
+#       tasks_from: verify.yaml
+#     vars:
+#       backup_verify_version_label: "meta.example/solution-version"
+#
+# Call it BEFORE anything mutates state, so a blocked upgrade leaves nothing
+# half-written behind.
+#
+# Inputs (all optional):
+#   backup_verify_version_label   label key recording the solution version
+#   solution_version              value for that key
+#   backup_verify_label_selectors explicit selectors, overriding the two above
+#   upgrade_backup_max_age_hours  freshness window (default 6)
+#   allow_upgrade_without_backup  bypass, with a warning (default false)
+#
+# Output:
+#   _bk_verified_backup, _bk_verified_backup_timestamp  (unset when bypassed)
+# =============================================================================
+
+# The gate must look up exactly the label backup.yaml wrote. When the caller has
+# a profile in scope, reuse the same resolution; otherwise fall back to a
+# solution_version the caller loaded itself.
+- name: "backup | verify | Resolve the solution version from the profile"
+  ansible.builtin.include_tasks: resolve_version.yaml
+  when:
+    - backup_profile is defined
+    - backup_profile.version_label | default('') != ''
+
+- name: "backup | verify | Resolve the selectors"
+  ansible.builtin.set_fact:
+    _bk_verify_selectors: >-
+      {{ backup_verify_label_selectors
+         | default([backup_verify_version_label ~ '='
+                    ~ (_bk_version | default(solution_version | default('')))]
+                   if backup_verify_version_label | default('') != ''
+                      and (_bk_version | default(solution_version | default('')) | string | length) > 0
+                   else []) }}
+
+- name: "backup | verify | Cannot establish the running version"
+  ansible.builtin.fail:
+    msg: |
+      backup_verify_version_label is set to
+      '{{ backup_verify_version_label | default('') }}' but the running version
+      could not be resolved, so the gate cannot tell which backups belong to it.
+
+      Make solution_version available before including this file, or pass
+      backup_verify_label_selectors explicitly. Do not let it default: a gate
+      matching the wrong label reports a restore point that is not one.
+  when:
+    - backup_verify_label_selectors is not defined
+    - backup_verify_version_label | default('') != ''
+    - (_bk_version | default(solution_version | default('')) | string | length) == 0
+
+- name: "backup | verify | Nothing to check against"
+  ansible.builtin.debug:
+    msg: >-
+      No version label configured for the backup gate
+      (backup_verify_version_label / backup_verify_label_selectors are unset),
+      so backup freshness cannot be established. Skipping the gate.
+  when: _bk_verify_selectors | length == 0
+
+- name: "backup | verify | Gate"
+  when: _bk_verify_selectors | length > 0
+  block:
+    - name: "backup | verify | Is Velero installed?"
+      kubernetes.core.k8s_info:
+        kind: Namespace
+        name: "{{ velero_namespace }}"
+      register: _bk_verify_ns
+      failed_when: false
+
+    - name: "backup | verify | Fail — Velero absent and a backup is required"
+      ansible.builtin.fail:
+        msg: |
+          Upgrade blocked: Velero is not installed, so no backup exists to fall
+          back to (namespace '{{ velero_namespace }}' not found).
+
+          Either:
+            1. install Velero, then take a backup through the solution's
+               backup playbook:
+                 ./es_auto_installer.sh install velero --env <env> --only
+            2. or accept the risk for this run:
+                 -e allow_upgrade_without_backup=true
+      when:
+        - _bk_verify_ns.resources | length == 0
+        - not (allow_upgrade_without_backup | bool)
+
+    - name: "backup | verify | Bypassed — Velero absent"
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: Velero is not installed and allow_upgrade_without_backup=true.
+          Proceeding with no restore point.
+      when:
+        - _bk_verify_ns.resources | length == 0
+        - allow_upgrade_without_backup | bool
+
+    - name: "backup | verify | Check the backups"
+      when: _bk_verify_ns.resources | length > 0
+      block:
+        - name: "backup | verify | Query backups for this version"
+          kubernetes.core.k8s_info:
+            api_version: velero.io/v1
+            kind: Backup
+            namespace: "{{ velero_namespace }}"
+            label_selectors: "{{ _bk_verify_selectors }}"
+          register: _bk_verify_list
+
+        - name: "backup | verify | Keep the completed ones"
+          ansible.builtin.set_fact:
+            _bk_verify_completed: >-
+              {{ _bk_verify_list.resources | default([])
+                 | selectattr('status.phase', 'defined')
+                 | selectattr('status.phase', 'equalto', 'Completed')
+                 | list }}
+
+        - name: "backup | verify | Filter by age"
+          ansible.builtin.script:
+            cmd: "{{ role_path }}/files/filter_backups_by_age.py"
+          environment:
+            BACKUPS_JSON: "{{ _bk_verify_completed | to_json }}"
+            MAX_AGE_HOURS: "{{ upgrade_backup_max_age_hours }}"
+          register: _bk_verify_filtered
+          changed_when: false
+          when: _bk_verify_completed | length > 0
+
+        - name: "backup | verify | Parse the fresh backups"
+          ansible.builtin.set_fact:
+            _bk_verify_fresh: "{{ (_bk_verify_filtered.stdout | from_json).backups | default([]) }}"
+          when:
+            - _bk_verify_filtered is defined
+            - _bk_verify_filtered.stdout | default('') != ''
+
+        - name: "backup | verify | Fail — no fresh backup"
+          ansible.builtin.fail:
+            msg: |
+              Upgrade blocked: no Completed backup matching
+              {{ _bk_verify_selectors | join(', ') }}
+              within the last {{ upgrade_backup_max_age_hours }} hour(s).
+
+              {% if _bk_verify_completed | length > 0 %}
+              There are {{ _bk_verify_completed | length }} completed backup(s), but all
+              of them are older than the window. Take a fresh one:
+              {% else %}
+              No completed backup matches at all. Take one:
+              {% endif %}
+                run the solution's backup playbook with backup_action=backup
+
+              Or accept the risk for this run:
+                -e allow_upgrade_without_backup=true
+              Or widen the window:
+                -e upgrade_backup_max_age_hours=<hours>
+          when:
+            - (_bk_verify_fresh | default([]) | length) == 0
+            - not (allow_upgrade_without_backup | bool)
+
+        - name: "backup | verify | Bypassed — no fresh backup"
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: no backup for {{ _bk_verify_selectors | join(', ') }} within
+              {{ upgrade_backup_max_age_hours }}h and
+              allow_upgrade_without_backup=true. Proceeding with no restore point.
+          when:
+            - (_bk_verify_fresh | default([]) | length) == 0
+            - allow_upgrade_without_backup | bool
+
+        - name: "backup | verify | Record the backup being relied on"
+          ansible.builtin.set_fact:
+            _bk_verified_backup: "{{ _bk_verify_fresh[0].name }}"
+            _bk_verified_backup_timestamp: "{{ _bk_verify_fresh[0].completionTimestamp }}"
+          when: (_bk_verify_fresh | default([]) | length) > 0
+
+        # A Backup object can exist while its data is unreachable. That is the
+        # failure mode where an operator believes they have a restore point and
+        # does not, so prove the data is readable before letting the upgrade run.
+        - name: "backup | verify | Prove the backup data is readable"
+          when: _bk_verified_backup is defined
+          block:
+            - name: "backup | verify | Find the Velero server pod"
+              kubernetes.core.k8s_info:
+                api_version: v1
+                kind: Pod
+                namespace: "{{ velero_namespace }}"
+                label_selectors: >-
+                  {{ backup_velero_pod_labels.keys() | zip(backup_velero_pod_labels.values())
+                     | map('join', '=') | list }}
+                field_selectors:
+                  - status.phase=Running
+              register: _bk_verify_pod
+
+            - name: "backup | verify | Cannot check — no server pod"
+              ansible.builtin.debug:
+                msg: >-
+                  WARNING: no running Velero pod, so the readability of backup
+                  '{{ _bk_verified_backup }}' could not be confirmed.
+              when: _bk_verify_pod.resources | default([]) | length == 0
+
+            - name: "backup | verify | Read the backup's resource list"
+              kubernetes.core.k8s_exec:
+                namespace: "{{ velero_namespace }}"
+                pod: "{{ _bk_verify_pod.resources[0].metadata.name }}"
+                container: velero
+                command: >-
+                  /velero backup describe {{ _bk_verified_backup }} --details -o json
+                  {{ '--insecure-skip-tls-verify'
+                     if (velero_external_bsl_enabled | bool) and (velero_external_bsl_tls_enabled | bool)
+                     else '' }}
+              register: _bk_verify_describe
+              changed_when: false
+              when: _bk_verify_pod.resources | default([]) | length > 0
+
+            - name: "backup | verify | Parse it"
+              ansible.builtin.set_fact:
+                _bk_verify_details: "{{ _bk_verify_describe.stdout | from_json }}"
+              when:
+                - _bk_verify_describe is defined
+                - _bk_verify_describe.stdout | default('') != ''
+
+            - name: "backup | verify | Fail — backup data unreadable"
+              ansible.builtin.fail:
+                msg: |
+                  Upgrade blocked: backup '{{ _bk_verified_backup }}' exists but its
+                  contents cannot be read from the backup store.
+                  Error: {{ _bk_verify_details.status.errorGettingResourceList | default('resource list empty') }}
+
+                  The object looks healthy while the data behind it is unreachable —
+                  it is not a restore point. Check the store:
+                    kubectl -n {{ velero_namespace }} get backupstoragelocations
+                  and, for an external store, its credentials, CA certificate and
+                  no_proxy settings.
+              when:
+                - _bk_verify_details is defined
+                - (_bk_verify_details.status.resourceList | default({}) | length) == 0
+                - not (allow_upgrade_without_backup | bool)
+
+            - name: "backup | verify | Gate passed"
+              ansible.builtin.debug:
+                msg: >-
+                  Restore point confirmed: {{ _bk_verified_backup }}
+                  (completed {{ _bk_verified_backup_timestamp }},
+                  {{ _bk_verify_details.status.resourceList | default({}) | length }}
+                  resource type(s) readable from the store).
+              when:
+                - _bk_verify_details is defined
+                - (_bk_verify_details.status.resourceList | default({}) | length) > 0

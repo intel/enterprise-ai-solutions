@@ -1,0 +1,241 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - internal vars (not an override surface)
+# =============================================================================
+# Manifests and shell for the end-to-end probe in tasks/validate_e2e.yaml.
+# Kept out of defaults/main.yaml because these are not knobs.
+#
+# All scripts are POSIX shell (busybox ash). All pods satisfy the restricted Pod
+# Security Standard; fsGroup is what makes a fresh FlexVol writable for a
+# non-root uid.
+# =============================================================================
+
+# 8 MiB of random data, fsynced, checksummed, then read back and re-checksummed.
+# `test -w` is the part a reachability probe cannot replace: an export with
+# root_squash or a read-only rule for the node CIDR mounts fine and fails here.
+_e2e_script_writer: |
+  set -e
+  D=/mnt/probe
+  ID="$(date -u +%s)-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  dd if=/dev/urandom of="$D/probe.bin" bs=1M count=8 2>/dev/null
+  sync -f "$D/probe.bin" 2>/dev/null || sync
+  sha256sum "$D/probe.bin" | awk '{print $1}' > "$D/probe.sum"
+  printf '%s\n' "$ID" > "$D/marker"
+  test -w "$D"
+  A="$(cat "$D/probe.sum")"
+  B="$(sha256sum "$D/probe.bin" | awk '{print $1}')"
+  test "$A" = "$B"
+  echo "PROBE_MARKER=$ID"
+  echo "PROBE_WRITE_OK"
+
+_e2e_script_reader: |
+  set -e
+  D=/mnt/probe
+  test -f "$D/marker"
+  A="$(cat "$D/probe.sum")"
+  B="$(sha256sum "$D/probe.bin" | awk '{print $1}')"
+  test "$A" = "$B"
+  echo "PROBE_MARKER=$(cat "$D/marker")"
+  echo "PROBE_READ_OK"
+
+# Pod A writes, then waits for pod B's file; pod B waits for pod A's file, then
+# writes. Both must Succeed, and on different nodes, for RWX to be proven.
+_e2e_script_rwx_a: |
+  set -e
+  D=/mnt/probe
+  printf 'from-a\n' > "$D/a.txt"
+  sync
+  for i in $(seq 1 90); do
+    if [ -f "$D/b.txt" ]; then
+      grep -q from-b "$D/b.txt"
+      echo PROBE_RWX_A_OK
+      exit 0
+    fi
+    sleep 1
+  done
+  echo PROBE_RWX_A_TIMEOUT
+  exit 1
+
+_e2e_script_rwx_b: |
+  set -e
+  D=/mnt/probe
+  for i in $(seq 1 90); do
+    if [ -f "$D/a.txt" ]; then
+      break
+    fi
+    sleep 1
+  done
+  grep -q from-a "$D/a.txt"
+  printf 'from-b\n' > "$D/b.txt"
+  sync
+  echo PROBE_RWX_B_OK
+
+# uid/gid 65534 (nobody) as literal integers: a nested Jinja expression inside a
+# templated dict comes back as a string and the API server rejects that.
+_e2e_pod_security_context:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+_e2e_container_security_context:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 65534
+  capabilities:
+    drop: [ALL]
+  seccompProfile:
+    type: RuntimeDefault
+
+_e2e_pvc_rwo:
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ontap-probe-rwo
+    namespace: "{{ _e2e_ns }}"
+    labels:
+      app.kubernetes.io/managed-by: netapp_trident_csi-role
+      app.kubernetes.io/component: storage-probe
+  spec:
+    accessModes: [ReadWriteOnce]
+    storageClassName: "{{ _e2e_sc_name }}"
+    resources:
+      requests:
+        storage: "{{ ontap_validate_pvc_size }}"
+
+_e2e_pvc_rwx:
+  apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ontap-probe-rwx
+    namespace: "{{ _e2e_ns }}"
+    labels:
+      app.kubernetes.io/managed-by: netapp_trident_csi-role
+      app.kubernetes.io/component: storage-probe
+  spec:
+    accessModes: [ReadWriteMany]
+    storageClassName: "{{ _e2e_sc_name }}"
+    resources:
+      requests:
+        storage: "{{ ontap_validate_pvc_size }}"
+
+_e2e_pod_writer:
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: ontap-probe-writer
+    namespace: "{{ _e2e_ns }}"
+    labels:
+      app: ontap-probe
+      app.kubernetes.io/managed-by: netapp_trident_csi-role
+  spec:
+    restartPolicy: Never
+    securityContext: "{{ _e2e_pod_security_context }}"
+    containers:
+      - name: probe
+        image: "{{ ontap_validate_image }}"
+        command: [/bin/sh, -c, "{{ _e2e_script_writer }}"]
+        securityContext: "{{ _e2e_container_security_context }}"
+        volumeMounts:
+          - name: probe
+            mountPath: /mnt/probe
+    volumes:
+      - name: probe
+        persistentVolumeClaim:
+          claimName: ontap-probe-rwo
+
+_e2e_pod_reader:
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: ontap-probe-reader
+    namespace: "{{ _e2e_ns }}"
+    labels:
+      app: ontap-probe
+      app.kubernetes.io/managed-by: netapp_trident_csi-role
+  spec:
+    restartPolicy: Never
+    securityContext: "{{ _e2e_pod_security_context }}"
+    containers:
+      - name: probe
+        image: "{{ ontap_validate_image }}"
+        command: [/bin/sh, -c, "{{ _e2e_script_reader }}"]
+        securityContext: "{{ _e2e_container_security_context }}"
+        volumeMounts:
+          - name: probe
+            mountPath: /mnt/probe
+    volumes:
+      - name: probe
+        persistentVolumeClaim:
+          claimName: ontap-probe-rwo
+
+# maxSkew 1 + DoNotSchedule over kubernetes.io/hostname forces the two pods onto
+# different nodes; if the scheduler cannot honour it the pods stay Pending and
+# phase 4 fails loudly instead of passing on a single node.
+_e2e_pod_rwx_a:
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: ontap-probe-rwx-a
+    namespace: "{{ _e2e_ns }}"
+    labels:
+      app: ontap-probe-rwx
+      app.kubernetes.io/managed-by: netapp_trident_csi-role
+  spec:
+    restartPolicy: Never
+    securityContext: "{{ _e2e_pod_security_context }}"
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: ontap-probe-rwx
+    containers:
+      - name: probe
+        image: "{{ ontap_validate_image }}"
+        command: [/bin/sh, -c, "{{ _e2e_script_rwx_a }}"]
+        securityContext: "{{ _e2e_container_security_context }}"
+        volumeMounts:
+          - name: probe
+            mountPath: /mnt/probe
+    volumes:
+      - name: probe
+        persistentVolumeClaim:
+          claimName: ontap-probe-rwx
+
+_e2e_pod_rwx_b:
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: ontap-probe-rwx-b
+    namespace: "{{ _e2e_ns }}"
+    labels:
+      app: ontap-probe-rwx
+      app.kubernetes.io/managed-by: netapp_trident_csi-role
+  spec:
+    restartPolicy: Never
+    securityContext: "{{ _e2e_pod_security_context }}"
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: ontap-probe-rwx
+    containers:
+      - name: probe
+        image: "{{ ontap_validate_image }}"
+        command: [/bin/sh, -c, "{{ _e2e_script_rwx_b }}"]
+        securityContext: "{{ _e2e_container_security_context }}"
+        volumeMounts:
+          - name: probe
+            mountPath: /mnt/probe
+    volumes:
+      - name: probe
+        persistentVolumeClaim:
+          claimName: ontap-probe-rwx

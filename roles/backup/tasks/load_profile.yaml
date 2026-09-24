@@ -1,0 +1,84 @@
+---
+# =============================================================================
+# backup — Load one profile
+# =============================================================================
+# Turns a profile file into the `backup_profile` fact the rest of the engine
+# consumes, and reports whether it is enabled through `backup_profile_active`.
+#
+# Caller passes:
+#   backup_profile_file  absolute path to the solution's backup_profile.yaml
+#
+# The caller is the solution that owns the profile, so there is nothing to
+# discover here — one path in, one profile out.
+
+- name: "backup | Require a profile path"
+  ansible.builtin.assert:
+    that:
+      - backup_profile_file | default('') | length > 0
+    fail_msg: >-
+      backup_profile_file was not set. Pass the path of the solution's
+      backup_profile.yaml; see configs/backup.yaml for the contract.
+
+- name: "backup | Read the profile file"
+  ansible.builtin.stat:
+    path: "{{ backup_profile_file }}"
+  register: _bk_profile_stat
+
+- name: "backup | Fail when the profile is missing"
+  ansible.builtin.fail:
+    msg: "No backup profile at {{ backup_profile_file }}."
+  when: not (_bk_profile_stat.stat.exists | default(false))
+
+# role_path, not the caller's playbook_dir: the defaults live in this repository
+# beside this role, and the caller may be checked out anywhere.
+- name: "backup | Load the profile defaults"
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../../configs/backup.yaml"
+
+# Offered to the profile template so a path inside the profile can be written
+# relative to the profile itself. Without it the only way to name a sibling file
+# is through the caller's playbook_dir, which makes the profile depend on where
+# the playbook that reads it happens to live.
+- name: "backup | Publish the profile's own directory"
+  ansible.builtin.set_fact:
+    backup_profile_dir: "{{ backup_profile_file | dirname }}"
+
+# lookup('template') NOT lookup('file') — a profile gates itself on config
+# (`enabled: "{{ backup_enabled }}"`), and the unrendered string is always truthy.
+- name: "backup | Merge the profile over the defaults"
+  ansible.builtin.set_fact:
+    backup_profile: >-
+      {{ backup_profile_defaults
+         | combine({'name': (backup_profile_file | dirname | dirname | basename)})
+         | combine(lookup('template', backup_profile_file) | from_yaml) }}
+
+# convert_bool is not optional. Rendering turns `enabled: "{{ backup_enabled |
+# default(false) }}"` into the *string* "False", and every non-empty string is
+# truthy by default — so a profile that ships disabled would be applied anyway
+# and backup would never be the no-op it is documented to be. The component
+# resolver coerces the same values for the same reason (see
+# filter_plugins/resolve_components.py).
+- name: "backup | Decide whether the profile applies"
+  ansible.builtin.set_fact:
+    backup_profile_active: "{{ [backup_profile] | selectattr('enabled', 'truthy', convert_bool=true) | length > 0 }}"
+
+# Only when the caller ran through the installer, which is where _env_layers
+# comes from. Invoked directly the operator has already named the solution, so
+# an unknown layer set is not a reason to refuse.
+- name: "backup | Fail when this environment was not provisioned for the profile's layer"
+  ansible.builtin.fail:
+    msg: >-
+      Profile '{{ backup_profile.name }}' belongs to layer '{{ backup_profile.layer }}',
+      which this environment was not provisioned for ({{ _env_layers }}).
+  when:
+    - _env_layers is defined
+    - _env_layers | length > 0
+    - backup_profile.layer | default('') not in (_env_layers | split(','))
+
+- name: "backup | Report a profile that is present but not enabled"
+  ansible.builtin.debug:
+    msg: >-
+      Backup profile '{{ backup_profile.name }}' is not enabled, so there is
+      nothing to do. Enable it in the solution's configuration; see
+      configs/backup.yaml for the contract.
+  when: not (backup_profile_active | bool)

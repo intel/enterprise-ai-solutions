@@ -32,6 +32,10 @@
       kubernetes.core.helm_repository:
         name: "{{ istio_csr_helm_repo_name }}"
         repo_url: "{{ istio_csr_helm_repo_url }}"
+      register: helm_repo_add_result
+      until: helm_repo_add_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "istio | csr | Create selfsigned-root ClusterIssuer"
       kubernetes.core.k8s:
@@ -126,6 +130,10 @@
               revisions:
                 - default
           affinity: "{{ _platform_affinity | default({}) }}"
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     # The chart's ClusterRole omits namespace-scoped permissions in istio-system.
     # v0.15+ creates "dynamic" Roles per Istio revision — the SA must be able to

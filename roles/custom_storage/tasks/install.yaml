@@ -1,0 +1,104 @@
+---
+# =============================================================================
+# custom_storage | install
+# =============================================================================
+# Nothing is installed — the CSI driver is the user's. This step only proves the
+# class every component will provision against exists and is the cluster default,
+# so a typo fails here instead of leaving half the platform with Pending PVCs.
+# =============================================================================
+
+- name: "custom_storage | List StorageClasses"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: _custom_storage_scs
+  changed_when: false
+  check_mode: false
+
+- name: "custom_storage | Extract StorageClass facts"
+  vars:
+    # json_query, not selectattr: the annotation key contains dots and slashes
+    # and Jinja's selectattr splits its attribute argument on '.'.
+    _default_sc_query: >-
+      [?metadata.annotations."storageclass.kubernetes.io/is-default-class" == 'true'].metadata.name
+  ansible.builtin.set_fact:
+    # Trimmed for the same reason the backend selector is: a quoted value with
+    # stray whitespace would otherwise fail as "does not exist".
+    _custom_storage_class: "{{ storage_custom_storageclass | default('', true) | string | trim }}"
+    _custom_storage_sc_names: "{{ _custom_storage_scs.resources | default([]) | map(attribute='metadata.name') | list }}"
+    _custom_storage_defaults: "{{ _custom_storage_scs.resources | default([]) | json_query(_default_sc_query) | default([], true) }}"
+
+- name: "custom_storage | StorageClass '{{ _custom_storage_class }}' exists"
+  ansible.builtin.assert:
+    that: _custom_storage_class in _custom_storage_sc_names
+    success_msg: "StorageClass '{{ _custom_storage_class }}' found"
+    fail_msg: >-
+      storage_custom_storageclass='{{ _custom_storage_class }}' does not
+      exist. Available: {{ _custom_storage_sc_names | join(', ') | default('none', true) }}.
+      Fix the name in global_config.yaml, or switch storage_backend to nfs or ceph
+      to let the installer provide a class.
+
+# Everything downstream — core roles and the bundled charts alike — provisions
+# without naming a class, so the default annotation is the whole inheritance
+# mechanism. The installer will not set it: annotating a class it does not own
+# would silently redirect PVCs of workloads outside this platform.
+- name: "custom_storage | Cluster default is '{{ _custom_storage_class }}'"
+  ansible.builtin.assert:
+    that:
+      - _custom_storage_defaults | length == 1
+      - _custom_storage_defaults | first == _custom_storage_class
+    success_msg: "Default StorageClass: {{ _custom_storage_class }}"
+    fail_msg: >-
+      Default StorageClass(es): {{ _custom_storage_defaults | join(', ') | default('none', true) }},
+      expected exactly '{{ _custom_storage_class }}'. Every component
+      provisions without naming a class, so with none marked default the PVCs stay
+      Pending forever and with more than one they land somewhere nondeterministic.
+      Run: kubectl annotate storageclass {{ _custom_storage_class }}
+      storageclass.kubernetes.io/is-default-class=true --overwrite
+      {{ '(and remove the annotation from ' ~ (_custom_storage_defaults | reject('equalto', _custom_storage_class) | join(', ')) ~ ')'
+         if (_custom_storage_defaults | reject('equalto', _custom_storage_class) | list | length) > 0 else '' }}
+
+- name: "custom_storage | Count cluster nodes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _custom_storage_nodes
+  changed_when: false
+  check_mode: false
+
+# resolve.yaml runs the same rule, but off the inventory. On a BYO cluster
+# (existing_kubernetes) the inventory is one host no matter how many nodes the
+# cluster has, so the real count is only knowable here.
+- name: "custom_storage | Reject an RWO-only class on a multi-node cluster"
+  ansible.builtin.fail:
+    msg: >-
+      storage_custom_rwx=false, but the cluster has
+      {{ _custom_storage_nodes.resources | length }} nodes. The model store is one
+      volume mounted by the weight-download job and every predictor pod, so
+      ReadWriteMany is required. Point storage_custom_storageclass at a
+      shared-filesystem class and set storage_custom_rwx: true.
+  when:
+    - not (storage_custom_rwx | default(true) | bool)
+    - (_custom_storage_nodes.resources | default([]) | length) > 1
+
+# Not an assert: storage_custom_rwx is the user's claim about a driver capability
+# the API cannot report, and proving it would take a volume mounted from two
+# nodes. This only restates the claim the install is about to rely on.
+- name: "custom_storage | Note the ReadWriteMany assumption on multi-node"
+  ansible.builtin.debug:
+    msg: >-
+      NOTE: {{ _custom_storage_nodes.resources | length }} nodes and
+      storage_custom_rwx=true, so '{{ _custom_storage_class }}' is assumed
+      ReadWriteMany-capable. If it is really RWO-only, the model-store PVC will
+      stay Pending — and accessModes is immutable, so recovering means deleting it.
+  when:
+    - storage_custom_rwx | default(true) | bool
+    - (_custom_storage_nodes.resources | default([]) | length) > 1
+
+- name: "custom_storage | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "Custom storage accepted — no provisioner installed."
+      - "  StorageClass: {{ _custom_storage_class }} (cluster default)"
+      - "  RWX:          {{ storage_custom_rwx | default(true) | bool }}"
+      - "  Nodes:        {{ _custom_storage_nodes.resources | default([]) | length }}"

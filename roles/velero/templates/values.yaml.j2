@@ -1,0 +1,202 @@
+{#
+Copyright (C) 2024-2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+#}
+{% set use_external_bsl = velero_external_bsl_enabled %}
+{% set use_tls = use_external_bsl and velero_external_bsl_tls_enabled %}
+{% set bsl_host = (velero_external_bsl_s3_url | urlsplit('hostname')) if use_external_bsl and velero_external_bsl_s3_url != '' else '' %}
+{% set bsl_host_ip = velero_external_bsl_tls_host_ip if use_external_bsl else '' %}
+{% set needs_host_alias = use_external_bsl and bsl_host_ip != '' and bsl_host != bsl_host_ip %}
+{% set node_agent_enabled = velero_deploy_node_agent | bool %}
+{% set move_data = velero_snapshot_move_data | bool %}
+{% set bsl_credentials_secret = _velero_credentials_secret | default('velero-seaweedfs-access-secrets') %}
+{% set _http_proxy = http_proxy | default('') %}
+{% set _https_proxy = https_proxy | default(_http_proxy) %}
+{#
+  pod_no_proxy: combined NO_PROXY for the Velero pod.
+  Always excludes the in-cluster store, loopback, and RFC 1918 CIDRs.
+  When a corporate proxy is configured, also propagates no_proxy from global_config.
+#}
+{% set _np = ['seaweedfs-s3.' ~ velero_namespace ~ '.svc', 'localhost', '127.0.0.1', '::1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'] %}
+{% if bsl_host != '' %}{% set _np = _np + [bsl_host] %}{% endif %}
+{% if bsl_host_ip != '' and bsl_host_ip != bsl_host %}{% set _np = _np + [bsl_host_ip] %}{% endif %}
+{% if _http_proxy != '' and no_proxy is defined and no_proxy != '' %}
+  {% for entry in no_proxy.split(',') %}{% if entry | trim != '' %}{% set _np = _np + [entry | trim] %}{% endif %}{% endfor %}
+{% endif %}
+{% set pod_no_proxy = _np | unique | join(',') %}
+
+{% if not use_external_bsl %}
+veleroAccessKey: "{{ _velero_seaweedfs_access_key }}"
+veleroSecretKey: "{{ _velero_seaweedfs_secret_key }}"
+
+seaweedfs:
+  enabled: true
+  master:
+    enabled: true
+    replicas: 1
+    data:
+      type: "persistentVolumeClaim"
+      size: "{{ velero_seaweedfs_master_size }}"
+{% if _velero_storage_class | default('') != '' %}
+      storageClass: "{{ _velero_storage_class }}"
+{% endif %}
+    volumeSizeLimitMB: {{ velero_seaweedfs_master_volume_size_limit_mb }}
+    # The chart mounts logs from a hostPath, which Pod Security 'baseline'
+    # forbids: the StatefulSet then never creates its pod and the store never
+    # comes up. Logs belong in the pod's own scratch space anyway.
+    logs:
+      type: "emptyDir"
+  volume:
+    enabled: true
+    replicas: 1
+    dataDirs:
+      - name: data1
+        type: "persistentVolumeClaim"
+        size: "{{ velero_seaweedfs_volume_size }}"
+{% if _velero_storage_class | default('') != '' %}
+        storageClass: "{{ _velero_storage_class }}"
+{% endif %}
+        maxVolumes: 0
+  filer:
+    enabled: true
+    replicas: 1
+    data:
+      type: "persistentVolumeClaim"
+      size: "{{ velero_seaweedfs_filer_size }}"
+{% if _velero_storage_class | default('') != '' %}
+      storageClass: "{{ _velero_storage_class }}"
+{% endif %}
+    logs:
+      type: "emptyDir"
+    s3:
+      enabled: true
+      enableAuth: false
+      createBuckets:
+        - name: {{ velero_bucket_name }}
+          anonymousRead: false
+  s3:
+    enabled: true
+    port: 8333
+    enableAuth: false
+    createSecret: false
+    # Same hostPath problem as master and filer above, one component further on.
+    # The S3 gateway is a Deployment rather than a StatefulSet, so it fails
+    # differently: the ReplicaSet is created and reports FailedCreate on every
+    # attempt, the Deployment never becomes available, and a Helm install that
+    # waits gives up on it. Missed the first time because the filer serves S3 as
+    # well, so the backup store worked while this stayed broken.
+    logs:
+      type: "emptyDir"
+    existingConfigSecret: "seaweedfs-s3-secret"
+    credentials:
+      enabled: true
+    ingress:
+      enabled: false
+  admin:
+    enabled: false
+{% else %}
+
+seaweedfs:
+  enabled: false
+{% endif %}
+
+velero:
+  resources: {}
+  deployNodeAgent: {{ node_agent_enabled | lower }}
+
+{% if needs_host_alias %}
+  hostAliases:
+    - ip: "{{ bsl_host_ip }}"
+      hostnames:
+        - "{{ bsl_host }}"
+{% else %}
+  hostAliases: []
+{% endif %}
+{% if use_tls %}
+  extraVolumes:
+    - name: bsl-ca-cert
+      configMap:
+        name: velero-bsl-ca-cert
+  extraVolumeMounts:
+    - name: bsl-ca-cert
+      mountPath: /certs
+      readOnly: true
+{% endif %}
+
+  initContainers:
+    - name: velero-plugin-for-aws
+      image: velero/velero-plugin-for-aws:v1.14.2
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - mountPath: /target
+          name: plugins
+  credentials:
+    useSecret: true
+    existingSecret: {{ bsl_credentials_secret }}
+  # The role applies the CRDs itself (see tasks/install.yaml), so the chart's own
+  # job — which needs a shell binary compatible with the Velero image — is off.
+  upgradeCRDs: false
+  cleanUpCRDs: false
+  configuration:
+    # EnableCSI turns on the CSI plugin; the snapshot class is selected by the
+    # velero.io/csi-volumesnapshot-class label, which this role applies (see
+    # tasks/snapshot_class.yaml).
+    features: EnableCSI
+    # snapshotsEnabled controls VolumeSnapshotLocation, which is only used by the
+    # native cloud-provider snapshotters. CSI snapshots do not need one.
+    snapshotsEnabled: false
+{% if move_data %}
+    uploaderType: "kopia"
+    defaultSnapshotMoveData: true
+{% endif %}
+    defaultItemOperationTimeout: 120m
+    extraArgs:
+      - "--resource-timeout=120m"
+    backupStorageLocation:
+      - name: default
+        provider: aws
+{% if use_external_bsl %}
+        bucket: {{ velero_external_bsl_bucket }}
+{% if use_tls and _velero_ca_cert_b64 | default('') != '' %}
+        caCert: "{{ _velero_ca_cert_b64 }}"
+{% endif %}
+{% else %}
+        bucket: {{ velero_bucket_name }}
+{% endif %}
+        default: true
+        config:
+{% if use_external_bsl %}
+          region: {{ velero_external_bsl_region }}
+          s3ForcePathStyle: "{{ velero_external_bsl_s3_force_path_style }}"
+{% if velero_external_bsl_s3_url != '' %}
+          s3Url: {{ velero_external_bsl_s3_url }}
+{% endif %}
+{% for key, value in (velero_external_bsl_config | default({})).items() %}
+          {{ key }}: "{{ value }}"
+{% endfor %}
+{% else %}
+          # The in-cluster store ignores the region, but the object-store plugin
+          # will not: from v1.14 its SDK resolves the endpoint through rules that
+          # require one, and an empty value fails validation with "A region must
+          # be set when sending requests to S3" — leaving the store Unavailable
+          # while every pod looks healthy.
+          region: {{ velero_seaweedfs_region }}
+          s3ForcePathStyle: "true"
+          s3Url: http://seaweedfs-s3.{{ velero_namespace }}.svc:8333
+{% endif %}
+    volumeSnapshotLocation: []
+    extraEnvVars:
+      - name: "NO_PROXY"
+        value: "{{ pod_no_proxy }}"
+      - name: "no_proxy"
+        value: "{{ pod_no_proxy }}"
+{% if use_tls %}
+      - name: "SSL_CERT_FILE"
+        value: "/certs/ca.crt"
+{% endif %}
+{% if _http_proxy != '' %}
+      - name: "HTTP_PROXY"
+        value: "{{ _http_proxy }}"
+      - name: "HTTPS_PROXY"
+        value: "{{ _https_proxy }}"
+{% endif %}

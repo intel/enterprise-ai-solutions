@@ -1,0 +1,26 @@
+{#
+Copyright (C) 2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+
+Differences from the upstream NetApp sample, all deliberate:
+  - no `fsType`: that is a Trident block/SAN parameter, invalid and ignored for
+    the NAS drivers this role targets.
+  - reclaimPolicy is a knob defaulting to Retain, matching roles/nfs_storage:
+    a PVC delete must not destroy an ONTAP FlexVol behind the operator's back.
+  - volumeBindingMode defaults to Immediate: the model store and the
+    model-download jobs provision volumes before any consumer pod exists, and a
+    NAS volume has no node affinity worth waiting for.
+  - the default-class annotation is knob-gated (trident_storageclass_default).
+#}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ trident_storage_class | to_json }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: {{ (trident_storageclass_default | bool) | string | lower | to_json }}
+provisioner: csi.trident.netapp.io
+parameters:
+  backendType: {{ ontap_driver | to_json }}
+allowVolumeExpansion: {{ (trident_allow_volume_expansion | bool) | to_json }}
+volumeBindingMode: {{ trident_volume_binding_mode | to_json }}
+reclaimPolicy: {{ trident_reclaim_policy | to_json }}

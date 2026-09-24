@@ -1,4 +1,4 @@
-# Prerequisites for Intel® AI for Enterprise Solutions
+# Prerequisites
 
 [← Docs Index](../README.md)
 

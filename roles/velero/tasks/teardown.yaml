@@ -1,0 +1,193 @@
+---
+# =============================================================================
+# velero — Teardown
+# =============================================================================
+# Backup data is NOT destroyed unless velero_teardown_delete_backup_data is set.
+# Tearing down the platform layer must never silently delete the backups taken
+# from it. Removing the component only removes the mechanism; the objects and,
+# with the in-cluster store, its volumes are left for an explicit decision.
+# =============================================================================
+
+- name: "velero | Check if Helm release exists"
+  kubernetes.core.helm_info:
+    name: "{{ velero_helm_release_name }}"
+    release_namespace: "{{ velero_namespace }}"
+  register: _velero_release
+  failed_when: false
+
+- name: "velero | Not installed — skipping teardown"
+  ansible.builtin.debug:
+    msg: "Velero Helm release not found in {{ velero_namespace }} — skipping teardown."
+  when: _velero_release.status is not defined or _velero_release.status is none
+
+- name: "velero | Teardown"
+  when: _velero_release.status is defined and _velero_release.status is not none
+  block:
+    - name: "velero | Inventory Backup and Restore objects"
+      kubernetes.core.k8s_info:
+        api_version: velero.io/v1
+        kind: "{{ item }}"
+        namespace: "{{ velero_namespace }}"
+      register: _velero_objects
+      loop:
+        - Backup
+        - Restore
+
+    - name: "velero | Report what is being preserved"
+      ansible.builtin.debug:
+        msg: >-
+          Preserving {{ _velero_objects.results[0].resources | default([]) | length }} backup(s)
+          and {{ _velero_objects.results[1].resources | default([]) | length }} restore(s).
+          The Velero namespace and its storage are left in place.
+          To remove them as well, re-run with -e velero_teardown_delete_backup_data=true.
+      when: not (velero_teardown_delete_backup_data | bool)
+
+    # =========================================================================
+    # Default path — remove the mechanism, keep the data
+    # =========================================================================
+
+    - name: "velero | Uninstall Helm release (data preserved)"
+      kubernetes.core.helm:
+        name: "{{ velero_helm_release_name }}"
+        release_namespace: "{{ velero_namespace }}"
+        state: absent
+        wait: true
+      failed_when: false
+      when: not (velero_teardown_delete_backup_data | bool)
+
+    # =========================================================================
+    # Opt-in path — destroy backup data too
+    # =========================================================================
+
+    - name: "velero | Destroy backup data (explicitly requested)"
+      when: velero_teardown_delete_backup_data | bool
+      block:
+        - name: "velero | Warn — backup data will be destroyed"
+          ansible.builtin.debug:
+            msg: >-
+              velero_teardown_delete_backup_data=true —
+              deleting {{ _velero_objects.results[0].resources | default([]) | length }} backup(s),
+              {{ _velero_objects.results[1].resources | default([]) | length }} restore(s)
+              and the namespace. With an external store this removes only the
+              Kubernetes objects; the remote data is left untouched.
+
+        # DeleteBackupRequest is the API equivalent of `velero backup delete`:
+        # the server removes the object and, for a store it owns, the data.
+        # Using the API keeps teardown independent of the velero CLI.
+        - name: "velero | Request backup deletion"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: velero.io/v1
+              kind: DeleteBackupRequest
+              metadata:
+                name: "teardown-{{ item.metadata.name }}"
+                namespace: "{{ velero_namespace }}"
+                labels:
+                  velero.io/backup-name: "{{ item.metadata.name }}"
+              spec:
+                backupName: "{{ item.metadata.name }}"
+          loop: "{{ _velero_objects.results[0].resources | default([]) }}"
+          loop_control:
+            label: "{{ item.metadata.name }}"
+          failed_when: false
+
+        - name: "velero | Wait for backups to be removed"
+          kubernetes.core.k8s_info:
+            api_version: velero.io/v1
+            kind: Backup
+            namespace: "{{ velero_namespace }}"
+          register: _velero_backups_left
+          until: _velero_backups_left.resources | length == 0
+          retries: "{{ velero_wait_retries }}"
+          delay: "{{ velero_wait_delay }}"
+          failed_when: false
+
+        - name: "velero | Delete Restore objects"
+          kubernetes.core.k8s:
+            api_version: velero.io/v1
+            kind: Restore
+            name: "{{ item.metadata.name }}"
+            namespace: "{{ velero_namespace }}"
+            state: absent
+          loop: "{{ _velero_objects.results[1].resources | default([]) }}"
+          loop_control:
+            label: "{{ item.metadata.name }}"
+          failed_when: false
+
+        - name: "velero | Uninstall Helm release"
+          kubernetes.core.helm:
+            name: "{{ velero_helm_release_name }}"
+            release_namespace: "{{ velero_namespace }}"
+            state: absent
+            wait: true
+          failed_when: false
+
+        - name: "velero | Wait for pods to terminate"
+          kubernetes.core.k8s_info:
+            kind: Pod
+            namespace: "{{ velero_namespace }}"
+            label_selectors:
+              - "app.kubernetes.io/name in (velero,seaweedfs)"
+          register: _velero_pods
+          until: _velero_pods.resources | length == 0
+          retries: "{{ velero_wait_retries }}"
+          delay: "{{ velero_wait_delay }}"
+
+        - name: "velero | Delete namespace"
+          kubernetes.core.k8s:
+            state: absent
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ velero_namespace }}"
+
+    # =========================================================================
+    # The snapshot class — undo exactly what install did
+    # =========================================================================
+    # Runs on both paths: the class is part of the mechanism, not of the backup
+    # data. A class this component created goes; a class it merely labelled stays
+    # and loses the label again, because the storage component created it for
+    # snapshots in general and hand-taken snapshots still need it.
+
+    - name: "velero | Read the VolumeSnapshotClasses"
+      kubernetes.core.k8s_info:
+        api_version: snapshot.storage.k8s.io/v1
+        kind: VolumeSnapshotClass
+      register: _velero_td_vsc
+      failed_when: false
+
+    - name: "velero | Delete the snapshot class this component created"
+      kubernetes.core.k8s:
+        api_version: snapshot.storage.k8s.io/v1
+        kind: VolumeSnapshotClass
+        name: "{{ item.metadata.name }}"
+        state: absent
+      loop: "{{ _velero_td_vsc.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+      when: (item.metadata.labels | default({}))['app.kubernetes.io/component'] | default('') == 'velero'
+
+    # A strategic-merge patch removes a key when it is set to null.
+    - name: "velero | Take back the label this component added"
+      kubernetes.core.k8s:
+        state: patched
+        api_version: snapshot.storage.k8s.io/v1
+        kind: VolumeSnapshotClass
+        name: "{{ item.metadata.name }}"
+        definition:
+          metadata:
+            labels:
+              velero.io/csi-volumesnapshot-class: null
+            # Computed key in one expression — a templated mapping key would be
+            # sent literally.
+            annotations: "{{ {velero_snapshot_class_label_annotation: None} }}"
+      loop: "{{ _velero_td_vsc.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+      when:
+        - (item.metadata.labels | default({}))['app.kubernetes.io/component'] | default('') != 'velero'
+        - (item.metadata.annotations | default({}))[velero_snapshot_class_label_annotation] | default('false') | bool

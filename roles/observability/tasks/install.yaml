@@ -93,6 +93,92 @@
     label: "{{ item.name }}:{{ item.port }}"
   when: istio_enabled | default(false) | bool
 
+# The PERMISSIVE exception above is a mesh-edge bridge: it lets *any* plaintext peer
+# reach the operator on 10250, and mTLS mode alone cannot tell callers apart. Only two
+# clients are legitimate — the host-network apiserver (plaintext, so identifiable only
+# by node IP) and Prometheus scraping /metrics over mTLS. An ALLOW policy turns the
+# workload deny-by-default, closing 10250 to every other pod in the mesh.
+- name: "observability | Read node internal IPs (apiserver webhook source)"
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: _obs_nodes
+  when: istio_enabled | default(false) | bool
+
+- name: "observability | Collect node internal IPs"
+  ansible.builtin.set_fact:
+    _obs_node_ips: >-
+      {{ _obs_nodes.resources | map(attribute='status.addresses') | flatten
+         | selectattr('type', 'eq', 'InternalIP') | map(attribute='address')
+         | unique | list }}
+  when: istio_enabled | default(false) | bool
+
+# The node addresses are a snapshot taken at this moment. A node joining, or being
+# replaced with a different address, leaves the policy naming an address that no
+# longer serves the apiserver, and the webhook calls are then rejected. That failure
+# is silent: the admission webhook is registered failurePolicy: Ignore, so the
+# apiserver admits the object anyway and validation is skipped rather than reported.
+# Re-running this role refreshes the addresses, which is the remedy.
+- name: "observability | Restrict the mesh-edge ports to the apiserver and Prometheus"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: AuthorizationPolicy
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ observability_namespace }}"
+      spec:
+        selector:
+          matchLabels: "{{ item.selector }}"
+        action: ALLOW
+        rules: "{{ item.rules }}"
+  loop:
+    # The operator's webhook and its /metrics both listen on 10250, so one port has two
+    # legitimate callers: the apiserver and Prometheus.
+    - name: authz-webhook-operator
+      selector: {app: kube-prometheus-stack-operator}
+      rules:
+        - from:
+            - source:
+                ipBlocks: "{{ _obs_node_ips }}"      # the apiserver, plaintext from the host network
+          to:
+            - operation:
+                ports: ["10250"]
+        - from:
+            - source:
+                principals:                          # Prometheus scraping /metrics over mTLS
+                  - "cluster.local/ns/{{ observability_namespace }}/sa/kube-prometheus-stack-prometheus"
+          to:
+            - operation:
+                ports: ["10250"]
+    # The adapter serves the aggregated metrics API to the apiserver on 6443 and is reached
+    # by nothing else in the mesh, so the apiserver is its only caller. Without this the
+    # PERMISSIVE exception on 6443 stays open to every peer in the mesh.
+    - name: authz-metrics-adapter
+      selector: {app.kubernetes.io/name: prometheus-adapter}
+      rules:
+        - from:
+            - source:
+                ipBlocks: "{{ _obs_node_ips }}"
+          to:
+            - operation:
+                ports: ["6443"]
+  loop_control:
+    label: "{{ item.name }}"
+  when: istio_enabled | default(false) | bool
+
+# The policy this replaces carried the same name as the PeerAuthentication above.
+# Two objects of different kinds may share a name, but reading `kubectl get -n
+# monitoring allow-webhook-operator` then depends on which kind the caller meant.
+- name: "observability | Remove the previously named authorization policy"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: security.istio.io/v1
+    kind: AuthorizationPolicy
+    name: allow-webhook-operator
+    namespace: "{{ observability_namespace }}"
+  when: istio_enabled | default(false) | bool
+
 - name: "observability | Label namespace — PSS"
   kubernetes.core.k8s:
     state: present
@@ -102,6 +188,8 @@
       metadata:
         name: "{{ observability_namespace }}"
         labels:
+          # The OTel collector DaemonSet hostPath-mounts /var/log/pods for the filelog
+          # receiver, and node-exporter needs hostNetwork/hostPID.
           pod-security.kubernetes.io/enforce: "privileged"
           pod-security.kubernetes.io/audit: "privileged"
           pod-security.kubernetes.io/warn: "privileged"
@@ -139,16 +227,28 @@
   kubernetes.core.helm_repository:
     name: prometheus-community
     repo_url: "{{ observability_prometheus_helm_repo }}"
+  register: helm_repo_add_result
+  until: helm_repo_add_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
 
 - name: "observability | Add grafana-community Helm repo"
   kubernetes.core.helm_repository:
     name: grafana-community
     repo_url: "{{ observability_grafana_helm_repo }}"
+  register: helm_repo_add_result
+  until: helm_repo_add_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
 
 - name: "observability | Add open-telemetry Helm repo"
   kubernetes.core.helm_repository:
     name: open-telemetry
     repo_url: "{{ observability_otel_helm_repo }}"
+  register: helm_repo_add_result
+  until: helm_repo_add_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
 
 # =============================================================================
 # 1. kube-prometheus-stack
@@ -174,7 +274,7 @@
             prometheusSpec:
               retention: "{{ observability_prometheus_retention }}"
               # Discover ServiceMonitors/PodMonitors from ALL namespaces so
-              # inference and application layers are scraped automatically.
+              # inference and solution layers are scraped automatically.
               serviceMonitorSelectorNilUsesHelmValues: false
               podMonitorSelectorNilUsesHelmValues: false
               ruleSelectorNilUsesHelmValues: false
@@ -198,7 +298,13 @@
             env:
               http_proxy: "{{ http_proxy | default('') }}"
               https_proxy: "{{ https_proxy | default('') }}"
-              no_proxy: "{{ no_proxy | default('') }}"
+              # Grafana reaches datasources by short name (loki.monitoring)
+              no_proxy: "{{ no_proxy ~ ',.' ~ observability_namespace if no_proxy | default('') else '' }}"
+            # The chown init container fails against local-path-provisioner PVCs
+            # Grafana's own securityContext already lands the
+            # right ownership on the volume, so the pre-chown is redundant.
+            initChownData:
+              enabled: false
             grafana.ini:
               plugins:
                 plugin_admin_enabled: true
@@ -255,6 +361,10 @@
           # ── kube-state-metrics ──────────────────────────────────────────────
           kube-state-metrics:
             affinity: "{{ _platform_affinity | default({}) }}"
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "observability | Wait for Prometheus Operator"
       kubernetes.core.k8s_info:
@@ -377,6 +487,10 @@
                 installOperator: false
             lokiCanary:
               enabled: false
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "observability | Wait for Loki StatefulSet"
       kubernetes.core.k8s_info:
@@ -395,6 +509,13 @@
   ansible.builtin.debug:
     msg: "Loki already deployed in {{ observability_namespace }} — skipping."
   when: _obs_loki_release.status is defined and _obs_loki_release.status is not none
+
+# ── PrometheusRule: Loki + MinIO PVC usage alerts ─────────────────────────────
+
+- name: "observability | Apply Loki PVC usage PrometheusRule"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'loki-pvc-usage-rule.yaml.j2') | from_yaml }}"
 
 # =============================================================================
 # 3. Tempo (monolithic mode)
@@ -439,6 +560,10 @@
           affinity: "{{ _platform_affinity | default({}) }}"
           serviceMonitor:
             enabled: true
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "observability | Wait for Tempo StatefulSet"
       kubernetes.core.k8s_info:
@@ -478,6 +603,10 @@
         wait: "{{ helm_wait }}"
         timeout: "{{ helm_timeout }}"
         values: "{{ lookup('template', 'otel-collector-values.yaml.j2') | from_yaml }}"
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "observability | Wait for OTel Collector DaemonSet"
       kubernetes.core.k8s_info:
@@ -523,6 +652,10 @@
           affinity: "{{ _platform_affinity | default({}) }}"
           rules:
             default: true
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "observability | Wait for Prometheus Adapter"
       kubernetes.core.k8s_info:
@@ -557,12 +690,26 @@
         namespace: "{{ observability_namespace }}"
       spec:
         parentRefs:
+          # Pin to the HTTPS listener only. Without sectionName an HTTPRoute
+          # attaches to every compatible listener, including the plaintext
+          # HTTP:80 one, which would serve Grafana admin credentials in cleartext.
           - name: "{{ gateway_name }}"
             namespace: "{{ gateway_namespace }}"
+            sectionName: https
         hostnames:
           - "{{ observability_grafana_hostname }}"
         rules:
-          - backendRefs:
+          - filters:
+              # HSTS: only ever reach Grafana over HTTPS on a compliant browser,
+              # so a later plaintext attempt is refused before the admin
+              # credential leaves the browser. Only honored over HTTPS, so it is
+              # set here on the :443 route, not the :80 redirect.
+              - type: ResponseHeaderModifier
+                responseHeaderModifier:
+                  set:
+                    - name: Strict-Transport-Security
+                      value: "max-age=31536000; includeSubDomains"
+            backendRefs:
               - name: kube-prometheus-stack-grafana
                 port: 80
   when: gateway_create | default(false) | bool

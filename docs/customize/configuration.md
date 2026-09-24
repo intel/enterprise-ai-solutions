@@ -1,4 +1,4 @@
-# Intel® AI for Enterprise Solutions Configuration Reference
+# Configuration Reference
 
 [← Docs Index](../README.md)
 
@@ -18,9 +18,9 @@ working defaults.
 ### How it fits together
 
 ```
-./es_auto_installer.sh init local      # 1. creates env/local/global_config.yaml with defaults
+./es_auto_installer.sh init inference  # 1. creates env/local/global_config.yaml with defaults
 vi env/local/global_config.yaml        # 2. (optional) change what you need
-./es_auto_installer.sh install --all   # 3. reads the file and deploys
+./es_auto_installer.sh install inference # 3. reads the file and deploys
 ```
 
 Step 2 is optional. The defaults deploy a complete, working stack on a single
@@ -73,6 +73,7 @@ You need to edit the file when one of these is true:
 | `gateway_tls_mode` | `selfsigned` | Auto-generated CA, or bring your own — see [TLS](#tls) |
 | `kubernetes_accelerator` | `cpu` | Compute target for inference (Intel® Xeon®) |
 | `observability_enabled` | `true` | Deploy Prometheus + Grafana + Loki + Tempo |
+| `velero_enabled` | `false` | Deploy the backup mechanism (Velero + CSI snapshots). Needs `storage_backend: nfs` or `ceph`; each solution documents its own backup and restore procedure |
 
 Everything else is safe to leave alone until you have a reason to change it.
 
@@ -89,7 +90,7 @@ auth_provider: "litellm"
 **Or** override at install time without editing anything:
 
 ```bash
-./es_auto_installer.sh install --all --env local -- -e auth_provider=litellm
+./es_auto_installer.sh install inference --env local -- -e auth_provider=litellm
 ```
 
 Anything after the bare `--` is passed straight to Ansible, so any variable in
@@ -131,6 +132,8 @@ auth_provider: "keycloak"                 # "keycloak" = full OIDC with SSO, RBA
 storage_backend: "local-path"             # "local-path" = node-local (single-node only)
                                            # "nfs"        = shared NFS (required for multi-node)
                                            # "ceph"       = replicated block via Rook-Ceph
+                                           # "custom"     = use your cluster's own StorageClass
+# storage_custom_storageclass: ""          # required when storage_backend=custom
 
 # --- Compute ---
 kubernetes_accelerator: "cpu"             # "cpu" = Intel® Xeon® (default)
@@ -140,6 +143,9 @@ kubernetes_cpu_policy: "nri-balloons"     # "nri-balloons"   = NUMA-aware pinnin
 
 # --- Observability ---
 observability_enabled: true               # Deploy Prometheus, Grafana, Loki, Tempo
+
+# --- Backup ---
+velero_enabled: false                     # Deploy Velero + CSI snapshots (needs nfs or ceph)
 
 # --- Networking ---
 gateway_request_timeout: "600s"           # Envoy timeout for long LLM responses
@@ -177,6 +183,7 @@ minio_storage_size: "10Gi"
 | `kubernetes_accelerator` | Compute target for inference workloads (Intel® Xeon® CPU) |
 | `kubernetes_cpu_policy` | CPU pinning strategy for inference workloads |
 | `observability_enabled` | Whether the full monitoring stack (Prometheus/Grafana/Loki/Tempo) is deployed |
+| `velero_enabled` | Whether the backup mechanism is deployed — needs snapshot-capable storage |
 | `gateway_request_timeout` | Max time the gateway waits for a model response before timing out |
 | `object_store_backend` | Backend for log/trace/blob storage |
 | `existing_kubernetes` | Point to an existing kubeconfig to skip cluster provisioning entirely |
@@ -231,10 +238,29 @@ Switching `auth_provider` changes which components deploy and how the gateway `S
 | `storage_backend` | Description | When to use |
 |---|---|---|
 | `local-path` (default) | Node-local storage (ReadWriteOnce) | Single-node only |
-| `nfs` | NFS server auto-provisioned on the first control-plane node at `/data/nfs` (ReadWriteMany) | **Required for multi-node** — model weights must be accessible from every node |
+| `nfs` | NFS server auto-provisioned on the first control-plane node at `/data/nfs` (ReadWriteMany), served through the `csi-driver-nfs` CSI driver so volumes can be snapshotted. The StorageClass is named `nfs-client` — kept from the provisioner it replaced, since layers above this one hardcode that name | **Required for multi-node** — model weights must be accessible from every node. Also required for `velero_enabled` (backup needs a CSI-capable class) |
 | `ceph` | Replicated block storage via Rook-Ceph (ReadWriteMany + redundancy) | Multi-node with raw block devices, production durability |
+| `custom` | Nothing is installed — an existing StorageClass named by you is used as-is | Your cluster already runs its own CSI driver |
 
 > **Multi-node warning:** the installer aborts if `storage_backend: local-path` is detected on a multi-node cluster. Change it to `nfs` before running.
+
+**Custom (bring your own CSI):**
+
+```yaml
+storage_backend: custom
+storage_custom_storageclass: "my-csi-sc"   # required
+storage_custom_rwx: true                   # false = RWO-only class, single-node only
+```
+
+Every component — core roles and the bundled third-party charts alike — provisions without naming a StorageClass, so the class you name must be the cluster's **only** default; that annotation is what makes the rest of the stack inherit it:
+
+```console
+kubectl annotate storageclass my-csi-sc storageclass.kubernetes.io/is-default-class=true --overwrite
+```
+
+The installer verifies the class exists and is the sole default, then stops there. It never creates, patches, or deletes it — the driver is yours and is likely shared with workloads outside the platform, so `teardown` leaves it alone too.
+
+`storage_custom_rwx` is the one thing the installer cannot work out for itself: ReadWriteMany capability is a property of the CSI driver, not a field on the StorageClass. It decides the access mode of the shared `model-store` PVC, which the weight-download job and every predictor pod mount at once. Leave it `true` for a shared-filesystem class (NFS, CephFS, ontap-nas, EFS, Azure Files); set it `false` only for an RWO-only class such as EBS, `ceph-block`, or a hostPath provisioner — which restricts you to a single node, and the installer aborts if it finds more. Getting it wrong leaves `model-store` `Pending`, and since `accessModes` is immutable, recovering means deleting the PVC by hand.
 
 **Ceph additional settings:**
 
@@ -347,7 +373,7 @@ observability_grafana_admin_password: "your-password"
 or as install-time overrides:
 
 ```bash
-./es_auto_installer.sh install --all -- \
+./es_auto_installer.sh install inference -- \
   -e keycloak_admin_password=your-password \
   -e observability_grafana_admin_password=your-password
 ```
@@ -372,6 +398,19 @@ Component versions are set in `global_config.yaml` and can be overridden at runt
 ```
 
 Or edit `global_config.yaml` and re-run `install <component>`.
+
+---
+
+## Per-Layer Solution Configs
+
+In addition to `global_config.yaml`, each solution layer has its own configuration file seeded by `init <layer>`:
+
+- **`env/<name>/config.inference.yaml`** — seeded by `init inference` from the inference repo's `config.yaml`
+- **`env/<name>/config.erag.yaml`** — seeded by `init erag` from the chosen flavour's `config.yaml` (default: `chatqna`)
+
+These files are **flat** override surfaces loaded via `-e @file`, so nested dicts clobber role defaults rather than merging. The installer loads them in manifest order (dependencies first), then loads `global_config.yaml`, so `global_config.yaml` wins over layer configs. This lets you set solution-specific defaults in your layer config and override them globally when needed.
+
+Example: `config.erag.yaml` sets RAG pipeline parameters like `ui_enabled`, `edp_enabled`, `vector_databases_enabled`. To override globally, set those same variables in `global_config.yaml`.
 
 ---
 

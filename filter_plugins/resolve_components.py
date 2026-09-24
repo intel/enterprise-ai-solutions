@@ -17,7 +17,6 @@ Jinja expressions resolve to "True"/"False" strings; _enabled() coerces those.
 import warnings
 from collections import deque
 
-TARGET_ALL = "all"
 VALID_ACTIONS = ("install", "teardown", "validate")
 
 
@@ -169,13 +168,10 @@ def resolve_components(components, layers, target, action="install",
         )
 
     layer_names = {layer["name"] for layer in layers}
-    disabled_layers = {layer["name"] for layer in layers
-                       if layer.get("enabled") is False}
     by_name = {c["name"]: c for c in components}
 
     # Classify target: each part is either a known layer or a component name.
-    parts = [t.strip() for t in target.split(",")
-             if t.strip() and t != TARGET_ALL]
+    parts = [t.strip() for t in target.split(",") if t.strip()]
     targeted_layers = [p for p in parts if p in layer_names]
     targeted_components = [p for p in parts if p not in layer_names]
 
@@ -188,10 +184,7 @@ def resolve_components(components, layers, target, action="install",
             )
 
     # Determine seed layers
-    if target == TARGET_ALL:
-        seed_layers = [layer["name"] for layer in layers
-                       if layer["name"] not in disabled_layers]
-    elif targeted_layers:
+    if targeted_layers:
         seed_layers = targeted_layers
     else:
         seed_layers = []
@@ -200,11 +193,7 @@ def resolve_components(components, layers, target, action="install",
             if comp.get("layer") not in seed_layers:
                 seed_layers.append(comp["layer"])
 
-    # Resolve full layer set (all already has every enabled layer, skip BFS)
-    if target == TARGET_ALL:
-        resolved_layers = seed_layers
-    else:
-        resolved_layers = _resolve_layers(layers, seed_layers, action, include_deps)
+    resolved_layers = _resolve_layers(layers, seed_layers, action, include_deps)
 
     # Execution order is derived, not inherited: layers in dependency order, then
     # components in dependency order within each layer. Manifest merge order (ext
@@ -235,9 +224,12 @@ def resolve_components(components, layers, target, action="install",
         pool = [c for c in pool if c["name"] in wanted]
 
     # Skip filter
+    # A skip entry may name a component or a whole layer: "skip erag" is the useful
+    # request, and expanding it to erag's component list is the caller's job otherwise.
     skip_names = {s.strip() for s in (skip or "").split(",") if s.strip()}
     if skip_names:
-        pool = [c for c in pool if c["name"] not in skip_names]
+        pool = [c for c in pool
+                if c["name"] not in skip_names and c.get("layer") not in skip_names]
 
     # Enabled filter
     pool = [c for c in pool if _enabled(c)]

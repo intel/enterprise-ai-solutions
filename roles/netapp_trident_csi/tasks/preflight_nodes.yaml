@@ -1,0 +1,223 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - Node preflight (cluster/nodes, no ONTAP contact)
+# =============================================================================
+# Everything here needs SSH to the cluster nodes but nothing needs the array:
+#   1. resolve the node list defensively (a BYO inventory may have no
+#      k8s_cluster/kube_node child)
+#   2. gather OS facts ON THE DELEGATE, not on localhost
+#   3. install the NFS client packages kubelet needs to mount an ontap-nas
+#      volume - stock Kubespray does not install them
+#   4. prove /sbin/mount.nfs is actually present afterwards
+#   5. resolve the LIF hostnames from the node, since Trident resolves them
+#      there and not on the installer host
+#
+# All probes run first, then the asserts, so a single SSH-dead node cannot abort
+# the play under any_errors_fatal before the matrices print. The asserts are
+# ordered most-fundamental-first: reachability, mount helper, LIF resolution.
+# =============================================================================
+
+- name: "netapp_trident_csi | preflight_nodes | Resolve cluster node list"
+  ansible.builtin.set_fact:
+    # Unguarded groups['kube_node'] raises "'dict object' has no attribute
+    # 'kube_node'" on a BYO cluster or a hand-written inventory. Union the three
+    # groups Trident node pods can land on, each defaulted to an empty list.
+    _trident_nodes: >-
+      {{ ((groups['k8s_cluster'] | default([]))
+          + (groups['kube_node'] | default([]))
+          + (groups['kube_control_plane'] | default([]))) | unique | list }}
+    _trident_lif_names: >-
+      {{ [ontap_management_lif | string | trim, ontap_data_lif | string | trim]
+         | reject('match', '^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+         | reject('equalto', '') | unique | list }}
+
+- name: "netapp_trident_csi | preflight_nodes | No inventory nodes to prepare"
+  ansible.builtin.debug:
+    msg: >-
+      No hosts in k8s_cluster / kube_node / kube_control_plane. Skipping node
+      preparation. On a BYO cluster (existing_kubernetes) the NFS client
+      packages must already be present on every node that mounts an ontap-nas
+      volume, or the Trident node pod fails MountVolume.SetUp with "bad option;
+      for several filesystems you might need a /sbin/mount.<type> helper
+      program".
+  when: _trident_nodes | length == 0
+
+- name: "netapp_trident_csi | preflight_nodes | Prepare cluster nodes"
+  when: _trident_nodes | length > 0
+  block:
+
+    # Read-only fact gathering. check_mode: false so the package task below has
+    # a real ansible_os_family to branch on even under --check; delegate_facts
+    # is what makes those facts the *node's* rather than localhost's.
+    - name: "netapp_trident_csi | preflight_nodes | Gather OS facts on cluster nodes"
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "!min"
+          - distribution
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ _trident_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _trident_node_facts
+      # Both flags are needed: on a looped task ignore_unreachable clears the
+      # per-item result but the task-level aggregate still carries
+      # unreachable/failed, which any_errors_fatal acts on. Neither outcome is
+      # swallowed - both are asserted at the end of this block.
+      ignore_errors: true
+      ignore_unreachable: true
+      check_mode: false
+      changed_when: false
+
+    - name: "netapp_trident_csi | preflight_nodes | Collect nodes that did not answer"
+      ansible.builtin.set_fact:
+        _trident_unreachable_nodes: >-
+          {{ (_trident_node_facts.results | default([]))
+             | selectattr('unreachable', 'defined') | selectattr('unreachable')
+             | map(attribute='item') | list }}
+        _trident_failed_fact_nodes: >-
+          {{ (_trident_node_facts.results | default([]))
+             | rejectattr('unreachable', 'defined')
+             | selectattr('failed', 'defined') | selectattr('failed')
+             | map(attribute='item') | list }}
+
+    # The tasks below skip the nodes that did not answer: retrying each one costs
+    # another SSH timeout per task and adds nothing the assert at the end of this
+    # block does not say.
+    - name: "netapp_trident_csi | preflight_nodes | Narrow to the nodes that answered"
+      ansible.builtin.set_fact:
+        _trident_reachable_nodes: >-
+          {{ _trident_nodes | difference(_trident_unreachable_nodes)
+             | difference(_trident_failed_fact_nodes) }}
+
+    - name: "netapp_trident_csi | preflight_nodes | Nodes that did not answer"
+      ansible.builtin.debug:
+        msg: >-
+          {{ (_trident_unreachable_nodes + _trident_failed_fact_nodes) | length }} of
+          {{ _trident_nodes | length }} inventory node(s) did not answer:
+          {{ (_trident_unreachable_nodes | join(', ')) | default('-', true) }}
+          unreachable over SSH,
+          {{ (_trident_failed_fact_nodes | join(', ')) | default('-', true) }}
+          reachable but fact gathering failed. Node preparation and the checks
+          below cover the remaining {{ _trident_reachable_nodes | length }}; the
+          assert at the end of this phase reports the full list.
+      when: (_trident_unreachable_nodes + _trident_failed_fact_nodes) | length > 0
+
+    # ontap-nas volumes are NFS mounts performed by kubelet on the node.
+    # Kubespray installs no NFS client, and neither the TCP probes nor the
+    # TridentBackendConfig Bound check can detect the absence.
+    - name: "netapp_trident_csi | preflight_nodes | Install NFS client packages on cluster nodes"
+      ansible.builtin.package:
+        name: "{{ 'nfs-common' if _os_family == 'Debian' else 'nfs-utils' }}"
+        state: present
+        update_cache: "{{ true if _os_family == 'Debian' else omit }}"
+      vars:
+        _os_family: "{{ hostvars[item]['ansible_os_family'] | default('') }}"
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ _trident_reachable_nodes }}"
+      loop_control:
+        label: "{{ item }} ({{ hostvars[item]['ansible_os_family'] | default('unknown') }})"
+      # A node that drops off between the fact gather and here must be reported
+      # by the assert at the end of this phase, not abort the play.
+      ignore_unreachable: true
+
+    - name: "netapp_trident_csi | preflight_nodes | Check for the NFS mount helper"
+      ansible.builtin.stat:
+        path: /sbin/mount.nfs
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ _trident_reachable_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _trident_mount_nfs
+      # See above: an unreachable node is reported once, at the end.
+      ignore_unreachable: true
+      # Read-only probe: it must still run under --check, and it never changes
+      # anything, so neither skip it nor report it as a change.
+      check_mode: false
+      changed_when: false
+
+    # Trident resolves the LIFs from the node it runs on. A name that resolves
+    # on the installer host but not on a worker produces a backend that Binds
+    # and volumes that never mount.
+    - name: "netapp_trident_csi | preflight_nodes | Resolve LIF names from each node"
+      ansible.builtin.command:
+        argv:
+          - getent
+          - hosts
+          - "{{ item[1] }}"
+      delegate_to: "{{ item[0] }}"
+      loop: "{{ _trident_reachable_nodes | product(_trident_lif_names) | list }}"
+      loop_control:
+        label: "{{ item[0] }} -> {{ item[1] }}"
+      register: _trident_lif_resolve
+      # Read-only lookup. failed_when: false so the aggregated assert below can
+      # report every unresolvable (node, name) pair at once instead of aborting
+      # on the first one; ignore_unreachable for the same reason as above.
+      failed_when: false
+      ignore_unreachable: true
+      changed_when: false
+      check_mode: false
+      when: _trident_lif_names | length > 0
+
+    # Last, so every matrix above has printed first.
+    - name: "netapp_trident_csi | preflight_nodes | Assert every inventory node answered"
+      ansible.builtin.assert:
+        that:
+          - _trident_unreachable_nodes | length == 0
+          - _trident_failed_fact_nodes | length == 0
+        fail_msg: |
+          {{ (_trident_unreachable_nodes + _trident_failed_fact_nodes) | length }} of {{ _trident_nodes | length }} cluster node(s) did not answer:
+          {% for node in _trident_unreachable_nodes %}
+            {{ node }} ({{ hostvars[node]['ansible_host'] | default(node) }}:{{ hostvars[node]['ansible_port'] | default(22) }}) UNREACHABLE over SSH
+          {% endfor %}
+          {% for node in _trident_failed_fact_nodes %}
+            {{ node }} ({{ hostvars[node]['ansible_host'] | default(node) }}) reachable, but fact gathering FAILED
+          {% endfor %}
+          Trident runs a node pod on every one of them, so a node the installer
+          cannot reach is a node whose NFS client packages cannot be installed and
+          whose ONTAP reachability cannot be proven. Fix SSH/the inventory
+          (env/<env>/inventory/hosts.yaml) and re-run. The matrices above cover
+          only the {{ _trident_reachable_nodes | length }} node(s) that answered.
+        success_msg: "All {{ _trident_nodes | length }} cluster node(s) answered over SSH."
+
+    - name: "netapp_trident_csi | preflight_nodes | Assert the NFS mount helper exists on every node"
+      ansible.builtin.assert:
+        that: _missing_helper | length == 0
+        fail_msg: >-
+          /sbin/mount.nfs is missing on: {{ _missing_helper | join(', ') }}.
+          The Trident node pod on those hosts will fail MountVolume.SetUp with
+          "bad option; for several filesystems you might need a
+          /sbin/mount.<type> helper program". Install nfs-common (Debian family)
+          or nfs-utils (RHEL family) there and re-run.
+        success_msg: "NFS mount helper present on all {{ _trident_nodes | length }} node(s)."
+      vars:
+        _missing_helper: >-
+          {{ (_trident_mount_nfs.results | default([]))
+             | selectattr('stat', 'defined')
+             | rejectattr('stat.exists')
+             | map(attribute='item') | list }}
+      when: (_trident_mount_nfs.results | default([])) | length > 0
+
+    - name: "netapp_trident_csi | preflight_nodes | Assert LIF names resolve on every node"
+      ansible.builtin.assert:
+        that: _unresolved | length == 0
+        fail_msg: |
+          ONTAP LIF names do not resolve on some cluster nodes:
+          {% for pair in _unresolved %}
+            {{ pair }}
+          {% endfor %}
+          Trident resolves LIFs from the node, not from the installer host. Use
+          IP addresses in ontap_management_lif / ontap_data_lif, or fix DNS on
+          the nodes listed above.
+        success_msg: "All ONTAP LIF names resolve on every cluster node."
+      vars:
+        _unresolved: >-
+          {{ (_trident_lif_resolve.results | default([]))
+             | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0)
+             | map(attribute='item') | map('join', ' cannot resolve ') | list }}
+      when: (_trident_lif_resolve.results | default([])) | length > 0

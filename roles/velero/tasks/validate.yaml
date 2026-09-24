@@ -1,0 +1,172 @@
+---
+# =============================================================================
+# velero — Validate
+# =============================================================================
+# A green Helm release proves nothing about whether a backup would capture data.
+# This checks the whole chain: release, server, backup store, snapshot class.
+
+- name: "velero | Check Helm release"
+  kubernetes.core.helm_info:
+    name: "{{ velero_helm_release_name }}"
+    release_namespace: "{{ velero_namespace }}"
+  register: _velero_release
+  failed_when: false
+
+- name: "velero | Assert Velero is installed"
+  ansible.builtin.assert:
+    that:
+      - _velero_release.status is defined
+      - _velero_release.status is not none
+    fail_msg: "Velero is not installed in namespace {{ velero_namespace }}"
+    success_msg: "Velero Helm release found"
+
+- name: "velero | Check server deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: velero
+    namespace: "{{ velero_namespace }}"
+  register: _velero_deploy
+
+- name: "velero | Assert server is available"
+  ansible.builtin.assert:
+    that:
+      - _velero_deploy.resources | length > 0
+      - (_velero_deploy.resources[0].status.conditions | default([])
+         | selectattr('type', 'eq', 'Available')
+         | selectattr('status', 'eq', 'True') | list | length > 0)
+    fail_msg: "Velero server deployment is not Available in {{ velero_namespace }}"
+
+- name: "velero | Check backup store"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: BackupStorageLocation
+    namespace: "{{ velero_namespace }}"
+  register: _velero_bsl
+
+- name: "velero | Assert a backup store is Available"
+  ansible.builtin.assert:
+    that:
+      - _velero_bsl.resources | default([]) | length > 0
+      - (_velero_bsl.resources | map(attribute='status.phase') | select('eq', 'Available') | list | length > 0)
+    fail_msg: >-
+      No BackupStorageLocation in {{ velero_namespace }} reports phase Available.
+      Backups will fail. Check the store credentials and, for an external store,
+      network reachability and TLS trust.
+
+- name: "velero | Check snapshot classes"
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+  register: _velero_vsc
+  failed_when: false
+
+- name: "velero | Collect Velero-labelled snapshot classes"
+  ansible.builtin.set_fact:
+    _velero_snapshot_classes: "{{ _velero_snapshot_classes | default([]) + [item.metadata.name] }}"
+  loop: "{{ _velero_vsc.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: (item.metadata.labels | default({}))['velero.io/csi-volumesnapshot-class'] | default('false') | bool
+
+# A labelled class alone is not enough: it has to be labelled for the driver
+# behind this cluster's storage. A class left over from another backend is
+# labelled, satisfies a naive check, and services nothing.
+- name: "velero | Collect labelled classes for this cluster's driver"
+  ansible.builtin.set_fact:
+    _velero_snapshot_classes_matching: "{{ _velero_snapshot_classes_matching | default([]) + [item.metadata.name] }}"
+  loop: "{{ _velero_vsc.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - (item.metadata.labels | default({}))['velero.io/csi-volumesnapshot-class'] | default('false') | bool
+    - item.driver == velero_csi_snapshot_drivers[storage_backend | default('local-path')] | default('')
+
+- name: "velero | Assert a snapshot class is available for this driver"
+  ansible.builtin.assert:
+    that:
+      - _velero_snapshot_classes_matching | default([]) | length > 0
+    success_msg: >-
+      Snapshot class(es) for
+      {{ velero_csi_snapshot_drivers[storage_backend | default('local-path')] | default('unknown driver') }}:
+      {{ _velero_snapshot_classes_matching | default([]) | join(', ') }}
+    fail_msg: >-
+      No VolumeSnapshotClass carries velero.io/csi-volumesnapshot-class=true for
+      the driver behind storage_backend
+      '{{ storage_backend | default('local-path') }}'
+      ({{ velero_csi_snapshot_drivers[storage_backend | default('local-path')] | default('not mapped') }}).
+      {% if _velero_snapshot_classes | default([]) | length > 0 %}
+      Labelled but for another driver:
+      {{ _velero_snapshot_classes | join(', ') }}.
+      {% endif %}
+      Backups would complete with metadata only and no volume data. Re-run
+      `install velero --only`, which adopts or creates the class.
+
+# ── What the server is actually allowed to do ─────────────────────────────────
+#
+# A labelled class Velero cannot act on is the same as no class. The chart grants
+# the server cluster-admin, so this passes today and costs one API call — its
+# value is the day someone narrows that binding: the failure then lands here,
+# naming the verb, instead of in the middle of a restore.
+#
+# The ServiceAccount name is the chart's, so read it off the Deployment rather
+# than restating it.
+- name: "velero | Read the server's ServiceAccount"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ velero_namespace }}"
+    name: "{{ velero_helm_release_name }}"
+  register: _velero_val_deploy
+  failed_when: false
+
+- name: "velero | Permissions on the snapshot API"
+  when: _velero_val_deploy.resources | default([]) | length > 0
+  block:
+
+    - name: "velero | Ask the API what the server may do"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: authorization.k8s.io/v1
+          kind: SubjectAccessReview
+          spec:
+            user: >-
+              system:serviceaccount:{{ velero_namespace }}:{{
+                _velero_val_deploy.resources[0].spec.template.spec.serviceAccountName }}
+            resourceAttributes:
+              group: "snapshot.storage.k8s.io"
+              resource: "{{ item.resource }}"
+              verb: "{{ item.verb }}"
+      loop:
+        - { resource: "volumesnapshots", verb: "create" }
+        - { resource: "volumesnapshotcontents", verb: "get" }
+      loop_control:
+        label: "{{ item.verb }} {{ item.resource }}"
+      register: _velero_val_sar
+      changed_when: false
+      failed_when: false
+
+    - name: "velero | The server may snapshot and read snapshot contents"
+      ansible.builtin.assert:
+        that:
+          - _velero_val_sar.results | map(attribute='result.status.allowed') | select('defined') | list | length == 2
+          - _velero_val_sar.results | map(attribute='result.status.allowed') | select('equalto', false) | list | length == 0
+        success_msg: >-
+          {{ _velero_val_deploy.resources[0].spec.template.spec.serviceAccountName }}
+          may create VolumeSnapshots and read VolumeSnapshotContents
+        fail_msg: >-
+          The API server refuses
+          {{ _velero_val_deploy.resources[0].spec.template.spec.serviceAccountName }}
+          in {{ velero_namespace }} one of the two calls a CSI backup is made of.
+          Backups would complete with metadata only. Reasons given:
+          {{ _velero_val_sar.results | map(attribute='result.status.reason') | select('defined') | join(' | ') }}
+
+- name: "velero | Validation summary"
+  ansible.builtin.debug:
+    msg: >-
+      Velero ready in {{ velero_namespace }} —
+      store(s): {{ _velero_bsl.resources | map(attribute='metadata.name') | join(', ') }};
+      snapshot class(es): {{ _velero_snapshot_classes_matching | default([]) | join(', ') }};
+      node agent: {{ 'deployed' if velero_deploy_node_agent | bool else 'not deployed' }};
+      data movement: {{ 'on' if velero_snapshot_move_data | bool else 'off' }}.

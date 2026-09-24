@@ -258,14 +258,14 @@ spec:
 In Intel® AI for Enterprise Solutions, all workload namespaces are enrolled in **Istio ambient mode**. This provides transparent mutual TLS (mTLS) between pods via the `ztunnel` DaemonSet — no sidecars injected.
 
 - **L4 (ztunnel)**: Automatic mTLS for all east-west pod traffic. Zero config, zero application changes.
-- **Enforcement is STRICT**: a mesh-wide `PeerAuthentication` named `default` in `istio-system` (`mtls.mode: STRICT`) makes ztunnel **reject any plaintext inbound** to a mesh workload. Configurable via `istio_mtls_mode`; applied by the core `istio` role.
+- **Enforcement is STRICT**: a mesh-wide `PeerAuthentication` named `default` in `istio-system` (`mtls.mode: STRICT`) makes ztunnel **reject any plaintext inbound** to a mesh workload. Configurable via `istio_mtls_mode`; applied by the platform `istio` role.
 - **Exceptions are owned by the component that creates the workload**, not centralized in the istio role: each role applies its own `PeerAuthentication` right after its ambient-label task. The istio role owns only the mesh-wide default and the `cert-manager` exception (istio-csr is its own dependency). This way nothing pre-defines a namespace/port for a component that may not be installed.
 - **Mesh-edge exceptions** — namespaces/workloads that receive traffic from *outside* the mesh get a `PeerAuthentication: PERMISSIVE` overriding STRICT for them only:
   - `cert-manager` (namespace-wide, **istio role**) — the trust root (istio-csr CA + cert-manager webhook); STRICT here deadlocks cert bootstrap.
   - `eg-gateway` (selector-scoped, **envoy_gateway role**) — the north-south ingress edge proxy; external clients present no mesh identity. The internal `ai-gateway` proxy in the same namespace stays STRICT (reached in-mesh via passthrough).
 - **Admission-webhook exceptions** — the kube-apiserver is host-network with **no mesh identity**, so STRICT rejects its calls to any in-mesh admission webhook (symptom: `failed calling webhook … EOF` at admission time). Each owning role gives its operator a `PeerAuthentication` with `portLevelMtls` opening **only** the webhook container port (`9443` for CNPG/KServe/LWS/AI-gateway/envoy-gateway controllers; `10250`/`6443` for the Prometheus operator/adapter) as PERMISSIVE — every other port (e.g. metrics scrape) stays STRICT.
 - **Calico handles L3 routing** (pod-to-pod IP, VXLAN or direct), Istio handles **L4 identity and encryption** on top.
-- Namespaces excluded from the mesh: `metallb-system` (raw ARP), `kube-system`.
+- Namespaces excluded from the mesh: `metallb-system` (raw ARP), `csi-driver-nfs` (host network; the CSI driver mounts NFS on the node, not through a pod's network), `kube-system`.
 
 The ambient mesh is transparent to the request flow described below — it adds ~0.1-0.3ms per hop for encryption/decryption but does not change the routing topology.
 

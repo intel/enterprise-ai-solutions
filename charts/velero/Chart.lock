@@ -1,0 +1,9 @@
+dependencies:
+- name: seaweedfs
+  repository: https://seaweedfs.github.io/seaweedfs/helm
+  version: 4.0.407
+- name: velero
+  repository: https://vmware-tanzu.github.io/helm-charts/
+  version: 12.1.0
+digest: sha256:9a482a48ad9abc3f6adee2601a4f5f3f1476758c589b83cee48d983bd6231103
+generated: "2026-08-24T01:54:43.100284157+02:00"

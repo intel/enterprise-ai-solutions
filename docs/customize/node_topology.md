@@ -2,7 +2,12 @@
 
 [← Docs Index](../README.md)
 
-Soft affinity-based workload placement for multi-node Intel® AI for Enterprise Solutions clusters, separating platform components from inference workloads without hard enforcement.
+Soft affinity-based workload placement for multi-node clusters, separating platform components from inference workloads without hard enforcement.
+
+Why you would care: model servers want whole machines. If Keycloak, PostgreSQL, and the observability stack land on the same node as an LLM, they compete for the cores that inference throughput depends on. This feature expresses that preference to the scheduler, and because it is a preference rather than a constraint, pods still get placed when a node is unavailable.
+
+> [!NOTE]
+> This applies to multi-node clusters only. On a single node there is nowhere else to place anything, and the setting has no effect.
 
 ## Overview
 
@@ -84,8 +89,8 @@ nodeAffinity:
 - cert-manager (controller + webhook + cainjector) ([`roles/cert_manager/tasks/install.yaml`](../../roles/cert_manager/tasks/install.yaml))
 - MetalLB controller ([`roles/metallb/tasks/install.yaml`](../../roles/metallb/tasks/install.yaml))
 - Envoy Gateway **controller + data plane** ([`roles/envoy_gateway/tasks/install.yaml`](../../roles/envoy_gateway/tasks/install.yaml))
-- Envoy AI Gateway **controller + data plane** ([`ext/enterprise.ai-inference/roles/envoy_ai_gateway/tasks/install.yaml`](https://github.com/intel/enterprise-inference/blob/main/roles/envoy_ai_gateway/tasks/install.yaml))
-- KServe controller ([`ext/enterprise.ai-inference/roles/kserve/tasks/install.yaml`](https://github.com/intel/enterprise-inference/blob/main/roles/kserve/tasks/install.yaml))
+- Envoy AI Gateway **controller + data plane** ([`ext/enterprise.ai-inference/roles/envoy_ai_gateway/tasks/install.yaml`](../../ext/enterprise.ai-inference/roles/envoy_ai_gateway/tasks/install.yaml))
+- KServe controller ([`ext/enterprise.ai-inference/roles/kserve/tasks/install.yaml`](../../ext/enterprise.ai-inference/roles/kserve/tasks/install.yaml))
 
 > **Envoy data-plane pinning**: The actual Envoy proxy pods (which handle external
 > HTTPS traffic, not just the controller) are pinned via an `EnvoyProxy` CRD
@@ -113,8 +118,8 @@ affinity:
 ```
 
 **Affected templates** (static YAML — processed by model_manager at runtime, not Ansible):
-- LLMInferenceService ([`ext/enterprise.ai-inference/model_manager/templates/llm-inference-service.yaml`](https://github.com/intel/enterprise-inference/blob/main/model_manager/templates/llm-inference-service.yaml))
-- InferenceService ([`ext/enterprise.ai-inference/model_manager/templates/inference-service.yaml`](https://github.com/intel/enterprise-inference/blob/main/model_manager/templates/inference-service.yaml))
+- LLMInferenceService ([`ext/enterprise.ai-inference/model_manager/templates/llm-inference-service.yaml`](../../ext/enterprise.ai-inference/model_manager/templates/llm-inference-service.yaml))
+- InferenceService ([`ext/enterprise.ai-inference/model_manager/templates/inference-service.yaml`](../../ext/enterprise.ai-inference/model_manager/templates/inference-service.yaml))
 
 ## Benefits
 
@@ -215,8 +220,8 @@ If soft affinity causes issues:
 vim env/<name>/global_config.yaml  # set node_topology_enabled: false
 
 # Redeploy affected layers
-./es_auto_installer.sh teardown --all --env <name>
-./es_auto_installer.sh install --all --env <name>
+./es_auto_installer.sh teardown infrastructure --env <name>
+./es_auto_installer.sh install inference --env <name>
 ```
 
 Or remove labels manually:

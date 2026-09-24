@@ -1,0 +1,116 @@
+---
+# =============================================================================
+# Velero Role Defaults
+# =============================================================================
+
+velero_namespace: "velero"
+velero_install_server: true
+velero_install_client: true
+velero_client_version: "automatic"
+velero_storage_class: ""
+
+# Helm configuration
+velero_helm_repo_name: "velero-tanzu"
+velero_helm_repo_url: "https://vmware-tanzu.github.io/helm-charts/"
+velero_helm_seaweedfs_repo_name: "seaweedfs"
+velero_helm_seaweedfs_repo_url: "https://seaweedfs.github.io/seaweedfs/helm"
+velero_helm_chart_name: "velero"
+velero_helm_chart_version: "12.1.0"
+velero_helm_release_name: "velero"
+velero_helm_chart_directory: "{{ playbook_dir }}/../charts/velero"
+velero_helm_default_values_file: "{{ velero_helm_chart_directory }}/values.yaml"
+
+# --- PV data path -------------------------------------------------------------
+# Only "csi" is supported. Velero snapshots persistent volumes through the CSI
+# driver, so the cluster's StorageClass must be backed by a CSI driver with a
+# VolumeSnapshotClass labelled velero.io/csi-volumesnapshot-class=true.
+# Enforced by the preflight assertions in tasks/install.yaml.
+velero_pv_mode: "csi"
+
+# Storage backends known to satisfy the CSI snapshot requirement. Extend this
+# list when another backend gains a snapshot-capable CSI driver.
+velero_csi_capable_backends:
+  - nfs
+  - ceph
+
+# --- The snapshot class Velero uses -------------------------------------------
+# The CSI driver behind each backend. tasks/snapshot_class.yaml labels the
+# VolumeSnapshotClass for the driver matching storage_backend, and creates one
+# when the cluster has none — the label is Velero's, so this component applies
+# it rather than asking the storage component to know about backups.
+#
+# The ceph entry reads another role's default, which is not in scope here, so it
+# repeats that role's literal default. It must stay in step with the provisioner
+# rendered in roles/rook_ceph_storage; overriding the namespace in the env config
+# makes both agree.
+velero_csi_snapshot_drivers:
+  nfs: "nfs.csi.k8s.io"
+  ceph: "{{ rook_ceph_operator_namespace | default('rook-ceph') }}.rbd.csi.ceph.com"
+
+# Used only when no class exists for the driver at all. A class installed with
+# the storage component is adopted and keeps its own name.
+velero_snapshot_class_name: "velero-csi-snapclass"
+velero_snapshot_class_deletion_policy: "Delete"
+
+# Written on a class this component labelled but did not create, so teardown can
+# remove the label it added without touching one that was labelled elsewhere.
+velero_snapshot_class_label_annotation: "meta.velero/label-applied-by-installer"
+
+# --- Data movement ------------------------------------------------------------
+# By default a CSI snapshot stays in the storage backend and only its metadata
+# reaches the backup store. Turning on data movement copies snapshot contents
+# into the backup store, which is what makes a backup survive cluster loss —
+# it only makes sense with an external store, and it needs the node agent.
+velero_deploy_node_agent: false
+velero_snapshot_move_data: false
+
+# --- In-cluster backup store (SeaweedFS) --------------------------------------
+# EVALUATION ONLY: it lives on the same StorageClass as the workloads, so losing
+# cluster storage loses the backups with the data. Size velero_seaweedfs_volume_size
+# for the volume of backup data you intend to keep — the default fits an
+# evaluation node, not a production estate.
+velero_seaweedfs_master_size: "2Gi"
+velero_seaweedfs_master_volume_size_limit_mb: 1024
+velero_seaweedfs_filer_size: "2Gi"
+velero_seaweedfs_volume_size: "50Gi"
+
+# The bucket the in-cluster store serves, and the pod the install talks to when
+# making sure it exists. The chart creates the bucket from a post-install hook,
+# which does not fire on an upgrade — see tasks/install.yaml.
+velero_bucket_name: "velero"
+# Sent to the in-cluster store, which ignores it, because the object-store plugin
+# requires a region to resolve any S3 endpoint at all.
+velero_seaweedfs_region: "us-east-1"
+velero_seaweedfs_filer_pod: "seaweedfs-filer-0"
+
+# --- External backup store ----------------------------------------------------
+# Off-cluster S3-compatible store instead of the in-cluster one. The only
+# configuration suitable for disaster recovery.
+velero_external_bsl_enabled: false
+velero_external_bsl_s3_url: ""
+velero_external_bsl_bucket: "velero"
+velero_external_bsl_credentials_secret: ""
+velero_external_bsl_credentials_file_path: ""
+velero_external_bsl_region: "us-east-1"
+velero_external_bsl_s3_force_path_style: "true"
+velero_external_bsl_config: {}
+
+# TLS for external store endpoint
+velero_external_bsl_tls_enabled: false
+velero_external_bsl_tls_host_ip: ""
+velero_external_bsl_tls_ca_cert_path: ""
+velero_external_bsl_tls_ca_cert: ""
+
+# --- Teardown -----------------------------------------------------------------
+# Removing the component never destroys backup data unless this is set. Tearing
+# down the platform layer must not silently delete the backups taken from it.
+velero_teardown_delete_backup_data: false
+
+# Shell snippet that points the velero CLI at an external store (proxy bypass and,
+# in TLS mode, the CA). Written only when an external store is configured; nothing
+# in backup/restore needs it, it is for interactive use.
+velero_env_file: "{{ env_dir | default('/tmp') }}/logs/velero-env.sh"
+
+# Wait tuning
+velero_wait_retries: 30
+velero_wait_delay: 10

@@ -3,7 +3,7 @@
 #
 # TIP: For multi-node deployments, you can define nodes in nodes.yaml instead
 # of editing this file directly. The installer will auto-generate this file.
-# See: config/defaults/nodes.yaml → nodes_control_plane / nodes_workers
+# See: configs/defaults/nodes.yaml → nodes_control_plane / nodes_workers
 #
 # ─── Option A: Localhost (default, single-node PoC) ─────────────────────
 all:
@@ -43,6 +43,7 @@ all:
 #                 kube_node:
 #             vars:
 #                 ansible_become: true
+#                 ansible_connection: ssh
 #         calico_rr:
 #             hosts: {}
 
@@ -75,5 +76,6 @@ all:
 #             vars:
 #                 ansible_become: true
 #                 ansible_ssh_private_key_file: ~/.ssh/id_rsa
+#                 ansible_connection: ssh
 #         calico_rr:
 #             hosts: {}

@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Storage — Backend Registry
@@ -7,11 +9,24 @@
 # rest of the stack provisions against the default SC and never names a backend.
 #
 # Add a backend: append a row here (name → role) and create roles/<role>/.
-# The resolver, the meta-role and config/components.yaml stay generic.
+# The resolver, the meta-role and configs/components.yaml stay generic.
 # =============================================================================
 
 # Backend selector (override in global_config.yaml). Default local-path (dev).
 storage_backend: "local-path"
+
+# StorageClass to use when storage_backend=custom: a class the cluster's own CSI
+# driver already provides. The installer only checks it — it installs no
+# provisioner and never patches the class.
+storage_custom_storageclass: ""
+
+# Does that class support ReadWriteMany? Consumers that need a shared volume read
+# this; the shared model store is the reason it exists. It cannot be detected —
+# RWX capability is not a StorageClass field, only a property of the driver — so
+# for every other backend the installer knows the answer because it built the
+# class, and for custom it has to be told. Wrong value = a PVC that never binds,
+# and accessModes is immutable, so fixing it means deleting the PVC by hand.
+storage_custom_rwx: true
 
 # Registry. 'role: ~' = no role to run (local-path is provided by Kubespray).
 storage_backends:
@@ -21,7 +36,12 @@ storage_backends:
     role: nfs_storage
   - name: ceph
     role: rook_ceph_storage
+  - name: netapp-trident
+    role: netapp_trident_csi
+  - name: custom
+    role: custom_storage
 
 # Resolver outputs (set by tasks/resolve.yaml — do not set by hand):
-#   _resolved_storage_backend  normalized selector
+#   _resolved_storage_backend  normalized selector, always set; the value every
+#                              consumer (core roles and the ext repos) must read
 #   _resolved_storage_role     role to run, or none (local-path)

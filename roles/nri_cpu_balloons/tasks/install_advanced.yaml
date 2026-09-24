@@ -208,6 +208,10 @@
     HTTP_PROXY: "{{ http_proxy | default('') }}"
     HTTPS_PROXY: "{{ https_proxy | default('') }}"
     NO_PROXY: "{{ no_proxy | default('') }}"
+  register: helm_install_result
+  until: helm_install_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
 
 - name: "nri_cpu_balloons | Wait for DaemonSet readiness"
   kubernetes.core.k8s_info:

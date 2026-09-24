@@ -1,0 +1,73 @@
+---
+# =============================================================================
+# backup | Resolve the solution version that labels a backup
+# =============================================================================
+# Included by backup.yaml and verify.yaml so both agree on the label value — a
+# backup written with one value and looked up with another is a gate that never
+# fires.
+#
+# The engine does not know where a solution keeps its version. The profile says:
+#   version_label: "meta.example/solution-version"
+#   version_file:  "{{ deployment_dir }}/version.yaml"   # optional
+#   version_key:   "solution_version"                    # optional
+#
+# Precedence: a solution_version already in scope wins (the caller loaded it),
+# otherwise version_file is read. Output: _bk_version.
+# =============================================================================
+
+- name: "backup | version | Use the version already in scope"
+  ansible.builtin.set_fact:
+    _bk_version: "{{ solution_version }}"
+  when: solution_version is defined and (solution_version | string | length) > 0
+
+- name: "backup | version | Read it from the profile's version file"
+  when:
+    - _bk_version is not defined
+    - backup_profile.version_file | default('') != ''
+  block:
+    - name: "backup | version | Check the version file exists"
+      ansible.builtin.stat:
+        path: "{{ backup_profile.version_file }}"
+      register: _bk_version_stat
+
+    - name: "backup | version | Load it"
+      ansible.builtin.include_vars:
+        file: "{{ backup_profile.version_file }}"
+        name: _bk_version_vars
+      when: _bk_version_stat.stat.exists
+
+    - name: "backup | version | Extract the key"
+      ansible.builtin.set_fact:
+        _bk_version: "{{ _bk_version_vars[backup_profile.version_key | default('solution_version')] }}"
+      when:
+        - _bk_version_stat.stat.exists
+        - _bk_version_vars[backup_profile.version_key | default('solution_version')] is defined
+
+# Labelling a backup "unknown" is worse than refusing to take it: the pre-upgrade
+# gate would then match every backup ever taken, and report a restore point that
+# does not correspond to the running version.
+- name: "backup | version | Fail if it could not be resolved"
+  ansible.builtin.assert:
+    that:
+      - _bk_version is defined
+      - (_bk_version | string | length) > 0
+    fail_msg: |
+      Profile '{{ backup_profile.name }}' sets
+      version_label: {{ backup_profile.version_label }}
+      but the version itself could not be resolved.
+
+      Give the profile a version_file (and version_key if it is not
+      solution_version):
+        version_file: "{{ '{{' }} deployment_dir {{ '}}' }}/version.yaml"
+      or make solution_version available to the caller.
+
+      Alternatively clear version_label — backups then carry no version and the
+      pre-upgrade gate is disabled, which is honest but unguarded.
+  when: backup_profile.version_label | default('') != ''
+
+- name: "backup | version | Resolved"
+  ansible.builtin.debug:
+    msg: >-
+      Profile '{{ backup_profile.name }}' version:
+      {{ backup_profile.version_label }}={{ _bk_version }}
+  when: backup_profile.version_label | default('') != ''

@@ -1,11 +1,13 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# NFS Storage — Install
+# NFS Storage — Install (CSI Driver NFS)
 # =============================================================================
 # 1. Set up NFS server on the designated node (delegate_to nfs_server group)
-# 2. Install nfs-common on all cluster nodes (delegate_to kube_node)
-# 3. Install nfs-subdir-external-provisioner via Helm (localhost)
-# 4. Set StorageClass as default (localhost)
+# 2. Install nfs-common on all cluster nodes (delegate_to k8s_cluster)
+# 3. Install csi-driver-nfs via Helm (CSI driver with VolumeSnapshot support)
+# 4. Create StorageClass and VolumeSnapshotClass
 # =============================================================================
 
 # ─── Resolve NFS server host ────────────────────────────────────────────
@@ -51,8 +53,8 @@
 
 - name: "nfs_storage | Check for existing Helm release"
   kubernetes.core.helm_info:
-    name: nfs-subdir-external-provisioner
-    release_namespace: "{{ nfs_provisioner_namespace }}"
+    name: csi-driver-nfs
+    release_namespace: "{{ nfs_csi_namespace }}"
   register: _nfs_existing
   failed_when: false
 
@@ -69,25 +71,68 @@
     _nfs_release_present: "{{ (_nfs_existing.status | default({})) | length > 0 }}"
     _nfs_sc_present: "{{ (_nfs_sc_existing.resources | default([])) | length > 0 }}"
 
+# The StorageClass name is the one the nfs-subdir-external-provisioner used, so a
+# cluster installed before this driver already has a class under it, owned by that
+# provisioner. A StorageClass cannot be re-provisioned in place — provisioner and
+# parameters are immutable — so the apply below would fail on a field the operator
+# has no reason to connect to a change of driver.
+- name: "nfs_storage | Refuse a StorageClass owned by another provisioner"
+  ansible.builtin.assert:
+    that:
+      - not _nfs_sc_present | bool
+        or _nfs_sc_existing.resources[0].provisioner == 'nfs.csi.k8s.io'
+    fail_msg: >-
+      StorageClass '{{ nfs_storageclass_name }}' is provisioned by
+      '{{ (_nfs_sc_existing.resources[0].provisioner | default('unknown')) }}', not by
+      nfs.csi.k8s.io. A StorageClass cannot be moved to another provisioner in place.
+      Tear down the previous storage component, or delete the class by hand
+      (kubectl delete storageclass {{ nfs_storageclass_name }}) — deleting it does not
+      touch volumes already bound through it — and install again.
+
 - name: "nfs_storage | Already installed — skip"
   when: _nfs_release_present | bool and _nfs_sc_present | bool
   ansible.builtin.debug:
-    msg: "NFS Storage already present (Helm release + StorageClass). Skipping."
+    msg: "NFS CSI driver already present (Helm release + StorageClass). Skipping."
 
 # ─── Install nfs-common on ALL cluster nodes ─────────────────────────────
 # Always run — a new worker may be missing /sbin/mount.nfs even if the
 # StorageClass already exists.
 
-- name: "nfs_storage | Install NFS client packages on cluster nodes"
-  ansible.builtin.package:
-    name: "{{ 'nfs-common' if ansible_os_family == 'Debian' else 'nfs-utils' }}"
-    state: present
-    update_cache: "{{ true if ansible_os_family == 'Debian' else omit }}"
+# The package name depends on the *node's* OS family, so the facts have to be
+# gathered on the delegate. A bare `ansible_os_family` here reads localhost's
+# facts, which silently picks the wrong package on a mixed-OS cluster and the
+# wrong one for every node when the installer host differs from the nodes.
+#
+# Gather over the same group the install below loops over. A node that is missing
+# from this loop has no ansible_os_family in hostvars, and the install then reads
+# an empty string, decides the node is not Debian and asks for the package under
+# its other name — which fails on Debian and reports as a package-not-found
+# error rather than as the missing fact it is.
+- name: "nfs_storage | Gather OS facts on cluster nodes"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!min"
+      - distribution
   delegate_to: "{{ item }}"
-  become: true
-  loop: "{{ groups['kube_node'] | default([]) }}"
+  delegate_facts: true
+  loop: "{{ groups['k8s_cluster'] | default(groups['kube_node'] | default([])) }}"
   loop_control:
     label: "{{ item }}"
+  changed_when: false
+
+- name: "nfs_storage | Install NFS client packages on cluster nodes"
+  ansible.builtin.package:
+    name: "{{ 'nfs-common' if _os_family == 'Debian' else 'nfs-utils' }}"
+    state: present
+    update_cache: "{{ true if _os_family == 'Debian' else omit }}"
+  vars:
+    _os_family: "{{ hostvars[item]['ansible_os_family'] | default('') }}"
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['k8s_cluster'] | default(groups['kube_node'] | default([])) }}"
+  loop_control:
+    label: "{{ item }} ({{ hostvars[item]['ansible_os_family'] | default('unknown') }})"
 
 # ─── Set up NFS server (delegate_to the nfs_server host) ────────────────
 
@@ -95,9 +140,9 @@
   when: not (_nfs_release_present | bool and _nfs_sc_present | bool)
   block:
 
-    - name: "nfs_storage | ━━━ BEGIN: NFS Storage ━━━"
+    - name: "nfs_storage | ━━━ BEGIN: NFS CSI Storage ━━━"
       ansible.builtin.debug:
-        msg: "Setting up NFS server on {{ _nfs_target | trim }} ({{ nfs_path }}) and installing provisioner..."
+        msg: "Setting up NFS server on {{ _nfs_target | trim }} and installing CSI driver..."
 
     - name: "nfs_storage | Install NFS server packages"
       ansible.builtin.package:
@@ -117,11 +162,58 @@
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
+    - name: "nfs_storage | Resolve NFS export client list"
+      ansible.builtin.set_fact:
+        _nfs_export_clients: >-
+          {%- if nfs_export_clients | default('', true) | trim | length > 0 -%}
+            {{ nfs_export_clients | trim }}
+          {%- else -%}
+            {%- set ns = namespace(clients=[]) -%}
+            {%- for host in ((groups['kube_node'] | default([])) + (groups['kube_control_plane'] | default([]))) | unique -%}
+              {%- set _ = ns.clients.append(hostvars[host]['ansible_host'] | default(host)) -%}
+            {%- endfor -%}
+            {{ ns.clients | unique | join(' ') }}
+          {%- endif -%}
+
+    - name: "nfs_storage | Validate NFS export clients"
+      ansible.builtin.assert:
+        that:
+          - _nfs_export_clients | trim | length > 0
+          - "'*' not in _nfs_export_clients"
+        fail_msg: >-
+          nfs_export_clients resolved to '{{ _nfs_export_clients | trim }}'.
+          A wildcard ('*') exports the share to every reachable host without
+          authentication (CWE-306). Set nfs_export_clients to a CIDR or host
+          list, or ensure the kube_node / kube_control_plane inventory groups
+          are populated.
+
+    - name: "nfs_storage | Build NFS export line"
+      ansible.builtin.set_fact:
+        _nfs_exports_line: >-
+          {{ nfs_path }}
+          {% for c in (_nfs_export_clients | trim).split() %}{{ c }}({{ nfs_export_options }}){% if not loop.last %} {% endif %}{% endfor %}
+
     - name: "nfs_storage | Configure /etc/exports"
       ansible.builtin.lineinfile:
         path: /etc/exports
         regexp: "^{{ nfs_path | regex_escape }}\\s"
-        line: "{{ nfs_path }} *({{ nfs_export_options }})"
+        line: "{{ _nfs_exports_line | trim }}"
+        create: true
+        mode: "0644"
+      delegate_to: "{{ _nfs_target | trim }}"
+      become: true
+
+    # csi-driver-nfs provisions each subdir 0755 root:root and the kubelet then applies
+    # fsGroup, leaving it 2775 root:<fsGroup>. That is only writable to the pod if the
+    # server honours the supplementary GID the client sends; with manage-gids the server
+    # re-derives groups from the uid instead and the fsGroup is lost, so a non-root pod
+    # cannot write its own volume. Set before the service restart below picks it up.
+    - name: "nfs_storage | Honour client-supplied supplementary GIDs"
+      community.general.ini_file:
+        path: /etc/nfs.conf
+        section: mountd
+        option: manage-gids
+        value: "{{ 'y' if nfs_manage_gids | bool else 'n' }}"
         create: true
         mode: "0644"
       delegate_to: "{{ _nfs_target | trim }}"
@@ -207,65 +299,331 @@
       ansible.builtin.debug:
         msg: "{{ _nfs_mount_test.stdout | trim }}"
 
-    # ── Install Helm provisioner (runs on localhost, talks to k8s API) ────
+    # ── Install CSI Driver NFS ───────────────────────────────────────────
 
-    - name: "nfs_storage | Add Helm repo"
+    - name: "nfs_storage | Add CSI Driver NFS Helm repo"
       kubernetes.core.helm_repository:
-        name: "{{ nfs_provisioner_chart_repo_name }}"
-        repo_url: "{{ nfs_provisioner_chart_repo }}"
+        name: "{{ nfs_csi_chart_repo_name }}"
+        repo_url: "{{ nfs_csi_chart_repo }}"
+      register: helm_repo_add_result
+      until: helm_repo_add_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
-    - name: "nfs_storage | Install nfs-subdir-external-provisioner"
-      kubernetes.core.helm:
-        name: nfs-subdir-external-provisioner
-        chart_ref: "{{ nfs_provisioner_chart_repo_name }}/nfs-subdir-external-provisioner"
-        release_namespace: "{{ nfs_provisioner_namespace }}"
-        create_namespace: true
-        chart_version: "{{ nfs_provisioner_chart_version }}"
-        wait: "{{ helm_wait }}"
-        timeout: "{{ nfs_wait_timeout }}"
-        values:
-          nfs:
-            server: "{{ nfs_server | trim }}"
-            path: "{{ nfs_path }}"
-          storageClass:
-            name: "{{ nfs_storageclass_name }}"
-            defaultClass: "{{ nfs_storageclass_default }}"
-            reclaimPolicy: Retain
-            archiveOnDelete: true
-          tolerations:
-            - operator: Exists
+    # The snapshot CRDs are cluster-scoped and may predate this release — an
+    # older cluster build installed them, or another driver did. Helm refuses to
+    # create an object that already exists without its own ownership metadata, so
+    # the release would fail on the conflict. Install them only when nothing else
+    # already has — or when this release is the thing that already has, which is
+    # not the same question: dropping them from a release that owns them hands
+    # perfectly good CRDs to nobody.
+    #
+    # Uninstalling is not the hazard it looks like: the chart carries the three
+    # CRDs as ordinary templates but annotates each helm.sh/resource-policy: keep
+    # (checked in v4.13.4), so `helm uninstall` leaves them, and with them every
+    # VolumeSnapshot in the cluster.
+    - name: "nfs_storage | Check for existing VolumeSnapshot CRDs"
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: volumesnapshots.snapshot.storage.k8s.io
+      register: _nfs_snapshot_crd
+      failed_when: false
 
-    # ── Wait for provisioner ─────────────────────────────────────────────
+    # Both halves of the ownership annotation have to match. The release name is a
+    # literal, so a release of this chart in another namespace carries the same
+    # one, and Helm compares the pair — claiming the CRDs on the name alone makes
+    # the install fail on the half that was not checked. That is exactly the state
+    # a cluster is left in when the driver's namespace changes: the CRDs survive
+    # teardown (helm.sh/resource-policy: keep) still annotated with the old
+    # namespace, and are then adoptable by nobody.
+    - name: "nfs_storage | Note whether this release already owns them"
+      ansible.builtin.set_fact:
+        _nfs_snapshot_crds_ours: >-
+          {{ _nfs_crd_annotations['meta.helm.sh/release-name'] | default('') == 'csi-driver-nfs'
+             and _nfs_crd_annotations['meta.helm.sh/release-namespace'] | default('') == nfs_csi_namespace }}
+      vars:
+        _nfs_crd_annotations: >-
+          {{ (_nfs_snapshot_crd.resources | default([]) | first | default({}))
+             .metadata.annotations | default({}, true) }}
 
-    - name: "nfs_storage | Wait for provisioner deployment"
+    - name: "nfs_storage | Decide who installs the snapshot CRDs"
+      ansible.builtin.set_fact:
+        _nfs_install_snapshot_crds: >-
+          {{ nfs_csi_manage_snapshotter | bool
+             and ((_nfs_snapshot_crd.resources | default([]) | length == 0)
+                  or (_nfs_snapshot_crds_ours | bool)) }}
+
+    - name: "nfs_storage | Note pre-existing snapshot CRDs"
+      ansible.builtin.debug:
+        msg: >-
+          VolumeSnapshot CRDs already exist and are left with their current owner.
+          The chart's snapshot controller is still installed.
+      when:
+        - nfs_csi_manage_snapshotter | bool
+        - not (_nfs_install_snapshot_crds | bool)
+
+    # A Deployment is not shareable either. Clusters built before the chart owned
+    # the snapshot controller have one deployed by kubespray under the same name,
+    # and Helm would fail on it halfway through the release. Say so up front, with
+    # the two ways out.
+    #
+    # Foreign means owned by something else, not merely present. This role's own
+    # earlier run leaves one behind under the csi-driver-nfs release, and this block
+    # is reached whenever the release and the StorageClass are not both there — so
+    # treating any existing controller as a collision makes every second install of
+    # the component refuse, including the one that only has to create a StorageClass.
+    - name: "nfs_storage | Check for a foreign snapshot controller"
       kubernetes.core.k8s_info:
         api_version: apps/v1
         kind: Deployment
-        name: nfs-subdir-external-provisioner
-        namespace: "{{ nfs_provisioner_namespace }}"
-      register: _nfs_deploy
+        name: "{{ nfs_csi_snapshotter_name }}"
+        namespace: "{{ nfs_csi_namespace }}"
+      register: _nfs_snapshotter_existing
+      failed_when: false
+      when: nfs_csi_manage_snapshotter | bool
+
+    - name: "nfs_storage | Refuse to collide with it"
+      ansible.builtin.assert:
+        that:
+          - (_nfs_snapshotter_existing.resources | default([])) | length == 0
+            or (_nfs_snapshotter_annotations['meta.helm.sh/release-name'] | default('') == 'csi-driver-nfs'
+                and _nfs_snapshotter_annotations['meta.helm.sh/release-namespace'] | default('') == nfs_csi_namespace)
+        fail_msg: >-
+          A {{ nfs_csi_snapshotter_name }} Deployment already exists in
+          {{ nfs_csi_namespace }} and is not part of this Helm release, so the
+          install would fail on it. Either remove it together with its RBAC
+          (clusters built with kubespray's csi_snapshot_controller_enabled have
+          one), or set nfs_csi_manage_snapshotter=false to keep using it — in
+          which case make sure the snapshot CRDs are present too.
+      vars:
+        _nfs_snapshotter_annotations: >-
+          {{ (_nfs_snapshotter_existing.resources | default([]) | first | default({}))
+             .metadata.annotations | default({}, true) }}
+      when: nfs_csi_manage_snapshotter | bool
+
+    # The check above only looks in the namespace this release installs into, which
+    # is the driver's own. A cluster built with kubespray's
+    # csi_snapshot_controller_enabled has a controller in kube-system instead, and
+    # that one is now out of the assert's sight. Two snapshot controllers watch the
+    # same VolumeSnapshots and race to service them, so a snapshot can be marked
+    # ready by one while the other is still working on it. Reported rather than
+    # refused: a Deployment in a namespace this component does not own is not its to
+    # remove, and the driver installs correctly beside it either way.
+    - name: "nfs_storage | Look for a snapshot controller elsewhere in the cluster"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        field_selectors:
+          - "metadata.name={{ nfs_csi_snapshotter_name }}"
+      register: _nfs_snapshotter_elsewhere
+      failed_when: false
+      when: nfs_csi_manage_snapshotter | bool
+
+    - name: "nfs_storage | Warn about a second snapshot controller"
+      ansible.builtin.debug:
+        msg: >-
+          A {{ nfs_csi_snapshotter_name }} Deployment also exists in
+          {{ _nfs_snapshotter_other | map(attribute='metadata.namespace') | join(', ') }}.
+          Two snapshot controllers service the same VolumeSnapshots and race each
+          other. Remove the other one together with its RBAC, or set
+          nfs_csi_manage_snapshotter=false to keep using it instead of the
+          chart's.
+      vars:
+        _nfs_snapshotter_other: >-
+          {{ _nfs_snapshotter_elsewhere.resources | default([])
+             | rejectattr('metadata.namespace', 'eq', nfs_csi_namespace) | list }}
+      when:
+        - nfs_csi_manage_snapshotter | bool
+        - _nfs_snapshotter_other | length > 0
+
+    # privileged is the floor, not a relaxation: the node plugin and the controller
+    # both run privileged, on the host network, with hostPath volumes and
+    # bidirectional mount propagation, none of which baseline admits. Stamped after
+    # the collision check so a refused install leaves the namespace alone.
+    - name: "nfs_storage | Label namespace — PSS"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ nfs_csi_namespace }}"
+            labels:
+              pod-security.kubernetes.io/enforce: "privileged"
+              pod-security.kubernetes.io/audit: "privileged"
+              pod-security.kubernetes.io/warn: "privileged"
+      when: enforce_pss | default(false) | bool
+
+    - name: "nfs_storage | Install csi-driver-nfs"
+      kubernetes.core.helm:
+        name: csi-driver-nfs
+        chart_ref: "{{ nfs_csi_chart_repo_name }}/csi-driver-nfs"
+        release_namespace: "{{ nfs_csi_namespace }}"
+        create_namespace: true
+        chart_version: "{{ nfs_csi_chart_version }}"
+        wait: "{{ helm_wait }}"
+        timeout: "{{ nfs_wait_timeout }}"
+        values:
+          controller:
+            useTarCommandInSnapshot: "{{ nfs_csi_use_tar_in_snapshot | bool }}"
+            tolerations:
+              - operator: Exists
+          node:
+            tolerations:
+              - operator: Exists
+          externalSnapshotter:
+            enabled: "{{ nfs_csi_manage_snapshotter | bool }}"
+            name: "{{ nfs_csi_snapshotter_name }}"
+            customResourceDefinitions:
+              enabled: "{{ _nfs_install_snapshot_crds | bool }}"
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+
+    - name: "nfs_storage | Wait for CSI driver pods"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: csi-nfs-node
+        namespace: "{{ nfs_csi_namespace }}"
+      register: _nfs_ds
       until:
-        - _nfs_deploy.resources | length > 0
-        - _nfs_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+        - _nfs_ds.resources | length > 0
+        - (_nfs_ds.resources[0].status.numberReady | default(0)) == (_nfs_ds.resources[0].status.desiredNumberScheduled | default(1))
       retries: 60
       delay: 5
 
-    # ── Verify StorageClass ──────────────────────────────────────────────
+    # ── Create StorageClass ──────────────────────────────────────────────
+    #
+    # Created here rather than by the chart so the reclaim policy and the
+    # snapshot class stay in one place. Each option below was chosen rather than
+    # inherited, so the reasoning is not re-derived:
+    #
+    #   mountOptions: nfsvers=4.1  — what every node negotiates anyway, and
+    #                                asking for it explicitly keeps sessions and
+    #                                locking out of the v4.0 path
+    #   volumeBindingMode:         — an NFS export has no topology to wait for,
+    #     Immediate                  and binding late only defers provisioning
+    #                                failures to scheduling time
+    #   reclaimPolicy: Retain      — the chart default is Delete; a deleted PVC
+    #                                must not silently take the data with it, so
+    #                                the export is cleaned up deliberately
+    #   subDir: ${pv.metadata.name} — the driver's own default, stated explicitly
+    #                                so the layout on the export does not depend
+    #                                on it
+    - name: "nfs_storage | Create StorageClass"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: "{{ nfs_storageclass_name }}"
+            annotations: "{{ {'storageclass.kubernetes.io/is-default-class': 'true'} if nfs_storageclass_default else {} }}"
+          provisioner: nfs.csi.k8s.io
+          parameters:
+            server: "{{ nfs_server | trim }}"
+            share: "{{ nfs_path }}"
+            subDir: "${pv.metadata.name}"
+          reclaimPolicy: Retain
+          volumeBindingMode: Immediate
+          mountOptions:
+            - nfsvers=4.1
 
-    - name: "nfs_storage | Verify StorageClass created"
-      kubernetes.core.k8s_info:
-        api_version: storage.k8s.io/v1
-        kind: StorageClass
-        name: "{{ nfs_storageclass_name }}"
-      register: _nfs_sc
-      until: _nfs_sc.resources | length > 0
-      retries: 10
-      delay: 3
+    # ── Create VolumeSnapshotClass ───────────────────────────────────────
+    #
+    # A VolumeSnapshotClass is what lets a VolumeSnapshot name this driver, so
+    # it belongs with the driver rather than with whatever consumes snapshots.
+    # It carries no labels: tools that select a class by label add their own to
+    # the class they intend to use, and a class that also serves hand-taken
+    # snapshots should not be tied to one of them.
+    - name: "nfs_storage | Create VolumeSnapshotClass"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: snapshot.storage.k8s.io/v1
+          kind: VolumeSnapshotClass
+          metadata:
+            name: "{{ nfs_snapshot_class_name }}"
+          driver: nfs.csi.k8s.io
+          deletionPolicy: Delete
+      when: nfs_install_snapshot_class | bool
 
-    - name: "nfs_storage | ━━━ DONE: NFS Storage ━━━"
+    - name: "nfs_storage | ━━━ DONE: NFS CSI Storage ━━━"
       ansible.builtin.debug:
         msg:
-          - "NFS Storage provisioner installed successfully."
+          - "NFS CSI driver installed successfully."
           - "  NFS Server: {{ nfs_server | trim }}:{{ nfs_path }}"
-          - "  StorageClass: {{ nfs_storageclass_name }} (default={{ nfs_storageclass_default }})"
-          - "  Namespace: {{ nfs_provisioner_namespace }}"
+          - "  StorageClass: {{ nfs_storageclass_name }} (provisioner: nfs.csi.k8s.io, default={{ nfs_storageclass_default }})"
+          - "  VolumeSnapshotClass: {{ nfs_snapshot_class_name }}"
+          - "  CSI snapshot support: enabled"
+
+# ─── Leave exactly one default StorageClass ─────────────────────────────
+#
+# Marking this class default does not unmark any other, and Kubernetes does not
+# refuse the result: measured on 1.34, a claim that names no class is admitted and
+# given the most recently *created* default. So two defaults bind silently, and
+# which class a workload lands on depends on the order the classes happened to be
+# created in — including the order of a reinstall. That is how a cluster which
+# already had NFS storage under another provisioner ends up with volumes for one
+# export split across two classes.
+#
+# Outside the install block on purpose. That block is skipped once the Helm release
+# and the StorageClass both exist, which is exactly the cluster whose defaults are
+# wrong — repairing them only on a first install would never repair anything. All
+# three tasks are idempotent: the first patches one annotation to the value the
+# configuration asks for, and the last patches only classes that claim to be default
+# and are not this one.
+#
+# Two things worth knowing. The annotation key contains dots, so it cannot be
+# reached through a selectattr path: Jinja splits such a path on every dot and
+# looks for an annotation called "storageclass", which matches nothing. And
+# teardown does not put the previous default back — a cluster whose default was
+# another class keeps no default once this component is removed, and the operator
+# marks the one they want.
+# Ours first, so there is never a moment with no default at all — and so a class
+# somebody demoted by hand is marked again. The annotation is otherwise only set
+# where the class is created, inside the skipped block, and an install that found
+# no default would report success and leave the cluster with none: every claim that
+# names no class then stays Pending.
+- name: "nfs_storage | Mark this StorageClass default"
+  kubernetes.core.k8s:
+    state: present
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ nfs_storageclass_name }}"
+    definition:
+      metadata:
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "true"
+  when: nfs_storageclass_default | bool
+
+- name: "nfs_storage | List the other StorageClasses"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: _nfs_all_sc
+  when: nfs_storageclass_default | bool
+
+- name: "nfs_storage | Remove the default annotation from the others"
+  kubernetes.core.k8s:
+    state: present
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "false"
+  loop: >-
+    {{ _nfs_all_sc.resources | default([])
+       | rejectattr('metadata.name', 'eq', nfs_storageclass_name)
+       | list }}
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - nfs_storageclass_default | bool
+    - ((item.metadata.annotations | default({}, true))
+       ['storageclass.kubernetes.io/is-default-class'] | default('')) == 'true'

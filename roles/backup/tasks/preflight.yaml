@@ -1,0 +1,212 @@
+---
+# =============================================================================
+# backup | Preflight — is Velero usable at all?
+# =============================================================================
+# Runs once, before any profile. Everything checked here fails the run with the
+# fix in the message: a backup that starts against a broken Velero produces a
+# green-looking object with nothing in it.
+# =============================================================================
+
+- name: "backup | preflight | Check Velero namespace"
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ velero_namespace }}"
+  register: _bk_ns
+  failed_when: false
+
+- name: "backup | preflight | Fail if Velero is not installed"
+  ansible.builtin.fail:
+    msg: |
+      Velero is not installed — namespace '{{ velero_namespace }}' does not exist.
+
+      Install it (platform layer, opt-in):
+        set velero_enabled: true in env/<env>/global_config.yaml
+        ./es_auto_installer.sh install velero --env <env> --only
+
+      It requires CSI-snapshot-capable storage (storage_backend: nfs or ceph).
+  when: _bk_ns.resources | length == 0
+
+- name: "backup | preflight | Check Velero CRDs"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+  register: _bk_crds
+  failed_when: false
+  loop:
+    - backups.velero.io
+    - restores.velero.io
+    - backupstoragelocations.velero.io
+    - deletebackuprequests.velero.io
+
+- name: "backup | preflight | Collect missing CRDs"
+  ansible.builtin.set_fact:
+    _bk_missing_crds: "{{ _bk_crds.results | selectattr('resources', 'equalto', []) | map(attribute='item') | list }}"
+
+- name: "backup | preflight | Fail on missing CRDs"
+  ansible.builtin.fail:
+    msg: |
+      Velero CRDs are missing: {{ _bk_missing_crds | join(', ') }}
+
+      They are created by the Velero chart, so this means the install is
+      incomplete. Check:  kubectl get crd | grep velero
+      Then re-run:  ./es_auto_installer.sh install velero --env <env> --only
+  when: _bk_missing_crds | length > 0
+
+- name: "backup | preflight | Wait for the Velero server"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ velero_namespace }}"
+    label_selectors: >-
+      {{ backup_velero_pod_labels.keys() | zip(backup_velero_pod_labels.values()) | map('join', '=') | list }}
+    field_selectors:
+      - status.phase=Running
+  register: _bk_velero_pods
+  until: >-
+    _bk_velero_pods.resources | default([]) | length > 0 and
+    (_bk_velero_pods.resources[0].status.containerStatuses | default([])
+     | selectattr('ready', 'equalto', true) | list | length > 0)
+  retries: 30
+  delay: 10
+  failed_when: false
+
+- name: "backup | preflight | Fail if the server is not ready"
+  ansible.builtin.fail:
+    msg: |
+      The Velero server is not ready in namespace '{{ velero_namespace }}'.
+
+      {% if _bk_velero_pods.resources | default([]) | length == 0 %}
+      No Velero pod matched {{ backup_velero_pod_labels }}.
+      {% else %}
+      {% for pod in _bk_velero_pods.resources %}
+      - {{ pod.metadata.name }}: {{ pod.status.phase }},
+        ready {{ pod.status.containerStatuses | default([]) | selectattr('ready', 'equalto', true) | list | length }}/{{ pod.status.containerStatuses | default([]) | length }}
+      {% endfor %}
+      {% endif %}
+
+      Logs:  kubectl logs -n {{ velero_namespace }} -l app.kubernetes.io/name=velero
+  when: >-
+    _bk_velero_pods.resources | default([]) | length == 0 or
+    (_bk_velero_pods.resources[0].status.containerStatuses | default([])
+     | selectattr('ready', 'equalto', true) | list | length == 0)
+
+- name: "backup | preflight | Record the server pod"
+  ansible.builtin.set_fact:
+    _bk_velero_pod: "{{ _bk_velero_pods.resources[0].metadata.name }}"
+
+- name: "backup | preflight | Check the backup store"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: BackupStorageLocation
+    namespace: "{{ velero_namespace }}"
+  register: _bk_bsl
+
+- name: "backup | preflight | Fail if no backup store is configured"
+  ansible.builtin.fail:
+    msg: |
+      No BackupStorageLocation in namespace '{{ velero_namespace }}'.
+      Velero needs at least one. Check:
+        kubectl get backupstoragelocations -n {{ velero_namespace }}
+  when: _bk_bsl.resources | default([]) | length == 0
+
+- name: "backup | preflight | Fail if no backup store is Available"
+  ansible.builtin.fail:
+    msg: |
+      No BackupStorageLocation reports phase Available:
+      {% for bsl in _bk_bsl.resources %}
+      - {{ bsl.metadata.name }}: {{ bsl.status.phase | default('Unknown') }}
+      {% endfor %}
+
+      Backups and restores would fail against an unreachable store. For an
+      external store check credentials, network reachability, TLS trust and
+      no_proxy. Details:
+        kubectl describe backupstoragelocation -n {{ velero_namespace }}
+  when: >-
+    _bk_bsl.resources | selectattr('status.phase', 'defined')
+    | selectattr('status.phase', 'equalto', 'Available') | list | length == 0
+
+- name: "backup | preflight | Collect Velero-labelled snapshot classes"
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+  register: _bk_vsc
+  failed_when: false
+
+- name: "backup | preflight | Note the snapshot classes"
+  ansible.builtin.set_fact:
+    _bk_snapshot_classes: "{{ _bk_snapshot_classes | default([]) + [item.metadata.name] }}"
+  loop: "{{ _bk_vsc.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: (item.metadata.labels | default({}))['velero.io/csi-volumesnapshot-class'] | default('false') | bool
+
+- name: "backup | preflight | Fail if nothing can snapshot"
+  ansible.builtin.fail:
+    msg: |
+      No VolumeSnapshotClass carries velero.io/csi-volumesnapshot-class=true, so
+      Velero cannot snapshot any volume. A backup taken now would contain object
+      metadata only.
+
+      The label is applied by the velero component, so re-running it is the fix:
+        ./es_auto_installer.sh install velero --env <env> --only
+
+      If that leaves the label absent, the cluster has no snapshot support at
+      all — the CRDs and the controller come with the storage component:
+        kubectl get crd | grep snapshot.storage
+        kubectl get deploy -A | grep snapshot-controller
+  when: _bk_snapshot_classes | default([]) | length == 0
+
+# A role hook is resolved by Ansible only when it runs, and a post_restore hook runs
+# after the replay — so an unresolvable one would surface once the destructive part
+# is already done. Checked here instead, against the same search path Ansible uses.
+- name: "backup | preflight | Collect the profile's role hooks"
+  ansible.builtin.set_fact:
+    _bk_role_hooks: >-
+      {{ ((backup_profile.pre_backup | default([])) + (backup_profile.post_restore | default([])))
+         | selectattr('kind', 'defined') | selectattr('kind', 'equalto', 'role')
+         | map(attribute='role') | zip(((backup_profile.pre_backup | default([])) + (backup_profile.post_restore | default([])))
+         | selectattr('kind', 'defined') | selectattr('kind', 'equalto', 'role')
+         | map(attribute='tasks_from')) | map('join', '/tasks/') | list | unique }}
+
+# The same places Ansible looks: the configured roles_path, and — the one that makes
+# a solution's own role resolvable at all — the playbook's own directory and the
+# roles directory beside it.
+- name: "backup | preflight | Note where a role can be found"
+  ansible.builtin.set_fact:
+    _bk_roles_search: "{{ [playbook_dir ~ '/roles', playbook_dir] + lookup('config', 'DEFAULT_ROLES_PATH') }}"
+
+- name: "backup | preflight | Locate the task file of every role hook"
+  ansible.builtin.stat:
+    path: "{{ item.0 }}/{{ item.1 }}"
+  register: _bk_hook_roles
+  loop: "{{ _bk_roles_search | product(_bk_role_hooks) | list }}"
+  loop_control:
+    label: "{{ item.1 }} in {{ item.0 }}"
+
+- name: "backup | preflight | Fail on a role hook that cannot be found"
+  ansible.builtin.fail:
+    msg: |
+      The profile's role hooks name task files that are on none of the paths Ansible
+      searches for roles:
+        {{ _bk_role_hooks | difference(_bk_hook_roles.results | selectattr('stat.exists') | map(attribute='item.1') | list) | join(', ') }}
+
+      Searched: {{ _bk_roles_search | join(', ') }}
+
+      A solution's own role is found when the playbook driving the backup sits in
+      that repository, beside its roles directory. Run the solution's own backup
+      playbook where it lives rather than copying it elsewhere, or add its roles
+      directory to ANSIBLE_ROLES_PATH. Checked here because a post_restore hook runs
+      after the replay: unresolvable, it would fail with the destructive part done.
+  when: >-
+    _bk_role_hooks | difference(_bk_hook_roles.results | selectattr('stat.exists')
+                                | map(attribute='item.1') | list) | length > 0
+
+# The CLI is only needed for the deep readability check, and that runs inside the
+# server pod via k8s_exec, so nothing here depends on a local velero binary.
+- name: "backup | preflight | Ready"
+  ansible.builtin.debug:
+    msg: >-
+      Velero ready — namespace {{ velero_namespace }},
+      server pod {{ _bk_velero_pod }},
+      store(s) {{ _bk_bsl.resources | map(attribute='metadata.name') | join(', ') }},
+      snapshot class(es) {{ _bk_snapshot_classes | join(', ') }}.

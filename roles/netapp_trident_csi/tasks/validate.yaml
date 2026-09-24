@@ -1,0 +1,247 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - Validate
+# =============================================================================
+#  1. offline config checks (same asserts install runs)
+#  2. Helm release present
+#  3. trident-controller Available; trident-node DaemonSet ready on every
+#     schedulable node
+#  4. StorageClass exists, matches the configured policy, exactly one default
+#  5. TridentBackendConfig still Bound, with the reason surfaced
+#  6. ONTAP reachability re-checked
+#  7. end-to-end provision/write/persist/RWX test (validate_e2e.yaml)
+#
+# Steps 2-6 fail fast: each is a precondition for the next, so continuing after
+# "the controller is not Available" only produces derived noise. The config checks
+# and the E2E phases aggregate instead, because their findings are independent.
+# =============================================================================
+
+- name: "netapp_trident_csi | validate | Validate configuration (offline)"
+  ansible.builtin.include_tasks: validate_config.yaml
+
+- name: "netapp_trident_csi | validate | Check Helm release"
+  kubernetes.core.helm_info:
+    name: trident-operator
+    release_namespace: "{{ trident_namespace }}"
+  register: _trident_val_release
+  # helm_info does not raise on an absent release, it returns no `status` key -
+  # which is what the assert below reads. failed_when is suppressed so an
+  # unreachable cluster also reaches that message instead of a module traceback.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | validate | Helm release present"
+  ansible.builtin.assert:
+    that: (_trident_val_release.status | default({}) | length) > 0
+    fail_msg: >-
+      Helm release trident-operator not found in namespace {{ trident_namespace }}.
+      {{ 'The cluster API did not answer, so this is not necessarily an absent
+          release: ' ~ (_trident_val_release.msg | default('')) ~ ' - check
+          KUBECONFIG first.'
+         if (_trident_val_release.msg is defined)
+         else 'Run ./es_auto_installer.sh install storage.' }}
+    success_msg: >-
+      trident-operator present
+      (chart {{ (_trident_val_release.status | default({})).get('chart', 'unknown') }}).
+
+- name: "netapp_trident_csi | validate | Check trident-controller"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: trident-controller
+    namespace: "{{ trident_namespace }}"
+  register: _trident_val_controller
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | validate | trident-controller Available"
+  ansible.builtin.assert:
+    that:
+      - _trident_val_controller.resources | default([]) | length > 0
+      - >-
+        _trident_val_controller.resources[0].status.conditions | default([])
+        | selectattr('type', 'equalto', 'Available')
+        | selectattr('status', 'equalto', 'True') | list | length > 0
+    fail_msg: >-
+      Deployment trident-controller is not Available. No PVC can be provisioned.
+      Inspect: kubectl -n {{ trident_namespace }} describe deploy/trident-controller
+    success_msg: "trident-controller is Available."
+
+- name: "netapp_trident_csi | validate | Check trident-node DaemonSet"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    namespace: "{{ trident_namespace }}"
+    label_selectors:
+      - app=node.csi.trident.netapp.io
+  register: _trident_val_ds
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | validate | Count schedulable nodes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _trident_val_nodes
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | validate | Derive node counts"
+  vars:
+    # A node is schedulable when it is neither cordoned nor carrying a
+    # NoSchedule taint. On a 2-node deployment with a tainted control plane the
+    # DaemonSet legitimately covers one node only, and that is exactly the case
+    # this check has to distinguish from a broken rollout.
+    _schedulable_query: >-
+      [?spec.unschedulable != `true`
+        && length(spec.taints[?effect == 'NoSchedule'] || `[]`) == `0`].metadata.name
+  ansible.builtin.set_fact:
+    _trident_schedulable_nodes: "{{ _trident_val_nodes.resources | default([]) | json_query(_schedulable_query) | default([], true) }}"
+    _trident_ds_desired: "{{ (_trident_val_ds.resources | default([{}]))[0].status.desiredNumberScheduled | default(0) }}"
+    _trident_ds_ready: "{{ (_trident_val_ds.resources | default([{}]))[0].status.numberReady | default(0) }}"
+
+- name: "netapp_trident_csi | validate | trident-node DaemonSet ready"
+  ansible.builtin.assert:
+    that:
+      - _trident_val_ds.resources | default([]) | length > 0
+      - (_trident_ds_ready | int) == (_trident_ds_desired | int)
+      - (_trident_ds_desired | int) > 0
+    fail_msg: >-
+      trident-node DaemonSet: {{ _trident_ds_ready }}/{{ _trident_ds_desired }} ready.
+      Pods on the missing nodes cannot mount ONTAP volumes. Inspect:
+      kubectl -n {{ trident_namespace }} get pods -l app=node.csi.trident.netapp.io -o wide
+    success_msg: "trident-node DaemonSet ready on {{ _trident_ds_ready }} node(s)."
+
+- name: "netapp_trident_csi | validate | Warn when some schedulable nodes have no Trident node pod"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ _trident_schedulable_nodes | length }} schedulable node(s)
+      ({{ _trident_schedulable_nodes | join(', ') }}) but the trident-node
+      DaemonSet only targets {{ _trident_ds_desired }}. Workloads scheduled onto
+      the uncovered node(s) will fail to mount ONTAP volumes.
+  when: (_trident_ds_desired | int) < (_trident_schedulable_nodes | length)
+
+# ─── StorageClass ────────────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | validate | List StorageClasses"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: _trident_val_scs
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | validate | Extract StorageClass facts"
+  vars:
+    # json_query, not selectattr: the annotation key contains dots and slashes
+    # and Jinja's selectattr splits its attribute argument on '.'.
+    _default_sc_query: >-
+      [?metadata.annotations."storageclass.kubernetes.io/is-default-class" == 'true'].metadata.name
+  ansible.builtin.set_fact:
+    _trident_val_sc: >-
+      {{ (_trident_val_scs.resources | default([])
+          | selectattr('metadata.name', 'equalto', trident_storage_class)
+          | list | first) | default({}, true) }}
+    _trident_val_defaults: "{{ _trident_val_scs.resources | default([]) | json_query(_default_sc_query) | default([], true) }}"
+
+- name: "netapp_trident_csi | validate | StorageClass matches configuration"
+  ansible.builtin.assert:
+    that:
+      - _trident_val_sc | length > 0
+      - _trident_val_sc.provisioner | default('') == 'csi.trident.netapp.io'
+      - _trident_val_sc.reclaimPolicy | default('') == trident_reclaim_policy
+      - _trident_val_sc.volumeBindingMode | default('') == trident_volume_binding_mode
+    fail_msg: >-
+      StorageClass '{{ trident_storage_class }}' is missing or does not match the
+      configuration. found provisioner={{ _trident_val_sc.provisioner | default('n/a') }}
+      reclaimPolicy={{ _trident_val_sc.reclaimPolicy | default('n/a') }}
+      (expected {{ trident_reclaim_policy }})
+      volumeBindingMode={{ _trident_val_sc.volumeBindingMode | default('n/a') }}
+      (expected {{ trident_volume_binding_mode }}). A StorageClass is immutable in
+      these fields, so changing the knobs requires deleting and recreating it:
+      ./es_auto_installer.sh teardown storage && ./es_auto_installer.sh install storage
+    success_msg: >-
+      StorageClass {{ trident_storage_class }} OK
+      (reclaim={{ trident_reclaim_policy }}, binding={{ trident_volume_binding_mode }},
+      expansion={{ _trident_val_sc.allowVolumeExpansion | default(false) }}).
+
+- name: "netapp_trident_csi | validate | Exactly one default StorageClass"
+  ansible.builtin.assert:
+    that:
+      - _trident_val_defaults | length == 1
+      - _trident_val_defaults | first == trident_storage_class
+    fail_msg: >-
+      Default StorageClass(es): {{ _trident_val_defaults | join(', ') | default('none', true) }},
+      expected exactly '{{ trident_storage_class }}'. With more than one default,
+      any PVC that omits storageClassName lands on a nondeterministic backend;
+      with none it stays Pending forever.
+    success_msg: "Default StorageClass: {{ trident_storage_class }}"
+  when: trident_storageclass_default | bool
+
+# ─── Backend ─────────────────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | validate | Check TridentBackendConfig"
+  kubernetes.core.k8s_info:
+    api_version: trident.netapp.io/v1
+    kind: TridentBackendConfig
+    name: "{{ trident_backend_name }}"
+    namespace: "{{ trident_namespace }}"
+  register: _trident_val_backend
+  # A missing CRD raises "Failed to find exact match for
+  # trident.netapp.io/v1.TridentBackendConfig"; the assert below says so in
+  # words instead.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | validate | Backend is Bound"
+  ansible.builtin.assert:
+    that:
+      - _trident_val_backend.resources | default([]) | length > 0
+      - _status.phase | default('') == 'Bound'
+    fail_msg: >-
+      TridentBackendConfig {{ trident_backend_name }}
+      phase={{ _status.phase | default('object does not exist') }},
+      lastOperationStatus={{ _status.lastOperationStatus | default('n/a') }},
+      message="{{ _status.message | default('n/a') }}". No volume can be
+      provisioned on SVM '{{ ontap_svm }}' until this is Bound.
+    success_msg: >-
+      Backend {{ trident_backend_name }} Bound
+      (backendUUID {{ _status.backendInfo.backendUUID | default('n/a') }}).
+  vars:
+    _status: "{{ (_trident_val_backend.resources | default([{}]))[0].status | default({}) }}"
+
+# ─── Re-check the array ──────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | validate | ONTAP reachability"
+  ansible.builtin.include_tasks: preflight_ontap.yaml
+  when: ontap_preflight_online | bool
+
+# ─── End-to-end ──────────────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | validate | End-to-end storage test"
+  ansible.builtin.include_tasks: validate_e2e.yaml
+  when: ontap_validate_e2e | bool
+
+- name: "netapp_trident_csi | validate | E2E skipped"
+  ansible.builtin.debug:
+    msg: >-
+      ontap_validate_e2e is false: dynamic provisioning was not exercised. The
+      checks above prove Trident is running and the backend is Bound, not that a
+      pod can write to an ONTAP volume.
+  when: not (ontap_validate_e2e | bool)
+
+- name: "netapp_trident_csi | validate | PASS"
+  ansible.builtin.debug:
+    msg:
+      - "NetApp Trident CSI validation passed."
+      - "  operator:     {{ (_trident_val_release.status | default({})).get('chart', 'unknown') }} in {{ trident_namespace }}"
+      - "  controller:   Available"
+      - "  node pods:    {{ _trident_ds_ready }}/{{ _trident_ds_desired }} ready ({{ _trident_schedulable_nodes | length }} schedulable node(s))"
+      - "  backend:      {{ trident_backend_name }} ({{ ontap_driver }}) Bound -> SVM {{ ontap_svm }}"
+      - "  StorageClass: {{ trident_storage_class }} (default={{ trident_storageclass_default }}, reclaim={{ trident_reclaim_policy }})"
+      - "  ONTAP checks: {{ 'run' if (ontap_preflight_online | bool) else 'skipped (ontap_preflight_online=false)' }}"
+      - "  E2E test:     {{ 'run' if (ontap_validate_e2e | bool) else 'skipped' }}"

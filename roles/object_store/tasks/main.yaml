@@ -14,7 +14,7 @@
 #          object_store_endpoint: "http://rustfs.{{ rustfs_namespace }}.svc.cluster.local:{{ rustfs_port }}"
 # 3. Read object_store_consumers to create users/buckets (copy the pattern
 #    from minio/tasks/install.yaml — the consumer list is backend-agnostic)
-# 4. In config/components.yaml, add:
+# 4. In configs/components.yaml, add:
 #      - name: rustfs
 #        layer: platform
 #        enabled: "{{ (object_store_backend | default('minio')) == 'rustfs' }}"

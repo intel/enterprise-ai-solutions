@@ -1,0 +1,20 @@
+---
+# =============================================================================
+# backup | Run a profile's hook list
+# =============================================================================
+# Callers set:
+#   _bk_hooks       list of hook dicts (see configs/backup.yaml for the contract)
+#   _bk_hook_phase  "pre_backup" | "post_restore", for log lines
+# =============================================================================
+
+- name: "backup | hooks | {{ _bk_hook_phase }} — nothing declared"
+  ansible.builtin.debug:
+    msg: "Profile '{{ backup_profile.name }}' declares no {{ _bk_hook_phase }} hooks."
+  when: _bk_hooks | default([]) | length == 0
+
+- name: "backup | hooks | {{ _bk_hook_phase }}"
+  ansible.builtin.include_tasks: hook_run.yaml
+  loop: "{{ _bk_hooks | default([]) }}"
+  loop_control:
+    loop_var: _bk_hook
+    label: "{{ _bk_hook.name | default(_bk_hook.kind) }}"

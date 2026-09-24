@@ -9,22 +9,72 @@
 nfs_server: ""
 nfs_path: "/data/nfs"
 
-# --- Helm provisioner ---
-nfs_provisioner_namespace: "nfs-provisioner"
-nfs_provisioner_chart_repo: "https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/"
-nfs_provisioner_chart_repo_name: "nfs-subdir-external-provisioner"
-nfs_provisioner_chart_version: "4.0.18"
+# --- CSI Driver NFS (replaces nfs-subdir-external-provisioner) ---
+# A namespace of the driver's own, named after the chart and the Helm release so
+# `kubectl get ns` and `helm list -A` read the same. Not kube-system: the node
+# plugin and the controller run privileged, on the host network, with hostPath
+# volumes and bidirectional mount propagation, so their namespace has to be
+# labelled pod-security.kubernetes.io/*=privileged — and kube-system is exempt
+# from Pod Security Admission by convention, so a label there states nothing
+# about this driver while relaxing the floor for everything else in it.
+nfs_csi_namespace: "csi-driver-nfs"
+nfs_csi_chart_repo: "https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts"
+nfs_csi_chart_repo_name: "csi-driver-nfs"
+nfs_csi_chart_version: "v4.13.4"
+
+# The name the nfs-subdir-external-provisioner used, kept when the CSI driver took
+# its place. Layers above the platform name it as a literal rather than reading it
+# from here — the inference layer resolves its own storage class to 'nfs-client'
+# whenever storage_backend is nfs — so a different name here leaves those
+# workloads pointing at a class that does not exist.
 nfs_storageclass_name: "nfs-client"
 # Make 'nfs-client' the cluster-wide default StorageClass.
 # Set to false in environments that already have a default SC (e.g. local-path).
 nfs_storageclass_default: true
 nfs_wait_timeout: "300s"
 
+# Write snapshot archives with the external GNU tar instead of the driver's own
+# Go writer. The Go writer records the group but drops the user, so every file in
+# a restored volume comes back owned by root and any workload that runs as a
+# non-root user refuses to start on its own data.
+#
+# Snapshot compression is left at the chart's default of on: with the tar path it
+# is just `tar -czf`, and the archives on the export are already .tar.gz.
+nfs_csi_use_tar_in_snapshot: true
+
+# --- VolumeSnapshot support ---
+# The class a VolumeSnapshot names to be serviced by this driver. Created
+# unlabelled — see the comment beside the task.
+nfs_snapshot_class_name: "nfs-csi-snapclass"
+nfs_install_snapshot_class: true
+
+# Let the chart own the snapshot controller. It is what turns a VolumeSnapshot
+# into a call to the driver; without it a snapshot request is accepted and never
+# becomes ready, so anything reading snapshots sees an empty result rather than
+# an error. Owning it here means the storage component no longer depends on a
+# cluster-level toggle that only fires while the cluster is being built.
+nfs_csi_manage_snapshotter: true
+
+# Must match whatever else in the cluster might already run a snapshot
+# controller, so a pre-existing one is recognised rather than collided with.
+nfs_csi_snapshotter_name: "snapshot-controller"
+
 # --- NFS export options ---
+# Hosts allowed to mount the export. Auto-resolved from the kube_node /
+# kube_control_plane inventory groups when empty. Accepts a CIDR or a
+# space-separated IP/host list. NEVER set to "*" — a wildcard exports the
+# share to every reachable host without authentication (CWE-306).
+nfs_export_clients: ""
+
 # Kubernetes pods typically run as root (uid 0). With root_squash, NFS maps
 # remote root to nobody — breaking PVC writes for PostgreSQL, model storage,
 # etc. no_root_squash is required for Kubernetes NFS volumes.
 nfs_export_options: "rw,sync,no_subtree_check,no_root_squash"
+
+# rpc.mountd manage-gids. Leave false: enabled, the server discards the client's
+# supplementary GID list and re-derives groups from the uid, which throws away a
+# pod's fsGroup and leaves its own PVC unwritable.
+nfs_manage_gids: false
 
 # Permissions and ownership applied to the export directory on the NFS server.
 # 0775 + nogroup is sufficient for non-root pods; raise to 0777 only when
@@ -38,5 +88,5 @@ nfs_dir_group: "nogroup"
 # verifies it reaches Bound state, then deletes it.
 nfs_validate_pvc_bind: true
 nfs_validate_pvc_size: "100Mi"
-nfs_validate_pvc_namespace: "{{ nfs_provisioner_namespace }}"
+nfs_validate_pvc_namespace: "default"
 nfs_validate_pvc_timeout_seconds: 60

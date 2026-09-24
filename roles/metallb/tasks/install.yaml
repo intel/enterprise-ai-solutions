@@ -262,6 +262,8 @@
               metadata:
                 name: "{{ metallb_namespace }}"
                 labels:
+                  # The speaker DaemonSet needs hostNetwork and NET_RAW to answer
+                  # ARP/NDP for the VIPs.
                   pod-security.kubernetes.io/enforce: "privileged"
                   pod-security.kubernetes.io/audit: "privileged"
                   pod-security.kubernetes.io/warn: "privileged"
@@ -271,6 +273,10 @@
           kubernetes.core.helm_repository:
             name: metallb
             repo_url: "{{ metallb_helm_repo }}"
+          register: helm_repo_add_result
+          until: helm_repo_add_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
 
         - name: "metallb | Install via Helm"
           kubernetes.core.helm:
@@ -284,6 +290,10 @@
             values:
               controller:
                 affinity: "{{ _platform_affinity | default({}) }}"
+          register: helm_install_result
+          until: helm_install_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
 
         - name: "metallb | Wait for controller"
           kubernetes.core.k8s_info:

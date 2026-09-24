@@ -1,0 +1,158 @@
+---
+# =============================================================================
+# Backup / Restore — engine defaults and the profile contract
+# =============================================================================
+# roles/backup is the engine. A solution triggers it from its own playbook, which
+# includes `load_profile.yaml` with the path of its profile and then the task file
+# for the operation. This repository ships no backup action and names no solution.
+#
+# Everything solution-specific — which namespaces, which resources, what to delete
+# before replaying, what to run before and after — is data in the profile.
+#
+# Place a profile at the root of a repo's deployment directory, e.g.
+#   ext/<repo>/deployment/backup_profile.yaml
+# It is rendered with Jinja before parsing, so `enabled: "{{ backup_enabled }}"`
+# resolves against the merged config. Two things are in scope while it renders:
+# the merged configuration, and `backup_profile_dir` — the directory the profile
+# itself came from. Use that for a path to a sibling file rather than a variable
+# the calling playbook happens to define.
+# =============================================================================
+
+backup_profile_defaults:
+  # Human name, used in the Backup object's name and label. Defaults to the
+  # directory the profile was found in when the profile does not set it.
+  name: ""
+
+  # The layer this profile belongs to. The profile is skipped unless the env was
+  # provisioned for that layer (env/<env>/.solutions.yaml records it).
+  layer: ""
+
+  # Opt-in. A profile that ships disabled makes `backup` a no-op for it.
+  enabled: false
+
+  # -- What to capture ---------------------------------------------------------
+  # Namespaces, in the order they must be restored. Namespaces that do not exist
+  # on the cluster are skipped with a log line, never silently.
+  namespace_order: []
+
+  # Kubernetes label selectors, in native structured form. or_label_selectors
+  # includes a resource matching ANY entry; label_selector includes only
+  # resources matching all of it. They are mutually exclusive — when
+  # or_label_selectors is non-empty, label_selector is ignored.
+  #
+  #   or_label_selectors:
+  #     - matchLabels:
+  #         app.kubernetes.io/component: deployment-manifest
+  #     - matchExpressions:
+  #         - key: app.kubernetes.io/instance
+  #           operator: NotIn
+  #           values: [model-server]
+  or_label_selectors: []
+  label_selector: {}
+
+  # Resources never restored (webhooks, pods, generated CRs, ...).
+  exclude_resources: []
+
+  # Label key that records the solution's version on each Backup. The upgrade
+  # gate looks backups up by it, so leaving it empty disables that gate.
+  version_label: ""
+
+  # Where the version itself comes from. The engine does not know how a solution
+  # keeps its version; point it at the file and, if it is not called
+  # solution_version, name the key. A solution_version already in scope wins.
+  # Write the path relative to the profile:
+  #   version_file: "{{ backup_profile_dir }}/version.yaml"
+  #
+  # If version_label is set and the version cannot be resolved, backup refuses
+  # rather than labelling it "unknown" — the gate would otherwise match every
+  # backup ever taken and report a restore point for the wrong version.
+  version_file: ""
+  version_key: "solution_version"
+
+  # -- What to clear before replaying a backup ---------------------------------
+  # Per namespace, the things that must be gone before Velero writes over them.
+  # Three short forms:
+  #   Helm/<release>              uninstall that Helm release
+  #   <Kind>/<name>               delete that object
+  #   <Kind>/selector: k=v[,k=v]  delete every object of that kind matching
+  #
+  # The short forms derive the API version from the kind: apps/v1 for the workload
+  # kinds, v1 for everything else. That covers the two groups a solution's own
+  # objects live in and nothing else, so anything outside them — an operator's
+  # custom resource, most often — is written out in full instead:
+  #
+  #   cleanup:
+  #     postgresql:
+  #       - kind: Cluster
+  #         api_version: postgresql.cnpg.io/v1
+  #         name: postgresql
+  #
+  # `label_selectors` (a list, in `k=v` form) may stand in for `name`. Entries in
+  # this form are deleted before the short ones in the same namespace: a custom
+  # resource whose controller is still running recreates whatever the other
+  # entries delete, including the volume the restore is about to replay.
+  #
+  # Restoring into a half-populated namespace fails in confusing ways, which is
+  # why this list lives next to the components it describes. Nothing checks it
+  # automatically: every Helm/<release> here has to match a release name the
+  # corresponding role really creates, and a rename on one side is silent on the
+  # other until a restore leaves something stale behind.
+  cleanup: {}
+
+  # -- Hooks -------------------------------------------------------------------
+  # pre_backup runs before the Backup object is created; post_restore runs after
+  # the Restore reaches a terminal phase. Four kinds:
+  #
+  #   kind: exec       run a command in a pod
+  #     namespace, pod_selector (label selector) or pod, container, command
+  #
+  #     command is a single STRING, shlex-split before it is sent. Quote anything
+  #     that has to survive as one argument:
+  #       command: "/bin/sh -c 'pg_dump -U postgres db | gzip -9 | base64 -w0'"
+  #
+  #   kind: capture    run a command in a pod and store its stdout in a Secret,
+  #                    so Velero captures it as an ordinary object. This is how
+  #                    a database dump becomes part of the backup.
+  #     namespace, pod_selector or pod, container, command (string, as above),
+  #     secret (name), secret_namespace (defaults to namespace), key (data key),
+  #     labels (extra labels, so an or_label_selector can pick the Secret up)
+  #
+  #     secret_namespace matters: the pod that can produce a dump often lives in a
+  #     namespace the profile deliberately does not capture — a live database data
+  #     directory is not a supported restore source — while the dump itself has to
+  #     land somewhere the backup walks.
+  #
+  #     A Secret holds at most 1 MiB, and the exec returns text, so compress and
+  #     encode inside the command (`| gzip -9 | base64 -w0`) rather than shipping
+  #     raw output that a text channel would corrupt.
+  #
+  #   kind: annotate   stamp an annotation on a workload to force a rollout or a
+  #                    controller re-sync
+  #     namespace, target: {api_version, kind, name}, annotation
+  #
+  #   kind: role       run a task file from one of the solution's own roles
+  #     role (role name), tasks_from (file within its tasks/), args (optional dict,
+  #     reaches the role as backup_hook_args)
+  #
+  #     For state the engine cannot describe without knowing what it is. The kinds
+  #     above are modelled because their shape is the same for every solution: a
+  #     command, its output, an annotation. Exporting a component's own state is not
+  #     like that — it means knowing how that component exports itself, which
+  #     version of it is running, and what it needs to be handed back. Naming a role
+  #     keeps that knowledge in the repository that owns the component while the
+  #     declaration stays here, next to the rest of the solution's data.
+  #
+  #     The role must be on roles_path, which for a solution's own role means its
+  #     repository is checked out under ext/ — true whenever this profile is read.
+  #     It runs in the engine's scope, so backup_profile is available to it.
+  #
+  # Every hook takes an optional `name` (shown in the log) and
+  # `ignore_errors: true` (default false — a failed pre_backup hook aborts the
+  # backup rather than producing one that silently lacks the dump).
+  pre_backup: []
+  post_restore: []
+
+  # -- Timeouts and retention --------------------------------------------------
+  ttl: "720h"
+  item_operation_timeout: "2h0m0s"
+  csi_snapshot_timeout: "2h0m0s"

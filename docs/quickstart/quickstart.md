@@ -1,4 +1,4 @@
-# Getting Started with Intel® AI for Enterprise Solutions
+# Getting Started
 
 [← Docs Index](../README.md)
 
@@ -31,7 +31,7 @@ cd enterprise-ai-solutions
 Every deployment lives in a named environment under `env/<name>/`. The name is arbitrary — use `local` for a single-node dev setup, `prod` for production, or anything you like.
 
 ```bash
-./es_auto_installer.sh init local
+./es_auto_installer.sh init inference
 ```
 
 This creates `env/local/` with:
@@ -69,7 +69,7 @@ Everything runs on the machine you're sitting on. No SSH configuration needed.
 The default inventory created by `init` already targets localhost, so just install:
 
 ```bash
-./es_auto_installer.sh install --all --env local
+./es_auto_installer.sh install inference --env local
 ```
 
 Takes 15–20 minutes. When it finishes:
@@ -96,7 +96,7 @@ Quick overview:
 1. Set up passwordless SSH from the installer host to every node.
 2. Edit `env/local/inventory/hosts.yaml` with your node IPs.
 3. Set `storage_backend: nfs` (or `ceph`) in `global_config.yaml` — `local-path` only works for single-node.
-4. Run `./es_auto_installer.sh install --all --env local`.
+4. Run `./es_auto_installer.sh install inference --env local`.
 
 ---
 
@@ -121,7 +121,7 @@ istio_enabled: false            # bring your own service mesh
 Then install:
 
 ```bash
-./es_auto_installer.sh install --all --env local
+./es_auto_installer.sh install inference --env local
 ```
 
 ---
@@ -135,7 +135,7 @@ kubectl get nodes                  # all nodes Ready
 kubectl get pods -A                # all pods Running or Completed
 
 # Or use the built-in health check:
-./es_auto_installer.sh validate --all --env local
+./es_auto_installer.sh validate inference --env local
 ```
 
 ---
@@ -154,6 +154,9 @@ DOMAIN=$(yq '.base_domain_name' env/local/global_config.yaml)
 # Add to /etc/hosts on any client machine
 echo "${GATEWAY_IP}  ${DOMAIN} grafana.${DOMAIN} keycloak.${DOMAIN} litellm.${DOMAIN}"
 ```
+
+> [!IMPORTANT]
+> Every subdomain must be listed explicitly. Wildcards do not work in `/etc/hosts`, so a missing entry looks like a connection failure in the browser rather than an error from the cluster.
 
 For self-signed TLS (the default), import the CA certificate to remove browser warnings:
 
@@ -187,13 +190,13 @@ cat env/local/logs/ai-solutions-ca.crt
 You can manage multiple isolated environments from one machine:
 
 ```bash
-./es_auto_installer.sh init dev
-./es_auto_installer.sh init staging
-./es_auto_installer.sh init prod
+./es_auto_installer.sh init inference --env dev
+./es_auto_installer.sh init inference --env staging
+./es_auto_installer.sh init inference --env prod
 
 # Each has its own config, inventory, kubeconfig
-./es_auto_installer.sh install --all --env dev
-./es_auto_installer.sh install --all --env prod
+./es_auto_installer.sh install inference --env dev
+./es_auto_installer.sh install inference --env prod
 
 # Use the matching kubeconfig per environment
 export KUBECONFIG=$(pwd)/env/prod/kubeconfig.yaml

@@ -1,0 +1,11 @@
+---
+# =============================================================================
+# backup — Entry point
+# =============================================================================
+# Not a registered component: the solution that owns a profile includes the task
+# files directly (load_profile.yaml, preflight.yaml, backup.yaml, restore.yaml),
+# and its upgrade path includes verify.yaml as a gate. This dispatcher exists so
+# `validate backup` and any component-style invocation still land somewhere
+# sensible rather than failing on a missing file.
+- name: "backup | Dispatch action: {{ component_action | default('validate') }}"
+  ansible.builtin.include_tasks: "{{ (component_action | default('validate')) if (component_action | default('validate')) in ['backup', 'restore', 'validate'] else 'validate' }}.yaml"

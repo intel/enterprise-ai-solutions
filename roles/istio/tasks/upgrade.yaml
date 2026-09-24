@@ -17,3 +17,7 @@
     dependency_update: true
     wait: "{{ helm_wait }}"
     timeout: "{{ istio_wait_timeout }}"
+  register: helm_install_result
+  until: helm_install_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15

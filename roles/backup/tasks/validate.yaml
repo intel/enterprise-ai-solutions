@@ -1,0 +1,15 @@
+---
+# =============================================================================
+# backup | Validate — can this cluster take a usable backup right now?
+# =============================================================================
+# The same checks the engine runs before every operation, on their own, so an
+# operator can answer "is backup working?" without taking one.
+
+- name: "backup | validate | Velero preflight"
+  ansible.builtin.include_tasks: preflight.yaml
+
+- name: "backup | validate | Ready"
+  ansible.builtin.debug:
+    msg: >-
+      Backup mechanism is usable. Take one by running the solution's backup
+      playbook with backup_action=backup.

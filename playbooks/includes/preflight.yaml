@@ -4,7 +4,7 @@
 # =============================================================================
 # Required vars (set by the calling playbook):
 #   component_action:  install | teardown | validate
-#   target:            "all" or comma-separated component/layer names
+#   target:            layer or component name(s), comma-separated
 #
 # Optional vars:
 #   _include_deps:     true → auto-include dep/dependant layers  (default: true)
@@ -16,9 +16,25 @@
 
 # ── Load registry ─────────────────────────────────────────────────────────────
 
-- name: "Preflight - Load core component registry"
+- name: "Preflight - Load ai-solutions component registry"
   ansible.builtin.include_vars:
-    file: "{{ playbook_dir }}/../config/components.yaml"
+    file: "{{ playbook_dir }}/../configs/components.yaml"
+
+- name: "Preflight - Ensure log and tmp directories exist"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ log_dir | default((env_dir | default(playbook_dir + '/../env/local')) ~ '/logs') }}"
+    - "{{ tmp_dir | default((log_dir | default((env_dir | default(playbook_dir + '/../env/local')) ~ '/logs')) ~ '/tmp') }}"
+
+# Captured before the ext merge. ai-solutions' own layers are always in scope; a
+# solution's layer is in scope only when this env was inited for it, which
+# env/<env>/.solutions.yaml records and the installer passes as _env_layers.
+- name: "Preflight - Note which layers ai-solutions declares itself"
+  ansible.builtin.set_fact:
+    _core_layers: "{{ layers | default([]) | map(attribute='name') | list }}"
 
 - name: "Preflight - Check for ext directory"
   ansible.builtin.stat:
@@ -120,7 +136,7 @@
 #   best-effort     no pinning, standard CFS scheduler
 #
 # The derived facts are consumed by:
-#   - config/components.yaml       → gates the nri_cpu_balloons role
+#   - configs/components.yaml       → gates the nri_cpu_balloons role
 #   - roles/kubernetes             → kubespray_extra_auto.yml (kubelet flags,
 #                                    reservedSystemCPUs) + reserved-CPU calc
 #   - the inference stack          → MM_CPU_POLICY for model-manager
@@ -281,6 +297,27 @@
                                           action=component_action | default('install'),
                                           include_deps=_include_deps | default(true) | bool,
                                           skip=_skip_components | default('')) }}
+
+# The record is the source of truth for which solutions an env includes, so a plan that
+# reaches a layer it does not list is a mismatch between env/ and ext/, not a preference:
+# ext/ is per checkout and shared by every env, so a clone alone must not pull a solution
+# into an env that was never provisioned for it.
+- name: "Preflight - Refuse layers this env was not provisioned for"
+  vars:
+    _allowed: >-
+      {{ _core_layers + (_env_layers | default('') | split(',') | reject('equalto', '') | list) }}
+    _planned: "{{ (_active_components | map(attribute='name') | list) + (_disabled_components | default([])) }}"
+    _unprovisioned: >-
+      {{ components | selectattr('name', 'in', _planned)
+                    | map(attribute='layer') | unique | difference(_allowed) }}
+  ansible.builtin.fail:
+    msg: |-
+      env/{{ env_name | default('?') }} was not provisioned for layer(s): {{ _unprovisioned | join(', ') }}
+      The plan for target '{{ target }}' reaches them because they are declared by a repo in
+      ext/, but env/{{ env_name | default('?') }}/.solutions.yaml does not list them.
+      Either provision them   ./es_auto_installer.sh init {{ _unprovisioned | first }} --env {{ env_name | default('local') }}
+      or take them off disk    mv ext/<repo> elsewhere, so no plan can reach them.
+  when: _unprovisioned | length > 0
 
 - name: "Preflight - Show skipped components"
   when: _disabled_components | length > 0

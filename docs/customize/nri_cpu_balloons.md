@@ -5,6 +5,11 @@
 A practical, copy-paste guide for enabling the NRI CPU-balloons policy
 and deploying models that use it.
 
+On a multi-socket server, threads that drift across memory domains pay for every remote memory access, and CPU inference is memory-bound enough for that to show up as lower tokens per second. This policy pins model servers to a fixed set of cores on one NUMA node, so the cores an LLM is given stay its own.
+
+> [!NOTE]
+> This guide applies when `kubernetes_cpu_policy: nri-balloons` is set. With the default policy the components below are not deployed, and models are scheduled without pinning.
+
 ---
 
 ## 1. What it does

@@ -1,23 +1,16 @@
 ---
 # =============================================================================
-# Component Registry — Single source of truth for all components
+# Component Registry — ai-solutions' own layers and components
 # =============================================================================
-# Layers define execution order and dependencies between groups.
-# Components define individual units within a layer.
+# Execution order is derived from depends_on, not from the order of this file:
+# layers in dependency order, then components within each layer.
+# Component depends_on is SAME-LAYER only — cross-layer ordering comes from the
+# layer graph.
 #
-# To add a new layer:
-#   1. Add an entry under 'layers' (with its dependencies)
-#   2. Create playbooks/<layer>.yaml
-#   That's it — es_auto_installer.sh reads layer order from this file.
-#
-# To add a new component:
-#   1. Add an entry under 'components' (after its same-layer dependencies)
-#   2. Create the role in roles/<name>/
-#   3. Add <name>_enabled: true to global_config.yaml
-#   Playbooks and es_auto_installer.sh read this file automatically.
-#
-# Component depends_on only needs SAME-LAYER dependencies.
-# Cross-layer dependencies are handled automatically via layer ordering.
+# Adding a component here: add an entry and create roles/<name>/.
+# Adding a whole solution (its own layer, in its own repo): see
+# docs/adding_solutions.md — external repos declare their own layers, which
+# preflight merges in, so they are not listed here.
 # =============================================================================
 
 layers:
@@ -30,10 +23,7 @@ layers:
   - name: inference
     enabled: true
     depends_on: [platform]
-  - name: application
-    enabled: false                  # opt-in via an ext solution repo
-    depends_on: [platform,inference]
-  # Future layers — just add here:
+  # Opt-in layers are declared by their own ext repo's components.yaml
 
 components:
   # --- Infrastructure ---
@@ -92,6 +82,11 @@ components:
     layer: platform
     enabled: "{{ observability_enabled | default(true) | bool }}"
     depends_on: [cert_manager, metallb, minio]
+
+  - name: velero
+    layer: platform
+    enabled: "{{ velero_enabled | default(false) | bool }}"
+    depends_on: []
 
   # --- Inference ---
   # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy

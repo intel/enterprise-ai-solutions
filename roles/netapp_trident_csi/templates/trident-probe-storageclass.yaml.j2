@@ -1,0 +1,27 @@
+{#
+Copyright (C) 2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+
+The StorageClass the end-to-end probe provisions on. A clone of
+trident-storageclass.yaml.j2 with two deliberate differences:
+  - reclaimPolicy is always Delete, so a validate run leaves no FlexVol on the
+    array (the real class defaults to Retain).
+  - no default-class annotation: this class must never win a PVC that omits
+    storageClassName.
+volumeBindingMode is copied from the real class so the probe still exercises its
+binding behaviour. Rendered through a template rather than a dict in
+vars/main.yaml so YAML types the booleans.
+#}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ ontap_validate_probe_storage_class | to_json }}
+  labels:
+    app.kubernetes.io/managed-by: netapp_trident_csi-role
+    app.kubernetes.io/component: storage-probe
+provisioner: csi.trident.netapp.io
+parameters:
+  backendType: {{ ontap_driver | to_json }}
+allowVolumeExpansion: {{ (trident_allow_volume_expansion | bool) | to_json }}
+volumeBindingMode: {{ _e2e_binding_mode | to_json }}
+reclaimPolicy: Delete

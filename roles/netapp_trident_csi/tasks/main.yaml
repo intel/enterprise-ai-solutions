@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - Main Dispatcher
+# =============================================================================
+
+- name: "netapp_trident_csi | Dispatch action: {{ component_action }}"
+  ansible.builtin.include_tasks: "{{ component_action }}.yaml"

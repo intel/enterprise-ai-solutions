@@ -1,0 +1,102 @@
+---
+# =============================================================================
+# velero — the VolumeSnapshotClass it snapshots through
+# =============================================================================
+# Velero selects a snapshot class by label: velero.io/csi-volumesnapshot-class.
+# That label is Velero's, so this component applies it rather than expecting the
+# storage component to know about backups. Two situations, both handled here:
+#
+#   a class already exists for the backend's CSI driver  → label it
+#   no class exists for that driver at all               → create one, labelled
+#
+# Either way the object is recorded well enough for teardown to undo exactly
+# what was done: a class created here is deleted, a class only labelled here has
+# the label taken off again and is otherwise left alone.
+# =============================================================================
+
+- name: "velero | snapshot class | Resolve the backend's CSI driver"
+  ansible.builtin.set_fact:
+    _velero_csi_driver: "{{ velero_csi_snapshot_drivers[storage_backend | default('local-path')] | default('') }}"
+
+- name: "velero | snapshot class | Fail if the backend's driver is unknown"
+  ansible.builtin.assert:
+    that:
+      - _velero_csi_driver | length > 0
+    fail_msg: >-
+      storage_backend '{{ storage_backend | default('local-path') }}' is listed
+      as snapshot-capable but no CSI driver name is mapped to it, so there is no
+      way to tell which VolumeSnapshotClass Velero should use. Add the driver to
+      velero_csi_snapshot_drivers — the name is the `provisioner` on the
+      backend's StorageClass:
+      kubectl get sc -o custom-columns=NAME:.metadata.name,PROVISIONER:.provisioner
+
+- name: "velero | snapshot class | Read the existing VolumeSnapshotClasses"
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+  register: _velero_vsc_all
+  failed_when: false
+
+- name: "velero | snapshot class | Keep the ones for this driver"
+  ansible.builtin.set_fact:
+    _velero_vsc_matching: >-
+      {{ _velero_vsc_all.resources | default([])
+         | selectattr('driver', 'equalto', _velero_csi_driver) | list }}
+
+# Nothing to adopt. This is the path taken when the cluster's storage was not
+# installed by this repo, or when snapshots were never wired up at all: the CRDs
+# have to exist for the object to be accepted, and the failure message says so.
+- name: "velero | snapshot class | Create one for this driver"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: snapshot.storage.k8s.io/v1
+      kind: VolumeSnapshotClass
+      metadata:
+        name: "{{ velero_snapshot_class_name }}"
+        labels:
+          velero.io/csi-volumesnapshot-class: "true"
+          app.kubernetes.io/managed-by: ansible
+          app.kubernetes.io/component: velero
+      driver: "{{ _velero_csi_driver }}"
+      deletionPolicy: "{{ velero_snapshot_class_deletion_policy }}"
+  register: _velero_vsc_created
+  when: _velero_vsc_matching | length == 0
+
+- name: "velero | snapshot class | Report the created class"
+  ansible.builtin.debug:
+    msg: >-
+      No VolumeSnapshotClass existed for {{ _velero_csi_driver }}, so
+      '{{ velero_snapshot_class_name }}' was created and will be removed again on
+      teardown. A snapshot class installed with the storage component would be
+      adopted instead of duplicated.
+  when: _velero_vsc_matching | length == 0
+
+# Label whatever is already there. The annotation is what teardown reads to tell
+# "we put this label on someone else's class" from "the class was already
+# labelled before Velero existed", so an unrelated label is never removed.
+- name: "velero | snapshot class | Label the classes for this driver"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels:
+          velero.io/csi-volumesnapshot-class: "true"
+        # One expression with a computed key: Ansible does not template a
+        # mapping key, it would be sent literally.
+        annotations: "{{ {velero_snapshot_class_label_annotation: 'true'} }}"
+  loop: "{{ _velero_vsc_matching }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: not ((item.metadata.labels | default({}))['velero.io/csi-volumesnapshot-class'] | default('false') | bool)
+
+- name: "velero | snapshot class | Ready"
+  ansible.builtin.debug:
+    msg: >-
+      Snapshot class for {{ _velero_csi_driver }}:
+      {{ (_velero_vsc_matching | map(attribute='metadata.name') | list
+          if _velero_vsc_matching | length > 0
+          else [velero_snapshot_class_name]) | join(', ') }}

@@ -1,0 +1,21 @@
+---
+# =============================================================================
+# Layer manifest — inference
+# =============================================================================
+# One file per layer: configs/repos/repos.<layer>.yaml. The filename carries the
+# layer name, so `init inference` / `install inference` resolve to this file.
+#
+# Self-contained: every repo this layer needs, dependencies first, each pinned
+# independently. Field reference and the rest of the wiring:
+# docs/adding_solutions.md
+# =============================================================================
+
+repos:
+  - layer: "inference"
+    url: "https://github.com/intel/enterprise-inference"
+    dest: "enterprise.ai-inference"
+    rev: "main"
+    deployment_subdir: ""
+    config_dir: ""
+    default_flavour: ""
+    model_catalog: "model_manager/models.yaml"

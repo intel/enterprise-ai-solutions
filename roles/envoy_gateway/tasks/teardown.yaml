@@ -27,6 +27,15 @@
         state: absent
       failed_when: false
 
+    - name: "envoy_gateway | Delete S3 listener ClientTrafficPolicy"
+      kubernetes.core.k8s:
+        api_version: gateway.envoyproxy.io/v1alpha1
+        kind: ClientTrafficPolicy
+        name: "{{ gateway_name }}-s3-path"
+        namespace: "{{ gateway_namespace }}"
+        state: absent
+      failed_when: false
+
     - name: "envoy_gateway | Delete Gateway resource"
       kubernetes.core.k8s:
         api_version: gateway.networking.k8s.io/v1

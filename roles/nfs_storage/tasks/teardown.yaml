@@ -1,12 +1,16 @@
 ---
 # =============================================================================
-# NFS Storage — Teardown
+# NFS Storage — Teardown (CSI Driver NFS)
+# =============================================================================
+# Removes the CSI driver, its StorageClass and VolumeSnapshotClass, and the NFS
+# export. The exported data itself is left on disk: teardown removes the way in,
+# not the contents.
 # =============================================================================
 
 - name: "nfs_storage | Check if Helm release exists"
   kubernetes.core.helm_info:
-    name: nfs-subdir-external-provisioner
-    release_namespace: "{{ nfs_provisioner_namespace }}"
+    name: "{{ nfs_csi_chart_repo_name }}"
+    release_namespace: "{{ nfs_csi_namespace }}"
   register: _nfs_release
   failed_when: false
 
@@ -16,7 +20,7 @@
 
 - name: "nfs_storage | Not installed — skipping teardown"
   ansible.builtin.debug:
-    msg: "NFS provisioner Helm release not found. Nothing to tear down."
+    msg: "csi-driver-nfs Helm release not found in {{ nfs_csi_namespace }}. Nothing to tear down."
   when: not _nfs_release_present
 
 - name: "nfs_storage | Resolve NFS server target"
@@ -34,21 +38,61 @@
   when: _nfs_release_present
   block:
 
-    - name: "nfs_storage | Uninstall Helm release"
-      kubernetes.core.helm:
-        name: nfs-subdir-external-provisioner
-        release_namespace: "{{ nfs_provisioner_namespace }}"
+    # Before the driver goes: without it, nothing can service the deletion and
+    # the objects sit in Terminating forever.
+    - name: "nfs_storage | Delete VolumeSnapshotClass"
+      kubernetes.core.k8s:
+        api_version: snapshot.storage.k8s.io/v1
+        kind: VolumeSnapshotClass
+        name: "{{ nfs_snapshot_class_name }}"
         state: absent
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
       failed_when: false
 
-    - name: "nfs_storage | Delete namespace"
+    - name: "nfs_storage | Delete StorageClass"
       kubernetes.core.k8s:
-        kind: Namespace
-        name: "{{ nfs_provisioner_namespace }}"
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ nfs_storageclass_name }}"
         state: absent
       failed_when: false
+
+    - name: "nfs_storage | Uninstall Helm release"
+      kubernetes.core.helm:
+        name: "{{ nfs_csi_chart_repo_name }}"
+        release_namespace: "{{ nfs_csi_namespace }}"
+        state: absent
+        wait: "{{ helm_wait | default(true) }}"
+        timeout: "{{ helm_timeout | default('10m0s') }}"
+      failed_when: false
+
+    # The namespace is the driver's own, so it goes with the release — otherwise
+    # every teardown leaves an empty namespace behind and the next install has to
+    # adopt it. Not when the variable has been pointed at a namespace the cluster
+    # shares: deleting kube-system would take the control plane with it, and none
+    # of the four is this component's to remove.
+    - name: "nfs_storage | Note whether the namespace is the driver's own"
+      ansible.builtin.set_fact:
+        _nfs_ns_is_ours: >-
+          {{ nfs_csi_namespace not in
+             ['kube-system', 'kube-public', 'kube-node-lease', 'default'] }}
+
+    - name: "nfs_storage | Delete the driver's namespace"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ nfs_csi_namespace }}"
+        state: absent
+        wait: "{{ helm_wait | default(true) }}"
+        wait_timeout: 120
+      failed_when: false
+      when: _nfs_ns_is_ours | bool
+
+    # The snapshot CRDs stay, even when this release installed them: the chart
+    # annotates them helm.sh/resource-policy: keep. So existing VolumeSnapshot
+    # objects survive this teardown and are left naming a driver that is gone —
+    # they cannot be restored from, and deleting one will hang until the driver
+    # is back or its finalizer is removed by hand. A reason not to tear storage
+    # down on its own while anything still expects to read snapshots.
 
     - name: "nfs_storage | Remove NFS export on server"
       ansible.builtin.lineinfile:
@@ -58,7 +102,6 @@
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
       failed_when: false
-      when: nfs_server | default('', true) | length > 0
 
     - name: "nfs_storage | Re-export after removal"
       ansible.builtin.command: exportfs -ra
@@ -66,11 +109,14 @@
       become: true
       changed_when: true
       failed_when: false
-      when: nfs_server | default('', true) | length > 0
 
     - name: "nfs_storage | Teardown complete"
       ansible.builtin.debug:
         msg:
-          - "NFS provisioner removed."
-          - "NFS export removed from {{ _nfs_target | trim }}:/etc/exports."
-          - "Data at {{ nfs_server | default('') | trim }}:{{ nfs_path }} is preserved (manual cleanup if needed)."
+          - >-
+            csi-driver-nfs removed from {{ nfs_csi_namespace }}{{
+              ', and the namespace with it' if _nfs_ns_is_ours | bool
+              else ' — the namespace is shared, so it stays' }}.
+          - "StorageClass {{ nfs_storageclass_name }} and VolumeSnapshotClass {{ nfs_snapshot_class_name }} deleted."
+          - "NFS export {{ nfs_path }} removed from {{ _nfs_target | trim }}:/etc/exports."
+          - "Data under {{ nfs_path }} on {{ _nfs_target | trim }} is preserved — remove it by hand if you want it gone."

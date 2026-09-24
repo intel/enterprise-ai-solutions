@@ -19,7 +19,7 @@ The platform brings together:
 - AI-aware inference routing via Envoy AI Gateway
 - Persistent model storage (NFS, local-path, Ceph)
 - NUMA-aware CPU optimization via NRI CPU Balloons
-- Retrieval-augmented generation services (eRAG — opt-in)
+- Retrieval-augmented generation services (Intel® AI for Enterprise RAG — opt-in)
 - Metrics, logs, traces, and LLM observability (Prometheus, Grafana, Loki, Tempo, Langfuse)
 
 ---
@@ -30,10 +30,10 @@ Enterprise AI requires more than a model server.
 
 Teams also need Kubernetes, networking, storage, TLS, identity, model routing, observability, and workload placement. Building and integrating those layers individually can take significant engineering effort — weeks to months.
 
-AI for Enterprise Solutions deploys them through one environment-based workflow:
+AI Solutions deploys them through one environment-based workflow:
 
 ```bash
-./es_auto_installer.sh install --all --env <name>
+./es_auto_installer.sh install inference --env <name>
 ```
 
 The installer deploys enabled layers in dependency order:
@@ -80,13 +80,30 @@ Prometheus, Grafana, Loki, Tempo, OpenTelemetry, and Langfuse provide infrastruc
 
 ## Solution layers
 
-| Layer | What it provides | Included in `--all` |
+| Layer | What it provides | How to deploy |
 |---|---|---|
-| **Inference** | Model serving, routing, authentication, OpenAI-compatible endpoints | Yes |
-| **RAG (eRAG)** | Document ingestion, vector search, grounded chat, chat history, UI | No — opt-in via `install application` |
+| **Inference** | Model serving, routing, authentication, OpenAI-compatible endpoints | `init inference` + `install inference` (pulls infrastructure + platform automatically) |
+| **Intel® AI for Enterprise RAG** | Document ingestion, vector search, grounded chat, chat history, UI | `init erag` + `install erag` (pulls infrastructure + platform + inference) |
 | **Agentic AI** | Agent orchestration, tool calling, sandboxed execution, multi-agent workflows | Planned |
 
-Each layer builds on the one below it. Deploy what you need today and add layers as your use case evolves.
+Each layer builds on the one below it. Deploy what you need today and add layers as your use case evolves. **Intel AI for Enterprise RAG is opt-in** — installing `inference` does not bring it; you must initialize and install it explicitly.
+
+### Which repository do I start from?
+
+This one. Several repositories make up the portfolio, but you only ever clone and work from this one; `init` fetches the others into `ext/` at the revisions this repo pins.
+
+```
+github.com/intel/enterprise-ai-solutions      <- start here; run all commands from this root
+  |
+  |-- es_auto_installer.sh      the single entry point (configure / init / install / teardown)
+  |-- env/<name>/               your configuration, kubeconfig, credentials, and logs
+  `-- ext/                      cloned automatically by `init`
+        |-- enterprise.ai-inference    model serving: KServe, vLLM, OpenVINO Model Server
+        `-- enterprise.ai-erag         Intel AI for Enterprise RAG: pipelines, ingestion, UI
+```
+
+> [!IMPORTANT]
+> Do not clone the inference or RAG repositories yourself to deploy them. They are pulled in as pinned dependencies, and every command in this documentation runs from the root of this repository.
 
 ---
 
@@ -133,4 +150,6 @@ Each layer builds on the one below it. Deploy what you need today and add layers
 | Multi-node or BYO cluster | [Multi-Node & BYO Cluster](../deploy/topologies.md) |
 | Connect your app or framework | [Integration Guide](../customize/integration.md) |
 | Architecture deep-dive | [Architecture](../reference/architecture.md) |
+| Common questions | [FAQ](../faq.md) |
+| What a term means | [Glossary](../glossary.md) |
 | Configuration reference | [Configuration](../customize/configuration.md) |

@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Global Configuration — Default Template
@@ -14,7 +16,17 @@ kubernetes_kube_proxy_mode: "nftables"    # nftables | iptables | ipvs
 #                                         # Skips all Kubespray phases. Leave commented for managed install.
 
 # --- Storage ---
-storage_backend: local-path               # local-path (single-node) | nfs | ceph (multi-node)
+# ceph and netapp-trident each need their own settings block: see Optional
+# Features at the bottom of this file.
+storage_backend: local-path               # local-path (single-node) | nfs | ceph | netapp-trident(available only with customer specific HW) | custom
+
+# custom = your cluster already has a CSI driver; the installer installs no
+# provisioner and only checks the class below. It must be the cluster's default
+# StorageClass — every component provisions without naming one:
+#   kubectl annotate storageclass <name> storageclass.kubernetes.io/is-default-class=true --overwrite
+# storage_custom_storageclass: ""         # required when storage_backend=custom
+# storage_custom_rwx: true                # false = the class is RWO-only (single-node only:
+#                                         # the shared model store needs ReadWriteMany)
 
 # --- Ceph (only used when storage_backend=ceph) ---
 # Raw block devices for OSDs, keyed by node name. Listed nodes run all Ceph daemons.
@@ -48,6 +60,7 @@ gateway_request_timeout: "600s"           # Envoy default is 15s — too short f
 # --- Components ---
 istio_enabled: true
 observability_enabled: true
+velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 
 # --- Authentication ---
 auth_provider: "keycloak"                 # keycloak | litellm
@@ -69,6 +82,11 @@ postgresql_databases:
 # Soft affinity to separate platform pods (masters) from inference pods (workers).
 # Single-node: no-op. Set false to let all pods land anywhere.
 node_topology_enabled: true
+
+# --- Pod Security Standards (PSS) ---
+# Stamps pod-security.kubernetes.io/{enforce,audit,warn} on every installer-created namespace;
+# each role picks its own profile (privileged / baseline / restricted).
+enforce_pss: true
 
 # --- CPU Policy ---
 # NRI balloons is the only supported CPU policy for production deployments.
@@ -96,3 +114,34 @@ cert_manager_enabled: true
 metallb_enabled: true
 postgresql_enabled: true
 envoy_gateway_enabled: true
+
+# =============================================================================
+# Optional Features (only read when the matching option above selects them)
+# =============================================================================
+
+# --- NetApp ONTAP (requires storage_backend: netapp-trident) ---
+# Prerequisites, troubleshooting and the ONTAP S3 flow: docs/NETAPP_ONTAP.md.
+# ontap_management_lif: "10.0.0.100"      # cluster/SVM management LIF, TCP 443
+# ontap_data_lif: "10.0.0.101"            # NFS data LIF, TCP 2049 + 111
+# ontap_svm: "svm_ai"                     # SVM that owns the LIFs above
+# ontap_username: "vsadmin"               # ONTAP user with http/ontapi application access
+# ontap_password: ""                      # goes into a K8s Secret; keep this file mode 0600
+# ontap_driver: "ontap-nas"               # ontap-nas | ontap-nas-economy | ontap-nas-flexgroup
+#
+# The StorageClass uses reclaimPolicy: Retain, matching the nfs backend: deleting
+# a PVC leaves the ONTAP FlexVol and its data in place. Teardown prints every
+# FlexVol left behind plus the ONTAP command to remove them; it cannot delete
+# them itself once the CSI driver is gone.
+# ontap_teardown_delete_pvcs: false       # true = teardown deletes Trident PVCs first
+# ontap_preflight_online: true            # false = validate config/nodes only, never contact the array
+#
+# ontap_s3_data_lif: "10.0.0.102"         # object-store server data LIF (NOT the NFS one)
+# ontap_s3_port: 443                      # TCP port of the ONTAP S3 server. Unset = the
+#                                         # consuming layer assumes 443 and preflight does NOT probe it
+# ontap_s3_tls: true                      # false = plaintext HTTP to the S3 port
+# ontap_s3_ca_cert_file: ""               # PEM on the installer host that signed the S3 certificate
+#
+# Subdomain the S3 API is published under, as <subdomain>.<base_domain_name>. The
+# gateway names its dedicated S3 listener after it, and a solution layer that
+# publishes an S3 API reads the same value, so both agree by construction.
+# gateway_s3_subdomain: "s3"

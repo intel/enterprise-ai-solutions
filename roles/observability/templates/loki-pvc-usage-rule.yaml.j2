@@ -1,0 +1,100 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# PVC usage alerts for the logging stack:
+#   - Loki single-binary PVC (WAL + index cache) in {{ observability_namespace }}
+#   - MinIO PVC that stores Loki chunks in {{ minio_namespace }}
+#
+# Thresholds are intentionally hardcoded (not exposed as role defaults) and
+# chosen to give operators time to react before Loki starts rejecting ingest:
+#   - 85% used  -> warning  (10m sustained)
+#   - 95% used  -> critical (5m sustained)
+#
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: logs-pvc-usage
+  namespace: {{ observability_namespace }}
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/part-of: observability
+    app.kubernetes.io/component: logs
+spec:
+  groups:
+    - name: logs.pvc-usage
+      rules:
+        - alert: LogsPVCUsageHigh
+          expr: |
+            100 * (
+              1 - kubelet_volume_stats_available_bytes{
+                    namespace=~"{{ observability_namespace }}|{{ minio_namespace }}",
+                    persistentvolumeclaim=~"storage-loki-.*|minio"
+                  }
+                / kubelet_volume_stats_capacity_bytes{
+                    namespace=~"{{ observability_namespace }}|{{ minio_namespace }}",
+                    persistentvolumeclaim=~"storage-loki-.*|minio"
+                  }
+            ) > 85
+          for: 10m
+          labels:
+            severity: warning
+            component: logs
+          annotations:
+            summary: "Logs PVC {{ '{{ $labels.persistentvolumeclaim }}' }} > 85% used"
+            description: |
+              PVC {{ '{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}' }}
+              is {{ '{{ $value | printf "%.1f" }}' }}% full.
+              Increase observability_loki_storage_size (Loki WAL/index PVC) or
+              minio_storage_size (MinIO chunk store) in the role defaults and
+              resize the existing PVC (StorageClass must have
+              allowVolumeExpansion=true), or lower
+              observability_loki_retention_hours.
+
+        - alert: LogsPVCUsageCritical
+          expr: |
+            100 * (
+              1 - kubelet_volume_stats_available_bytes{
+                    namespace=~"{{ observability_namespace }}|{{ minio_namespace }}",
+                    persistentvolumeclaim=~"storage-loki-.*|minio"
+                  }
+                / kubelet_volume_stats_capacity_bytes{
+                    namespace=~"{{ observability_namespace }}|{{ minio_namespace }}",
+                    persistentvolumeclaim=~"storage-loki-.*|minio"
+                  }
+            ) > 95
+          for: 5m
+          labels:
+            severity: critical
+            component: logs
+          annotations:
+            summary: "Logs PVC {{ '{{ $labels.persistentvolumeclaim }}' }} > 95% used"
+            description: |
+              PVC {{ '{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}' }}
+              is {{ '{{ $value | printf "%.1f" }}' }}% full. Loki/MinIO will
+              start rejecting ingest soon. Free space immediately (resize PVC,
+              lower retention, or wipe the MinIO Loki bucket).
+
+    # Native MinIO capacity metric — more accurate than kubelet_volume_stats
+    # because it accounts for MinIO erasure-code overhead.
+    # Requires the MinIO ServiceMonitor to be scraped (already enabled, see roles/minio).
+    - name: logs.minio-capacity
+      rules:
+        - alert: LogsMinIOCapacityLow
+          expr: |
+            100 * (
+              minio_cluster_capacity_usable_free_bytes{namespace="{{ minio_namespace }}"}
+              / minio_cluster_capacity_usable_total_bytes{namespace="{{ minio_namespace }}"}
+            ) < 15
+          for: 15m
+          labels:
+            severity: warning
+            component: logs
+          annotations:
+            summary: "MinIO (Loki chunks) has < 15% usable free capacity"
+            description: |
+              MinIO backing Loki chunks reports
+              {{ '{{ $value | printf "%.1f" }}' }}% free usable capacity.
+              Increase minio_storage_size in roles/minio/defaults/main.yaml and
+              resize the MinIO PVC (StorageClass must have
+              allowVolumeExpansion=true).

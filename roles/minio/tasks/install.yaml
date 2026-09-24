@@ -50,9 +50,13 @@
       metadata:
         name: "{{ minio_namespace }}"
         labels:
-          pod-security.kubernetes.io/enforce: "privileged"
-          pod-security.kubernetes.io/audit: "privileged"
-          pod-security.kubernetes.io/warn: "privileged"
+          # baseline, not restricted: the chart's post-install Job (buckets/policies/
+          # users) exposes only a pod-level securityContext, so its containers can
+          # never set allowPrivilegeEscalation or drop capabilities — both are
+          # container-only fields. The MinIO Deployment itself is restricted-clean.
+          pod-security.kubernetes.io/enforce: "baseline"
+          pod-security.kubernetes.io/audit: "restricted"
+          pod-security.kubernetes.io/warn: "restricted"
   when: enforce_pss | default(false) | bool
 
 - name: "minio | Bootstrap credentials"
@@ -71,6 +75,10 @@
   kubernetes.core.helm_repository:
     name: minio
     repo_url: "{{ minio_helm_repo }}"
+  register: helm_repo_add_result
+  until: helm_repo_add_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
 
 # =============================================================================
 # Translate object_store_consumers → MinIO buckets / IAM policies / users.
@@ -170,6 +178,16 @@
           persistence:
             enabled: true
             size: "{{ minio_storage_size }}"
+          # Chart passes this through verbatim, so the MinIO Deployment itself is
+          # fully restricted-compliant even though the namespace enforces baseline.
+          containerSecurityContext:
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             requests:
               memory: 512Mi
@@ -192,6 +210,10 @@
               # Prometheus Operator CRDs are installed by the observability role
               # which runs after minio — disable here to avoid CRD-not-found errors.
               enabled: false
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "minio | Wait for MinIO Deployment"
       kubernetes.core.k8s_info:

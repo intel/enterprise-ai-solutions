@@ -1,0 +1,448 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - Install
+# =============================================================================
+#  1. offline config validation, then node prep, then (gated) ONTAP probes
+#  2. idempotency pre-check: helm release + StorageClass already present
+#  3. Helm install the operator, wait for CRDs, TridentOrchestrator, controller
+#  4. ONTAP credentials Secret (re-templated only when it actually changed)
+#  5. TridentBackendConfig, waited to Bound with real diagnostics on failure
+#  6. StorageClass, then exactly-one-default-StorageClass enforcement
+#
+# Every wait below is `failed_when: false` plus a following assert: an exhausted
+# `until` aborts the play under any_errors_fatal (ansible.cfg) with an opaque
+# {"attempts": N}, so the diagnostics live in the assert instead.
+#
+# Under --check every wait is skipped - nothing was created to wait on.
+# =============================================================================
+
+- name: "netapp_trident_csi | install | Check mode: what is and is not verified"
+  ansible.builtin.debug:
+    msg: >-
+      --check run: configuration, node preparation and the ONTAP probes are real;
+      the Helm install and every readiness wait (CRDs, TridentOrchestrator,
+      trident-controller, backend Bound) are skipped, because nothing is created
+      for them to wait on. A --check run therefore cannot tell you that Trident
+      will come up, only that its inputs are usable.
+  when: ansible_check_mode
+
+- name: "netapp_trident_csi | install | Validate configuration (offline)"
+  ansible.builtin.include_tasks: validate_config.yaml
+
+- name: "netapp_trident_csi | install | Node preflight"
+  ansible.builtin.include_tasks: preflight_nodes.yaml
+
+- name: "netapp_trident_csi | install | ONTAP preflight"
+  ansible.builtin.include_tasks: preflight_ontap.yaml
+  when: ontap_preflight_online | bool
+
+- name: "netapp_trident_csi | install | ONTAP preflight skipped"
+  ansible.builtin.debug:
+    msg: >-
+      ontap_preflight_online is false: reachability checks against
+      {{ ontap_management_lif }} were skipped. Config, templates and node
+      preparation were still validated.
+  when: not (ontap_preflight_online | bool)
+
+# ─── Idempotency pre-check ───────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | install | Check for existing Helm release"
+  kubernetes.core.helm_info:
+    name: trident-operator
+    release_namespace: "{{ trident_namespace }}"
+  register: _trident_existing
+  # helm_info does NOT raise on an absent release: it returns success with no
+  # `status` key, which is what the presence fact below keys off.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | install | Check for existing StorageClass"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ trident_storage_class }}"
+  register: _trident_sc_existing
+  # Absent StorageClass (and an unreachable cluster on a first run) must not
+  # abort here; presence is derived below.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | install | Set presence facts"
+  ansible.builtin.set_fact:
+    _trident_release_present: "{{ (_trident_existing.status | default({})) | length > 0 }}"
+    _trident_sc_present: "{{ (_trident_sc_existing.resources | default([])) | length > 0 }}"
+    # helm_info reports chart as "<name>-<version>", so a version bump is
+    # detectable and a matching version makes the Helm step a genuine no-op.
+    _trident_chart_current: >-
+      {{ (_trident_existing.status | default({})).get('chart', '')
+         == ('trident-operator-' ~ trident_chart_version) }}
+
+- name: "netapp_trident_csi | install | Already present"
+  ansible.builtin.debug:
+    msg: >-
+      Trident operator {{ trident_chart_version }} and StorageClass
+      {{ trident_storage_class }} already present. The Helm step will be skipped;
+      the backend and StorageClass are reconciled below (idempotent).
+  when:
+    - _trident_release_present | bool
+    - _trident_sc_present | bool
+    - _trident_chart_current | bool
+
+# ─── Operator ────────────────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | install | Create Trident namespace"
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ trident_namespace }}"
+    state: present
+
+- name: "netapp_trident_csi | install | Install Trident operator"
+  when: not (_trident_release_present | bool) or not (_trident_chart_current | bool)
+  block:
+
+    - name: "netapp_trident_csi | install | Add Trident Helm repo"
+      kubernetes.core.helm_repository:
+        name: "{{ trident_chart_repo_name }}"
+        repo_url: "{{ trident_chart_repo_url }}"
+
+    # imageRegistry is what the operator passes on to the trident-controller and
+    # trident-node images, so one value mirrors the whole driver.
+    - name: "netapp_trident_csi | install | Install Trident operator via Helm"
+      kubernetes.core.helm:
+        name: trident-operator
+        chart_ref: "{{ trident_chart_repo_name }}/trident-operator"
+        release_namespace: "{{ trident_namespace }}"
+        create_namespace: true
+        chart_version: "{{ trident_chart_version }}"
+        update_repo_cache: true
+        wait: "{{ helm_wait }}"
+        timeout: "{{ trident_wait_timeout }}"
+        release_values: >-
+          {{ {}
+             | combine({'imageRegistry': trident_image_registry | string | trim}
+                       if (trident_image_registry | default('', true) | string | trim | length > 0) else {})
+             | combine({'imagePullSecrets': [trident_image_pull_secret | string | trim]}
+                       if (trident_image_pull_secret | default('', true) | string | trim | length > 0) else {}) }}
+
+- name: "netapp_trident_csi | install | Wait for the TridentBackendConfig CRD"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: tridentbackendconfigs.trident.netapp.io
+  register: _trident_crd_check
+  until:
+    - _trident_crd_check.resources | default([]) | length > 0
+    - >-
+      _trident_crd_check.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'Established')
+      | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: "{{ trident_crd_wait_retries | int }}"
+  delay: "{{ trident_crd_wait_delay | int }}"
+  failed_when: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "netapp_trident_csi | install | Assert the Trident CRDs are established"
+  ansible.builtin.assert:
+    that:
+      - _trident_crd_check.resources | default([]) | length > 0
+      - >-
+        _trident_crd_check.resources[0].status.conditions | default([])
+        | selectattr('type', 'equalto', 'Established')
+        | selectattr('status', 'equalto', 'True') | list | length > 0
+    fail_msg: >-
+      CRD tridentbackendconfigs.trident.netapp.io was not Established within
+      {{ (trident_crd_wait_retries | int) * (trident_crd_wait_delay | int) }}s of
+      the Helm install. The operator registers the CRDs as its first action, so
+      this almost always means the trident-operator pod never started - a pending
+      image pull behind a proxy is the usual cause. Inspect with:
+      kubectl -n {{ trident_namespace }} get pods and
+      kubectl -n {{ trident_namespace }} describe deploy/trident-operator.
+    success_msg: "Trident CRDs established."
+  when: not ansible_check_mode
+
+# CRD registration happens well before Trident is serving, and after a teardown
+# that kept the CRDs the check above passes instantly with nothing running. The
+# TridentOrchestrator status is the operator's own readiness signal.
+- name: "netapp_trident_csi | install | Wait for TridentOrchestrator to report Installed"
+  kubernetes.core.k8s_info:
+    api_version: trident.netapp.io/v1
+    kind: TridentOrchestrator
+  register: _trident_orchestrator
+  until:
+    - _trident_orchestrator.resources | default([]) | length > 0
+    - _trident_orchestrator.resources[0].status.status | default('') == 'Installed'
+  retries: "{{ trident_orchestrator_wait_retries | int }}"
+  delay: "{{ trident_orchestrator_wait_delay | int }}"
+  failed_when: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "netapp_trident_csi | install | Assert TridentOrchestrator installed"
+  ansible.builtin.assert:
+    that:
+      - _trident_orchestrator.resources | default([]) | length > 0
+      - _trident_orchestrator.resources[0].status.status | default('') == 'Installed'
+    fail_msg: >-
+      Trident did not finish installing within
+      {{ (trident_orchestrator_wait_retries | int) * (trident_orchestrator_wait_delay | int) }}s.
+      TridentOrchestrator status={{ (_trident_orchestrator.resources | default([{}]))[0].status.status | default('absent') }},
+      message="{{ (_trident_orchestrator.resources | default([{}]))[0].status.message | default('none') }}".
+      Inspect with: kubectl get torc -o yaml and
+      kubectl get pods -n {{ trident_namespace }}. A pending image pull behind a
+      proxy is the most common cause.
+    success_msg: "TridentOrchestrator reports Installed."
+  when: not ansible_check_mode
+
+- name: "netapp_trident_csi | install | Wait for trident-controller to be Available"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: trident-controller
+    namespace: "{{ trident_namespace }}"
+  register: _trident_controller
+  until:
+    - _trident_controller.resources | default([]) | length > 0
+    - >-
+      _trident_controller.resources[0].status.conditions | default([])
+      | selectattr('type', 'equalto', 'Available')
+      | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: "{{ trident_controller_wait_retries | int }}"
+  delay: "{{ trident_controller_wait_delay | int }}"
+  failed_when: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "netapp_trident_csi | install | Assert trident-controller is Available"
+  ansible.builtin.assert:
+    that:
+      - _trident_controller.resources | default([]) | length > 0
+      - >-
+        _trident_controller.resources[0].status.conditions | default([])
+        | selectattr('type', 'equalto', 'Available')
+        | selectattr('status', 'equalto', 'True') | list | length > 0
+    fail_msg: >-
+      Deployment trident-controller in {{ trident_namespace }} never became
+      Available. Creating a backend now would fail with an opaque timeout.
+      Inspect with: kubectl -n {{ trident_namespace }} get pods,deploy and
+      kubectl -n {{ trident_namespace }} describe deploy/trident-controller.
+    success_msg: "trident-controller is Available."
+  when: not ansible_check_mode
+
+# ─── ONTAP credentials ───────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | install | Read existing ONTAP credentials Secret"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ trident_backend_name }}-secret"
+    namespace: "{{ trident_namespace }}"
+  register: _trident_secret_existing
+  # Absent on a first run, which is normal; the comparison below treats a
+  # missing Secret as "changed".
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  # The result carries the base64 credentials. Unconditional, not gated on
+  # secure_logs: the installer tees all Ansible output into env/<env>/logs/ and
+  # keeps 30 runs, so a single verbose run would persist them to disk.
+  no_log: true
+
+- name: "netapp_trident_csi | install | Decide whether the Secret must be rewritten"
+  ansible.builtin.set_fact:
+    _trident_secret_changed: >-
+      {{ (_trident_secret_existing.resources | default([]) | length == 0)
+         or ((_trident_secret_existing.resources[0].data | default({})).get('username', '') | b64decode
+             != (ontap_username | string))
+         or ((_trident_secret_existing.resources[0].data | default({})).get('password', '') | b64decode
+             != (ontap_password | string)) }}
+  # Compares plaintext credentials; never let this land in a log.
+  no_log: true
+
+- name: "netapp_trident_csi | install | ONTAP credentials unchanged"
+  ansible.builtin.debug:
+    msg: >-
+      ONTAP credentials Secret {{ trident_backend_name }}-secret is already
+      current. Not rewriting it, so the Trident controller is not rolled.
+  when: not (_trident_secret_changed | bool)
+
+- name: "netapp_trident_csi | install | Create or update ONTAP credentials Secret"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'trident-secret.yaml.j2') | from_yaml }}"
+  when: _trident_secret_changed | bool
+  # The submitted definition and the returned object both contain the ONTAP
+  # password. On failure the default callback dumps the whole result into
+  # env/<env>/logs/, so this is unconditional rather than "{{ secure_logs }}".
+  no_log: true
+
+# ─── Backend ─────────────────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | install | Create ONTAP backend configuration"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'trident-backend.yaml.j2') | from_yaml }}"
+
+- name: "netapp_trident_csi | install | Wait for the backend to reach Bound"
+  kubernetes.core.k8s_info:
+    api_version: trident.netapp.io/v1
+    kind: TridentBackendConfig
+    name: "{{ trident_backend_name }}"
+    namespace: "{{ trident_namespace }}"
+  register: _trident_backend_check
+  until:
+    - _trident_backend_check.resources | default([]) | length > 0
+    - _trident_backend_check.resources[0].status.phase | default('') == 'Bound'
+  retries: "{{ trident_backend_wait_retries | int }}"
+  delay: "{{ trident_backend_wait_delay | int }}"
+  failed_when: false
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "netapp_trident_csi | install | Set backend phase facts"
+  ansible.builtin.set_fact:
+    _trident_backend_bound: >-
+      {{ (_trident_backend_check.resources | default([]) | length > 0)
+         and (_trident_backend_check.resources[0].status.phase | default('') == 'Bound') }}
+
+- name: "netapp_trident_csi | install | Read trident-controller logs (backend failure only)"
+  kubernetes.core.k8s_log:
+    namespace: "{{ trident_namespace }}"
+    label_selectors:
+      - app=controller.csi.trident.netapp.io
+    tail_lines: 20
+  register: _trident_controller_logs
+  when: not (_trident_backend_bound | bool)
+  # Diagnostics for the assert below. A missing pod or a log API hiccup must not
+  # replace the real failure message with a log-fetch error.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | install | Assert the backend is Bound"
+  ansible.builtin.assert:
+    that: _trident_backend_bound | bool
+    fail_msg: |
+      TridentBackendConfig {{ trident_backend_name }} did not reach Bound within
+      {{ (trident_backend_wait_retries | int) * (trident_backend_wait_delay | int) }}s.
+        phase:      {{ _status.phase | default('object does not exist') }}
+        last op:    {{ _status.lastOperationStatus | default('n/a') }}
+        message:    {{ _status.message | default('n/a') }}
+        backend:    {{ _status.backendInfo.backendName | default('n/a') }} ({{ _status.backendInfo.backendUUID | default('n/a') }})
+      Trident could not talk to SVM '{{ ontap_svm }}' on {{ ontap_management_lif }}.
+      The usual causes are wrong ontap_username/ontap_password, an ONTAP user
+      without http/ontapi application access, or an SVM name that does not exist
+      on that cluster.
+      {% if _trident_controller_logs.log_lines | default([]) | length > 0 %}
+      Last {{ _trident_controller_logs.log_lines | length }} trident-controller log lines:
+      {% for line in _trident_controller_logs.log_lines %}
+        {{ line }}
+      {% endfor %}
+      {% endif %}
+      Re-run ./es_auto_installer.sh validate storage after fixing the cause.
+    success_msg: >-
+      Backend {{ trident_backend_name }} is Bound
+      (backendUUID {{ _status.backendInfo.backendUUID | default('n/a') }}).
+  vars:
+    _status: "{{ (_trident_backend_check.resources | default([{}]))[0].status | default({}) }}"
+  when: not ansible_check_mode
+
+# ─── StorageClass and default-class enforcement ──────────────────────────────
+
+# reclaimPolicy, volumeBindingMode and parameters are immutable on a
+# StorageClass, so the apply below would come back as a raw 422 API traceback.
+# validate.yaml already has the right words for this; say them before the API
+# does, not after.
+- name: "netapp_trident_csi | install | Assert the existing StorageClass still matches the configuration"
+  ansible.builtin.assert:
+    that:
+      - _sc.reclaimPolicy | default(trident_reclaim_policy) == trident_reclaim_policy
+      - _sc.volumeBindingMode | default(trident_volume_binding_mode) == trident_volume_binding_mode
+      - (_sc.parameters | default({})).get('backendType', ontap_driver) == ontap_driver
+    fail_msg: >-
+      StorageClass '{{ trident_storage_class }}' already exists with
+      reclaimPolicy={{ _sc.reclaimPolicy | default('n/a') }}
+      (configured {{ trident_reclaim_policy }}),
+      volumeBindingMode={{ _sc.volumeBindingMode | default('n/a') }}
+      (configured {{ trident_volume_binding_mode }}),
+      backendType={{ (_sc.parameters | default({})).get('backendType', 'n/a') }}
+      (configured {{ ontap_driver }}). A StorageClass is immutable in these
+      fields, so changing trident_reclaim_policy, trident_volume_binding_mode or
+      ontap_driver requires deleting and recreating it:
+      ./es_auto_installer.sh teardown storage && ./es_auto_installer.sh install storage
+      Existing volumes keep the policy they were created with, so under
+      reclaimPolicy Retain check the array residue report teardown prints first.
+    success_msg: "Existing StorageClass {{ trident_storage_class }} matches the configuration."
+  vars:
+    _sc: "{{ (_trident_sc_existing.resources | default([{}]))[0] }}"
+  when: _trident_sc_present | bool
+
+- name: "netapp_trident_csi | install | Create Trident StorageClass"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'trident-storageclass.yaml.j2') | from_yaml }}"
+
+- name: "netapp_trident_csi | install | Re-read StorageClasses"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: _trident_sc_after
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | install | Define the default-StorageClass query"
+  ansible.builtin.set_fact:
+    _default_sc_query: >-
+      [?metadata.annotations."storageclass.kubernetes.io/is-default-class" == 'true'].metadata.name
+
+- name: "netapp_trident_csi | install | Assert exactly one default StorageClass"
+  ansible.builtin.assert:
+    that:
+      - _defaults | length == 1
+      - _defaults | first == trident_storage_class
+    fail_msg: >-
+      {{ _defaults | length }} default StorageClass(es) after install
+      ({{ _defaults | join(', ') | default('none', true) }}), expected exactly
+      one named '{{ trident_storage_class }}'. Dynamic provisioning for any PVC
+      that omits storageClassName is nondeterministic with more than one default
+      and impossible with none. Remove the
+      storageclass.kubernetes.io/is-default-class annotation from the classes
+      that should not be default and re-run, or set
+      trident_storageclass_default: false and name the class explicitly in every
+      consumer.
+    success_msg: "Exactly one default StorageClass: {{ _defaults | join(', ') }}"
+  vars:
+    _defaults: "{{ _trident_sc_after.resources | default([]) | json_query(_default_sc_query) }}"
+  when: trident_storageclass_default | bool
+
+- name: "netapp_trident_csi | install | Assert no competing defaults (opted out of default class)"
+  ansible.builtin.assert:
+    that: _defaults | length <= 1
+    fail_msg: >-
+      trident_storageclass_default is false, but the cluster has
+      {{ _defaults | length }} default StorageClasses ({{ _defaults | join(', ') }}).
+      Dynamic provisioning for any PVC that omits storageClassName is
+      nondeterministic. Leave exactly one, or none if every consumer names its
+      class.
+    success_msg: >-
+      Default StorageClass left as {{ _defaults | join(', ') | default('none', true) }};
+      '{{ trident_storage_class }}' must be named explicitly by consumers.
+  vars:
+    _defaults: "{{ _trident_sc_after.resources | default([]) | json_query(_default_sc_query) }}"
+  when: not (trident_storageclass_default | bool)
+
+- name: "netapp_trident_csi | install | Done"
+  ansible.builtin.debug:
+    msg:
+      - "NetApp Trident CSI installed."
+      - "  operator:     trident-operator {{ trident_chart_version }} in {{ trident_namespace }}"
+      - "  backend:      {{ trident_backend_name }} ({{ ontap_driver }}) -> SVM {{ ontap_svm }} @ {{ ontap_management_lif }}"
+      - "  StorageClass: {{ trident_storage_class }} (default={{ trident_storageclass_default }})"
+      - "  reclaim:      {{ trident_reclaim_policy }}{{ ' - deleting a PVC leaves the ONTAP FlexVol in place' if trident_reclaim_policy == 'Retain' else ' - deleting a PVC destroys the ONTAP FlexVol' }}"
+      - "  images:       {{ trident_image_registry if (trident_image_registry | default('', true) | string | trim | length > 0) else 'chart defaults (Docker Hub)' }}"
+      - "  verify:       ./es_auto_installer.sh validate storage"

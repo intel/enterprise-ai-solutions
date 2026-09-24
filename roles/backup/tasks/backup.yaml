@@ -1,0 +1,195 @@
+---
+# =============================================================================
+# backup | Take a backup for one profile
+# =============================================================================
+# The Backup object is created through the Kubernetes API rather than the velero
+# CLI: the same fields, no dependency on a local binary, and the spec is
+# reviewable next to the profile that produced it.
+# =============================================================================
+
+- name: "backup | {{ backup_profile.name }} | Get existing namespaces"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+  register: _bk_namespaces
+
+- name: "backup | {{ backup_profile.name }} | Intersect the profile's namespaces with the cluster"
+  ansible.builtin.set_fact:
+    _bk_include_namespaces: >-
+      {{ backup_profile.namespace_order
+         | select('in', _bk_namespaces.resources | map(attribute='metadata.name') | list)
+         | list }}
+    _bk_absent_namespaces: >-
+      {{ backup_profile.namespace_order
+         | reject('in', _bk_namespaces.resources | map(attribute='metadata.name') | list)
+         | list }}
+
+- name: "backup | {{ backup_profile.name }} | Fail if none of them exist"
+  ansible.builtin.fail:
+    msg: >-
+      None of the namespaces in profile '{{ backup_profile.name }}' exist on this
+      cluster. Configured: {{ backup_profile.namespace_order | join(', ') }}.
+      Is the solution installed in this environment?
+  when: _bk_include_namespaces | length == 0
+
+# Reported, never silent: a namespace missing from the backup is a gap in it.
+- name: "backup | {{ backup_profile.name }} | Report the namespace set"
+  ansible.builtin.debug:
+    msg: >-
+      Backing up: {{ _bk_include_namespaces | join(', ') }}.
+      {{ ('Not present on this cluster, so excluded: ' ~ (_bk_absent_namespaces | join(', ')))
+         if _bk_absent_namespaces | length > 0 else 'Every configured namespace is present.' }}
+
+# --- pre_backup hooks --------------------------------------------------------
+# Before the Backup object exists, so anything a hook produces (a database dump
+# captured into a Secret, for instance) is part of what Velero walks.
+
+- name: "backup | {{ backup_profile.name }} | Run pre_backup hooks"
+  ansible.builtin.include_tasks: hooks.yaml
+  vars:
+    _bk_hooks: "{{ backup_profile.pre_backup | default([]) }}"
+    _bk_hook_phase: "pre_backup"
+
+# --- Backup object -----------------------------------------------------------
+
+- name: "backup | {{ backup_profile.name }} | Resolve the solution version"
+  ansible.builtin.include_tasks: resolve_version.yaml
+
+- name: "backup | {{ backup_profile.name }} | Compose the Backup name and labels"
+  ansible.builtin.set_fact:
+    _bk_name: "{{ backup_name_prefix }}-{{ backup_profile.name }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
+    _bk_all_labels: >-
+      {{ backup_labels
+         | combine({ backup_profile_label_key: backup_profile.name })
+         | combine({ backup_profile.version_label: _bk_version }
+                   if backup_profile.version_label | default('') != '' else {}) }}
+
+- name: "backup | {{ backup_profile.name }} | Create the Backup"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: velero.io/v1
+      kind: Backup
+      metadata:
+        name: "{{ _bk_name }}"
+        namespace: "{{ velero_namespace }}"
+        labels: "{{ _bk_all_labels }}"
+      spec: >-
+        {{ {
+             'includedNamespaces': _bk_include_namespaces,
+             'snapshotVolumes': true,
+             'defaultVolumesToFsBackup': false,
+             'ttl': backup_profile.ttl,
+             'itemOperationTimeout': backup_profile.item_operation_timeout,
+             'csiSnapshotTimeout': backup_profile.csi_snapshot_timeout,
+           }
+           | combine({'snapshotMoveData': true} if velero_snapshot_move_data | bool else {})
+           | combine({'orLabelSelectors': backup_profile.or_label_selectors}
+                     if backup_profile.or_label_selectors | default([]) | length > 0 else {})
+           | combine({'labelSelector': backup_profile.label_selector}
+                     if backup_profile.or_label_selectors | default([]) | length == 0
+                        and backup_profile.label_selector | default({}) | length > 0 else {})
+        }}
+
+- name: "backup | {{ backup_profile.name }} | Wait for the Backup to finish"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: Backup
+    namespace: "{{ velero_namespace }}"
+    name: "{{ _bk_name }}"
+  register: _bk_status
+  until: >-
+    _bk_status.resources | length > 0 and
+    ((_bk_status.resources[0].status.phase | default('')) == 'Completed' or
+     (_bk_status.resources[0].status.phase | default('')) in backup_terminal_failure_phases)
+  retries: "{{ backup_monitor_retries }}"
+  delay: "{{ backup_monitor_delay }}"
+
+- name: "backup | {{ backup_profile.name }} | Fail on a failed Backup"
+  ansible.builtin.fail:
+    msg: |
+      Backup '{{ _bk_name }}' ended in phase
+      {{ _bk_status.resources[0].status.phase | default('Unknown') }}.
+
+      Errors: {{ _bk_status.resources[0].status.errors | default(0) }},
+      warnings: {{ _bk_status.resources[0].status.warnings | default(0) }}.
+      Details:
+        kubectl -n {{ velero_namespace }} describe backup {{ _bk_name }}
+        kubectl -n {{ velero_namespace }} logs deploy/velero
+  when: (_bk_status.resources[0].status.phase | default('')) in backup_terminal_failure_phases
+
+# --- Prove the backup contains volume data -----------------------------------
+# The failure mode this whole feature exists to prevent is a Completed backup
+# holding object metadata and no volume contents. Completion alone is not
+# evidence, so check for snapshots of the volumes in the captured namespaces.
+
+- name: "backup | {{ backup_profile.name }} | Verify volume data was captured"
+  when: backup_assert_volume_data | bool
+  block:
+    - name: "backup | {{ backup_profile.name }} | Find PVCs in the captured namespaces"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: "{{ item }}"
+      loop: "{{ _bk_include_namespaces }}"
+      register: _bk_pvcs
+
+    - name: "backup | {{ backup_profile.name }} | Count the PVCs"
+      ansible.builtin.set_fact:
+        _bk_pvc_count: >-
+          {{ _bk_pvcs.results | map(attribute='resources') | map('length') | sum }}
+
+    # Velero records the snapshot outcome on the Backup itself and deletes the
+    # transient VolumeSnapshot objects at finalization, so counting live
+    # VolumeSnapshots proves nothing — the numbers Velero kept are the evidence.
+    - name: "backup | {{ backup_profile.name }} | Re-read the Backup for its snapshot counts"
+      kubernetes.core.k8s_info:
+        api_version: velero.io/v1
+        kind: Backup
+        namespace: "{{ velero_namespace }}"
+        name: "{{ _bk_name }}"
+      register: _bk_final
+
+    - name: "backup | {{ backup_profile.name }} | Note the snapshot counts"
+      ansible.builtin.set_fact:
+        _bk_snap_attempted: "{{ _bk_final.resources[0].status.csiVolumeSnapshotsAttempted | default(0) | int }}"
+        _bk_snap_completed: "{{ _bk_final.resources[0].status.csiVolumeSnapshotsCompleted | default(0) | int }}"
+
+    - name: "backup | {{ backup_profile.name }} | Assert volumes were snapshotted"
+      ansible.builtin.assert:
+        that:
+          - _bk_snap_attempted | int > 0
+        fail_msg: |
+          Backup '{{ _bk_name }}' reports Completed but attempted zero CSI volume
+          snapshots, while {{ _bk_pvc_count }} PersistentVolumeClaim(s) exist in
+          the captured namespaces. It holds object metadata only and would not
+          restore any data.
+
+          Usual causes: the PVCs are bound to a StorageClass with no labelled
+          VolumeSnapshotClass, or the snapshot controller is not running:
+            kubectl get pvc -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,SC:.spec.storageClassName
+            kubectl get volumesnapshotclass -o wide
+            kubectl get deploy -A | grep snapshot-controller
+      when: _bk_pvc_count | int > 0
+
+    - name: "backup | {{ backup_profile.name }} | Assert every snapshot completed"
+      ansible.builtin.assert:
+        that:
+          - _bk_snap_completed | int == _bk_snap_attempted | int
+        fail_msg: >-
+          Backup '{{ _bk_name }}' completed
+          {{ _bk_snap_completed }} of {{ _bk_snap_attempted }} CSI volume
+          snapshots. The volumes behind the missing ones are not in this backup.
+          Details: kubectl -n {{ velero_namespace }} describe backup {{ _bk_name }}
+      when: _bk_snap_attempted | int > 0
+
+- name: "backup | {{ backup_profile.name }} | Done"
+  ansible.builtin.debug:
+    msg: >-
+      Backup '{{ _bk_name }}' Completed —
+      namespaces: {{ _bk_include_namespaces | join(', ') }};
+      items: {{ _bk_status.resources[0].status.progress.itemsBackedUp | default('n/a') }};
+      volume snapshots: {{ _bk_snap_completed | default(0) }}/{{ _bk_snap_attempted | default(0) }};
+      expires: {{ _bk_status.resources[0].status.expiration | default('n/a') }}.
+      Restore it by running the solution's backup playbook with
+      backup_action=restore and velero_restore_from={{ _bk_name }}.

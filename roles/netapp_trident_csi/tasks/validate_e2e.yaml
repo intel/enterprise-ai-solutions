@@ -1,0 +1,468 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - End-to-end storage test
+# =============================================================================
+# Turns "the StorageClass exists" into "a pod actually wrote bytes to ONTAP and
+# another pod read them back". Four phases, recorded rather than asserted in
+# place, so one message at the end lists every phase instead of the run stopping
+# at the first problem:
+#
+#   1 provision  PVC on a probe StorageClass cloned from the real one
+#   2 write      8 MiB + fsync + checksum + write-bit test  (catches root_squash
+#                and read-only exports, which no reachability probe can see)
+#   3 persist    second pod on the same PVC re-reads the marker and checksum
+#   4 RWX        two pods pinned to different nodes read each other's files
+#   cleanup      unconditional, in always:
+#
+# The probe volumes do NOT use trident_storage_class: that class is
+# reclaimPolicy Retain, so probing on it would leave a FlexVol on the array on
+# every validate run. The probe class is the same backendType with reclaimPolicy
+# Delete and is never the cluster default. It inherits volumeBindingMode from the
+# real class, so under WaitForFirstConsumer the phase order below still creates
+# the consumer pod before waiting for Bound.
+# =============================================================================
+
+- name: "netapp_trident_csi | e2e | Initialise result collector"
+  ansible.builtin.set_fact:
+    _e2e_results: []
+    _e2e_pv_names: []
+    _e2e_ns: "{{ ontap_validate_namespace }}"
+    _e2e_sc_name: "{{ ontap_validate_probe_storage_class }}"
+    # Flipped to true only once the ownership check below has passed. The always:
+    # cleanup keys off it, so a run that refused to touch someone else's
+    # namespace does not then delete it on the way out.
+    _e2e_ns_owned: false
+    _e2e_retries: "{{ ((ontap_validate_timeout_seconds | int) // 5) | int }}"
+
+- name: "netapp_trident_csi | e2e | Read StorageClass and node topology"
+  block:
+    - name: "netapp_trident_csi | e2e | Read the Trident StorageClass"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ trident_storage_class }}"
+      register: _e2e_sc
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | e2e | Read cluster nodes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Node
+      register: _e2e_nodes
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | e2e | Derive test parameters"
+      vars:
+        _schedulable_query: >-
+          [?spec.unschedulable != `true`
+            && length(spec.taints[?effect == 'NoSchedule'] || `[]`) == `0`].metadata.name
+      ansible.builtin.set_fact:
+        # The real class's policy, reported at the end so the operator knows what
+        # their own volumes will do.
+        _e2e_real_reclaim: "{{ (_e2e_sc.resources | default([{}]))[0].reclaimPolicy | default('Delete') }}"
+        _e2e_binding_mode: "{{ (_e2e_sc.resources | default([{}]))[0].volumeBindingMode | default(trident_volume_binding_mode) }}"
+        _e2e_schedulable: "{{ _e2e_nodes.resources | default([]) | json_query(_schedulable_query) | default([], true) }}"
+
+    - name: "netapp_trident_csi | e2e | Decide whether the RWX phase runs"
+      ansible.builtin.set_fact:
+        _e2e_rwx_run: >-
+          {{ (_e2e_schedulable | length >= 2)
+             if (ontap_validate_rwx | string | lower == 'auto')
+             else (ontap_validate_rwx | bool) }}
+
+    - name: "netapp_trident_csi | e2e | RWX phase skipped"
+      ansible.builtin.debug:
+        msg: >-
+          Cross-node RWX phase skipped:
+          {% if _e2e_schedulable | length < 2 %}only {{ _e2e_schedulable | length }}
+          schedulable node(s) ({{ _e2e_schedulable | join(', ') }}); two are needed
+          to prove a volume is shared across nodes.{% else %}disabled by
+          ontap_validate_rwx.{% endif %}
+      when: not (_e2e_rwx_run | bool)
+
+# ─── Phases 1-4 ──────────────────────────────────────────────────────────────
+
+- name: "netapp_trident_csi | e2e | Run"
+  block:
+
+    # ontap_validate_namespace is an override surface, and this phase *deletes*
+    # the namespace it names. `-e ontap_validate_namespace=edp` must not destroy a
+    # production namespace, so only ever delete one this role created.
+    - name: "netapp_trident_csi | e2e | Read the probe namespace"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ _e2e_ns }}"
+      register: _e2e_ns_existing
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | e2e | Assert the probe namespace is this role's to delete"
+      ansible.builtin.assert:
+        that: >-
+          (_e2e_ns_existing.resources | default([]) | length == 0)
+          or (((_e2e_ns_existing.resources | first).metadata.labels | default({}, true))
+              .get('app.kubernetes.io/managed-by', '') == 'netapp_trident_csi-role')
+        fail_msg: >-
+          Namespace '{{ _e2e_ns }}' already exists and does not carry
+          app.kubernetes.io/managed-by=netapp_trident_csi-role, so it was not
+          created by this role. The end-to-end probe deletes its namespace before
+          every run and refuses to delete one it does not own. Point
+          ontap_validate_namespace at an unused name, or delete '{{ _e2e_ns }}'
+          by hand if it really is a leftover.
+        success_msg: >-
+          Probe namespace '{{ _e2e_ns }}'
+          {{ 'does not exist yet' if (_e2e_ns_existing.resources | default([]) | length == 0)
+             else 'is a leftover from a previous probe run and will be recreated' }}.
+
+    - name: "netapp_trident_csi | e2e | Claim ownership of the probe namespace"
+      ansible.builtin.set_fact:
+        _e2e_ns_owned: true
+
+    # An interrupted previous run leaves the probe pods and PVCs behind, and
+    # `state: present` then silently reuses them: the reader pod's logs come from
+    # the earlier execution, so the phase results describe that run instead of
+    # this one. Start from nothing.
+    - name: "netapp_trident_csi | e2e | Remove leftovers from an interrupted previous run"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ _e2e_ns }}"
+        wait: true
+        wait_timeout: "{{ ontap_validate_timeout_seconds | int }}"
+      when: _e2e_ns_existing.resources | default([]) | length > 0
+
+    - name: "netapp_trident_csi | e2e | Create test namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ _e2e_ns }}"
+            labels:
+              app.kubernetes.io/managed-by: netapp_trident_csi-role
+              app.kubernetes.io/component: storage-probe
+
+    - name: "netapp_trident_csi | e2e | Create the probe StorageClass"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'trident-probe-storageclass.yaml.j2') | from_yaml }}"
+
+    # ── Phase 1: provision ────────────────────────────────────────────────
+    - name: "netapp_trident_csi | e2e | Create RWO probe PVC"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ _e2e_pvc_rwo }}"
+
+    - name: "netapp_trident_csi | e2e | Create writer pod (before waiting on the PVC)"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ _e2e_pod_writer }}"
+
+    - name: "netapp_trident_csi | e2e | Wait for the RWO PVC to bind"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: ontap-probe-rwo
+        namespace: "{{ _e2e_ns }}"
+      register: _e2e_pvc_state
+      until: (_e2e_pvc_state.resources | default([{}]))[0].status.phase | default('') == 'Bound'
+      retries: "{{ _e2e_retries | int }}"
+      delay: 5
+      # Recorded, not asserted: the summary at the end has to list every phase,
+      # and an exhausted `until` under any_errors_fatal would abort the play
+      # before cleanup and before that summary. Same for every phase below.
+      failed_when: false
+      changed_when: false
+
+    - name: "netapp_trident_csi | e2e | Record phase 1"
+      ansible.builtin.set_fact:
+        _e2e_results: >-
+          {{ _e2e_results + [{
+            'phase': '1 provision (RWO)',
+            'ok': _bound,
+            'detail': ('bound to PV ' ~ _pv) if _bound
+                      else ('PVC phase=' ~ _phase ~ ' after ' ~ ontap_validate_timeout_seconds
+                            ~ 's. Check: kubectl -n ' ~ _e2e_ns
+                            ~ ' describe pvc ontap-probe-rwo') }] }}
+        _e2e_pv_names: "{{ _e2e_pv_names + ([_pv] if _pv | length > 0 else []) }}"
+      vars:
+        _phase: "{{ (_e2e_pvc_state.resources | default([{}]))[0].status.phase | default('missing') }}"
+        _pv: "{{ (_e2e_pvc_state.resources | default([{}]))[0].spec.volumeName | default('') }}"
+        _bound: "{{ _phase == 'Bound' }}"
+
+    # ── Phase 2: write / fsync / read back / write bit ────────────────────
+    - name: "netapp_trident_csi | e2e | Wait for the writer pod to finish"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        name: ontap-probe-writer
+        namespace: "{{ _e2e_ns }}"
+      register: _e2e_writer_state
+      until: (_e2e_writer_state.resources | default([{}]))[0].status.phase | default('') in ['Succeeded', 'Failed']
+      retries: "{{ _e2e_retries | int }}"
+      delay: 5
+      failed_when: false
+      changed_when: false
+
+    - name: "netapp_trident_csi | e2e | Read writer pod logs"
+      kubernetes.core.k8s_log:
+        namespace: "{{ _e2e_ns }}"
+        name: ontap-probe-writer
+      register: _e2e_writer_log
+      # A pod that never started has no logs, and that must be reported by the
+      # phase record rather than as a log-fetch error.
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | e2e | Record phase 2"
+      ansible.builtin.set_fact:
+        _e2e_results: >-
+          {{ _e2e_results + [{
+            'phase': '2 write+fsync+checksum',
+            'ok': _ok,
+            'detail': ('8MiB written, fsynced and checksum verified; marker '
+                       ~ _marker) if _ok
+                      else ('writer pod phase=' ~ _phase ~ '. '
+                            ~ 'A mount that succeeds but cannot be written to is '
+                            ~ 'usually an ONTAP export policy with root_squash or '
+                            ~ 'a read-only rule for the node CIDR. Logs: '
+                            ~ (_log | default('none'))) }] }}
+        _e2e_marker_written: "{{ _marker }}"
+      vars:
+        _phase: "{{ (_e2e_writer_state.resources | default([{}]))[0].status.phase | default('missing') }}"
+        _log: "{{ (_e2e_writer_log.log | default('')) | trim }}"
+        _ok: "{{ _phase == 'Succeeded' and 'PROBE_WRITE_OK' in _log }}"
+        _marker: >-
+          {{ (_log | regex_search('PROBE_MARKER=[^\s]+') | default('', true))
+             | replace('PROBE_MARKER=', '') }}
+
+    # ── Phase 3: persistence across pods ─────────────────────────────────
+    - name: "netapp_trident_csi | e2e | Delete the writer pod"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Pod
+        name: ontap-probe-writer
+        namespace: "{{ _e2e_ns }}"
+        wait: true
+        wait_timeout: 120
+
+    - name: "netapp_trident_csi | e2e | Create reader pod on the same PVC"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ _e2e_pod_reader }}"
+
+    - name: "netapp_trident_csi | e2e | Wait for the reader pod to finish"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        name: ontap-probe-reader
+        namespace: "{{ _e2e_ns }}"
+      register: _e2e_reader_state
+      until: (_e2e_reader_state.resources | default([{}]))[0].status.phase | default('') in ['Succeeded', 'Failed']
+      retries: "{{ _e2e_retries | int }}"
+      delay: 5
+      failed_when: false
+      changed_when: false
+
+    - name: "netapp_trident_csi | e2e | Read reader pod logs"
+      kubernetes.core.k8s_log:
+        namespace: "{{ _e2e_ns }}"
+        name: ontap-probe-reader
+      register: _e2e_reader_log
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | e2e | Record phase 3"
+      ansible.builtin.set_fact:
+        _e2e_results: >-
+          {{ _e2e_results + [{
+            'phase': '3 persistence across pods',
+            'ok': _ok,
+            'detail': ('marker ' ~ _marker ~ ' and checksum survived pod replacement') if _ok
+                      else ('reader pod phase=' ~ _phase ~ ', marker written='
+                            ~ (_e2e_marker_written | default('?')) ~ ' read=' ~ _marker
+                            ~ '. A mismatch means the volume was not the same one, '
+                            ~ 'i.e. an emptyDir/ephemeral fallback. Logs: '
+                            ~ (_log | default('none'))) }] }}
+      vars:
+        _phase: "{{ (_e2e_reader_state.resources | default([{}]))[0].status.phase | default('missing') }}"
+        _log: "{{ (_e2e_reader_log.log | default('')) | trim }}"
+        _marker: >-
+          {{ (_log | regex_search('PROBE_MARKER=[^\s]+') | default('', true))
+             | replace('PROBE_MARKER=', '') }}
+        _ok: >-
+          {{ _phase == 'Succeeded' and 'PROBE_READ_OK' in _log
+             and _marker | length > 0
+             and _marker == (_e2e_marker_written | default('')) }}
+
+    # ── Phase 4: cross-node RWX ──────────────────────────────────────────
+    - name: "netapp_trident_csi | e2e | Cross-node RWX"
+      when: _e2e_rwx_run | bool
+      block:
+
+        - name: "netapp_trident_csi | e2e | Create RWX probe PVC"
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ _e2e_pvc_rwx }}"
+
+        - name: "netapp_trident_csi | e2e | Create RWX pod A"
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ _e2e_pod_rwx_a }}"
+
+        - name: "netapp_trident_csi | e2e | Create RWX pod B"
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ _e2e_pod_rwx_b }}"
+
+        - name: "netapp_trident_csi | e2e | Wait for both RWX pods to finish"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: "{{ _e2e_ns }}"
+            label_selectors:
+              - app=ontap-probe-rwx
+          register: _e2e_rwx_state
+          until: >-
+            (_e2e_rwx_state.resources | default([]) | length == 2)
+            and (_e2e_rwx_state.resources
+                 | selectattr('status.phase', 'in', ['Succeeded', 'Failed'])
+                 | list | length == 2)
+          retries: "{{ _e2e_retries | int }}"
+          delay: 5
+          failed_when: false
+          changed_when: false
+
+        - name: "netapp_trident_csi | e2e | Read RWX PVC state"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: PersistentVolumeClaim
+            name: ontap-probe-rwx
+            namespace: "{{ _e2e_ns }}"
+          register: _e2e_pvc_rwx_state
+          changed_when: false
+          check_mode: false
+
+        - name: "netapp_trident_csi | e2e | Record phase 4"
+          ansible.builtin.set_fact:
+            _e2e_results: >-
+              {{ _e2e_results + [{
+                'phase': '4 cross-node RWX',
+                'ok': _ok,
+                'detail': ('both pods read each other on distinct nodes: '
+                           ~ (_nodes | join(', '))) if _ok
+                          else ('pod phases=' ~ (_phases | join(',')) ~ ' nodes='
+                                ~ (_nodes | join(',')) ~ '. Identical node names mean '
+                                ~ 'the scheduler ignored the topology spread and RWX '
+                                ~ 'was not actually exercised; differing nodes with a '
+                                ~ 'Failed pod mean the volume is not really shared.') }] }}
+            _e2e_pv_names: "{{ _e2e_pv_names + ([_rwx_pv] if _rwx_pv | length > 0 else []) }}"
+          vars:
+            # default= on both: a pod that never gets scheduled has no
+            # spec.nodeName at all, and an undefined attribute makes map() raise
+            # rather than record the phase-4 failure this test exists to report.
+            _phases: "{{ _e2e_rwx_state.resources | default([]) | map(attribute='status.phase', default='Unknown') | list }}"
+            _nodes: "{{ _e2e_rwx_state.resources | default([]) | map(attribute='spec.nodeName', default='<unscheduled>') | list }}"
+            _rwx_pv: "{{ (_e2e_pvc_rwx_state.resources | default([{}]))[0].spec.volumeName | default('') }}"
+            _ok: >-
+              {{ (_phases | length == 2) and ((_phases | unique | list) == ['Succeeded'])
+                 and ((_nodes | unique | list | length) == 2) }}
+
+  always:
+
+    # ── Cleanup, unconditional ───────────────────────────────────────────
+    # The namespace deletion takes the PVCs with it, and the probe class is
+    # reclaimPolicy Delete, so the FlexVols go too. Never delete a namespace this
+    # run did not create: the ownership check above may have refused precisely
+    # because it belongs to someone else.
+    - name: "netapp_trident_csi | e2e | Cleanup: delete test namespace"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ _e2e_ns }}"
+        wait: true
+        wait_timeout: 120
+      # Cleanup is best effort: it must never turn a reported phase failure into
+      # an unrelated task failure.
+      failed_when: false
+      when: _e2e_ns_owned | bool
+
+    - name: "netapp_trident_csi | e2e | Cleanup: delete leftover probe PVs"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: PersistentVolume
+        name: "{{ item }}"
+        wait: true
+        wait_timeout: 60
+      loop: "{{ _e2e_pv_names | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      failed_when: false
+      when: _e2e_ns_owned | bool
+
+    # Cluster-scoped, so the namespace deletion does not take it.
+    - name: "netapp_trident_csi | e2e | Cleanup: delete the probe StorageClass"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ _e2e_sc_name }}"
+      failed_when: false
+      when: _e2e_ns_owned | bool
+
+    - name: "netapp_trident_csi | e2e | Report"
+      ansible.builtin.debug:
+        msg: |
+          End-to-end ONTAP storage test ({{ _e2e_results | default([]) | length }} phase(s) run):
+          {% for r in _e2e_results | default([]) %}
+            [{{ 'PASS' if r.ok | bool else 'FAIL' }}] {{ r.phase }}: {{ r.detail | trim }}
+          {% endfor %}
+          {% if not (_e2e_rwx_run | default(false) | bool) %}
+            [SKIP] 4 cross-node RWX
+          {% endif %}
+          The probe volumes used a reclaimPolicy Delete class, so nothing was left
+          on the array by this test. {{ trident_storage_class }} - the class the
+          platform actually provisions on - is
+          reclaimPolicy {{ _e2e_real_reclaim | default(trident_reclaim_policy) }}
+          {%- if (_e2e_real_reclaim | default(trident_reclaim_policy)) == 'Retain' %},
+          so deleting a real PVC leaves its ONTAP FlexVol and its data in place.
+          Teardown prints every FlexVol left behind plus the ONTAP command to
+          remove them.
+          {%- else %}, so deleting a real PVC destroys its ONTAP FlexVol.
+          {%- endif %}
+
+    # length >= 3 as well as "nothing failed": phases 1-3 are unconditional, so
+    # fewer than three records means the run aborted before it tested anything and
+    # an empty rejectattr('ok') would otherwise report a pass.
+    - name: "netapp_trident_csi | e2e | All phases passed"
+      ansible.builtin.assert:
+        that:
+          - _e2e_results | default([]) | length >= 3
+          - _e2e_results | default([]) | rejectattr('ok') | list | length == 0
+        fail_msg: >-
+          {% if (_e2e_results | default([]) | length) < 3 %}
+          End-to-end storage test did not complete: only
+          {{ _e2e_results | default([]) | length }} of the three unconditional
+          phases (provision, write, persist) were recorded, so the run stopped
+          before it could test the storage. The failed task above says why.
+          {% else %}
+          End-to-end storage test FAILED:
+          {{ _e2e_results | default([]) | rejectattr('ok')
+             | map(attribute='phase') | join(', ') }}.
+          The per-phase detail is in the report printed immediately above.
+          {% endif %}
+        success_msg: >-
+          End-to-end storage test passed
+          ({{ _e2e_results | default([]) | length }} phase(s)).

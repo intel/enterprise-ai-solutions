@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# custom_storage — bring-your-own CSI driver
+# =============================================================================
+# Selected by storage_backend: custom. Installs nothing: the cluster already has
+# a provisioner. The named class must be the cluster default, because that is how
+# every other role inherits it — core roles and the bundled third-party charts
+# provision without naming a class, so they land on whatever the default is.
+#
+# The class is only read, never patched: it predates this install and is shared
+# with workloads outside the platform.
+# =============================================================================
+
+# Declared here so the role is standalone-runnable (-e target=storage); the real
+# values come from global_config.yaml via roles/storage/defaults/main.yaml.
+storage_custom_storageclass: ""
+storage_custom_rwx: true

@@ -39,3 +39,22 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+{% if gateway_s3_listener_enabled | bool %}
+    # S3 API listener - a more specific hostname than the *.base_domain_name
+    # wildcard above, so Gateway API accepts both on port 443 and a route that
+    # names this listener in sectionName gets it. Its only purpose is to carry the
+    # ClientTrafficPolicy that turns off merge_slashes and %2F rewriting, which
+    # SigV4 needs and which must NOT be turned off for the shared listeners.
+    - name: {{ gateway_s3_listener_name }}
+      protocol: HTTPS
+      port: 443
+      hostname: "{{ gateway_s3_hostname }}"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ gateway_tls_secret_name }}
+      allowedRoutes:
+        namespaces:
+          from: All
+{% endif %}

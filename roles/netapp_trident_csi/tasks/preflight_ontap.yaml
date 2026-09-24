@@ -1,0 +1,294 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - ONTAP preflight (needs a reachable array)
+# =============================================================================
+# Only included when ontap_preflight_online is true, so every other check in
+# this role runs on a machine with no ONTAP access.
+#
+# TCP port probes only. There is no ONTAP REST API integration here: no
+# credentials leave the installer, nothing under /api/* is queried, no HTTP
+# request is made and no JSON is parsed. A failed endpoint is connected to once
+# more to read the socket errno, which is what turns "FAILED" into REFUSED /
+# TIMEOUT / DNS - the array-side fault and the network-side fault have different
+# remedies and wait_for cannot tell them apart.
+#
+# Every probe result is collected and reported once, as a full node x port matrix.
+# The probes use `ignore_errors`, not `failed_when: false`: the latter overwrites
+# result['failed'], so a later `when: item.failed` gate could never fire.
+# =============================================================================
+
+- name: "netapp_trident_csi | preflight_ontap | Resolve probe targets"
+  ansible.builtin.set_fact:
+    _trident_probe_nodes: >-
+      {{ ((groups['k8s_cluster'] | default([]))
+          + (groups['kube_node'] | default([]))
+          + (groups['kube_control_plane'] | default([]))) | unique | list }}
+
+# The management LIF is probed from every node (the controller can land on any of
+# them), the data and S3 endpoints only from kube_node: a control-plane node that
+# never mounts a volume does not need the NFS ports, and requiring them there
+# fails an install that works. An inventory with no kube_node at all
+# (hand-written, k8s_cluster only) keeps probing everything from everywhere.
+- name: "netapp_trident_csi | preflight_ontap | Resolve mounting nodes"
+  ansible.builtin.set_fact:
+    _trident_mount_nodes: >-
+      {{ _kube_node if (_kube_node | length > 0) else _trident_probe_nodes }}
+  vars:
+    _kube_node: "{{ groups['kube_node'] | default([]) | unique | list }}"
+
+- name: "netapp_trident_csi | preflight_ontap | No inventory nodes to probe from"
+  ansible.builtin.debug:
+    msg: >-
+      No cluster hosts in the inventory, so ONTAP reachability is probed from
+      the installer host only. On a BYO cluster verify by hand that every node
+      reaches {{ ontap_management_lif }}:{{ ontap_mgmt_port }} and
+      {{ ontap_data_lif }}:{{ ontap_data_ports | join('/') }}.
+  when: _trident_probe_nodes | length == 0
+
+# Reset before the accumulating loop below: this file is included by both
+# install.yaml and validate.yaml, and set_fact values survive for the whole play.
+- name: "netapp_trident_csi | preflight_ontap | Seed the ONTAP endpoint lists"
+  ansible.builtin.set_fact:
+    _trident_mgmt_endpoints:
+      - lif: "{{ ontap_management_lif | string | trim }}"
+        port: "{{ ontap_mgmt_port | int }}"
+        label: "management LIF"
+    _trident_mount_endpoints: []
+
+# One entry per data port. A loop is used because Jinja has no comprehension for
+# zipping a single host against a list of ports into dicts.
+- name: "netapp_trident_csi | preflight_ontap | Add the ONTAP data endpoints"
+  ansible.builtin.set_fact:
+    _trident_mount_endpoints: >-
+      {{ _trident_mount_endpoints
+         + [{'lif': ontap_data_lif | string | trim,
+             'port': item | int,
+             'label': 'data LIF'}] }}
+  loop: "{{ ontap_data_ports }}"
+  loop_control:
+    label: "{{ ontap_data_lif }}:{{ item }}"
+
+# The object-store server has its own LIF and port (ontap_s3_data_lif is NOT
+# ontap_data_lif). Probing it here is the difference between a blocked S3 port
+# surfacing in preflight and surfacing as a failed presigned upload later.
+- name: "netapp_trident_csi | preflight_ontap | Add the ONTAP S3 data endpoint"
+  ansible.builtin.set_fact:
+    _trident_mount_endpoints: >-
+      {{ _trident_mount_endpoints
+         + [{'lif': ontap_s3_data_lif | string | trim,
+             'port': ontap_s3_port | int,
+             'label': 'S3 data LIF'}] }}
+  when:
+    - ontap_s3_data_lif | default('', true) | string | trim | length > 0
+    - ontap_s3_port | default('', true) | string | trim | length > 0
+    - (ontap_s3_port | int) > 0
+
+- name: "netapp_trident_csi | preflight_ontap | Build probe matrix"
+  ansible.builtin.set_fact:
+    _trident_probe_matrix: >-
+      {{ (_all_nodes | product(_trident_mgmt_endpoints) | list)
+         + (_mount_nodes | product(_trident_mount_endpoints) | list) }}
+  vars:
+    _all_nodes: >-
+      {{ _trident_probe_nodes if (_trident_probe_nodes | length > 0) else ['localhost'] }}
+    _mount_nodes: >-
+      {{ _trident_mount_nodes if (_trident_mount_nodes | length > 0) else ['localhost'] }}
+
+- name: "netapp_trident_csi | preflight_ontap | Probe ONTAP TCP ports from every node"
+  ansible.builtin.wait_for:
+    host: "{{ item[1].lif }}"
+    port: "{{ item[1].port | int }}"
+    timeout: "{{ ontap_probe_timeout_seconds | int }}"
+    state: started
+  delegate_to: "{{ item[0] }}"
+  loop: "{{ _trident_probe_matrix }}"
+  loop_control:
+    label: "{{ item[0] }} -> {{ item[1].lif }}:{{ item[1].port }} ({{ item[1].label }})"
+  register: _trident_probes
+  # See the header for ignore_errors vs failed_when. ignore_unreachable keeps an
+  # SSH-dead node reportable instead of aborting under any_errors_fatal.
+  ignore_errors: true
+  ignore_unreachable: true
+  # Read-only probe: it opens a socket and closes it. Must still run under
+  # --check, and it changes nothing.
+  check_mode: false
+  changed_when: false
+
+# wait_for reports a refused connection and a blackholed packet identically, but
+# the remedies differ: REFUSED means nothing serves that port (wrong LIF, or the
+# protocol is off), TIMEOUT means the packet never arrived (VLAN routing,
+# firewall-policy). One extra connect recovers the distinction from the errno.
+- name: "netapp_trident_csi | preflight_ontap | Classify every failed probe"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-c"
+      - |
+        import socket, sys
+        host, port, timeout = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+        try:
+            family, kind, proto, _, addr = socket.getaddrinfo(
+                host, port, type=socket.SOCK_STREAM)[0]
+        except socket.gaierror:
+            print("DNS")
+            sys.exit(0)
+        sock = socket.socket(family, kind, proto)
+        sock.settimeout(timeout)
+        try:
+            sock.connect(addr)
+            print("OPEN")
+        except (socket.timeout, TimeoutError):
+            print("TIMEOUT")
+        except ConnectionRefusedError:
+            print("REFUSED")
+        except OSError as exc:
+            print("ERROR:%s" % (exc.strerror or exc))
+        finally:
+            sock.close()
+      - "{{ item.item[1].lif }}"
+      - "{{ item.item[1].port }}"
+      - "{{ ontap_probe_timeout_seconds }}"
+  delegate_to: "{{ item.item[0] }}"
+  loop: "{{ _trident_probes.results }}"
+  loop_control:
+    label: "{{ item.item[0] }} -> {{ item.item[1].lif }}:{{ item.item[1].port }}"
+  when:
+    - item.failed | default(false)
+    - not (item.unreachable | default(false))
+  register: _trident_probe_class
+  # The classifier only annotates an already-fatal failure, so its own exit status
+  # must decide nothing: a node without python3 reports a bare FAILED.
+  failed_when: false
+  ignore_unreachable: true
+  check_mode: false
+  changed_when: false
+
+# Same accumulator reset as the endpoint list above.
+- name: "netapp_trident_csi | preflight_ontap | Seed the annotated probe report"
+  ansible.builtin.set_fact:
+    _trident_probe_report: []
+
+# zip is safe: the classifier loops over _trident_probes.results itself and a
+# per-item `when` still emits a skipped entry, so the lists stay index-aligned.
+- name: "netapp_trident_csi | preflight_ontap | Annotate every probe with its outcome"
+  ansible.builtin.set_fact:
+    _trident_probe_report: >-
+      {{ _trident_probe_report + [{
+           'node': item[0].item[0],
+           'lif': item[0].item[1].lif,
+           'port': item[0].item[1].port,
+           'label': item[0].item[1].label,
+           'status': ('UNREACHABLE NODE' if (item[0].unreachable | default(false))
+                      else ('OK' if not (item[0].failed | default(false))
+                            else ('TRANSIENT' if _class == 'OPEN' else _class)))
+         }] }}
+  loop: "{{ _trident_probes.results | zip(_trident_probe_class.results) | list }}"
+  loop_control:
+    label: "{{ item[0].item[0] }} -> {{ item[0].item[1].lif }}:{{ item[0].item[1].port }}"
+  vars:
+    _class: "{{ (item[1].stdout | default('') | trim) or 'FAILED' }}"
+
+- name: "netapp_trident_csi | preflight_ontap | Connectivity matrix"
+  ansible.builtin.debug:
+    msg: |
+      ONTAP reachability ({{ ontap_probe_timeout_seconds }}s timeout per probe):
+      {% for r in _trident_probe_report %}
+        {{ r.node }} -> {{ r.lif }}:{{ r.port }} ({{ r.label }}) : {{ r.status }}
+      {% endfor %}
+      {% if (_trident_mount_nodes | length) < (_trident_probe_nodes | default([]) | length) %}
+      The data and S3 ports are required only on the schedulable node(s)
+      ({{ _trident_mount_nodes | join(', ') }}); a control-plane-only node mounts
+      nothing and needs the management LIF alone.
+      {% endif %}
+
+- name: "netapp_trident_csi | preflight_ontap | Assert every node reaches the array"
+  ansible.builtin.assert:
+    that:
+      - _failed | length == 0
+    fail_msg: |
+      ONTAP is not reachable from the whole cluster.
+      {% for r in _failed %}
+        {{ r.node }} -> {{ r.lif }}:{{ r.port }} ({{ r.label }}) : {{ r.status }}
+      {% endfor %}
+      {% for s in _failed | map(attribute='status') | unique | sort %}
+      {{ s }} = {{ _status_help[s] | default('see the wait_for error above') }}
+      {% endfor %}
+      {% if _unreachable_nodes | length > 0 %}
+      Start with {{ _unreachable_nodes | join(', ') }}: fix SSH and
+      env/<name>/inventory/hosts.yaml. Trident runs a node pod on every node.
+      {% elif _lif_collision and _mgmt_ok and _data_all_refused %}
+      ontap_data_lif is the same address as ontap_management_lif, and a management
+      LIF (service-policy default-management) never serves NFS. Use a data-role
+      LIF whose service-policy includes data-nfs, and check the nodes route to it:
+        network interface show -vserver {{ _svm }} -fields lif,address,role,service-policy
+      {% elif _data_all_refused %}
+      {{ ontap_data_lif }} serves neither 2049 nor 111: wrong LIF, or NFS is off on
+      the SVM. An object-store (S3) LIF is not the NFS LIF and refuses both too.
+        vserver nfs status -vserver {{ _svm }}
+        network interface show -vserver {{ _svm }} -fields lif,address,role,service-policy
+      {% elif _nfsd_only %}
+      rpcbind answers and nfsd does not, so the address is right and the NFS
+      server is not serving: check that it is running on the SVM.
+        vserver nfs status -vserver {{ _svm }}
+      {% elif _rpcbind_only %}
+      nfsd is reachable, rpcbind is not, and NFSv3 mounts go through rpcbind. Only
+      an NFSv4-only SVM may skip it, via ontap_data_ports: [2049].
+        vserver nfs show -vserver {{ _svm }} -fields v3,v4.1
+      {% elif _timeouts | length > 0 %}
+      The timed-out endpoints got no answer at all: storage VLAN routing (the data
+      LIF is usually off the default route), or the firewall-policy on the LIF.
+        ip route get {{ _timeouts[0].lif }}
+      {% endif %}
+      {% if _s3_failed | length > 0 %}
+      The object-store server has its own LIF and port (ontap_s3_data_lif):
+        vserver object-store-server show -vserver {{ _svm }}
+      {% endif %}
+      {% if not _mgmt_ok %}
+      The Trident controller can be scheduled on any node, so every node needs the
+      management LIF on {{ ontap_mgmt_port }}.
+      {% endif %}
+      Reproduce one line by hand on the node it names: nc -zv -w3 <lif> <port>
+    success_msg: >-
+      ONTAP reachable on every required port from
+      {{ _trident_probe_matrix | map('first') | unique | list | length }} node(s).
+  vars:
+    _failed: "{{ _trident_probe_report | rejectattr('status', 'equalto', 'OK') | list }}"
+    _svm: "{{ ontap_svm | default('<svm>', true) }}"
+    # Only the statuses actually present are printed, so this stays a lookup
+    # rather than a wall of legend text. An ERROR:<strerror> status has no entry
+    # and falls back to the default in the template.
+    _status_help:
+      REFUSED: "the address answered, nothing serves that port (array side)"
+      TIMEOUT: "the packet never arrived (routing or firewall-policy)"
+      DNS: "the hostname does not resolve on that node"
+      TRANSIENT: >-
+        answered a retry but not the {{ ontap_probe_timeout_seconds }}s wait
+        (flapping)
+      FAILED: "unclassified - no python3 on that node to re-probe with"
+      UNREACHABLE NODE: "Ansible cannot reach the node itself over SSH"
+    _unreachable_nodes: >-
+      {{ _failed | selectattr('status', 'equalto', 'UNREACHABLE NODE')
+         | map(attribute='node') | unique | list }}
+    _timeouts: "{{ _failed | selectattr('status', 'equalto', 'TIMEOUT') | list }}"
+    _s3_failed: "{{ _failed | selectattr('label', 'equalto', 'S3 data LIF') | list }}"
+    _mgmt_ok: >-
+      {{ _failed | selectattr('label', 'equalto', 'management LIF') | list | length == 0 }}
+    _data_probed: >-
+      {{ _trident_probe_report | selectattr('label', 'equalto', 'data LIF') | list }}
+    _data_failed: "{{ _failed | selectattr('label', 'equalto', 'data LIF') | list }}"
+    # Every data port probed, and every one of them refused. A partial failure
+    # (2049 open, 111 refused) is a different fault and gets its own branch.
+    _data_all_refused: >-
+      {{ _data_failed | length > 0
+         and _data_failed | length == _data_probed | length
+         and (_data_failed | rejectattr('status', 'equalto', 'REFUSED')
+              | list | length == 0) }}
+    _lif_collision: >-
+      {{ (ontap_data_lif | string | trim) == (ontap_management_lif | string | trim) }}
+    _data_failed_ports: "{{ _data_failed | map(attribute='port') | map('int') | list }}"
+    _rpcbind_only: >-
+      {{ 111 in _data_failed_ports and 2049 not in _data_failed_ports }}
+    _nfsd_only: >-
+      {{ 2049 in _data_failed_ports and 111 not in _data_failed_ports }}

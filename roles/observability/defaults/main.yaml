@@ -37,7 +37,7 @@ observability_prometheus_adapter_version: "4.11.0"
 observability_grafana_admin_user: "admin"
 # Password managed by tasks/credentials.yaml — stored in 'observability-credentials' Secret.
 observability_grafana_admin_password: ""
-observability_grafana_hostname: "grafana.{{ base_domain_name | default('inference-example.com') }}"
+observability_grafana_hostname: "grafana.{{ base_domain_name | default('solutions.ai') }}"
 
 # ── Prometheus retention & storage ───────────────────────────────────────────
 observability_prometheus_retention: "30d"

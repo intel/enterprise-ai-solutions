@@ -1,0 +1,37 @@
+{#
+Copyright (C) 2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+
+Path handling for the S3 API listener only (sectionName). S3 SigV4 signs the
+request path byte for byte, so Envoy's two default rewrites break any key that
+contains an empty path segment or an encoded slash:
+
+  disableMergeSlashes: true   -> '/bucket/a//b.pdf' is forwarded as signed
+                                 instead of collapsing to '/bucket/a/b.pdf'
+  escapedSlashesAction:
+    KeepUnchanged             -> '/bucket/a%2Fb.pdf' is forwarded as signed
+                                 instead of 307-redirecting
+
+Scoped to one listener because ClientTrafficPolicy path settings are per
+listener: applying them to 'https' or 'https-apex' would relax normalization for
+the UI, API and keycloak routes as well.
+
+Not covered: Envoy's normalize_path (dot-segment resolution, '/x/../y'). Gateway
+API exposes no field for it - the only lever is an EnvoyPatchPolicy, which this
+installer deliberately does not use. Keys containing '..' are rejected by the
+data-prep service before they are signed.
+#}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: {{ (gateway_name ~ '-s3-path') | to_json }}
+  namespace: {{ gateway_namespace | to_json }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ gateway_name | to_json }}
+      sectionName: {{ gateway_s3_listener_name | to_json }}
+  path:
+    disableMergeSlashes: true
+    escapedSlashesAction: KeepUnchanged

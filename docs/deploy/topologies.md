@@ -4,6 +4,11 @@
 
 How to deploy on multiple machines, or bring an existing Kubernetes cluster.
 
+This guide covers two paths that both end at the same platform: declaring several nodes so the installer provisions Kubernetes across them, or pointing the installer at a cluster you already run so it deploys only the platform and the layers above it. Nothing about the stack itself changes; what changes is who provisions the cluster and where persistent data lives.
+
+> [!IMPORTANT]
+> Multi-node deployments need shared storage that supports ReadWriteMany: `storage_backend: nfs`, `ceph`, or `netapp-trident`. The default `local-path` binds a volume to one node, so model weights would be invisible to every other node. See [Storage](../customize/configuration.md#storage).
+
 ---
 
 ## Multi-node deployment
@@ -25,7 +30,7 @@ Once the above are met, configure the node list and SSH credentials using [Optio
 
 ```bash
 ./es_auto_installer.sh configure
-./es_auto_installer.sh init prod
+./es_auto_installer.sh init inference --env prod
 ```
 
 ---
@@ -130,7 +135,7 @@ all:
 ### Step 4 — Install
 
 ```bash
-./es_auto_installer.sh install --all --env prod
+./es_auto_installer.sh install inference --env prod
 ```
 
 The installer SSHes into the nodes, provisions Kubernetes across them via Kubespray, then deploys platform and inference layers.
@@ -203,7 +208,7 @@ observability_enabled: false    # skip Prometheus/Grafana stack
 Then install as normal:
 
 ```bash
-./es_auto_installer.sh install --all --env myenv
+./es_auto_installer.sh install inference --env myenv
 ```
 
 > **BYO node topology:** node labels (`workload-class=platform/inference`) are not applied automatically. Apply them manually if you want workload placement:
@@ -218,7 +223,7 @@ Then install as normal:
 ## Teardown
 
 ```bash
-./es_auto_installer.sh teardown --all --env prod
+./es_auto_installer.sh teardown infrastructure --env prod
 ```
 
 Runs Kubespray `reset.yml` across all nodes. Configuration files under `env/prod/` are preserved. The kubeconfig is removed.

@@ -1,0 +1,52 @@
+---
+# Reserve each platform hostname to its owning namespace.
+#
+# The shared gateway listeners admit routes from every namespace, and the Gateway
+# API resolves two routes claiming the same hostname by match specificity without
+# regard to namespace. A route in any namespace that pins a more specific match
+# (e.g. an exact /v1/chat/completions path) on a platform hostname therefore
+# out-ranks the platform's own route and hijacks the traffic — including the
+# victim's bearer token — or denies it. This policy rejects, at admission, any
+# HTTPRoute that claims one of the reserved hostnames from a namespace other than
+# its owner. Routes on any other hostname are unaffected, so tenant self-service
+# via `from: All` keeps working.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: eg-protected-hostname-ownership
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["gateway.networking.k8s.io"]
+        apiVersions: ["v1", "v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["httproutes"]
+  variables:
+    # hostname -> owning namespace, rendered from gateway_protected_hostnames.
+    - name: owners
+      expression: >-
+        {{ '{' }}{% for e in gateway_protected_hostnames %}"{{ e.hostname }}": "{{ e.owner_namespace }}"{% if not loop.last %}, {% endif %}{% endfor %}{{ '}' }}
+  validations:
+    # A route with no explicit hostnames does not claim a reserved name by string,
+    # and the Gateway API ranks an explicit hostname above the listener wildcard,
+    # so only explicit claims can take over. Allow any hostname that is not
+    # reserved; for a reserved one, require the route to live in the owner namespace.
+    - expression: >-
+        !has(object.spec.hostnames) ||
+        object.spec.hostnames.all(h,
+          !(h in variables.owners) || variables.owners[h] == object.metadata.namespace)
+      messageExpression: >-
+        "HTTPRoute '" + object.metadata.namespace + "/" + object.metadata.name +
+        "' claims a hostname reserved for a platform component and may only be created " +
+        "in that hostname's owning namespace. Use a hostname your namespace owns, or " +
+        "have an operator extend gateway_protected_hostnames. Reserved: {{ gateway_protected_hostnames | map(attribute='hostname') | join(', ') }}."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: eg-protected-hostname-ownership
+spec:
+  policyName: eg-protected-hostname-ownership
+  validationActions: ["Deny"]

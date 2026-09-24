@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # storage | resolve
@@ -6,9 +8,18 @@
 # cluster calls), so it is safe before the cluster exists. The `storage`
 # component gates on _resolved_storage_role, so resolution must happen here.
 #
+# ONTAP values are validated here too: a missing ontap_svm caught in preflight
+# costs seconds, while the same mistake caught inside the storage role surfaces
+# after Kubespray has provisioned the cluster, roughly 40 minutes later.
+#
 # Input  : storage_backend  (default local-path)
-# Outputs: _resolved_storage_backend  normalized selector
+# Outputs: _resolved_storage_backend  normalized selector, always set
 #          _resolved_storage_role     role to run, or none (local-path)
+#
+# Consumers read _resolved_storage_backend, not storage_backend: it is normalized
+# (trim + lower) exactly once, here, and set for every action and target. Read it
+# as `_resolved_storage_backend | default(storage_backend | default('local-path'))`
+# so a standalone role run still works if this file never ran.
 # =============================================================================
 
 - name: "storage | resolve | normalize selector"
@@ -20,6 +31,71 @@
     _storage_is_multinode: >-
       {{ (nodes_workers | default([]) | length) > 0
          or (groups['all'] | default([]) | length) > 1 }}
+
+# ─── ONTAP / NetApp Trident ─────────────────────────────────────────────
+
+# Computed in its own task, with no_log, so the assert below can print its
+# message: no_log on an assert censors the very fail_msg it exists to show.
+# Only variable *names* leave this task.
+- name: "storage | resolve | collect missing ONTAP values"
+  ansible.builtin.set_fact:
+    _ontap_missing: >-
+      {{ [
+        ('ontap_management_lif' if (ontap_management_lif | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_data_lif' if (ontap_data_lif | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_svm' if (ontap_svm | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_username' if (ontap_username | default('', true) | string | trim | length == 0) else ''),
+        ('ontap_password' if (ontap_password | default('', true) | string | trim | length == 0) else '')
+      ] | reject('equalto', '') | list }}
+  when: _resolved_storage_backend == 'netapp-trident'
+  no_log: true
+
+- name: "storage | resolve | assert the ONTAP configuration is complete"
+  ansible.builtin.assert:
+    that: _ontap_missing | length == 0
+    fail_msg: >-
+      storage_backend='netapp-trident' but
+      {{ _ontap_missing | length }} required value(s) are empty:
+      {{ _ontap_missing | join(', ') }}.
+      Set them in env/<env>/global_config.yaml (see the "NetApp ONTAP" block in
+      configs/defaults/global_config.yaml). Failing now rather than after the
+      cluster is provisioned: an incomplete backend only shows up as a
+      TridentBackendConfig that never reaches Bound.
+    success_msg: >-
+      ONTAP parameters complete (SVM {{ ontap_svm | default('') }} via
+      {{ ontap_management_lif | default('') }}).
+  when: _resolved_storage_backend == 'netapp-trident'
+
+# ─── Custom (bring-your-own CSI) ────────────────────────────────────────
+
+# Checked here rather than in custom_storage for the same reason as ONTAP above:
+# the role runs after Kubespray, an empty name caught there costs ~40 minutes.
+- name: "storage | resolve | assert the custom StorageClass is named"
+  ansible.builtin.assert:
+    that: storage_custom_storageclass | default('', true) | string | trim | length > 0
+    fail_msg: >-
+      storage_backend='custom' but storage_custom_storageclass is empty. Set it in
+      global_config.yaml to the StorageClass your cluster's CSI driver provides
+      (kubectl get storageclass).
+    success_msg: "Custom StorageClass: {{ storage_custom_storageclass | default('') }}"
+  when: _resolved_storage_backend == 'custom'
+
+# Same rule as local-path below, for the same reason: the model store is one
+# volume mounted by the download job and every predictor pod, so without RWX the
+# pods that land off the downloading node cannot mount the weights.
+- name: "storage | resolve | reject an RWO-only custom class on multi-node"
+  ansible.builtin.fail:
+    msg: >-
+      storage_custom_rwx=false cannot run on a multi-node cluster: the shared
+      model store needs ReadWriteMany. Point storage_custom_storageclass at a
+      shared-filesystem class (NFS, CephFS, ontap-nas, EFS, Azure Files, ...) and
+      set storage_custom_rwx: true, or switch storage_backend to nfs or ceph.
+  when:
+    - _resolved_storage_backend == 'custom'
+    - not (storage_custom_rwx | default(true) | bool)
+    - _storage_is_multinode | bool
+
+# ─── Backend registry ───────────────────────────────────────────────────
 
 - name: "storage | resolve | reject local-path on multi-node"
   ansible.builtin.fail:
@@ -48,4 +124,4 @@
   ansible.builtin.debug:
     msg: >-
       Storage backend: {{ _resolved_storage_backend }}
-      → role={{ _resolved_storage_role | default('(none — local-path)', true) }}
+      -> role={{ _resolved_storage_role | default('(none - local-path)', true) }}

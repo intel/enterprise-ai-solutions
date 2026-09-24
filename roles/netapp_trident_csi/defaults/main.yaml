@@ -1,0 +1,146 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - Defaults
+# =============================================================================
+# Flat override surface: every value below can be set in
+# env/<env>/global_config.yaml. Nothing here is nested except the read-only
+# driver capability table, which is data the role interprets rather than a
+# user knob (a nested override would clobber it on shallow merge).
+# =============================================================================
+
+# --- Trident operator (Helm) ---
+# The NetApp chart carries a "100." epoch in front of the Trident release, so
+# the full chart version is pinned here in one place rather than assembled from
+# a bare release number at install time. 100.2510.0 is Trident 25.10, the
+# release qualified against the ONTAP 9.16.1P4+ recommended in
+# configs/defaults/global_config.yaml.
+trident_chart_version: "100.2510.0"
+trident_chart_repo_name: "netapp-trident"
+trident_chart_repo_url: "https://netapp.github.io/trident-helm-chart/"
+trident_namespace: "trident"
+# Air-gap / mirrored registry. Empty = the chart's own defaults, i.e. Docker Hub.
+# Set to the mirror hosting the netapp/trident* images (the operator passes it to
+# the images it deploys, so one value covers controller and node pods).
+trident_image_registry: ""
+# Name of an existing imagePullSecret in trident_namespace. Empty = none.
+trident_image_pull_secret: ""
+# Helm timeout for this role. `helm_wait` is a play var (playbooks/site.yaml)
+# and is deliberately not redeclared here - a role default would be shadowed.
+trident_wait_timeout: "600s"
+
+# --- Backend ---
+# TridentBackendConfig name; also derives <name>-secret and <name>-backend.
+trident_backend_name: "ontap-nas"
+ontap_driver: "ontap-nas"
+# ONTAP REST API instead of ZAPI. Needs ONTAP 9.11+; 9.16.1P4+ recommended.
+ontap_use_rest: true
+# FlexVol name prefix on the array. Empty = Trident default ("trident_").
+# Set this to make the volumes belonging to this cluster identifiable on the
+# array, which is what the teardown residue report keys off.
+ontap_storage_prefix: ""
+# Extra NFS mount options for NAS drivers, e.g. "nfsvers=4.1,rsize=262144".
+# Empty = let Trident/ONTAP negotiate.
+ontap_nfs_mount_options: ""
+
+# --- StorageClass ---
+trident_storage_class: "netapp-trident"
+# Mark the StorageClass the cluster-wide default. The rest of the stack
+# provisions against the default SC and never names a backend.
+trident_storageclass_default: true
+# Retain matches roles/nfs_storage: deleting a PVC leaves the ONTAP FlexVol in
+# place and the PV goes Released. Teardown reports what was left on the array;
+# it cannot delete it once the CSI driver is gone. Set to Delete only if you
+# accept that a PVC delete destroys array-side data.
+trident_reclaim_policy: "Retain"
+# Immediate, not WaitForFirstConsumer: model-download jobs and the inference
+# model store provision volumes before any consumer pod exists, and a NAS
+# volume has no node affinity to wait for.
+trident_volume_binding_mode: "Immediate"
+trident_allow_volume_expansion: true
+
+# --- ONTAP array (required; set in env/<env>/global_config.yaml) ---
+ontap_management_lif: ""
+ontap_data_lif: ""
+ontap_svm: ""
+ontap_username: ""
+ontap_password: ""
+
+# --- Supported drivers ---
+# NAS only, all of which serve ReadWriteMany over NFS. The SAN drivers need
+# iSCSI/multipath node preparation this role does not perform, and are
+# ReadWriteOnce, which the shared model store cannot use.
+trident_supported_drivers:
+  - ontap-nas
+  - ontap-nas-economy
+  - ontap-nas-flexgroup
+
+# --- Preflight ---
+# Master gate for everything that needs to talk to the array. Set false for a
+# complete config + template + topology validation run on a machine with no
+# ONTAP access:  ./es_auto_installer.sh validate storage -- -e ontap_preflight_online=false
+ontap_preflight_online: true
+ontap_probe_timeout_seconds: 10
+ontap_mgmt_port: 443
+# 2049 = nfsd, 111 = rpcbind. Some ONTAP export configurations still need
+# rpcbind for mount negotiation, so both are probed.
+ontap_data_ports: [2049, 111]
+
+# --- ONTAP S3 (optional; object store on the same SVM) ---
+# Only the S3 leg of this role's reachability matrix reads these. The other
+# consumers - the S3 listener in roles/envoy_gateway and the RAG data-prep layer -
+# are separate roles, so role defaults are out of scope for them: set the values
+# in env/<env>/global_config.yaml, not here.
+#
+# ontap_s3_data_lif is a DIFFERENT LIF from ontap_data_lif: that one is the NFS
+# data LIF (TCP 2049 + 111) Trident mounts volumes over, this one is the
+# object-store server's. They can be the same address, but there is no fallback:
+# defaulting to the NFS LIF would point the gateway at a port nothing listens on.
+# Empty = no object-store server, and nothing else in this block is used.
+ontap_s3_data_lif: ""
+ontap_s3_port: ""
+ontap_s3_tls: true
+# PEM bundle on the installer host that signed the ONTAP S3 certificate.
+ontap_s3_ca_cert_file: ""
+
+# --- Install waits ---
+trident_crd_wait_retries: 30
+trident_crd_wait_delay: 10
+# The operator registers CRDs well before trident-controller serves, and a
+# proxied or slow image pull can add minutes, so these are generous.
+trident_orchestrator_wait_retries: 60
+trident_orchestrator_wait_delay: 10
+trident_controller_wait_retries: 60
+trident_controller_wait_delay: 10
+trident_backend_wait_retries: 60
+trident_backend_wait_delay: 10
+
+# --- Validation ---
+ontap_validate_e2e: true
+ontap_validate_namespace: "ontap-validate"
+# The probe volumes get their own StorageClass, not trident_storage_class: the
+# real class is reclaimPolicy Retain, so probing on it would leave a FlexVol on
+# the array on every validate run. This class is identical except reclaimPolicy
+# Delete, and it is never the cluster default. Created and deleted by the E2E run.
+ontap_validate_probe_storage_class: "{{ trident_storage_class }}-probe"
+ontap_validate_pvc_size: "100Mi"
+ontap_validate_timeout_seconds: 180
+# auto = run the cross-node RWX phase when at least two schedulable nodes exist.
+# true = require it. false = skip.
+ontap_validate_rwx: "auto"
+# Reuse the image already pinned by roles/nri_cpu_balloons so an air-gapped
+# mirror needs one fewer entry.
+ontap_validate_image: "busybox:1.36"
+
+# --- Teardown ---
+# Deleting PVCs destroys application data, so it is opt-in. When false and
+# Trident PVCs exist, teardown fails with the full list rather than hanging on
+# finalizers half-way through.
+ontap_teardown_delete_pvcs: false
+# Remove *.trident.netapp.io CRDs. Leaving them behind lets a later install of
+# a different Trident version bind to stale schemas.
+ontap_teardown_remove_crds: true
+trident_teardown_wait_retries: 36
+trident_teardown_wait_delay: 5
+trident_teardown_namespace_timeout: 180

@@ -1,0 +1,718 @@
+---
+# =============================================================================
+# velero — Install via Helm
+# =============================================================================
+# Idempotent: the Helm release is reconciled on every run (helm upgrade --install
+# semantics via state: present), so configuration changes actually apply.
+# =============================================================================
+
+- name: "velero | Validate configuration"
+  ansible.builtin.assert:
+    that:
+      - velero_install_server or velero_install_client
+    fail_msg: "velero requires install_server or install_client to be true."
+
+# =============================================================================
+# Preflight — CSI snapshot capability
+# =============================================================================
+# Velero is deliberately restricted to CSI volume snapshots. A backup taken
+# without a working snapshot path completes successfully and contains no volume
+# data, which is worse than no backup at all — so this fails early and loudly.
+
+- name: "velero | Preflight — PV data path is csi"
+  ansible.builtin.assert:
+    that:
+      - velero_pv_mode == 'csi'
+    fail_msg: >-
+      velero_pv_mode is '{{ velero_pv_mode }}'. Only 'csi' is supported.
+      Filesystem-level backup (no snapshot) is not wired up in this release.
+
+- name: "velero | Preflight — storage backend can snapshot"
+  ansible.builtin.assert:
+    that:
+      - (storage_backend | default('local-path')) in velero_csi_capable_backends
+    fail_msg: >-
+      Velero needs CSI volume snapshots, and storage_backend is
+      '{{ storage_backend | default('local-path') }}', which cannot snapshot.
+      Fix: set storage_backend to one of
+      {{ velero_csi_capable_backends | join(', ') }} in
+      env/<env>/global_config.yaml and reinstall the storage component, or set
+      velero_enabled=false.
+
+# Adopts or creates the class, and applies Velero's own label to it. Runs before
+# the assertion below, which is then a check on the result rather than a
+# requirement on whoever installed the storage.
+- name: "velero | Ensure a labelled VolumeSnapshotClass"
+  ansible.builtin.include_tasks: snapshot_class.yaml
+  when: velero_install_server
+
+- name: "velero | Preflight — read VolumeSnapshotClasses"
+  kubernetes.core.k8s_info:
+    api_version: snapshot.storage.k8s.io/v1
+    kind: VolumeSnapshotClass
+  register: _velero_vsc_list
+  failed_when: false
+
+- name: "velero | Preflight — collect Velero-labelled VolumeSnapshotClasses"
+  ansible.builtin.set_fact:
+    _velero_snapshot_classes: "{{ _velero_snapshot_classes | default([]) + [item.metadata.name] }}"
+  loop: "{{ _velero_vsc_list.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: (item.metadata.labels | default({}))['velero.io/csi-volumesnapshot-class'] | default('false') | bool
+
+- name: "velero | Preflight — a labelled VolumeSnapshotClass exists"
+  ansible.builtin.assert:
+    that:
+      - _velero_snapshot_classes | default([]) | length > 0
+    fail_msg: >-
+      No VolumeSnapshotClass carries the label
+      velero.io/csi-volumesnapshot-class=true, so Velero has no snapshot class
+      to use — and this component just tried to create one, so the cluster is
+      missing the snapshot.storage.k8s.io CRDs rather than merely the class.
+      They come with the storage component (storage_backend=nfs), together with
+      the snapshot controller that services snapshot requests. Check what is
+      there with `kubectl get crd | grep snapshot.storage`,
+      `kubectl get volumesnapshotclass` and
+      `kubectl get deploy -A | grep snapshot-controller`, or run
+      `validate storage` for the whole chain. On a cluster whose storage
+      predates snapshot support and is not being reinstalled,
+      scripts/enable-csi-snapshots.sh sets the CRDs and controller up by hand.
+  when: velero_install_server
+
+- name: "velero | Preflight — snapshot class in use"
+  ansible.builtin.debug:
+    msg: "Velero will snapshot through: {{ _velero_snapshot_classes | default([]) | join(', ') }}"
+  when: velero_install_server
+
+# =============================================================================
+# Preflight — data movement
+# =============================================================================
+
+- name: "velero | Preflight — data movement needs the node agent"
+  ansible.builtin.assert:
+    that:
+      - velero_deploy_node_agent | bool
+    fail_msg: >-
+      velero_snapshot_move_data is on but velero_deploy_node_agent is off.
+      Moving snapshot data out of the cluster is done by the node agent —
+      set velero_deploy_node_agent=true.
+  when: velero_snapshot_move_data | bool
+
+- name: "velero | Preflight — data movement needs an external backup store"
+  ansible.builtin.assert:
+    that:
+      - velero_external_bsl_enabled | bool
+    fail_msg: >-
+      velero_snapshot_move_data is on but the in-cluster backup store is in use.
+      Copying snapshot data into a store that shares the cluster's fate gains
+      nothing — configure an external store
+      (velero_external_bsl_enabled=true) or turn data movement off.
+  when: velero_snapshot_move_data | bool
+
+- name: "velero | Validate external BSL credentials — mutually exclusive"
+  ansible.builtin.assert:
+    that:
+      - not (velero_external_bsl_credentials_secret != '' and velero_external_bsl_credentials_file_path != '')
+    fail_msg: >-
+      Both credentials_secret and credentials_file_path are set.
+      Use credentials_file_path to let Ansible create the secret automatically, OR
+      use credentials_secret to reference a pre-existing Kubernetes secret — not both.
+  when: velero_external_bsl_enabled
+
+- name: "velero | Install"
+  when: velero_install_server
+  block:
+    # =========================================================================
+    # Helm repositories & dependency build
+    # =========================================================================
+
+    - name: "velero | Add Velero Helm repo"
+      kubernetes.core.helm_repository:
+        name: "{{ velero_helm_repo_name }}"
+        repo_url: "{{ velero_helm_repo_url }}"
+      register: helm_repo_add_result
+      until: helm_repo_add_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+
+    - name: "velero | Add SeaweedFS Helm repo"
+      kubernetes.core.helm_repository:
+        name: "{{ velero_helm_seaweedfs_repo_name }}"
+        repo_url: "{{ velero_helm_seaweedfs_repo_url }}"
+      register: helm_repo_add_result
+      until: helm_repo_add_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+      when: not velero_external_bsl_enabled
+
+    - name: "velero | Build Helm chart dependencies"
+      ansible.builtin.command:
+        cmd: helm dependency build
+        chdir: "{{ velero_helm_chart_directory }}"
+      register: _velero_helm_dep
+      until: _velero_helm_dep is succeeded
+      retries: 5
+      delay: 15
+      changed_when: false
+
+    # =========================================================================
+    # Namespace
+    # =========================================================================
+
+    - name: "velero | Ensure namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ velero_namespace }}"
+
+    - name: "velero | Label namespace — Istio"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ velero_namespace }}"
+            labels:
+              istio.io/dataplane-mode: "ambient"
+      when: istio_enabled | default(false) | bool
+
+    - name: "velero | Label namespace — PSS"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ velero_namespace }}"
+            labels:
+              pod-security.kubernetes.io/enforce: "baseline"
+              pod-security.kubernetes.io/audit: "baseline"
+              pod-security.kubernetes.io/warn: "baseline"
+      when: enforce_pss | default(false) | bool
+
+    # =========================================================================
+    # StorageClass resolution (in-cluster backup store only)
+    # =========================================================================
+
+    - name: "velero | Resolve StorageClass"
+      when: not velero_external_bsl_enabled
+      block:
+        - name: "velero | Get all StorageClasses"
+          kubernetes.core.k8s_info:
+            api_version: storage.k8s.io/v1
+            kind: StorageClass
+          register: _velero_sc_list
+
+        - name: "velero | Collect default-annotated StorageClasses"
+          ansible.builtin.set_fact:
+            _velero_default_scs: "{{ _velero_default_scs | default([]) + [item.metadata.name] }}"
+          loop: "{{ _velero_sc_list.resources | default([]) }}"
+          loop_control:
+            label: "{{ item.metadata.name }}"
+          when: >-
+            (item.metadata.annotations | default({}))['storageclass.kubernetes.io/is-default-class']
+            | default('false') | bool
+
+        - name: "velero | Assert the default StorageClass is unambiguous"
+          ansible.builtin.assert:
+            that:
+              - _velero_default_scs | default([]) | length == 1
+            fail_msg: >-
+              Expected exactly one StorageClass annotated
+              storageclass.kubernetes.io/is-default-class=true, found
+              {{ _velero_default_scs | default([]) | length }}
+              ({{ _velero_default_scs | default([]) | join(', ') | default('none', true) }}).
+              Fix: annotate exactly one, or set velero_storage_class explicitly.
+          when: velero_storage_class == ''
+
+        - name: "velero | Determine StorageClass"
+          ansible.builtin.set_fact:
+            _velero_storage_class: >-
+              {{ velero_storage_class
+                 if velero_storage_class != ''
+                 else (_velero_default_scs | default([]) | first) }}
+
+    # =========================================================================
+    # External backup store — TLS & credentials
+    # =========================================================================
+
+    - name: "velero | Validate external BSL TLS"
+      ansible.builtin.assert:
+        that:
+          - velero_external_bsl_tls_host_ip != ''
+          - (velero_external_bsl_tls_ca_cert_path != '') or (velero_external_bsl_tls_ca_cert != '')
+          - velero_external_bsl_s3_url is match("^https://")
+        fail_msg: >-
+          When TLS is enabled: tls_host_ip and either tls_ca_cert_path or
+          tls_ca_cert (base64) must be set. s3_url must start with https://.
+      when:
+        - velero_external_bsl_enabled
+        - velero_external_bsl_tls_enabled
+
+    - name: "velero | Read CA cert from file"
+      ansible.builtin.slurp:
+        src: "{{ velero_external_bsl_tls_ca_cert_path }}"
+      register: _velero_ca_cert_file
+      when:
+        - velero_external_bsl_enabled
+        - velero_external_bsl_tls_enabled
+        - velero_external_bsl_tls_ca_cert_path != ''
+
+    - name: "velero | Resolve CA cert (path or inline)"
+      ansible.builtin.set_fact:
+        _velero_ca_cert_b64: >-
+          {{ _velero_ca_cert_file.content | default('')
+             if velero_external_bsl_tls_ca_cert_path != ''
+             else velero_external_bsl_tls_ca_cert }}
+      when:
+        - velero_external_bsl_enabled
+        - velero_external_bsl_tls_enabled
+
+    - name: "velero | Set empty CA cert fact when TLS disabled"
+      ansible.builtin.set_fact:
+        _velero_ca_cert_b64: ""
+      when: not (velero_external_bsl_enabled and velero_external_bsl_tls_enabled)
+
+    - name: "velero | Compute BSL host facts"
+      ansible.builtin.set_fact:
+        _velero_bsl_host: "{{ (velero_external_bsl_s3_url | urlsplit('hostname')) if velero_external_bsl_s3_url != '' else '' }}"
+        _velero_bsl_host_ip: "{{ velero_external_bsl_tls_host_ip }}"
+      when: velero_external_bsl_enabled
+
+    - name: "velero | Set empty BSL host facts"
+      ansible.builtin.set_fact:
+        _velero_bsl_host: ""
+        _velero_bsl_host_ip: ""
+      when: not velero_external_bsl_enabled
+
+    - name: "velero | Determine credentials secret name"
+      ansible.builtin.set_fact:
+        _velero_credentials_secret: >-
+          {{ velero_external_bsl_credentials_secret
+             if velero_external_bsl_credentials_secret != ''
+             else 'velero-bsl-credentials' }}
+      when: velero_external_bsl_enabled
+
+    - name: "velero | Default credentials secret name (in-cluster store)"
+      ansible.builtin.set_fact:
+        _velero_credentials_secret: "velero-seaweedfs-access-secrets"
+      when: not velero_external_bsl_enabled
+
+    # =========================================================================
+    # Secrets — in-cluster store
+    # =========================================================================
+    # The keys are generated once and reused: regenerating them on every run
+    # would invalidate the credentials Velero already holds for existing backups.
+
+    - name: "velero | Read existing in-cluster store secret"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: seaweedfs-s3-secret
+        namespace: "{{ velero_namespace }}"
+      register: _velero_sws_secret
+      when: not velero_external_bsl_enabled
+
+    - name: "velero | Reuse existing store access keys"
+      ansible.builtin.set_fact:
+        _velero_seaweedfs_access_key: "{{ _velero_sws_secret.resources[0].data.admin_access_key_id | b64decode }}"
+        _velero_seaweedfs_secret_key: "{{ _velero_sws_secret.resources[0].data.admin_secret_access_key | b64decode }}"
+      when:
+        - not velero_external_bsl_enabled
+        - _velero_sws_secret.resources | default([]) | length > 0
+      no_log: "{{ secure_logs | default(true) }}"
+
+    - name: "velero | Generate store access keys"
+      ansible.builtin.set_fact:
+        _velero_seaweedfs_access_key: "{{ lookup('password', '/dev/null length=20 chars=ascii_letters,digits') }}"
+        _velero_seaweedfs_secret_key: "{{ lookup('password', '/dev/null length=40 chars=ascii_letters,digits') }}"
+      when:
+        - not velero_external_bsl_enabled
+        - _velero_sws_secret.resources | default([]) | length == 0
+      no_log: "{{ secure_logs | default(true) }}"
+
+    - name: "velero | Create in-cluster store S3 secret"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: seaweedfs-s3-secret
+            namespace: "{{ velero_namespace }}"
+          type: Opaque
+          data:
+            admin_access_key_id: "{{ _velero_seaweedfs_access_key | b64encode }}"
+            admin_secret_access_key: "{{ _velero_seaweedfs_secret_key | b64encode }}"
+            seaweedfs_s3_config: "{{ _velero_s3_auth | to_json | b64encode }}"
+      vars:
+        _velero_s3_auth:
+          identities:
+            - name: "velero"
+              credentials:
+                - accessKey: "{{ _velero_seaweedfs_access_key }}"
+                  secretKey: "{{ _velero_seaweedfs_secret_key }}"
+              actions:
+                - "Read"
+                - "Write"
+                - "List"
+                - "Tagging"
+                - "Admin"
+      when: not velero_external_bsl_enabled
+      no_log: "{{ secure_logs | default(true) }}"
+
+    # =========================================================================
+    # Secrets — external store credentials
+    # =========================================================================
+
+    - name: "velero | External store credentials"
+      when: velero_external_bsl_enabled
+      block:
+        - name: "velero | Read external BSL credentials file"
+          ansible.builtin.slurp:
+            src: "{{ velero_external_bsl_credentials_file_path }}"
+          register: _velero_bsl_creds_file
+          when: velero_external_bsl_credentials_file_path != ''
+
+        - name: "velero | Create external BSL credentials secret"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: "{{ _velero_credentials_secret }}"
+                namespace: "{{ velero_namespace }}"
+              type: Opaque
+              stringData:
+                cloud: "{{ _velero_bsl_creds_file.content | b64decode }}"
+          when: velero_external_bsl_credentials_file_path != ''
+          no_log: "{{ secure_logs | default(true) }}"
+
+        - name: "velero | Verify external BSL credentials secret exists"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Secret
+            name: "{{ _velero_credentials_secret }}"
+            namespace: "{{ velero_namespace }}"
+          register: _velero_ext_secret
+
+        - name: "velero | Assert credentials secret present"
+          ansible.builtin.assert:
+            that:
+              - _velero_ext_secret.resources | length > 0
+            fail_msg: >-
+              External BSL credentials secret '{{ _velero_credentials_secret }}'
+              not found in namespace '{{ velero_namespace }}'.
+              Provide credentials_file_path or set credentials_secret to reference
+              a pre-existing secret.
+
+    # =========================================================================
+    # CA cert ConfigMap (external store + TLS)
+    # =========================================================================
+
+    - name: "velero | Create CA cert ConfigMap"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: velero-bsl-ca-cert
+            namespace: "{{ velero_namespace }}"
+          data:
+            ca.crt: "{{ _velero_ca_cert_b64 | b64decode }}"
+      when:
+        - velero_external_bsl_enabled
+        - velero_external_bsl_tls_enabled
+        - _velero_ca_cert_b64 | default('') != ''
+
+    # =========================================================================
+    # CRDs
+    # =========================================================================
+    # Applied here rather than by the chart's own job. Helm applies a chart's
+    # crds/ directory on install but never on upgrade, which is why the chart
+    # ships a job to re-apply them — and that job copies a shell and kubectl out
+    # of a third-party image into the Velero container, so the two images have to
+    # be binary-compatible. They are not: Velero's image has no libc, so anything
+    # dynamically linked fails at exec with a bare "no such file or directory".
+    # Applying the manifests from the chart is deterministic and needs no image.
+
+    - name: "velero | Prepare a place for the chart's CRDs"
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: velero-crds
+      register: _velero_crd_dir
+      changed_when: false
+
+    # The whole subchart, not just crds/: unarchive's `include` is a literal
+    # match unless tar is told to expand wildcards, and the archive is small.
+    - name: "velero | Extract the chart archive"
+      ansible.builtin.unarchive:
+        src: "{{ velero_helm_chart_directory }}/charts/velero-{{ velero_helm_chart_version }}.tgz"
+        dest: "{{ _velero_crd_dir.path }}"
+        remote_src: true
+      changed_when: false
+
+    - name: "velero | Find the CRD manifests"
+      ansible.builtin.find:
+        paths: "{{ _velero_crd_dir.path }}/velero/crds"
+        patterns: "*.yaml"
+      register: _velero_crd_files
+
+    - name: "velero | Assert the CRDs were found"
+      ansible.builtin.assert:
+        that:
+          - _velero_crd_files.files | length > 0
+        fail_msg: >-
+          No CRD manifests under velero/crds in
+          {{ velero_helm_chart_directory }}/charts/velero-{{ velero_helm_chart_version }}.tgz.
+          The vendored chart is not the expected one.
+
+    - name: "velero | Apply the CRDs"
+      kubernetes.core.k8s:
+        state: present
+        apply: true
+        src: "{{ item.path }}"
+      loop: "{{ _velero_crd_files.files | sort(attribute='path') }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: "velero | Remove the extracted CRDs"
+      ansible.builtin.file:
+        path: "{{ _velero_crd_dir.path }}"
+        state: absent
+      changed_when: false
+
+    # =========================================================================
+    # Helm install / upgrade
+    # =========================================================================
+
+    - name: "velero | Ensure tmp directory exists"
+      ansible.builtin.file:
+        path: "{{ tmp_dir | default('/tmp') }}"
+        state: directory
+        mode: "0755"
+
+    - name: "velero | Generate override values"
+      ansible.builtin.template:
+        src: "values.yaml.j2"
+        dest: "{{ tmp_dir | default('/tmp') }}/velero-override-values.yaml"
+        mode: "0600"
+
+    - name: "velero | Install or upgrade Helm chart"
+      kubernetes.core.helm:
+        name: "{{ velero_helm_release_name }}"
+        chart_ref: "{{ velero_helm_chart_directory }}"
+        release_namespace: "{{ velero_namespace }}"
+        create_namespace: true
+        state: present
+        values_files:
+          - "{{ velero_helm_default_values_file }}"
+          - "{{ tmp_dir | default('/tmp') }}/velero-override-values.yaml"
+        dependency_update: true
+        wait: true
+        timeout: "10m0s"
+      register: _velero_helm_install
+      until: _velero_helm_install is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+
+    # =========================================================================
+    # Readiness
+    # =========================================================================
+
+    - name: "velero | Wait for Velero deployment"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: velero
+        namespace: "{{ velero_namespace }}"
+      register: _velero_deploy
+      until:
+        - _velero_deploy.resources | length > 0
+        - (_velero_deploy.resources[0].status.conditions | default([])
+           | selectattr('type', 'eq', 'Available')
+           | selectattr('status', 'eq', 'True') | list | length > 0)
+      retries: "{{ velero_wait_retries }}"
+      delay: "{{ velero_wait_delay }}"
+
+    # The in-cluster store's bucket is created by a post-install Helm hook, which
+    # by definition does not run on an upgrade. So a first install that fails for
+    # any reason leaves a release that every later run upgrades — and the bucket is
+    # never created, leaving the store permanently Unavailable with NoSuchBucket
+    # while everything else looks healthy. Create it here instead: idempotent,
+    # independent of how the release got to this state.
+    - name: "velero | Ensure the in-cluster store's bucket exists"
+      when: not (velero_external_bsl_enabled | bool)
+      block:
+        # Unconditional, because `s3.bucket.create` is idempotent — it reports
+        # success on a bucket that already exists — and because there is no clean
+        # way to test for the bucket first: the shell's own output names the
+        # cluster's services, and this namespace is itself called velero, so any
+        # substring test for the bucket name matches that noise instead.
+        - name: "velero | Create the store's bucket"
+          kubernetes.core.k8s_exec:
+            pod: "{{ velero_seaweedfs_filer_pod }}"
+            namespace: "{{ velero_namespace }}"
+            command: >-
+              /bin/sh -c 'echo "s3.bucket.create --name {{ velero_bucket_name }}" | /usr/bin/weed shell'
+          register: _velero_bucket_create
+          changed_when: false
+          failed_when: >-
+            ('created bucket ' ~ velero_bucket_name) not in (_velero_bucket_create.stdout | default(''))
+
+        - name: "velero | Report the bucket"
+          ansible.builtin.debug:
+            msg: "Bucket '{{ velero_bucket_name }}' is present in the in-cluster store."
+
+    - name: "velero | Wait for the backup store to become Available"
+      kubernetes.core.k8s_info:
+        api_version: velero.io/v1
+        kind: BackupStorageLocation
+        name: default
+        namespace: "{{ velero_namespace }}"
+      register: _velero_bsl_status
+      until:
+        - _velero_bsl_status.resources | length > 0
+        - (_velero_bsl_status.resources[0].status.phase | default('')) == 'Available'
+      retries: 18
+      delay: 10
+
+    - name: "velero | Wait for the node agent"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: node-agent
+        namespace: "{{ velero_namespace }}"
+      register: _velero_node_agent
+      until:
+        - _velero_node_agent.resources | length > 0
+        - (_velero_node_agent.resources[0].status.numberReady | default(0))
+          == (_velero_node_agent.resources[0].status.desiredNumberScheduled | default(-1))
+      retries: "{{ velero_wait_retries }}"
+      delay: "{{ velero_wait_delay }}"
+      when: velero_deploy_node_agent | bool
+
+    # =========================================================================
+    # Server version (used to pin the client)
+    # =========================================================================
+
+    - name: "velero | Discover server version"
+      kubernetes.core.k8s_exec:
+        pod: "{{ _velero_deploy.resources[0].metadata.name | default('velero') }}"
+        container: velero
+        namespace: "{{ velero_namespace }}"
+        command: /velero version --client-only
+      register: _velero_version_raw
+      changed_when: false
+      failed_when: false
+
+    # `velero version --client-only` prints tab-indented "Version: vX.Y.Z", which
+    # is neither YAML nor worth a regex: the upstream branch fed it to from_yaml
+    # after a replace('\t', '  ') that never fired (inside Jinja quotes that is a
+    # backslash and a t, not a tab), and it failed on the first real tab. Pick the
+    # line and take what follows the colon.
+    - name: "velero | Extract server version"
+      ansible.builtin.set_fact:
+        _velero_server_version: >-
+          {{ ((_velero_version_raw.stdout_lines | default([]) | select('search', 'Version:') | list | first | default('')).split(':') | last | trim) }}
+      when: _velero_version_raw.rc | default(1) == 0
+
+# =============================================================================
+# Client installation
+# =============================================================================
+# The engine (roles/backup) drives Velero through the Kubernetes API, so the CLI
+# is a convenience for operators plus the deep backup-readability check.
+# It writes to /usr/local/bin, which needs privilege the component loop may not
+# have — failure is reported, not fatal. The durable home for this is
+# `es_auto_installer.sh configure`.
+
+- name: "velero | Install client"
+  when: velero_install_client
+  block:
+    - name: "velero | Determine target client version"
+      ansible.builtin.set_fact:
+        _velero_client_target: >-
+          {{ _velero_server_version | default('v1.15.2', true)
+             if velero_client_version == 'automatic'
+             else velero_client_version }}
+
+    - name: "velero | Check existing client"
+      ansible.builtin.command: velero version --client-only
+      register: _velero_local_client
+      ignore_errors: true
+      changed_when: false
+
+    - name: "velero | Extract local client version"
+      ansible.builtin.set_fact:
+        _velero_local_version: >-
+          {{ ((_velero_local_client.stdout_lines | default([]) | select('search', 'Version:') | list | first | default('')).split(':') | last | trim) }}
+      when: _velero_local_client.rc == 0
+
+    - name: "velero | Install matching client binary"
+      when: _velero_local_client.rc != 0 or (_velero_local_version | default('')) != _velero_client_target
+      block:
+        - name: "velero | Download client archive"
+          ansible.builtin.get_url:
+            url: "https://github.com/vmware-tanzu/velero/releases/download/{{ _velero_client_target }}/velero-{{ _velero_client_target }}-linux-amd64.tar.gz"
+            dest: "/tmp/velero-{{ _velero_client_target }}-linux-amd64.tar.gz"
+            mode: "0644"
+
+        - name: "velero | Extract client binary"
+          become: true
+          ansible.builtin.unarchive:
+            src: "/tmp/velero-{{ _velero_client_target }}-linux-amd64.tar.gz"
+            dest: /usr/local/bin
+            remote_src: true
+            extra_opts:
+              - "--strip-components=1"
+
+        - name: "velero | Set client binary permissions"
+          become: true
+          ansible.builtin.file:
+            path: /usr/local/bin/velero
+            owner: "{{ ansible_user_id | default(lookup('env', 'USER')) }}"
+            mode: "0755"
+      rescue:
+        - name: "velero | Client install failed — continuing"
+          ansible.builtin.debug:
+            msg: >-
+              Could not install the velero CLI {{ _velero_client_target }}
+              (needs write access to /usr/local/bin). Backup and restore still
+              work — they use the Kubernetes API — but
+              `velero backup describe --details` will not be available. Install
+              it by hand, or re-run ./es_auto_installer.sh configure.
+
+# =============================================================================
+# CLI environment snippet (external store only)
+# =============================================================================
+
+- name: "velero | Generate CLI environment snippet"
+  ansible.builtin.copy:
+    content: |
+      # Source this file to configure the velero CLI for external store access.
+      # Usage: source {{ velero_env_file }}
+      {% if velero_external_bsl_tls_enabled %}
+      {% set cert_path = velero_external_bsl_tls_ca_cert_path if velero_external_bsl_tls_ca_cert_path != '' else (velero_env_file | dirname) + '/velero-bsl-ca.crt' %}
+      export SSL_CERT_FILE="{{ cert_path }}"
+      {% endif %}
+      {% set _host = (velero_external_bsl_s3_url | urlsplit('hostname')) if velero_external_bsl_s3_url != '' else '' %}
+      {% set _ip = velero_external_bsl_tls_host_ip %}
+      {% set extra = ([_host] if _host else []) + ([_ip] if _ip and _ip != _host else []) %}
+      _velero_no_proxy="{{ extra | join(',') }}"
+      if [ -n "${no_proxy:-}" ]; then
+        export no_proxy="${no_proxy},${_velero_no_proxy}"
+      else
+        export no_proxy="${_velero_no_proxy}"
+      fi
+      export NO_PROXY="$no_proxy"
+      unset _velero_no_proxy
+    dest: "{{ velero_env_file }}"
+    mode: "0644"
+  when: velero_external_bsl_enabled

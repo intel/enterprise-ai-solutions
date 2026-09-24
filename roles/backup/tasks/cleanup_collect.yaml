@@ -1,0 +1,15 @@
+---
+# =============================================================================
+# backup | Append one namespace's cleanup entries to _bk_cleanup_items
+# =============================================================================
+# Included once per namespace from restore.yaml, in the profile's declared order.
+# _bk_cleanup_ns is the namespace. Entries are carried through as written — a
+# string in one of the short forms, or a mapping naming the resource in full — and
+# sorted into the delete tasks by restore.yaml.
+
+- name: "restore | Collect cleanup entries for {{ _bk_cleanup_ns }}"
+  ansible.builtin.set_fact:
+    _bk_cleanup_items: "{{ _bk_cleanup_items | default([]) + [{'ns': _bk_cleanup_ns, 'ref': item}] }}"
+  loop: "{{ backup_profile.cleanup[_bk_cleanup_ns] | default([]) }}"
+  loop_control:
+    label: "{{ _bk_cleanup_ns }}:{{ item if item is string else item.kind ~ '/' ~ (item.name | default('by selector')) }}"

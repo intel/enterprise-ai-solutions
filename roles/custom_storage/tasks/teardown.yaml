@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# custom_storage | teardown
+# =============================================================================
+# Deliberately a no-op. The CSI driver and its StorageClasses predate this
+# install and are shared with workloads outside the platform, so removing them
+# would break the user's cluster. Component PVCs are removed by their own roles.
+# =============================================================================
+
+- name: "custom_storage | Leave user-managed storage untouched"
+  ansible.builtin.debug:
+    msg:
+      - "Skipping storage teardown — storage_backend=custom is user-managed."
+      - "  StorageClass: {{ storage_custom_storageclass | default('(unset)', true) }}"

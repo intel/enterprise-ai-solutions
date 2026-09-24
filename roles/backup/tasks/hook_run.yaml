@@ -1,0 +1,209 @@
+---
+# =============================================================================
+# backup | Run one hook
+# =============================================================================
+# _bk_hook holds the hook. Kinds: exec | capture | annotate | role.
+# A hook that fails aborts the operation unless it sets ignore_errors: true — a
+# backup missing its database dump must not be reported as a success.
+# =============================================================================
+
+- name: "backup | hook | Validate kind"
+  ansible.builtin.assert:
+    that:
+      - _bk_hook.kind | default('') in ['exec', 'capture', 'annotate', 'role']
+    fail_msg: >-
+      Hook '{{ _bk_hook.name | default('(unnamed)') }}' in profile
+      '{{ backup_profile.name }}' has kind '{{ _bk_hook.kind | default('') }}'.
+      Valid kinds: exec, capture, annotate, role.
+
+# k8s_exec takes a single string and shlex-splits it. A YAML list is stringified
+# into "['/bin/sh', '-c', '...']" and split into nonsense, and the failure surfaces
+# as an unrelated int() conversion error from the module. Catch it here instead.
+- name: "backup | hook | Validate command"
+  ansible.builtin.assert:
+    that:
+      - _bk_hook.command is string
+    fail_msg: >-
+      Hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' in profile
+      '{{ backup_profile.name }}' gives command as a
+      {{ _bk_hook.command | type_debug }}. It must be a single string; the module
+      shlex-splits it, so quote anything that has to stay one argument:
+      command: "/bin/sh -c 'a | b'"
+  when: _bk_hook.kind in ['exec', 'capture']
+
+- name: "backup | hook | Validate role reference"
+  ansible.builtin.assert:
+    that:
+      - _bk_hook.role | default('') | length > 0
+      - _bk_hook.tasks_from | default('') | length > 0
+    fail_msg: >-
+      Hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' in profile
+      '{{ backup_profile.name }}' is kind role and must name both the role and the
+      task file to run: role: <role-name>, tasks_from: <file.yaml>. The role has to
+      be on roles_path — for a solution's own role that means its repository is
+      checked out under ext/, which it is whenever its profile is being read.
+  when: _bk_hook.kind == 'role'
+
+- name: "backup | hook | {{ _bk_hook.name | default(_bk_hook.kind) }}"
+  when: _bk_hook.kind in ['exec', 'capture']
+  block:
+    - name: "backup | hook | Resolve target pod"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ _bk_hook.namespace }}"
+        name: "{{ _bk_hook.pod | default(omit) }}"
+        label_selectors: "{{ [_bk_hook.pod_selector] if _bk_hook.pod_selector | default('') != '' else omit }}"
+        field_selectors:
+          - status.phase=Running
+      register: _bk_hook_pods
+
+    - name: "backup | hook | Assert a pod was found"
+      ansible.builtin.assert:
+        that:
+          - _bk_hook_pods.resources | default([]) | length > 0
+        fail_msg: >-
+          Hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' found no Running pod in
+          namespace '{{ _bk_hook.namespace }}'
+          {{ ("named " ~ _bk_hook.pod) if _bk_hook.pod | default('') != ''
+             else ("matching " ~ (_bk_hook.pod_selector | default('(no selector)'))) }}.
+
+    - name: "backup | hook | Execute"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ _bk_hook.namespace }}"
+        pod: "{{ _bk_hook_pods.resources[0].metadata.name }}"
+        container: "{{ _bk_hook.container | default(omit) }}"
+        command: "{{ _bk_hook.command }}"
+      register: _bk_hook_result
+      changed_when: true
+
+    # secret_namespace defaults to the pod's namespace but is often different: the
+    # pod that can produce the dump may live in a namespace the profile
+    # deliberately does not capture (a live database data directory is not a
+    # supported restore source), while the dump itself must land somewhere the
+    # backup walks.
+    - name: "backup | hook | Store output in a Secret so the backup captures it"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ _bk_hook.secret }}"
+            namespace: "{{ _bk_hook.secret_namespace | default(_bk_hook.namespace) }}"
+            labels: "{{ _bk_hook.labels | default({}) }}"
+          type: Opaque
+          # Built as one expression: Ansible does not template mapping keys, so
+          # writing the key as "{{ ... }}" inside data would send it literally and
+          # the API would reject it as an invalid config key.
+          data: "{{ {(_bk_hook.key | default('dump')): (_bk_hook_result.stdout | b64encode)} }}"
+      when: _bk_hook.kind == 'capture'
+      no_log: "{{ secure_logs | default(true) }}"
+
+    - name: "backup | hook | Report"
+      ansible.builtin.debug:
+        msg: >-
+          Hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' ran in
+          {{ _bk_hook.namespace }}/{{ _bk_hook_pods.resources[0].metadata.name }}
+          {{ ("— captured " ~ (_bk_hook_result.stdout | default('') | length) ~ " bytes into Secret "
+              ~ (_bk_hook.secret_namespace | default(_bk_hook.namespace)) ~ "/" ~ _bk_hook.secret)
+             if _bk_hook.kind == 'capture' else '' }}
+  rescue:
+    - name: "backup | hook | Failed"
+      ansible.builtin.fail:
+        msg: >-
+          Hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' in profile
+          '{{ backup_profile.name }}' failed. The operation is aborted so a
+          backup is not reported complete without what this hook contributes.
+          Set ignore_errors: true on the hook to accept that.
+      when: not (_bk_hook.ignore_errors | default(false) | bool)
+
+    - name: "backup | hook | Failed but tolerated"
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' failed and
+          is marked ignore_errors — continuing without it.
+      when: _bk_hook.ignore_errors | default(false) | bool
+
+# The escape hatch for state the engine cannot describe without knowing what it
+# is. Everything the engine models — a command, a dump, an annotation — it models
+# because the shape is the same for every solution. Some state is not like that:
+# capturing it means knowing how the component that owns it exports itself. Rather
+# than teach the engine one solution's component, hand control to the role that
+# already owns it and keep the declaration in the profile, where the rest of that
+# solution's data is declared.
+- name: "backup | hook | {{ _bk_hook.name | default(_bk_hook.kind) }}"
+  when: _bk_hook.kind == 'role'
+  block:
+    # Passed as a fact rather than through the include's vars: keyword, which
+    # Ansible parses before templating and rejects when it is given an expression
+    # instead of a literal mapping. The role reads backup_hook_args, and has
+    # backup_profile in scope as well — it is the profile's own role.
+    - name: "backup | hook | Publish the hook's arguments"
+      ansible.builtin.set_fact:
+        backup_hook_args: "{{ _bk_hook.args | default({}) }}"
+
+    # Defaulted because Ansible renders a task's name for every hook in the loop,
+    # including the ones this block skips, and a name that cannot render prints an
+    # error where the hook's identity should be.
+    - name: "backup | hook | Run {{ _bk_hook.role | default('(not a role hook)') }}/{{ _bk_hook.tasks_from | default('') }}"
+      ansible.builtin.include_role:
+        name: "{{ _bk_hook.role }}"
+        tasks_from: "{{ _bk_hook.tasks_from }}"
+
+    - name: "backup | hook | Report"
+      ansible.builtin.debug:
+        msg: >-
+          Hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' ran
+          {{ _bk_hook.role }}/{{ _bk_hook.tasks_from }}.
+  rescue:
+    - name: "backup | hook | Failed"
+      ansible.builtin.fail:
+        msg: >-
+          Hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' in profile
+          '{{ backup_profile.name }}' failed in
+          {{ _bk_hook.role }}/{{ _bk_hook.tasks_from }}. The operation is aborted so
+          a backup is not reported complete without what this hook contributes.
+          Set ignore_errors: true on the hook to accept that.
+      when: not (_bk_hook.ignore_errors | default(false) | bool)
+
+    - name: "backup | hook | Failed but tolerated"
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' failed and
+          is marked ignore_errors — continuing without it.
+      when: _bk_hook.ignore_errors | default(false) | bool
+
+- name: "backup | hook | Annotate to force a re-sync"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: "{{ _bk_hook.target.api_version | default('apps/v1') }}"
+    kind: "{{ _bk_hook.target.kind | default('Deployment') }}"
+    name: "{{ _bk_hook.target.name }}"
+    namespace: "{{ _bk_hook.namespace }}"
+    definition:
+      spec:
+        template:
+          metadata:
+            # One expression, because Ansible does not template mapping keys: written
+            # as "{{ ... }}: value" the key reaches the API literally, the patch is
+            # rejected, and a hook marked ignore_errors reports ok while the workload
+            # is never rolled at all.
+            annotations: "{{ {(_bk_hook.annotation | default('ai-solutions.io/restore-resync')): ansible_date_time.iso8601} }}"
+  when: _bk_hook.kind == 'annotate'
+  register: _bk_annotate
+  failed_when:
+    - _bk_annotate is failed
+    - not (_bk_hook.ignore_errors | default(false) | bool)
+
+# A tolerated failure still has to be visible: the point of the hook is that a
+# workload is rolled, and "ok" on a patch that was rejected says the opposite.
+- name: "backup | hook | Annotation failed but tolerated"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: hook '{{ _bk_hook.name | default(_bk_hook.kind) }}' could not annotate
+      {{ _bk_hook.target.kind | default('Deployment') }}/{{ _bk_hook.target.name }} in
+      {{ _bk_hook.namespace }} and is marked ignore_errors — that workload was NOT
+      restarted. {{ _bk_annotate.msg | default('') }}
+  when:
+    - _bk_hook.kind == 'annotate'
+    - _bk_annotate is failed

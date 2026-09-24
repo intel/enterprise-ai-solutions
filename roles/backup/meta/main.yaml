@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  role_name: backup
+  description: >-
+    Velero-driven backup and restore engine. Solution-agnostic: what to capture,
+    what to clear before replaying and which hooks to run all come from the
+    backup_profile.yaml an ext repo contributes. See configs/backup.yaml.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+dependencies: []

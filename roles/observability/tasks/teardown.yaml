@@ -134,16 +134,17 @@
       register: _obs_all_crds
       failed_when: false
 
+    # Selected on spec.group rather than a name regex: in the folded scalar this
+    # expression used to live in, YAML performs no escape processing, so the
+    # '\\.' reached `re` as an escaped backslash and the pattern matched nothing —
+    # which is why these CRDs survived every teardown.
     - name: "observability | Delete Prometheus Operator CRDs"
       kubernetes.core.k8s:
         api_version: apiextensions.k8s.io/v1
         kind: CustomResourceDefinition
         name: "{{ item.metadata.name }}"
         state: absent
-      loop: >-
-        {{ _obs_all_crds.resources | default([]) |
-           selectattr('metadata.name', 'match',
-             '.*\\.(monitoring\\.coreos\\.com|grafana\\.integreatly\\.org)') | list }}
+      loop: "{{ _obs_all_crds.resources | default([]) | selectattr('spec.group', 'in', ['monitoring.coreos.com', 'grafana.integreatly.org']) | list }}"
       loop_control:
         label: "{{ item.metadata.name }}"
       failed_when: false

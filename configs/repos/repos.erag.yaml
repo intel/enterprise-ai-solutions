@@ -1,0 +1,28 @@
+---
+# =============================================================================
+# Layer manifest — erag
+# =============================================================================
+# The inference layer eRAG builds on, then eRAG itself, each pinned to the
+# rev this layer is validated against. Dependencies first: inference is
+# cloned and seeded before erag.
+#
+# Field reference: docs/adding_solutions.md
+# =============================================================================
+
+repos:
+  - layer: "inference"
+    url: "https://github.com/intel/enterprise-inference"
+    dest: "enterprise.ai-inference"
+    rev: "main"
+    deployment_subdir: ""
+    config_dir: ""
+    default_flavour: ""
+    model_catalog: "model_manager/models.yaml"
+
+  - layer: "erag"
+    url: "https://github.com/intel/enterprise-rag"
+    dest: "enterprise.ai-erag"
+    rev: "main"
+    deployment_subdir: "deployment"
+    config_dir: "pipelines"
+    default_flavour: "chatqna"

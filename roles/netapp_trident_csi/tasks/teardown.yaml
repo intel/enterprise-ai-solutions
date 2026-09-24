@@ -1,0 +1,692 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# NetApp Trident CSI - Teardown
+# =============================================================================
+# Order is the whole point. TridentOrchestrator carries the operator's finalizer
+# and owns the trident-controller Deployment and the trident-node DaemonSet, so
+# uninstalling the operator first orphans them, leaves nothing to drain volume
+# finalizers, and the namespace hangs Terminating forever - after which a
+# re-install fails with "resource already exists".
+#
+#    1 presence gate          7 wait for the workloads to disappear
+#    2 inventory what is lost 8 StorageClass + Secret
+#    3 PVCs (opt-in), then    9 CRDs (opt-in, default on)
+#      Released PVs and      10 namespace
+#      VolumeAttachments     11 stuck-resource report / finalizer strip (opt-in)
+#    4 TridentBackendConfig  12 array residue report
+#    5 TridentOrchestrator
+#    6 helm uninstall
+#
+# Step 3's PV and VolumeAttachment sweeps run while the driver is still up, which
+# is the only time its finalizers can be cleared.
+#
+# failed_when: false is the norm here: teardown is also the recovery path for a
+# half-finished install, so a resource that was never created must not stop the
+# rest of the cleanup. Only the non-obvious cases carry their own comment.
+# =============================================================================
+
+# ─── 1. Presence gate ────────────────────────────────────────────────────────
+
+# A teardown that also removes the kubernetes component (`teardown infrastructure`
+# from the CLI, or target=all when the playbook is driven directly) is implied
+# consent to lose the volumes: the cluster itself is about to go. Without
+# this, the PVC refusal in step 2 fired on the common path - `application` is
+# disabled in configs/components.yaml, so a whole-stack teardown never removes the
+# eRAG PVCs first - and killed the play under any_errors_fatal before Kubespray
+# reset ever ran, leaving a live cluster and a non-zero exit.
+- name: "netapp_trident_csi | teardown | Detect a whole-stack teardown"
+  ansible.builtin.set_fact:
+    _trident_td_whole_stack: >-
+      {{ ('all' in ((target | default('') | string | lower).split(',') | map('trim') | list))
+         or ('kubernetes' in (_active_components | default([]) | map(attribute='name') | list)) }}
+
+- name: "netapp_trident_csi | teardown | Check for the Helm release"
+  kubernetes.core.helm_info:
+    name: trident-operator
+    release_namespace: "{{ trident_namespace }}"
+  register: _trident_td_release
+  # helm_info does NOT raise on an absent release: it returns success with no
+  # `status` key, which is the state the gate below reads. failed_when is
+  # suppressed only for the other case, an unreachable cluster - which the assert
+  # below distinguishes rather than silently treating as "already gone".
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | teardown | Check for Trident CRDs"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+  register: _trident_td_crds
+  # An unreachable cluster (a whole-stack teardown removes storage before Kubernetes on
+  # some paths) must not abort; the assert below decides whether that is
+  # acceptable for this target.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | teardown | Check for the Trident namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ trident_namespace }}"
+  register: _trident_td_ns_present
+  # Same as above: read-only probe on a possibly unreachable cluster.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "netapp_trident_csi | teardown | Compute presence facts"
+  ansible.builtin.set_fact:
+    _trident_td_release_present: "{{ (_trident_td_release.status | default({}) | length) > 0 }}"
+    _trident_td_crd_names: >-
+      {{ _trident_td_crds.resources | default([]) | map(attribute='metadata.name')
+         | select('search', '\.trident\.netapp\.io$') | list }}
+    _trident_td_ns_exists: "{{ (_trident_td_ns_present.resources | default([]) | length) > 0 }}"
+    # k8s_info returns a `resources` key on every successful call, empty list
+    # included. Its absence means the API call itself failed.
+    _trident_td_api_reachable: "{{ _trident_td_crds.resources is defined }}"
+
+# Without this, a stale kubeconfig produced a green teardown that removed
+# nothing: both probes above are failed_when: false, so an apiserver that never
+# answered looked exactly like a Trident that was already gone.
+- name: "netapp_trident_csi | teardown | Assert the cluster API answered"
+  ansible.builtin.assert:
+    that: _trident_td_api_reachable | bool
+    fail_msg: >-
+      Could not list CustomResourceDefinitions, so this teardown cannot tell an
+      already-removed Trident from an unreachable cluster - and reporting success
+      would claim to have removed something it never looked at.
+      The API error itself is in the "Check for Trident CRDs" task output above
+      (its failure is suppressed so this message can be printed).
+      Check that KUBECONFIG points at the right cluster and that the apiserver is
+      up (kubectl get ns), then re-run. Tear down the whole stack with
+      "./es_auto_installer.sh teardown infrastructure" if the cluster is already gone.
+    success_msg: "Cluster API reachable."
+  # On a whole-stack teardown the cluster may legitimately be gone or going away,
+  # and the kubernetes component that follows does not need it.
+  when: not (_trident_td_whole_stack | bool)
+
+# install.yaml creates the namespace before the Helm step, so an install that
+# failed in Helm leaves a namespace and nothing else. Without it in this gate,
+# teardown reported "nothing to tear down" and left it behind.
+- name: "netapp_trident_csi | teardown | Set teardown-needed flag"
+  ansible.builtin.set_fact:
+    _trident_td_needed: >-
+      {{ (_trident_td_release_present | bool)
+         or (_trident_td_crd_names | length > 0)
+         or (_trident_td_ns_exists | bool) }}
+
+- name: "netapp_trident_csi | teardown | Not installed, nothing to tear down"
+  ansible.builtin.debug:
+    msg: >-
+      No trident-operator Helm release in {{ trident_namespace }}, no
+      trident.netapp.io CRDs and no {{ trident_namespace }} namespace. Nothing to
+      tear down.
+  when: not (_trident_td_needed | bool)
+
+- name: "netapp_trident_csi | teardown | Remove Trident"
+  when: _trident_td_needed | bool
+  block:
+
+    # ─── 2. Inventory what will be lost ──────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | List StorageClasses served by Trident"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+      register: _trident_td_scs
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | List PersistentVolumes served by Trident"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolume
+      register: _trident_td_pvs
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | List PersistentVolumeClaims in every namespace"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+      register: _trident_td_pvcs
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | Build the inventory"
+      vars:
+        _trident_sc_query: "[?provisioner == 'csi.trident.netapp.io'].metadata.name"
+        _trident_pv_query: >-
+          [?spec.csi.driver == 'csi.trident.netapp.io'].{pv: metadata.name,
+            flexvol: spec.csi.volumeAttributes.internalName,
+            handle: spec.csi.volumeHandle,
+            size: spec.capacity.storage,
+            phase: status.phase,
+            claim: spec.claimRef.name,
+            claimns: spec.claimRef.namespace}
+        # jmespath join(), because building "<ns>/<name>" out of a Jinja filter
+        # chain needs a comprehension Jinja does not have.
+        _trident_pv_claim_query: >-
+          [?spec.csi.driver == 'csi.trident.netapp.io' && spec.claimRef != null]
+            | [].join('/', [spec.claimRef.namespace, spec.claimRef.name])
+      ansible.builtin.set_fact:
+        _trident_td_sc_names: "{{ _trident_td_scs.resources | default([]) | json_query(_trident_sc_query) | default([], true) }}"
+        # Captured before anything is deleted: once the CSI driver is gone this
+        # is the only record of what is left on the array.
+        _trident_td_volumes: "{{ _trident_td_pvs.resources | default([]) | json_query(_trident_pv_query) | default([], true) }}"
+        _trident_td_pv_claim_keys: "{{ _trident_td_pvs.resources | default([]) | json_query(_trident_pv_claim_query) | default([], true) }}"
+
+    # Selecting by StorageClass name alone missed live volumes: a hand-deleted
+    # StorageClass, or a PVC bound through another class to a Trident PV, left
+    # this list empty and teardown removed the CSI driver from under them. The
+    # Trident PVs' own claimRefs are the second, authoritative source. Filtered
+    # against the live PVC list, so a Released PV's stale claimRef does not
+    # resurrect a PVC that is already gone.
+    - name: "netapp_trident_csi | teardown | Select PVCs served by Trident"
+      vars:
+        _pvc_norm_query: >-
+          [].{ns: metadata.namespace, name: metadata.name,
+              key: join('/', [metadata.namespace, metadata.name]),
+              sc: spec.storageClassName,
+              pv: spec.volumeName,
+              size: spec.resources.requests.storage}
+        _pvc_norm: "{{ _trident_td_pvcs.resources | default([]) | json_query(_pvc_norm_query) | default([], true) }}"
+      ansible.builtin.set_fact:
+        _trident_td_claims: >-
+          {{ (_pvc_norm | selectattr('sc', 'in', _trident_td_sc_names) | list)
+             + (_pvc_norm | selectattr('key', 'in', _trident_td_pv_claim_keys)
+                | rejectattr('sc', 'in', _trident_td_sc_names) | list) }}
+
+    - name: "netapp_trident_csi | teardown | Report what will be removed"
+      ansible.builtin.debug:
+        msg: |
+          Trident teardown inventory:
+            StorageClasses:  {{ _trident_td_sc_names | join(', ') | default('none', true) }}
+            Trident PVs:     {{ _trident_td_volumes | length }}
+            Trident PVCs:    {{ _trident_td_claims | length }}
+          {% for c in _trident_td_claims %}
+              {{ c.ns }}/{{ c.name }} ({{ c.size | default('?', true) }}, sc={{ c.sc | default('(none)', true) }}, pv={{ c.pv | default('(unbound)', true) }})
+          {% endfor %}
+
+    - name: "netapp_trident_csi | teardown | Whole-stack teardown: PVC refusal skipped"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _trident_td_claims | length }} Trident PersistentVolumeClaim(s) still
+          exist, but this is a whole-stack teardown (target={{ target | default('all') }})
+          and the kubernetes component is being removed in the same run, so the
+          cluster and every volume in it are going anyway. Proceeding without
+          ontap_teardown_delete_pvcs. reclaimPolicy is {{ trident_reclaim_policy }}, so
+          {{ 'the ONTAP FlexVols survive on the array and are listed at the end of this teardown'
+             if trident_reclaim_policy == 'Retain'
+             else 'the ONTAP FlexVols are destroyed with their PVCs' }}.
+      when:
+        - _trident_td_claims | length > 0
+        - not (ontap_teardown_delete_pvcs | bool)
+        - _trident_td_whole_stack | bool
+
+    # Failing here is deliberate: proceeding would delete the CSI driver out
+    # from under live volumes, leaving PVs stuck Terminating on finalizers with
+    # nothing left to clear them, and FlexVols orphaned on the array. Same
+    # explicit-destructive-opt-in shape as rook_ceph_teardown_wipe_devices. Not on
+    # a whole-stack teardown, where the cluster itself is being removed and this
+    # fail would abort the play before Kubespray reset ran.
+    - name: "netapp_trident_csi | teardown | Refuse to strand live volumes"
+      ansible.builtin.fail:
+        msg: |
+          {{ _trident_td_claims | length }} PersistentVolumeClaim(s) are still
+          served by Trident, and ontap_teardown_delete_pvcs is false:
+          {% for c in _trident_td_claims %}
+            {{ c.ns }}/{{ c.name }} ({{ c.size | default('?', true) }}, sc={{ c.sc | default('(none)', true) }}, pv={{ c.pv | default('(unbound)', true) }})
+          {% endfor %}
+          Removing Trident now would leave those PVs Terminating forever with no
+          CSI driver to release them. Either tear down the workloads that own
+          them first:
+            kubectl delete pvc -n <namespace> <name>
+          or re-run accepting the data loss:
+            ./es_auto_installer.sh teardown storage -- -e ontap_teardown_delete_pvcs=true
+          A whole-stack "./es_auto_installer.sh teardown infrastructure" does not
+          need that flag: the cluster is removed in the same run, so consent is implied.
+          reclaimPolicy on these classes is {{ trident_reclaim_policy }}, so
+          {{ 'the ONTAP FlexVols survive and must be removed on the array' if trident_reclaim_policy == 'Retain' else 'deleting the PVCs also destroys the ONTAP FlexVols' }}.
+      when:
+        - _trident_td_claims | length > 0
+        - not (ontap_teardown_delete_pvcs | bool)
+        - not (_trident_td_whole_stack | bool)
+
+    # ─── 3. PVCs (opt-in) ────────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Delete Trident PVCs"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ item.name }}"
+        namespace: "{{ item.ns }}"
+        wait: true
+        wait_timeout: "{{ trident_teardown_namespace_timeout | int }}"
+      loop: "{{ _trident_td_claims }}"
+      loop_control:
+        label: "{{ item.ns }}/{{ item.name }}"
+      # A PVC held by a running pod times out here. The finalizer report in step
+      # 12 names it, which is more useful than aborting the whole teardown.
+      failed_when: false
+      when:
+        - _trident_td_claims | length > 0
+        - (ontap_teardown_delete_pvcs | bool) or (_trident_td_whole_stack | bool)
+
+    - name: "netapp_trident_csi | teardown | Wait for the released PVs to disappear"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolume
+        name: "{{ item.pv }}"
+      loop: "{{ _trident_td_volumes }}"
+      loop_control:
+        label: "{{ item.pv }}"
+      register: _trident_td_pv_wait
+      until: (_trident_td_pv_wait.resources | default([])) | length == 0
+      retries: "{{ trident_teardown_wait_retries | int }}"
+      delay: "{{ trident_teardown_wait_delay | int }}"
+      # With reclaimPolicy Retain the PV is *expected* to stay, so an exhausted
+      # loop is normal here and must not fail the play. Step 12 reports it.
+      failed_when: false
+      changed_when: false
+      when:
+        - (ontap_teardown_delete_pvcs | bool) or (_trident_td_whole_stack | bool)
+        - trident_reclaim_policy == 'Delete'
+
+    # Under reclaimPolicy Retain nothing ever deletes the PV objects, so every
+    # teardown used to leave a set of Trident PVs that are Released, unbindable
+    # (a Released PV keeps its old claimRef) and served by a CSI driver that no
+    # longer exists. Deleting the object is not destructive: the FlexVol behind it
+    # survives on the array and is named in the step 12 residue report.
+    - name: "netapp_trident_csi | teardown | Re-read Trident PersistentVolumes"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolume
+      register: _trident_td_pvs_now
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | Select Released Trident PersistentVolumes"
+      vars:
+        _released_pv_query: >-
+          [?spec.csi.driver == 'csi.trident.netapp.io'
+            && (status.phase == 'Released' || status.phase == 'Failed')].metadata.name
+      ansible.builtin.set_fact:
+        _trident_td_released_pvs: "{{ _trident_td_pvs_now.resources | default([]) | json_query(_released_pv_query) | default([], true) }}"
+
+    - name: "netapp_trident_csi | teardown | Delete Released Trident PersistentVolumes"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: PersistentVolume
+        name: "{{ item }}"
+        wait: true
+        wait_timeout: "{{ trident_teardown_wait_delay | int * trident_teardown_wait_retries | int }}"
+      loop: "{{ _trident_td_released_pvs }}"
+      loop_control:
+        label: "{{ item }}"
+      # A PV whose finalizer needs the CSI driver will not go until the driver
+      # runs, and the driver is still up at this point; one that still refuses is
+      # named by step 11 rather than aborting the teardown.
+      failed_when: false
+
+    # A VolumeAttachment carries an external-attacher finalizer that only the CSI
+    # driver clears. Left behind, it is unremovable once the driver is gone and it
+    # blocks a later re-install from attaching the same volume. This matters most
+    # for ontap-san, where every mount is a real attach.
+
+    - name: "netapp_trident_csi | teardown | List Trident VolumeAttachments"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: VolumeAttachment
+      register: _trident_td_va
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | Select Trident VolumeAttachments"
+      vars:
+        _va_query: "[?spec.attacher == 'csi.trident.netapp.io'].metadata.name"
+      ansible.builtin.set_fact:
+        _trident_td_va_names: "{{ _trident_td_va.resources | default([]) | json_query(_va_query) | default([], true) }}"
+
+    - name: "netapp_trident_csi | teardown | Delete Trident VolumeAttachments"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: storage.k8s.io/v1
+        kind: VolumeAttachment
+        name: "{{ item }}"
+        wait: true
+        wait_timeout: "{{ trident_teardown_wait_delay | int * trident_teardown_wait_retries | int }}"
+      loop: "{{ _trident_td_va_names }}"
+      loop_control:
+        label: "{{ item }}"
+      # Runs while the driver is still up so the attacher can clear its finalizer.
+      # One that does not go is reported below rather than aborting the teardown.
+      failed_when: false
+
+    - name: "netapp_trident_csi | teardown | Re-check Trident VolumeAttachments"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: VolumeAttachment
+      register: _trident_td_va_after
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | VolumeAttachments still present"
+      vars:
+        _va_query: "[?spec.attacher == 'csi.trident.netapp.io'].metadata.name"
+        _left: "{{ _trident_td_va_after.resources | default([]) | json_query(_va_query) | default([], true) }}"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _left | length }} Trident VolumeAttachment(s) survived deletion:
+          {{ _left | join(', ') }}. They hold an
+          external-attacher/csi-trident-netapp-io finalizer that only the Trident
+          attacher clears, so once the operator is uninstalled they can only be
+          removed by stripping that finalizer:
+          kubectl patch volumeattachment <name> --type merge
+          -p '{"metadata":{"finalizers":null}}'.
+          A pod still using the volume is the usual cause.
+      when: _left | length > 0
+
+    # ─── 4. Backend ──────────────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Delete the ONTAP backend configuration"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: trident.netapp.io/v1
+        kind: TridentBackendConfig
+        name: "{{ trident_backend_name }}"
+        namespace: "{{ trident_namespace }}"
+      # The CRD may already be gone from a partial teardown; kubernetes.core
+      # raises "Failed to find exact match for trident.netapp.io/v1..." then.
+      failed_when: false
+
+    - name: "netapp_trident_csi | teardown | Wait for the backend to disappear"
+      kubernetes.core.k8s_info:
+        api_version: trident.netapp.io/v1
+        kind: TridentBackendConfig
+        name: "{{ trident_backend_name }}"
+        namespace: "{{ trident_namespace }}"
+      register: _trident_td_backend
+      until: (_trident_td_backend.resources | default([])) | length == 0
+      retries: "{{ trident_teardown_wait_retries | int }}"
+      delay: "{{ trident_teardown_wait_delay | int }}"
+      # Deletion stalls in Deleting phase while volumes still live on the
+      # backend. Reported below rather than aborting mid-teardown.
+      failed_when: false
+      changed_when: false
+
+    - name: "netapp_trident_csi | teardown | Backend still present"
+      ansible.builtin.debug:
+        msg: >-
+          TridentBackendConfig {{ trident_backend_name }} did not disappear
+          within {{ (trident_teardown_wait_retries | int) * (trident_teardown_wait_delay | int) }}s.
+          Backend deletion blocks while volumes still exist on it. Continuing;
+          step 11 lists whatever is still holding finalizers.
+      when: (_trident_td_backend.resources | default([])) | length > 0
+
+    # ─── 5. TridentOrchestrator: the CR whose deletion uninstalls Trident ─
+
+    - name: "netapp_trident_csi | teardown | List TridentOrchestrator instances"
+      kubernetes.core.k8s_info:
+        api_version: trident.netapp.io/v1
+        kind: TridentOrchestrator
+      register: _trident_td_torc
+      # CRD may be absent on a partial teardown.
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | Delete TridentOrchestrator"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: trident.netapp.io/v1
+        kind: TridentOrchestrator
+        name: "{{ item.metadata.name }}"
+        wait: true
+        wait_timeout: "{{ trident_teardown_namespace_timeout | int }}"
+      loop: "{{ _trident_td_torc.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      # The operator has to run to drain this CR's finalizer, and it is still
+      # running at this point. A timeout is reported by step 11 rather than
+      # aborting before the operator is uninstalled.
+      failed_when: false
+
+    - name: "netapp_trident_csi | teardown | Wait for TridentOrchestrator to be gone"
+      kubernetes.core.k8s_info:
+        api_version: trident.netapp.io/v1
+        kind: TridentOrchestrator
+      register: _trident_td_torc_wait
+      until: (_trident_td_torc_wait.resources | default([])) | length == 0
+      retries: "{{ trident_teardown_wait_retries | int }}"
+      delay: "{{ trident_teardown_wait_delay | int }}"
+      # Same reason as above.
+      failed_when: false
+      changed_when: false
+
+    # ─── 6. Operator ─────────────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Uninstall the Trident operator"
+      kubernetes.core.helm:
+        name: trident-operator
+        release_namespace: "{{ trident_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ trident_wait_timeout }}"
+      # The release may be absent while CRDs remain (that combination is one of
+      # the two ways the presence gate above lets us in).
+      failed_when: false
+      when: _trident_td_release_present | bool
+
+    # ─── 7. Workloads ────────────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Wait for the Trident workloads to disappear"
+      kubernetes.core.k8s_info:
+        api_version: "{{ item.api }}"
+        kind: "{{ item.kind }}"
+        namespace: "{{ trident_namespace }}"
+        label_selectors: "{{ item.selector }}"
+      loop:
+        - {api: apps/v1, kind: Deployment, selector: [app=controller.csi.trident.netapp.io]}
+        - {api: apps/v1, kind: DaemonSet, selector: [app=node.csi.trident.netapp.io]}
+      loop_control:
+        label: "{{ item.kind }}"
+      register: _trident_td_workloads
+      until: (_trident_td_workloads.resources | default([])) | length == 0
+      retries: "{{ trident_teardown_wait_retries | int }}"
+      delay: "{{ trident_teardown_wait_delay | int }}"
+      # Orphaned workloads are reported by step 11, not fatal here.
+      failed_when: false
+      changed_when: false
+
+    # ─── 8. StorageClass and Secret ──────────────────────────────────────
+
+    # StorageClasses are cluster-scoped, so deleting the namespace does not
+    # remove them. Left behind, this one keeps the default-class annotation and a
+    # provisioner that no longer exists, and every PVC without an explicit
+    # storageClassName stays Pending forever.
+    - name: "netapp_trident_csi | teardown | Delete Trident StorageClasses"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ item }}"
+      loop: "{{ (_trident_td_sc_names + [trident_storage_class]) | unique | list }}"
+      loop_control:
+        label: "{{ item }}"
+      # A class already deleted by a previous teardown run is not an error.
+      failed_when: false
+
+    - name: "netapp_trident_csi | teardown | Confirm which StorageClass is default now"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+      register: _trident_td_scs_after
+      # Read-only, and the cluster may be going away in a whole-stack teardown.
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | Record the resulting default"
+      vars:
+        _default_sc_query: >-
+          [?metadata.annotations."storageclass.kubernetes.io/is-default-class" == 'true'].metadata.name
+      ansible.builtin.set_fact:
+        _trident_td_default_after: "{{ _trident_td_scs_after.resources | default([]) | json_query(_default_sc_query) | default([], true) }}"
+
+    - name: "netapp_trident_csi | teardown | Cluster has no default StorageClass"
+      ansible.builtin.debug:
+        msg: >-
+          The cluster now has no default StorageClass. Every PVC that omits
+          storageClassName will stay Pending, including the inference model store.
+          Install a storage backend: ./es_auto_installer.sh install storage
+      when: _trident_td_default_after | length == 0
+
+    - name: "netapp_trident_csi | teardown | Delete the ONTAP credentials Secret"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Secret
+        name: "{{ trident_backend_name }}-secret"
+        namespace: "{{ trident_namespace }}"
+      # Absent on a partial install.
+      failed_when: false
+
+    # ─── 9. CRDs ────────────────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Delete Trident CRDs"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        wait: true
+        wait_timeout: "{{ trident_teardown_namespace_timeout | int }}"
+      loop: "{{ _trident_td_crd_names }}"
+      loop_control:
+        label: "{{ item }}"
+      # A CRD whose CRs still hold finalizers will not go; step 11 names it.
+      failed_when: false
+      when: ontap_teardown_remove_crds | bool
+
+    - name: "netapp_trident_csi | teardown | Trident CRDs kept"
+      ansible.builtin.debug:
+        msg: >-
+          ontap_teardown_remove_crds is false, so {{ _trident_td_crd_names | length }}
+          trident.netapp.io CRD(s) were kept. A later install of a different
+          Trident version may bind to these stale schemas.
+      when: not (ontap_teardown_remove_crds | bool)
+
+    # ─── 10. Namespace ───────────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Delete the Trident namespace"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ trident_namespace }}"
+        wait: true
+        wait_timeout: "{{ trident_teardown_namespace_timeout | int }}"
+      register: _trident_td_ns
+      # A namespace stuck Terminating is exactly what step 11 exists to explain,
+      # so this must not abort before that report runs.
+      failed_when: false
+
+    # ─── 11. Stuck resources ─────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Look for anything still present"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ trident_namespace }}"
+      register: _trident_td_ns_check
+      # Read-only probe on a cluster that may already be gone.
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: "netapp_trident_csi | teardown | Enumerate resources holding finalizers"
+      when: (_trident_td_ns_check.resources | default([])) | length > 0
+      block:
+
+        - name: "netapp_trident_csi | teardown | List leftover Trident custom resources"
+          kubernetes.core.k8s_info:
+            api_version: trident.netapp.io/v1
+            kind: "{{ item }}"
+            namespace: "{{ trident_namespace }}"
+          loop:
+            - TridentBackendConfig
+            - TridentBackend
+            - TridentVolume
+            - TridentSnapshot
+            - TridentTransaction
+          loop_control:
+            label: "{{ item }}"
+          register: _trident_td_leftovers
+          # Most of these CRDs are gone by now; that is the success case.
+          failed_when: false
+          changed_when: false
+          check_mode: false
+
+        # Reported, not fixed: stripping a finalizer orphans the FlexVol behind it
+        # on the array, so that is the operator's call to make with the residue
+        # report below in hand.
+        - name: "netapp_trident_csi | teardown | Report stuck resources"
+          ansible.builtin.debug:
+            msg: |
+              Namespace {{ trident_namespace }} is still present
+              (phase={{ (_trident_td_ns_check.resources | first).status.phase | default('unknown') }})
+              after {{ trident_teardown_namespace_timeout }}s.
+              Resources still holding finalizers:
+              {% for r in _trident_td_leftovers.results | default([]) %}
+              {% for obj in r.resources | default([]) %}
+                {{ r.item }}/{{ obj.metadata.name }} finalizers={{ obj.metadata.finalizers | default([]) | join(',') }}
+              {% endfor %}
+              {% endfor %}
+              Clear one by hand, then re-run the teardown:
+                kubectl -n {{ trident_namespace }} patch <kind>/<name> --type merge -p '{"metadata":{"finalizers":null}}'
+
+    # ─── 12. Array residue ───────────────────────────────────────────────
+
+    - name: "netapp_trident_csi | teardown | Done, with what was left on the array"
+      ansible.builtin.debug:
+        msg: |
+          NetApp Trident CSI teardown complete.
+            operator:      removed from {{ trident_namespace }}
+            StorageClass:  {{ (_trident_td_sc_names + [trident_storage_class]) | unique | join(', ') }} deleted
+            default SC:    {{ _trident_td_default_after | default([]) | join(', ') | default('NONE - dynamic provisioning is broken until a backend is installed', true) }}
+            CRDs:          {{ 'removed' if (ontap_teardown_remove_crds | bool) else 'kept' }}
+            PVs:           {{ _trident_td_released_pvs | default([]) | length }} Released/Failed Trident PV object(s) deleted
+            attachments:   {{ _trident_td_va_names | default([]) | length }} Trident VolumeAttachment(s) deleted
+          {% if _trident_td_volumes | length == 0 %}
+          No Trident volumes existed, so nothing was left on the array.
+          {% else %}
+          {{ _trident_td_volumes | length }} FlexVol(s) were provisioned by this
+          cluster on SVM {{ ontap_svm }}. reclaimPolicy was {{ trident_reclaim_policy }}, so
+          {% if trident_reclaim_policy == 'Retain' %}
+          ALL of them still exist and hold data. This installer cannot delete
+          them: the CSI driver is gone.
+          {% else %}
+          the ones whose PVCs were deleted are gone; any PVC that was not deleted
+          leaves its FlexVol behind.
+          {% endif %}
+          {% for v in _trident_td_volumes %}
+            {{ v.flexvol | default(v.handle, true) | default(v.pv, true) }}  ({{ v.size | default('?', true) }}, was {{ v.claimns | default('?', true) }}/{{ v.claim | default('?', true) }})
+          {% endfor %}
+          List and remove them on the array:
+            ::> volume show -vserver {{ ontap_svm }} -volume {{ ontap_storage_prefix | default('trident', true) }}* -fields volume,size,state,used
+            ::> volume offline -vserver {{ ontap_svm }} -volume <name>
+            ::> volume delete -vserver {{ ontap_svm }} -volume <name>
+          {% endif %}

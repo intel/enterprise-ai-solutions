@@ -27,6 +27,10 @@
       kubernetes.core.helm_repository:
         name: cnpg
         repo_url: "{{ cnpg_helm_repo }}"
+      register: helm_repo_add_result
+      until: helm_repo_add_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "postgresql | Label cnpg-system namespace — Istio"
       kubernetes.core.k8s:
@@ -63,6 +67,10 @@
         chart_version: "{{ cnpg_version }}"
         wait: "{{ helm_wait }}"
         timeout: "{{ helm_timeout }}"
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "postgresql | Wait for CNPG operator readiness"
       kubernetes.core.k8s_info:

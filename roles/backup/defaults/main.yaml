@@ -1,0 +1,59 @@
+---
+# =============================================================================
+# backup — Role Defaults
+# =============================================================================
+# The engine. Everything solution-specific comes from a profile; see
+# configs/backup.yaml for that contract.
+
+# --- Cross-role shared defaults (owned by roles/velero) -----------------------
+velero_namespace: "velero"
+velero_external_bsl_enabled: false
+velero_external_bsl_tls_enabled: false
+velero_snapshot_move_data: false
+
+# Labels identifying the Velero server pod.
+backup_velero_pod_labels:
+  app.kubernetes.io/name: velero
+
+# --- Naming -------------------------------------------------------------------
+backup_name_prefix: "backup"
+restore_name_prefix: "restore"
+
+# Label the engine puts on every Backup and Restore it creates, so a restore can
+# find the backups that belong to a given profile.
+backup_profile_label_key: "ai-solutions.io/backup-profile"
+
+# --- Labels -------------------------------------------------------------------
+backup_labels:
+  backup-reason: regular
+restore_labels:
+  restore-reason: recovery
+
+# --- Restore ------------------------------------------------------------------
+# Empty = newest Completed backup for this profile. Set it to pin one.
+velero_restore_from: ""
+backup_existing_resource_policy: "update"
+
+# --- Monitoring ---------------------------------------------------------------
+backup_monitor_retries: 360          # 360 x 10s = 60 minutes
+backup_monitor_delay: 10
+backup_cleanup_wait_timeout: 300
+backup_pvc_delete_retries: 30
+backup_pvc_delete_delay: 10
+
+# Phases that mean "stop and report", as opposed to "still running".
+backup_terminal_failure_phases:
+  - FinalizingPartiallyFailed
+  - PartiallyFailed
+  - Failed
+  - FailedValidation
+
+# --- Post-backup data assertion ----------------------------------------------
+# A Backup can reach Completed while containing object metadata and no volume
+# data. When the profile declares PVCs, assert a snapshot actually exists for
+# them. Set false only to diagnose.
+backup_assert_volume_data: true
+
+# --- Upgrade gate (tasks/verify.yaml) ----------------------------------------
+upgrade_backup_max_age_hours: 6
+allow_upgrade_without_backup: false

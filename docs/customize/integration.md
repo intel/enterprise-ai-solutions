@@ -1,4 +1,4 @@
-# Integrating Applications with Intel® AI for Enterprise Solutions
+# Integrating Your Application
 
 [← Docs Index](../README.md)
 
@@ -21,7 +21,7 @@ The stack is built on open standards. Anything that speaks them works:
 
 ---
 
-## Quick start: get a token and call a model
+## The 30-second integration
 
 ### 1. Get the gateway address and a token
 
@@ -326,7 +326,9 @@ To declare models in Git instead, drop CRDs into your role/values and run:
 
 ---
 
-## Traditional ML models (sklearn, XGBoost, PyTorch, TensorFlow, ONNX, …)
+## Traditional ML models
+
+Scikit-learn, XGBoost, PyTorch, TensorFlow, ONNX, Triton, and custom servers.
 
 KServe is a **general-purpose model server** — LLMs are just one workload. You can deploy classic ML models on the same stack with the same auth, gateway, and routing.
 
@@ -480,6 +482,17 @@ Each `HTTPRoute` then claims the exact hostnames + paths it owns.
 | LLMs (KServe-managed) | `inference.<base>` | `/llm-inference/<model>/v1/...` (auto-created by KServe) |
 
 So the stack is already exercising **pure host routing** (Keycloak) and **host + path routing combined** (inference).
+
+> [!IMPORTANT]
+> **Platform hostnames are reserved.** The shared listeners admit routes from
+> every namespace, and the Gateway API resolves two routes claiming the same
+> hostname by match specificity regardless of namespace. To stop a route in one
+> namespace from claiming a platform hostname (e.g. `inference.<base>`) with a
+> more specific match and hijacking its traffic, a `ValidatingAdmissionPolicy`
+> reserves each hostname in `gateway_protected_hostnames` to its owning
+> namespace — a claim from any other namespace is rejected at admission. Use a
+> hostname your namespace owns (the patterns below), or have an operator add
+> yours to `gateway_protected_hostnames` in the `envoy_gateway` role.
 
 ### Patterns you can add with `kubectl apply` — no stack changes
 

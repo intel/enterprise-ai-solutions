@@ -209,12 +209,26 @@
         namespace: "{{ keycloak_namespace }}"
       spec:
         parentRefs:
+          # Pin to the HTTPS listener only. Without sectionName an HTTPRoute
+          # attaches to every compatible listener, including the plaintext
+          # HTTP:80 one, which would serve OIDC tokens in cleartext.
           - name: "{{ gateway_name | default('eg-gateway') }}"
             namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+            sectionName: https
         hostnames:
           - "{{ keycloak_hostname }}"
         rules:
-          - backendRefs:
+          - filters:
+              # HSTS: tell compliant browsers to only ever reach this host over
+              # HTTPS, so a later plaintext attempt is refused client-side before
+              # any credential leaves the browser. Only honored when received over
+              # HTTPS, hence set here on the :443 route, not the :80 redirect.
+              - type: ResponseHeaderModifier
+                responseHeaderModifier:
+                  set:
+                    - name: Strict-Transport-Security
+                      value: "max-age=31536000; includeSubDomains"
+            backendRefs:
               - name: keycloak-service
                 port: 8080
   when: gateway_create | default(false)

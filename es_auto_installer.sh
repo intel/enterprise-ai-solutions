@@ -2,6 +2,7 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+# Requires bash >= 4.3: mapfile, associative arrays, ${var^^}.
 set -euo pipefail
 
 # Force a UTF-8 locale for the whole run.
@@ -22,26 +23,59 @@ if (( _LOG_LEVEL >= 2 )); then
     export ANSIBLE_DEBUG=true
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION=$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo dev)
+# =============================================================================
+# Constants
+# =============================================================================
+# Paths are deliberately not readonly: the test suite sources this file and
+# repoints them at a fixture tree.
 
-CONFIG_DIR="${SCRIPT_DIR}/config"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly INSTALLER_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo dev)"
+
+CONFIG_DIR="${SCRIPT_DIR}/configs"
 COMPONENTS="${CONFIG_DIR}/components.yaml"
-REPOS_CONFIG="${CONFIG_DIR}/repos.yaml"
 DEFAULTS_DIR="${CONFIG_DIR}/defaults"
+# Layer manifests: configs/repos/repos.<layer>.yaml — filename is the layer name.
+REPOS_DIR="${CONFIG_DIR}/repos"
+REPOS_GLOB="${REPOS_DIR}/repos.*.yaml"
 
 EXT_DIR="${SCRIPT_DIR}/ext"
 VENV="${SCRIPT_DIR}/.venv"
 ENV_ROOT="${SCRIPT_DIR}/env"
+# Per-env provisioning record, written by init. See docs/adding_solutions.md.
+readonly SOLUTIONS_BASE=".solutions.yaml"
+# Bumped whenever a recorded field changes name or meaning, so an older record is
+# refused with the re-init to run instead of being misread as empty.
+readonly SOLUTIONS_SCHEMA=2
 
-YQ_VERSION="v4.53.2"
-KUBECTL_VERSION="v1.34.3"
-HELM_VERSION="v3.20.2"
+readonly YQ_VERSION="v4.53.2"
+readonly KUBECTL_VERSION="v1.34.3"
+readonly HELM_VERSION="v3.20.2"
 
 # Valid CLI actions.
-ACTIONS=(configure show init install teardown validate status)
+readonly -a ACTIONS=(configure show init install teardown validate status)
 
-# Logging helper variables and functions
+# =============================================================================
+# Mutable globals — every one of these, and nothing else, is written after startup
+# =============================================================================
+#   parse_args        ACTION TARGET ENV_NAME ONLY EXTRA_VARS
+#                     INIT_LAYER INIT_FLAVOUR INIT_UPGRADE
+#   ensure_env_dir    ENV_DIR ENV_LOG_DIR ENV_INVENTORY_DIR GLOBAL_CONFIG
+#   resolve_inventory INVENTORY
+#   ensure_sudo       _NEED_BECOME_PASS
+#   _discover_layers  LAYERS
+#   main              LOG
+#   _resolve_kubeconfig  KUBE_CFG IS_BYO
+#   ensure_repos      ANSIBLE_ROLES_PATH (exported)
+# init sets ENV_DIR itself: it runs before any env exists, so ensure_env_dir cannot.
+
+# =============================================================================
+# Output
+# =============================================================================
+# err/warn go to stderr, info/ok to stdout. Two traps worth knowing:
+#   - err exits, so `[[ cond ]] || err "..."` is safe as a function's last statement.
+#   - err inside $(...) or < <(...) exits only that subshell and is swallowed. Assign
+#     to a variable first, or wrap the callee in ( ) and handle the failure.
 RED=$'\033[0;31m' GRN=$'\033[0;32m' YEL=$'\033[0;33m' DIM=$'\033[2m' RST=$'\033[0m'
 
 err()  { echo -e "${RED}ERROR: $*${RST}" >&2; exit 1; }
@@ -70,7 +104,9 @@ _quiet() {
         "$@" 2>&1 | while IFS= read -r _line; do echo -e "${DIM}  ${_line}${RST}" >&2; done
         return "${PIPESTATUS[0]}"
     else
-        "$@" &>/dev/null &
+        # Captured, not discarded: on failure the reason is the only useful thing here.
+        local _log; _log=$(mktemp)
+        "$@" &>"$_log" &
         local _pid=$!
         while kill -0 "$_pid" 2>/dev/null; do
             sleep 2
@@ -78,8 +114,25 @@ _quiet() {
         done
         local _rc=0; wait "$_pid" || _rc=$?
         printf '\n'
+        (( _rc == 0 )) || { warn "failed (exit ${_rc}), last 15 lines:"; tail -15 "$_log" >&2
+                            info "  full output: re-run with ES_LOG_LEVEL=debug"; }
+        rm -f "$_log"
         return "$_rc"
     fi
+}
+
+# =============================================================================
+# Usage
+# =============================================================================
+# confirm <prompt> — y/N gate before destructive work. --force skips it; a non-interactive
+# run without it is refused rather than proceeding on a prompt nobody can answer.
+confirm() {
+    [[ "${FORCE:-false}" == "true" ]] && return 0
+    [[ -t 0 ]] || err "$1
+  Refusing: stdin is not a terminal and --force was not passed."
+    local reply=""
+    read -rp "$1 Proceed? [y/N] " reply || true
+    [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]] || err "Aborted."
 }
 
 usage() {
@@ -92,8 +145,11 @@ usage() {
     configure              install Python ≥ 3.11 + venv pkg + yq + kubectl + helm
                            (sudo, PERMANENT system changes). Run once per machine;
                            skip if those are already present.
-    init <env>             create env/<env>/ and seed configs from core + ext
-                           defaults. See README.md for configuration guidance.
+    init <layer>           create env and seed configs. Clones every repo in
+                           configs/repos/repos.<layer>.yaml at its pinned rev
+                           and seeds a config.<layer>.yaml for each. --flavour
+                           selects a pipeline preset (from pipelines/). Records
+                           what it provisioned in env/<env>/.solutions.yaml.
     show                   print available layers/components
     install   <target>     provision a layer or component into env/<env>/
     teardown  <target>     remove a layer or component
@@ -102,13 +158,21 @@ usage() {
                            helm releases, endpoints)
 
   Targets:
-    --all                  every enabled layer, install order
     <layer>                single layer (Ansible routes it to its components)
     <component>            single component (Ansible routes it to its layer)
 
   Options:
     --env <name>           env directory under env/<name>/ (default: local)
+    --flavour <name>       (init) pipeline preset for the layer being inited
+    --upgrade              (init) move already-cloned ext/ repos onto the revs the
+                           manifests pin now. Refuses on local changes; never
+                           rewrites your configs, only reports what changed.
     --only                 skip dep auto-pull; run target alone
+    --force                skip the confirmation prompt (required in CI, where there
+                           is no terminal to answer it)
+    --skip <names>         comma-separated layers or components to leave out of the
+                           plan, e.g. --skip erag to tear down the cluster without
+                           uninstalling it first
     -h, --help             this help
     -v, --version          print version
     -- <args...>           pass remaining args verbatim to ansible-playbook
@@ -125,18 +189,29 @@ usage() {
   Examples:
     $me show                                   # list layers/components
     $me configure                              # one-time machine prep
-    $me init local                             # seed env/local/ from defaults
-    $me install --all                          # full stack into env=local
+    $me init inference                         # seed env/local/ for inference
+    $me init erag                              # seed env/local/ for erag (+ deps)
+    $me init erag --flavour docsum             # erag + docsum pipeline preset
+    $me init erag --env prod                   # seed env/prod/ for erag
+    $me init erag --upgrade                    # move ext/ to the revs pinned now
+    $me install erag                           # install just the erag layer
     $me status                                 # see what's installed (env=local)
-    $me status --env prod                      # check prod environment
-    $me init prod
     $me install --env prod platform            # multi-env on one bastion
     $me install metallb --only -- -vvv
+    $me install velero --only                  # backup mechanism (opt-in)
 
 EOF
 }
 
-# Print the merged components.yaml from core + every ext repo
+# =============================================================================
+# Registry & layer manifests
+# =============================================================================
+# The merged components.yaml (this repo + every cloned ext repo) is the registry:
+# it decides which components exist. The per-layer manifests decide what to clone.
+
+# A leading underscore marks a helper used only inside its own section; anything
+# without one is called across sections or dispatched from main.
+# Print the merged components.yaml from ai-solutions + every ext repo
 _merged_components() {
     local files=("$COMPONENTS")
     [[ -d "$EXT_DIR" ]] && while IFS= read -r -d '' f; do files+=("$f"); done < \
@@ -147,15 +222,26 @@ _merged_components() {
         || warn "failed to merge components.yaml (malformed ext file? files: ${files[*]})"
 }
 
-# _discover_layers — populate LAYERS from the MERGED components (core + ext), not
-# core alone, so an ext-only layer still renders. Lazy: called after yq exists.
+# _discover_layers — populate LAYERS from the MERGED components (ai-solutions + ext), not
+# ai-solutions alone, so an ext-only layer still renders. Lazy: called after yq exists.
 LAYERS=()
 _discover_layers() {
     mapfile -t LAYERS < <(_merged_components | yq -r '.layers[].name' 2>/dev/null)
 }
 
+# _require_yq — mikefarah yq v4+. A distro package under that name is often v3 or the
+# unrelated Python yq, and neither understands a single expression in this file; without
+# this the symptom is "Unknown layer" rather than "your yq is the wrong one".
+_require_yq() {
+    command -v yq &>/dev/null \
+        || err "yq not found — run './es_auto_installer.sh configure' or install yq ${YQ_VERSION}."
+    local major; major=$(yq --version 2>&1 | grep -oE '[0-9]+' | head -1)
+    (( ${major:-0} >= 4 )) \
+        || err "the yq on PATH reports major version ${major:-?}; this needs mikefarah yq >= ${YQ_VERSION}."
+}
+
 show_table() {
-    command -v yq >/dev/null || err "yq not found — run './es_auto_installer.sh configure' or install yq"
+    _require_yq
 
     _discover_layers
     local merged; merged=$(_merged_components)
@@ -188,6 +274,9 @@ show_table() {
     echo
 }
 
+# =============================================================================
+# Host tooling — python, venv, yq, kubectl, helm
+# =============================================================================
 # Python helpers — check for suitable Python, print hints if missing.
 _find_python() {
     local py minor
@@ -238,8 +327,7 @@ configure() {
     - create the installer's Python venv under .venv/
 
 EOF
-    read -rp "    Proceed? [y/N] " _ans
-    [[ "$_ans" =~ ^[Yy]$ ]] || { info "Aborted."; exit 0; }
+    confirm "    configure makes the PERMANENT system changes listed above."
 
     # configure needs root. If not passwordless, prompt once here so
     # _quiet-backgrounded sudo commands use the cached credential.
@@ -260,7 +348,7 @@ EOF
     _install_helm
     _ensure_venv
     ok "configure: done."
-    info "Next:  ./es_auto_installer.sh init local  (see README.md for details)"
+    info "Next:  ./es_auto_installer.sh init <layer>  (see README.md for details)"
 }
 
 _detect_os() {
@@ -328,16 +416,20 @@ _arch() {
 _download() {
     local url="$1" dest="$2" use_sudo="${3:-}"
     local -a pre=()
-    # The commas are sudo's own --preserve-env list syntax, not array separators.
-    # shellcheck disable=SC2054
     [[ "$use_sudo" == "--sudo" ]] && pre=(sudo --preserve-env=http_proxy,https_proxy,no_proxy)
 
-    command -v wget &>/dev/null \
-        || err "wget is required for downloads but is not installed."
-
-    local -a q=(-q); (( _LOG_LEVEL >= 1 )) && q=(--progress=bar:force:noscroll)
-    "${pre[@]}" wget "${q[@]}" --connect-timeout=15 --read-timeout=60 --tries=3 \
-        -O "$dest" "$url" && return 0
+    # curl first: RHEL minimal images ship curl and no wget.
+    if command -v curl &>/dev/null; then
+        local -a q=(-sS); (( _LOG_LEVEL >= 1 )) && q=(--progress-bar)
+        "${pre[@]}" curl -fL "${q[@]}" --connect-timeout 15 --max-time 300 --retry 3 \
+            -o "$dest" "$url" && return 0
+    elif command -v wget &>/dev/null; then
+        local -a q=(-q); (( _LOG_LEVEL >= 1 )) && q=(--progress=bar:force:noscroll)
+        "${pre[@]}" wget "${q[@]}" --connect-timeout=15 --read-timeout=60 --tries=3 \
+            -O "$dest" "$url" && return 0
+    else
+        err "downloads need curl or wget; neither is installed."
+    fi
 
     err "Download failed or timed out: ${url}
   Behind a proxy? Export http_proxy/https_proxy and re-run — they are forwarded
@@ -397,55 +489,310 @@ _install_helm() {
         || err "helm install failed: /usr/local/bin/helm is not runnable (check network/arch)."
 }
 
-# ensure_repos [solution...] — clone repos and build ANSIBLE_ROLES_PATH.
-# Repos with always:true are always cloned. Optional repos are cloned only when
-# their solution tag is passed (i.e. during init --<solution>). Already-cloned
-# repos are always added to the roles path regardless of arguments.
+# layer_manifest <layer> — path to a layer's manifest, or empty if none exists.
+layer_manifest() {
+    local f="${REPOS_DIR}/repos.${1}.yaml"
+    [[ -f "$f" ]] && printf '%s' "$f"
+    return 0   # empty output, not failure — callers test the string under set -e.
+}
+
+# _registry_layers — layers declared in the merged components.yaml (ai-solutions + cloned ext).
+_registry_layers() {
+    _merged_components | yq -r '.layers[].name' 2>/dev/null
+}
+
+# known_layers — every nameable layer, sorted. A layer is nameable when a manifest
+# declares the repos it needs OR the merged registry declares the layer itself: ai-solutions'
+# layers ship every role in this repo, so they have no manifest and need none.
+known_layers() {
+    local f base
+    { for f in $REPOS_GLOB; do
+          [[ -e "$f" ]] || continue
+          base=$(basename "$f")            # repos.<layer>.yaml
+          base="${base#repos.}"
+          printf '%s\n' "${base%.yaml}"
+      done
+      _registry_layers
+    } | sort -u
+}
+
+# _layer_exists <layer> — manifest-backed or registry-declared.
+#
+# Here-string, not a pipe: `grep -q` closes the pipe on its first match, the producer dies
+# of SIGPIPE, and pipefail then reports the whole lookup as failed. Timing-dependent, so it
+# presents as a layer that exists "sometimes".
+_layer_exists() {
+    [[ -n "$(layer_manifest "$1")" ]] && return 0
+    grep -qxF -- "$1" <<< "$(_registry_layers)"
+}
+
+# require_layer <layer> — validate the layer and echo its manifest path, which is
+# empty for an ai-solutions layer that needs no external repos.
+require_layer() {
+    _layer_exists "$1" \
+        || err "Unknown layer: '${1}'. Valid: $(known_layers | tr '\n' ' ')(a solution layer also needs a configs/repos/repos.<layer>.yaml)."
+    local mf; mf=$(layer_manifest "$1")
+    # Parsed here because callers read manifest_rows through a process substitution, where
+    # a yq failure exits only the subshell and is indistinguishable from "no repos".
+    [[ -z "$mf" ]] || yq -e '.repos | tag == "!!seq"' "$mf" >/dev/null 2>&1 \
+        || err "${mf#${SCRIPT_DIR}/} does not parse, or has no 'repos:' list. Check it with:  yq . ${mf#${SCRIPT_DIR}/}"
+    printf '%s' "$mf"
+}
+
+# manifest_rows <manifest> — emit one pipe-joined row per repo, in file order.
+manifest_rows() {
+    [[ -n "${1:-}" && -f "$1" ]] || return 0   # layer with no manifest → no repos
+    yq -r '.repos[] | [(.layer // ""), (.url // ""), (.dest // ""), (.rev // "main"),
+                       (.deployment_subdir // ""), (.config_dir // ""),
+                       (.default_flavour // ""), (.model_catalog // "")] | join("|")' \
+        "$1" 2>/dev/null
+}
+
+# =============================================================================
+# Provisioning record — env/<env>/.solutions.yaml
+# =============================================================================
+# Written by init: which layers this env was provisioned for, which
+# config.<layer>.yaml each one seeded, and the git rev init asked for.
+#
+# `rev` is intent, never a resolved commit — developers switch revs in ext/ by hand,
+# so a record compared against HEAD would nag constantly. It is persisted because an
+# upgrade replaces this checkout's manifests, after which nothing else remembers what
+# the previous version pinned.
+# =============================================================================
+
+solutions_file() { printf '%s' "${ENV_ROOT}/${1}/${SOLUTIONS_BASE}"; }
+
+_solutions_create() {
+    local f="$1"
+    [[ -f "$f" ]] && return 0
+    printf '%s\n' \
+        "# Generated by es_auto_installer.sh init — do not hand-edit." \
+        "# What this env was provisioned for. 'rev' is what init asked for, not what is" \
+        "# checked out now (ask git for that)." \
+        "schema: ${SOLUTIONS_SCHEMA}" "inited: []" "layers: []" > "$f"
+}
+
+# _solutions_upsert <file> — replace the entry for SL_NAME in place, or append.
+# In place, because entry order is config precedence: manifests list dependencies
+# first, so a layer's own config must stay after the ones it builds on.
+_solutions_upsert() {
+    local f="$1"
+    local entry='{
+        "name": strenv(SL_NAME), "config": strenv(SL_CONFIG),
+        "seeded_from": strenv(SL_SEEDED_FROM), "repo": strenv(SL_REPO),
+        "url": strenv(SL_URL), "rev": strenv(SL_REV),
+        "model_catalog": strenv(SL_MC), "seeded_by": strenv(SL_BY)
+    }'
+    if yq -e '.layers[] | select(.name == strenv(SL_NAME))' "$f" >/dev/null 2>&1; then
+        yq -i "(.layers[] | select(.name == strenv(SL_NAME))) = ${entry}" "$f"
+    else
+        yq -i ".layers += [${entry}]" "$f"
+    fi
+}
+
+# _solutions_get <file> <layer> <key> — one recorded field, empty if unrecorded.
+_solutions_get() {
+    [[ -f "$1" ]] || return 0
+    SL_NAME="$2" SL_KEY="$3" \
+        yq -r '.layers[] | select(.name == strenv(SL_NAME)) | .[strenv(SL_KEY)] // ""' \
+        "$1" 2>/dev/null || true
+}
+
+# solution_configs — config.<layer>.yaml for every layer this env was provisioned
+# with, in record order, as absolute paths.
+#
+# Not target-scoped: teardown resolves upward, so a plan for any layer can contain
+# the layers above it, and their config must be loaded for the `enabled:` gates to
+# render at all — otherwise those components silently drop out of the plan and stay
+# on the cluster. Record-driven rather than a glob over env/, so unrelated
+# config.<whatever>.yaml an operator keeps there is never merged in.
+solution_configs() {
+    local f; f=$(solutions_file "$ENV_NAME")
+    [[ -f "$f" ]] \
+        || err "env/${ENV_NAME}/${SOLUTIONS_BASE} is missing — this env predates the provisioning record. Run:  ./$(basename "$0") init <layer> --env ${ENV_NAME}"
+    # Checked rather than ignored: an older record's fields are named differently, and
+    # reading them as absent would quietly drop the pin checks instead of failing.
+    local schema; schema=$(yq -r '.schema // 0' "$f" 2>/dev/null || echo 0)
+    [[ "$schema" == "$SOLUTIONS_SCHEMA" ]] \
+        || err "env/${ENV_NAME}/${SOLUTIONS_BASE} is schema ${schema}, this installer writes ${SOLUTIONS_SCHEMA}. Re-run:  ./$(basename "$0") init <layer> --env ${ENV_NAME}  (it rewrites the record, keeping your configs)"
+    local name cfg
+    while IFS='|' read -r name cfg; do
+        [[ -z "$cfg" ]] && continue
+        [[ -f "${ENV_DIR}/${cfg}" ]] \
+            || err "Layer '${name}' was provisioned with ${cfg}, but env/${ENV_NAME}/${cfg} is gone. Restore it or re-run init."
+        printf '%s\n' "${ENV_DIR}/${cfg}"
+    done < <(yq -r '.layers[] | [(.name // ""), (.config // "")] | join("|")' "$f" 2>/dev/null)
+}
+
+# solution_layers — layer names in the record, one per line. Preflight refuses a plan that
+# reaches any solution layer not listed here.
+solution_layers() {
+    local f; f=$(solutions_file "$ENV_NAME")
+    [[ -f "$f" ]] || return 0
+    yq -r '.layers[].name' "$f" 2>/dev/null || true
+}
+
+# _ext_roles_dirs — roles/ beside every ext components.yaml. Same discovery as
+# _merged_components (and as preflight), so the roles path and the merged registry
+# cannot disagree: a component in the plan always has a findable role.
+_ext_roles_dirs() {
+    [[ -d "$EXT_DIR" ]] || return 0
+    local m d
+    while IFS= read -r -d '' m; do
+        d="$(dirname "$m")/roles"
+        [[ -d "$d" ]] && printf '%s\n' "$d"
+    done < <(find -L "$EXT_DIR" -name components.yaml -type f \
+                  -not -path '*/\.git/*' -print0 2>/dev/null | sort -z)
+    return 0
+}
+
+# =============================================================================
+# Git operations on ext/
+# =============================================================================
+# Every rev form the manifests accept resolves through _checkout_rev, so a fresh clone
+# and an --upgrade can never disagree about what a rev means.
+
+# _checkout_rev <repo> <rev> <dest> — land an existing clone on a rev: a branch, tag,
+# commit SHA, or full ref. A branch becomes a local branch and stays committable;
+# everything else can only detach. Callers guarantee the worktree is safe to move.
+_checkout_rev() {
+    local repo="$1" rev="$2" dest="$3"
+    if [[ "$rev" == refs/* ]]; then
+        # A full ref (refs/pull/N/head) is not covered by the default fetch refspec,
+        # so it has to be named explicitly and taken from FETCH_HEAD.
+        git -C "$repo" fetch origin "$rev" \
+            && git -C "$repo" checkout --detach FETCH_HEAD \
+            && return 0
+        err "cannot check out ref '${rev}' in ext/${dest}. Verify it exists on the remote."
+    fi
+    git -C "$repo" fetch --tags --force origin \
+        || err "git fetch failed for ext/${dest}. Check credentials, network, and proxy."
+    # Branch before tag: when a name is both, the committable one is meant.
+    if git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/${rev}"; then
+        # -B moves the branch pointer, orphaning any local commit on it.
+        local _ahead=0
+        git -C "$repo" show-ref --verify --quiet "refs/heads/${rev}" \
+            && _ahead=$(git -C "$repo" rev-list --count \
+                            "refs/remotes/origin/${rev}..refs/heads/${rev}" 2>/dev/null || echo 0)
+        [[ "$_ahead" == "0" ]] \
+            || err "ext/${dest} branch '${rev}' has ${_ahead} commit(s) not on origin. Push or drop them, then re-run --upgrade."
+        git -C "$repo" checkout -B "$rev" "refs/remotes/origin/${rev}" \
+            || err "git checkout of branch '${rev}' failed for ext/${dest}."
+    elif git -C "$repo" show-ref --verify --quiet "refs/tags/${rev}"; then
+        git -C "$repo" checkout --detach "refs/tags/${rev}" \
+            || err "git checkout of tag '${rev}' failed for ext/${dest}."
+    elif git -C "$repo" rev-parse --verify --quiet "${rev}^{commit}" >/dev/null; then
+        # A commit SHA, full or abbreviated. The clone above is not shallow, so anything
+        # reachable from a branch or tag is already local and needs no fetch by SHA; a
+        # commit on no published ref is absent and falls through to the error below.
+        git -C "$repo" checkout --detach "$rev" \
+            || err "git checkout of commit '${rev}' failed for ext/${dest}."
+    else
+        err "rev '${rev}' does not resolve in ext/${dest} — not a branch or tag on the remote, and not a commit in its history. Use a branch, a tag, a commit SHA, or a full ref such as refs/pull/N/head."
+    fi
+}
+
+# clone_repo <url> <dest_path> <rev> <name> — clone unless already present.
+clone_repo() {
+    local url="$1" repo="$2" rev="$3" dest="$4"
+    command -v git &>/dev/null \
+        || err "git is required to clone ${dest} but is not installed. Install git or run './es_auto_installer.sh configure'."
+    mkdir -p "$EXT_DIR"
+    info "Cloning ${dest} (${rev})"
+    # Cloned bare of any rev, then positioned through the same resolver --upgrade uses, so
+    # the two cannot drift on what a rev may be. `git clone --branch` is avoided because it
+    # takes only a branch or tag, and its failure mode is a silent checkout of the default
+    # branch, i.e. deploying a revision nobody asked for.
+    git clone "$url" "$repo" \
+        || { rm -rf "$repo"; err "git clone failed for ${url}. Check credentials, network, and proxy."; }
+    # Subshell so _checkout_rev's err exits it rather than the script, leaving this the
+    # chance to clean up. A clone left at the default branch would look complete to
+    # ensure_repos, which then skips cloning and seeds from the wrong revision.
+    ( _checkout_rev "$repo" "$rev" "$dest" ) \
+        || { rm -rf "$repo"; err "removed the partial clone ext/${dest} — nothing is left at an unintended rev."; }
+}
+
+# repin_repo <dest> <rev> — move an existing clone onto a new rev. Refuses on a dirty
+# worktree, so a developer's local edits are never discarded while a clean clone moves
+# freely.
+repin_repo() {
+    local dest="$1" rev="$2"
+    local repo="${EXT_DIR}/${dest}"
+    [[ -d "$repo" ]] || return 0   # not cloned yet — ensure_repos clones it at the new rev
+    [[ -d "${repo}/.git" ]] \
+        || { warn "ext/${dest} is not a git checkout — leaving it alone."; return 0; }
+    # -uno: untracked files survive a checkout untouched, so they are not at risk and
+    # must not block — an ext repo under development usually has some.
+    [[ -z "$(git -C "$repo" status --porcelain -uno)" ]] \
+        || err "ext/${dest} has uncommitted changes to tracked files. Commit, stash or revert them, then re-run --upgrade."
+
+    _checkout_rev "$repo" "$rev" "$dest"
+    ok "  repinned: ext/${dest} → ${rev}"
+}
+
+# report_config_delta <live> <seed> <layer> — top-level key diff, printed only.
+#
+# Never writes: overwriting the live config would discard operator edits, and merging
+# YAML is a rabbit hole. Top-level keys are the right granularity because config vars
+# are flat by convention. yq runs twice per side rather than once into a variable
+# because an empty key set would then reach comm as a single blank line and be reported
+# as a real difference.
+report_config_delta() {
+    local live="$1" seed="$2" layer="$3"
+    [[ -f "$live" && -f "$seed" ]] || return 0
+    local added removed
+    added=$(comm -13 <(yq -r 'keys | .[]' "$live" 2>/dev/null | sort) \
+                     <(yq -r 'keys | .[]' "$seed" 2>/dev/null | sort) | tr '\n' ' ')
+    removed=$(comm -23 <(yq -r 'keys | .[]' "$live" 2>/dev/null | sort) \
+                       <(yq -r 'keys | .[]' "$seed" 2>/dev/null | sort) | tr '\n' ' ')
+    [[ -z "$added" && -z "$removed" ]] && return 0
+    warn "config.${layer}.yaml differs from the new ${seed#${EXT_DIR}/}:"
+    [[ -n "$added" ]]   && info "    new upstream keys, not in yours:  ${added% }"
+    [[ -n "$removed" ]] && info "    yours only, dropped upstream:     ${removed% }"
+    info "    Your file is untouched. Diff it against ${seed#${EXT_DIR}/} and merge by hand."
+    return 0
+}
+
+# =============================================================================
+# Environment, dependencies, roles path
+# =============================================================================
+# ensure_repos <target> [--clone] — make sure ext/ holds what the run needs, then
+# build ANSIBLE_ROLES_PATH.
+#   init (--clone):  clone whatever the target's manifest lists, at its pinned rev.
+#   otherwise:       nothing is cloned — only init may mutate ext/. A repo this env
+#                    was provisioned with but that is gone is fatal for a layer
+#                    target that owns a manifest, a warning otherwise.
 ensure_repos() {
-    local -a clone_solutions=("$@")
+    local target="${1:-}" mode="${2:-}"
     local roles="${SCRIPT_DIR}/roles"
-    if [[ -f "$REPOS_CONFIG" ]] && command -v yq &>/dev/null; then
-        local url dest branch subdir always solution repo roles_dir
-        while IFS='|' read -r url dest branch subdir always solution; do
+    command -v yq &>/dev/null || { export ANSIBLE_ROLES_PATH="$roles"; return 0; }
+
+    local layer_name url dest rev subdir _cfgdir _flav _catalog repo roles_dir
+    if [[ "$mode" == "--clone" ]]; then
+        local mf; mf=$(require_layer "$target")
+        while IFS='|' read -r layer_name url dest rev subdir _cfgdir _flav _catalog; do
             [[ -z "$url" || -z "$dest" ]] && continue
             repo="${EXT_DIR}/${dest}"
             roles_dir="${repo}${subdir:+/$subdir}/roles"
-            if [[ ! -d "$roles_dir" ]]; then
-                local _should_clone=false
-                if [[ "$always" == "true" ]]; then
-                    _should_clone=true
-                else
-                    local _s
-                    for _s in "${clone_solutions[@]:-}"; do [[ "$_s" == "$solution" ]] && { _should_clone=true; break; }; done
-                fi
-                [[ "$_should_clone" == "true" ]] || continue
-                command -v git &>/dev/null \
-                    || err "git is required to clone ${dest} but is not installed. Install git or run './es_auto_installer.sh configure'."
-                mkdir -p "$EXT_DIR"
-                info "Cloning ${dest} (${branch})"
-                if [[ "$branch" == refs/* ]]; then
-                    # A full ref (e.g. refs/pull/N/head) cannot be given to
-                    # `git clone --branch`: the default fetch refspec never retrieves
-                    # refs/pull/*. Clone the default branch, then fetch the ref and
-                    # detach onto it so the tree is on the requested commit before the
-                    # env configs below are seeded from it.
-                    { git clone "$url" "$repo" \
-                        && git -C "$repo" fetch --depth 1 origin "$branch" \
-                        && git -C "$repo" checkout --detach FETCH_HEAD; } \
-                        || { rm -rf "$repo"; err "git clone/checkout of ${branch} failed for ${url}. Check the ref exists, plus credentials, network, and proxy."; }
-                else
-                    git clone --branch "$branch" "$url" "$repo" \
-                        || { rm -rf "$repo"; git clone "$url" "$repo"; } \
-                        || err "git clone failed for ${url}. Check credentials, network, and proxy."
-                fi
-            fi
-            if [[ -d "$roles_dir" ]]; then
-                roles="${roles}:${roles_dir}"
-            else
-                warn "${dest} has no roles/ at ${roles_dir#${SCRIPT_DIR}/} — check deployment_subdir in repos.yaml; ansible will not find its roles."
-            fi
-        done < <(yq -r '.repos[] | [.url, .dest, (.branch // "main"), (.deployment_subdir // ""), (.always | tostring), (.solution // "")] | join("|")' "$REPOS_CONFIG" 2>/dev/null)
+            [[ -d "$roles_dir" ]] || clone_repo "$url" "$repo" "$rev" "$dest"
+            [[ -d "$roles_dir" ]] \
+                || warn "${dest} has no roles/ at ${roles_dir#${SCRIPT_DIR}/} — check deployment_subdir in repos.${layer_name}.yaml; ansible will not find its roles."
+        done < <(manifest_rows "$mf")
+    else
+        local fatal; fatal=$(layer_manifest "$target")
+        local f; f=$(solutions_file "$ENV_NAME")
+        while IFS='|' read -r layer_name dest; do
+            [[ -z "$dest" || -d "${EXT_DIR}/${dest}" ]] && continue
+            [[ -n "$fatal" ]] \
+                && err "Layer '${target}' needs ext/${dest} but it is not cloned. Run:  ./$(basename "$0") init ${target} --env ${ENV_NAME}"
+            warn "env/${ENV_NAME} was provisioned with ext/${dest} but it is not on disk — layer '${layer_name}' will fail if the plan reaches it."
+        done < <([[ -f "$f" ]] && yq -r '.layers[] | [(.name // ""), (.repo // "")] | join("|")' "$f" 2>/dev/null)
     fi
+
+    # Roles live beside components.yaml, so this is the same discovery preflight does.
+    while IFS= read -r roles_dir; do
+        [[ ":${roles}:" == *":${roles_dir}:"* ]] || roles="${roles}:${roles_dir}"
+    done < <(_ext_roles_dirs)
     export ANSIBLE_ROLES_PATH="$roles"
 }
 
@@ -522,9 +869,11 @@ ensure_env_dir() {
         if [[ -n "$available" ]]; then
             err "env/${name} does not exist. Available: ${available}— use --env <name>, e.g.: ./es_auto_installer.sh ${ACTION:-install} --env ${available%% *} ${TARGET:-}"
         else
-            err "env/${name} does not exist. Run:  ./es_auto_installer.sh init ${name}"
+            err "env/${name} does not exist. Run:  ./es_auto_installer.sh init <layer> --env ${name}"
         fi
     fi
+    [[ -f "${ENV_DIR}/${SOLUTIONS_BASE}" ]] \
+        || err "env/${name}/${SOLUTIONS_BASE} is missing — this env predates the provisioning record, so there is no way to know which configs it needs. Run:  ./es_auto_installer.sh init <layer> --env ${name}  (it fills gaps only, existing files are kept)"
     ENV_LOG_DIR="${ENV_DIR}/logs"
     ENV_INVENTORY_DIR="${ENV_DIR}/inventory"
     GLOBAL_CONFIG="${ENV_DIR}/global_config.yaml"
@@ -533,43 +882,238 @@ ensure_env_dir() {
 
 resolve_inventory() {
     local f="${ENV_INVENTORY_DIR}/hosts.yaml"
-    [[ -f "$f" ]] || err "Inventory missing: ${f}. Run: ./es_auto_installer.sh init ${ENV_NAME}"
+    [[ -f "$f" ]] || err "Inventory missing: ${f}. Run: ./es_auto_installer.sh init <layer> --env ${ENV_NAME}"
     INVENTORY="$f"
     info "Inventory: $INVENTORY"
 }
 
-# init: create env/<name>, generate localhost inventory, and seed defaults.
-# Usage: init <env> [--rag] [--<solution>...]
-# Repos with always:true always have their config seeded. Optional solutions
-# (always:false) are seeded only when --<solution> is passed. The presence of
-# env/<name>/config.<sol>.yaml is what marks a solution active at install time.
-init() {
-    local name="${1:-local}"
-    shift || true
+# =============================================================================
+# init
+# =============================================================================
+# _init_reconcile_pins <sol> <manifest> <layer> <upgrade> — make ext/ agree with the
+# manifest, or refuse. Every rev is checked before any repo moves, so an init this env
+# cannot accept changes nothing at all.
+_init_reconcile_pins() {
+    local sol="$1" mf="$2" layer="$3" upgrade="$4"
+    local layer_name dest rev rest prev
+    local -a repin=()
 
-    # Parse --<solution> flags, validated against the solution tags in repos.yaml
-    # so a typo (--rga) fails loudly instead of silently seeding nothing.
-    local -a _valid_sols=()
-    if [[ -f "$REPOS_CONFIG" ]] && command -v yq &>/dev/null; then
-        mapfile -t _valid_sols < <(yq -r '.repos[].solution // "" | select(. != "")' "$REPOS_CONFIG" 2>/dev/null)
+    while IFS='|' read -r layer_name _ dest rev rest; do
+        [[ -z "$layer_name" || -z "$dest" ]] && continue
+        prev=$(_solutions_get "$sol" "$layer_name" rev)
+        [[ -z "$prev" || "$prev" == "$rev" ]] && continue
+        [[ "$upgrade" == "true" ]] \
+            || err "Layer '${layer_name}' was provisioned at '${prev}' but repos.${layer}.yaml now pins '${rev}'. Re-run with --upgrade to move ext/${dest} (refused if it has local changes), or init into a fresh --env."
+        # Checked here as well as in repin_repo: refusing during application would leave
+        # ext/ half-moved with the record still describing the old revs.
+        [[ ! -d "${EXT_DIR}/${dest}/.git" ]] \
+            || [[ -z "$(git -C "${EXT_DIR}/${dest}" status --porcelain -uno)" ]] \
+            || err "ext/${dest} has uncommitted changes to tracked files. Commit, stash or revert them, then re-run --upgrade."
+        info "  re-pin: ${layer_name}  ${prev} → ${rev}"
+        repin+=("${dest}|${rev}")
+    done < <(manifest_rows "$mf")
+
+    if [[ "$upgrade" == "true" && ${#repin[@]} -eq 0 ]]; then
+        [[ -f "$sol" ]] \
+            && info "  nothing to re-pin: every recorded rev already matches ${mf##*/}." \
+            || warn "  no provisioning record yet, so there is no previous state to move from — writing one now."
     fi
-    local -a solutions=()
-    local _sol_ok _vs
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --*)
-                _sol_ok=false
-                for _vs in "${_valid_sols[@]:-}"; do [[ "${1#--}" == "$_vs" ]] && { _sol_ok=true; break; }; done
-                [[ "$_sol_ok" == "true" ]] \
-                    || err "Unknown solution: '$1'. Valid: ${_valid_sols[*]:-<none in repos.yaml>} (each maps to a 'solution' tag in config/repos.yaml)."
-                solutions+=("${1#--}"); shift
-                ;;
-            *)   shift ;;
-        esac
+
+    local pair
+    for pair in ${repin[@]+"${repin[@]}"}; do
+        repin_repo "${pair%%|*}" "${pair#*|}"
     done
+}
+
+# _init_seed_defaults <env_dir> <name> — copy configs/defaults/*.yaml into the env,
+# never over an existing file.
+_init_seed_defaults() {
+    local env_dir="$1" name="$2"
+    local f base
+    for f in "$DEFAULTS_DIR"/*.yaml; do
+        [[ -e "$f" ]] || continue
+        base=$(basename "$f")
+        if [[ -f "$env_dir/$base" ]]; then
+            warn "  exists, skipping: $base"
+        else
+            cp "$f" "$env_dir/$base"
+            info "  created: ${name}/${base}"
+        fi
+    done
+}
+
+# _init_warn_cross_env <name> <layer> <dest> <rev> — another env in this checkout
+# wanting the same repo at a different rev. ext/ is per checkout and can only be at one,
+# so this is reported rather than reconciled.
+_init_warn_cross_env() {
+    local name="$1" layer_name="$2" dest="$3" rev="$4"
+    local other base other_rev
+    for other in "$ENV_ROOT"/*/"$SOLUTIONS_BASE"; do
+        [[ -f "$other" ]] || continue
+        base=$(basename "$(dirname "$other")")
+        [[ "$base" == "$name" ]] && continue
+        other_rev=$(_solutions_get "$other" "$layer_name" rev)
+        [[ -n "$other_rev" && "$other_rev" != "$rev" ]] \
+            && warn "  env/${base} is provisioned with ext/${dest} at '${other_rev}' — ext/ can only be at one rev."
+    done
+    return 0
+}
+
+# _init_flavours <flavour_dir> — flavour names under a config_dir, one per line.
+# examples/ and anything starting with _ or . are shared or scratch, never presets.
+_init_flavours() {
+    local d name
+    for d in "$1"/*/; do
+        [[ -d "$d" ]] || continue
+        name=$(basename "$d")
+        [[ "$name" == "examples" || "$name" == _* || "$name" == .* ]] && continue
+        printf '%s\n' "$name"
+    done
+    return 0
+}
+
+# _init_resolve_seed <layer> <repo_dir> <config_dir> <requested_flavour> <default_flavour>
+# — echo the config.yaml a fresh seed must be copied from.
+#
+# A layer with a config_dir is seeded from a flavour and never from the repo-root
+# config.yaml: that file predates flavours in some repos, so falling back to it would
+# silently seed a stale config.
+_init_resolve_seed() {
+    local layer_name="$1" repo_dir="$2" config_dir="$3" req_flavour="$4" default_flavour="$5"
+    local cfg
+
+    if [[ -z "$config_dir" ]]; then
+        [[ -n "$req_flavour" ]] \
+            && err "Layer '${layer_name}' has no flavours (no config_dir in repos.${layer_name}.yaml); drop --flavour."
+        cfg="${repo_dir}/config.yaml"
+    else
+        local flavour_dir="${repo_dir}/${config_dir}"
+        local available; available=$(_init_flavours "$flavour_dir" | tr '\n' ' ')
+        [[ -z "$req_flavour" || -f "$flavour_dir/$req_flavour/config.yaml" ]] \
+            || err "Unknown flavour: '${req_flavour}'. Available for ${layer_name}: ${available:-<none>} (from ${config_dir}/ in ext repo)."
+        local use="${req_flavour:-$default_flavour}"
+        [[ -n "$use" ]] \
+            || err "Layer '${layer_name}' declares config_dir '${config_dir}' but no default_flavour in repos.${layer_name}.yaml — pass --flavour. Available: ${available:-<none>}."
+        cfg="$flavour_dir/$use/config.yaml"
+        [[ -f "$cfg" ]] \
+            || err "Flavour '${use}' for layer '${layer_name}' has no config.yaml at ${cfg#${EXT_DIR}/}. Available: ${available:-<none>}."
+    fi
+
+    [[ -f "$cfg" ]] \
+        || err "Layer '${layer_name}': nothing to seed config.${layer_name}.yaml from — ${cfg#${EXT_DIR}/} does not exist."
+    printf '%s' "$cfg"
+}
+
+# _init_check_flavour <layer> <seeded_from> <subdir> <config_dir> <flavour> <name>
+# — refuse a --flavour that is not the one the live config came from.
+#
+# Switching flavour would discard the operator's edits, so it is never done implicitly.
+# Compared as paths so no flavour name has to be parsed back out of the record: note
+# seeded_from is repo-root relative while config_dir is relative to deployment_subdir.
+_init_check_flavour() {
+    local layer_name="$1" seeded_from="$2" subdir="$3" config_dir="$4" flavour="$5" name="$6"
+    [[ -n "$flavour" && -n "$config_dir" ]] || return 0
+
+    if [[ -z "$seeded_from" || "$seeded_from" == "unknown" ]]; then
+        warn "  config.${layer_name}.yaml has no recorded source, so --flavour ${flavour} cannot be verified against it."
+        return 0
+    fi
+    local want="${subdir:+${subdir}/}${config_dir}/${flavour}/config.yaml"
+    [[ "$seeded_from" == "$want" ]] \
+        || err "config.${layer_name}.yaml was seeded from ${seeded_from}, but --flavour ${flavour} asks for ${want}. Switching flavour would discard your edits to it, so init will not: use a fresh --env, or delete env/${name}/config.${layer_name}.yaml to reseed."
+}
+
+# _init_seed_layer <manifest_row> <name> <layer> <flavour> <upgrade> <sol> <sol_new>
+# — one repo from the manifest: seed its config and models.yaml if absent, and record
+# what was provisioned. Reads the previous record ($sol) and writes the new one
+# ($sol_new), so a re-init preserves fields it cannot recompute.
+_init_seed_layer() {
+    local row="$1" name="$2" layer="$3" flavour="$4" upgrade="$5" sol="$6" sol_new="$7"
+    local layer_name url dest rev subdir config_dir default_flavour catalog
+    IFS='|' read -r layer_name url dest rev subdir config_dir default_flavour catalog <<< "$row"
+    [[ -z "$layer_name" || -z "$dest" ]] && return 0
+
+    local repo_dir="${EXT_DIR}/${dest}${subdir:+/$subdir}"
+    local target="${ENV_DIR}/config.${layer_name}.yaml"
+    local seeded_from; seeded_from=$(_solutions_get "$sol" "$layer_name" seeded_from)
+
+    # A flavour requested on the CLI belongs to the primary layer only.
+    local req_flavour=""
+    [[ "$layer_name" == "$layer" ]] && req_flavour="$flavour"
+
+    if [[ -f "$target" ]]; then
+        warn "  exists, skipping: config.${layer_name}.yaml"
+        _init_check_flavour "$layer_name" "$seeded_from" "$subdir" \
+                            "$config_dir" "$req_flavour" "$name"
+        # --upgrade never rewrites a live config — that would discard operator edits.
+        # Report what moved upstream and let them merge.
+        if [[ "$upgrade" == "true" ]]; then
+            local new_seed="${EXT_DIR}/${dest}/${seeded_from}"
+            if [[ -z "$seeded_from" || "$seeded_from" == "unknown" ]]; then
+                warn "  config.${layer_name}.yaml has no recorded source — cannot diff it against ${rev}."
+            elif [[ -f "$new_seed" ]]; then
+                report_config_delta "$target" "$new_seed" "$layer_name"
+            else
+                warn "  ${dest}/${seeded_from} no longer exists at '${rev}' — cannot diff config.${layer_name}.yaml."
+            fi
+        fi
+    else
+        local cfg; cfg=$(_init_resolve_seed "$layer_name" "$repo_dir" \
+                                            "$config_dir" "$req_flavour" "$default_flavour")
+        cp "$cfg" "$target"
+        info "  created: ${name}/config.${layer_name}.yaml  (${cfg#${EXT_DIR}/})"
+        seeded_from="${cfg#${EXT_DIR}/${dest}/}"
+    fi
+    # Only reachable for a config that already existed before any record did.
+    [[ -n "$seeded_from" ]] || seeded_from="unknown"
+
+    if [[ -n "$catalog" ]]; then
+        local mc_source="${EXT_DIR}/${dest}/${catalog}"
+        [[ -f "$mc_source" ]] \
+            || err "Layer '${layer_name}' declares model_catalog '${catalog}' but ${dest}/${catalog} does not exist."
+        if [[ -f "${ENV_DIR}/models.yaml" ]]; then
+            warn "  exists, skipping: models.yaml"
+        else
+            cp "$mc_source" "${ENV_DIR}/models.yaml"
+            info "  created: ${name}/models.yaml  (from ${dest}/${catalog})"
+        fi
+    fi
+
+    # seeded_by is first-writer: with two solutions sharing a dependency, the second
+    # init found the config already there and seeded nothing.
+    local seeded_by; seeded_by=$(_solutions_get "$sol" "$layer_name" seeded_by)
+    [[ -n "$seeded_by" ]] || seeded_by="$layer"
+
+    SL_NAME="$layer_name" SL_CONFIG="config.${layer_name}.yaml" SL_SEEDED_FROM="$seeded_from" \
+    SL_REPO="$dest" SL_URL="$url" SL_REV="$rev" SL_MC="$catalog" SL_BY="$seeded_by" \
+        _solutions_upsert "$sol_new"
+
+    _init_warn_cross_env "$name" "$layer_name" "$dest" "$rev"
+}
+
+# init — create env/<name>, seed its configs, and record what was provisioned.
+# Usage: init <layer> [--env <name>] [--flavour <name>] [--upgrade]
+#
+# Reads INIT_LAYER / INIT_FLAVOUR / INIT_UPGRADE / ENV_NAME from parse_args. Every repo
+# in the layer's manifest is cloned at its pinned rev and gets a config.<layer>.yaml
+# seeded; --flavour picks a preset from the primary layer's config_dir and defaults to
+# its default_flavour. --upgrade moves already-cloned repos onto the manifest's current
+# revs. Terminal: main exits straight after, which is what lets the EXIT trap below
+# stand uncleared.
+init() {
+    local name="$ENV_NAME" layer="$INIT_LAYER" flavour="$INIT_FLAVOUR" upgrade="$INIT_UPGRADE"
+
+    _require_yq
+    [[ -n "$layer" ]] \
+        || err "init requires a layer. Valid: $(known_layers | tr '\n' ' ')(try: ./$(basename "$0") init $(known_layers | head -1) --env ${name})"
+    local mf; mf=$(require_layer "$layer")
+    [[ -z "$mf" && -n "$flavour" ]] \
+        && err "Layer '${layer}' has no external repos, so no flavours; drop --flavour."
 
     ENV_DIR="${ENV_ROOT}/${name}"
-    info "init: env=${name}${solutions:+  solutions: ${solutions[*]}}  →  ${ENV_DIR}"
+    local sol; sol=$(solutions_file "$name")
+    local mode=""; [[ "$upgrade" == "true" ]] && mode="  (upgrade)"
+    info "init: env=${name}  layer=${layer}${flavour:+  flavour=${flavour}}${mode}  →  ${ENV_DIR}"
     mkdir -p "$ENV_DIR/inventory" "$ENV_DIR/logs"
 
     local inv_file="$ENV_DIR/inventory/hosts.yaml"
@@ -578,61 +1122,39 @@ init() {
         info "  created: ${name}/inventory/hosts.yaml"
     fi
 
-    command -v yq &>/dev/null || err "yq missing. Run './es_auto_installer.sh configure' first."
-    ensure_repos "${solutions[@]+"${solutions[@]}"}"
+    _init_reconcile_pins "$sol" "$mf" "$layer" "$upgrade"
+    ensure_repos "$layer" --clone
+    _init_seed_defaults "$ENV_DIR" "$name"
 
-    # Seed core defaults
-    local f base
-    for f in "$DEFAULTS_DIR"/*.yaml; do
-        [[ -e "$f" ]] || continue
-        base=$(basename "$f")
-        if [[ -f "$ENV_DIR/$base" ]]; then
-            warn "  exists, skipping: $base"
-        else
-            cp "$f" "$ENV_DIR/$base"
-            info "  created: ${name}/${base}"
-        fi
-    done
+    # The record is built aside and moved into place once seeding has finished. One left
+    # behind by a run that failed halfway is worse than none: it would satisfy the load
+    # check while naming no configs, so every `enabled:` gate would fall to its default
+    # and its components would silently drop out of the plan.
+    local sol_new="${sol}.tmp"
+    rm -f "$sol_new"
+    trap "rm -f '$sol_new'" EXIT   # EXIT, not RETURN: err exits rather than returns
+    if [[ -f "$sol" ]]; then cp "$sol" "$sol_new"; else _solutions_create "$sol_new"; fi
+    SL_LAYER="$layer" SL_SCHEMA="$SOLUTIONS_SCHEMA" yq -i \
+        '.schema = (strenv(SL_SCHEMA) | tonumber)
+         | .inited = ((.inited // []) + [strenv(SL_LAYER)] | unique)' "$sol_new"
 
-    # Seed ext repo configs based on always:true or matching --<solution>
-    local _sol _always _dest _subdir _cfg _s
-    while IFS='|' read -r _dest _subdir _sol _always; do
-        [[ -z "$_dest" ]] && continue
-        if [[ "$_always" != "true" ]]; then
-            local _wanted=false
-            for _s in "${solutions[@]:-}"; do [[ "$_s" == "$_sol" ]] && { _wanted=true; break; }; done
-            [[ "$_wanted" == "true" ]] || continue
-        fi
-        _cfg="${EXT_DIR}/${_dest}${_subdir:+/$_subdir}/config.yaml"
-        if [[ -f "$_cfg" ]]; then
-            local _target="$ENV_DIR/config.${_sol}.yaml"
-            if [[ -f "$_target" ]]; then
-                warn "  exists, skipping: config.${_sol}.yaml"
-            else
-                cp "$_cfg" "$_target"
-                info "  created: ${name}/config.${_sol}.yaml  (from ext/${_dest})"
-            fi
-        fi
-    done < <(yq -r '.repos[] | [.dest, (.deployment_subdir // ""), (.solution // ""), (.always | tostring)] | join("|")' "$REPOS_CONFIG" 2>/dev/null)
+    local row
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        _init_seed_layer "$row" "$name" "$layer" "$flavour" "$upgrade" "$sol" "$sol_new"
+    done < <(manifest_rows "$mf")
 
-    # Seed model-manager models.yaml from the repo's model catalog
-    local _mm_source="${EXT_DIR}/enterprise.ai-inference/model_manager/models.yaml"
-    local _mm_target="${ENV_DIR}/models.yaml"
-    if [[ -f "$_mm_source" ]]; then
-        if [[ -f "$_mm_target" ]]; then
-            warn "  exists, skipping: models.yaml"
-        else
-            cp "$_mm_source" "$_mm_target"
-            info "  created: ${name}/models.yaml  (model catalog — edit to add/remove models)"
-        fi
-    fi
-
+    mv "$sol_new" "$sol"
     ok "init: done."
     info "  Configure  ${ENV_DIR}/global_config.yaml  (see README.md § Configuration Reference)"
-    info "  Configure  ${ENV_DIR}/models.yaml          (see README.md § Deploy a Model)"
-    info "  Then       ./$(basename "$0") install --env ${name} --all"
+    [[ -f "${ENV_DIR}/models.yaml" ]] \
+        && info "  Configure  ${ENV_DIR}/models.yaml          (see README.md § Deploy a Model)"
+    info "  Then       ./$(basename "$0") install --env ${name} ${layer}"
 }
 
+# =============================================================================
+# Ansible invocation
+# =============================================================================
 # run: ansible-playbook wrapper that always passes -i.
 run() {
     local pb_name="$1"; shift
@@ -706,15 +1228,24 @@ run_kubespray() {
     fi
 }
 
+# _opt_value <flag> <value> — a flag's value must exist and not be another flag,
+# else `--env --flavour` silently seeds an env literally named "--flavour".
+# =============================================================================
+# CLI
+# =============================================================================
+_opt_value() {
+    [[ -n "$2" && "$2" != -* ]] \
+        || err "$1 requires a value (got '${2:-<nothing>}')."
+}
+
 # parse_args
 parse_args() {
-    ACTION="" TARGET="" ENV_NAME="local" ONLY=false
-    INIT_ARG=""
-    INIT_EXTRA=()
+    ACTION="" TARGET="" ENV_NAME="local" ONLY=false FORCE=false SKIP=""
+    INIT_LAYER="" INIT_FLAVOUR="" INIT_UPGRADE=false
     EXTRA_VARS=()
 
     [[ $# -eq 0 || "${1:-}" =~ ^(-h|--help)$ ]] && { usage; exit 0; }
-    [[ "$1" =~ ^(-v|--version)$ ]] && { echo "es_auto_installer ${VERSION}"; exit 0; }
+    [[ "$1" =~ ^(-v|--version)$ ]] && { echo "es_auto_installer ${INSTALLER_VERSION}"; exit 0; }
 
     ACTION="$1"; shift
 
@@ -723,10 +1254,23 @@ parse_args() {
     for _a in "${ACTIONS[@]}"; do [[ "$ACTION" == "$_a" ]] && { _known=true; break; }; done
     [[ "$_known" == "true" ]] || err "Unknown action: '$ACTION'. Valid: ${ACTIONS[*]} (try --help)"
 
-    # init keeps its own positional-then-solution-flags grammar (see init()).
+    # init uses its own grammar: init <layer> [--env <name>] [--flavour <name>]
     if [[ "$ACTION" == "init" ]]; then
-        [[ $# -gt 0 && "$1" != -* ]] && { INIT_ARG="$1"; shift; }
-        INIT_EXTRA=("$@"); set --
+        INIT_LAYER=""
+        INIT_FLAVOUR=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --env)      _opt_value --env "${2:-}"; ENV_NAME="$2"; shift 2 ;;
+                --flavour)  _opt_value --flavour "${2:-}"; INIT_FLAVOUR="$2"; shift 2 ;;
+                --upgrade)  INIT_UPGRADE=true; shift ;;
+                --force)    FORCE=true; shift ;;
+                -*)         err "Unknown option for init: '$1'. Valid: --env <name>, --flavour <name>, --upgrade, --force." ;;
+                *)          [[ -z "$INIT_LAYER" ]] \
+                                || err "init takes one layer, got '${INIT_LAYER}' and '$1'."
+                            INIT_LAYER="$1"; shift ;;
+            esac
+        done
+        set --
     fi
 
     # Unified parse for the remaining verbs. The target may appear anywhere (not
@@ -737,13 +1281,21 @@ parse_args() {
     local _takes_target=false
     [[ "$ACTION" =~ ^(install|teardown|validate)$ ]] && _takes_target=true
 
+    # configure and show read neither env nor target, so an option there is a mistake
+    # rather than a no-op.
+    [[ "$ACTION" =~ ^(configure|show)$ && $# -gt 0 ]] \
+        && err "'${ACTION}' takes no arguments (got '$1')."
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --env)           ENV_NAME="$2"; shift 2 ;;
-            --only)          ONLY=true; shift ;;
-            --all)           TARGET=all; shift ;;
+            --env)           _opt_value --env "${2:-}"; ENV_NAME="$2"; shift 2 ;;
+            --only)          [[ "$_takes_target" == "true" ]] \
+                                 || err "--only applies to install/teardown/validate only."
+                             ONLY=true; shift ;;
+            --force)         FORCE=true; shift ;;
+            --skip)          _opt_value --skip "${2:-}"; SKIP="$2"; shift 2 ;;
             --)              shift; EXTRA_VARS+=("$@"); break ;;
-            -*)              err "Unknown option: '$1'. Valid: --env <name> | --only | --all (pass ansible args after --). Try --help." ;;
+            -*)              err "Unknown option: '$1'. Valid: --env <name> | --only | --force | --skip <names> (pass ansible args after --). Try --help." ;;
             *)
                 if [[ "$_takes_target" == "true" && -z "$TARGET" ]]; then
                     TARGET="$1"; shift
@@ -755,34 +1307,116 @@ parse_args() {
     done
 
     if [[ "$_takes_target" == "true" && -z "$TARGET" ]]; then
-        warn "Specify a target: --all | <layer> | <component>"
+        # show_table needs yq and errs without it, which would replace this message with a
+        # less useful one, so say it as an error rather than a warning.
+        command -v yq &>/dev/null || err "${ACTION} needs a target: <layer> | <component>."
+        warn "Specify a target: <layer> | <component>"
         show_table; exit 1
     fi
 }
 
 # main: linear flow, no branching on cluster/mode/storage state.
+# _target_exists <name> — a layer or a component in the merged registry.
+# Here-string for the same reason as _layer_exists.
+_target_exists() {
+    local names; names=$(_merged_components | yq -r '.layers[].name, .components[].name' 2>/dev/null)
+    grep -qxF -- "$1" <<< "$names"
+}
+
+# _resolve_kubeconfig — set KUBE_CFG and IS_BYO. global_config.yaml declaring
+# existing_kubernetes means bring-your-own cluster; otherwise the env manages its own.
+_resolve_kubeconfig() {
+    local byo=""
+    if [[ -f "$GLOBAL_CONFIG" ]] && command -v yq &>/dev/null; then
+        byo="$(yq -r '.existing_kubernetes // ""' "$GLOBAL_CONFIG" 2>/dev/null)"
+    fi
+    if [[ -n "$byo" ]]; then
+        byo="${byo/#\~/$HOME}"   # yq returns a literal ~, which no k8s client expands
+        [[ -r "$byo" ]] \
+            || err "existing_kubernetes is '${byo}', which does not exist or is not readable."
+        IS_BYO=true
+        KUBE_CFG="$byo"
+        info "BYO cluster mode — kubeconfig: ${KUBE_CFG}"
+    else
+        IS_BYO=false
+        KUBE_CFG="${ENV_DIR}/kubeconfig.yaml"
+    fi
+}
+
+# _needs_kubespray — true when this run has to drive the kubespray bash bridge.
+#
+# Kubespray cannot run inside Ansible (ansible-in-ansible swallows all progress), so bash
+# drives it: prep → cluster.yml/reset.yml → post. A BYO cluster never needs it.
+#   install:  kubernetes is required for any target, since everything depends on
+#             infrastructure transitively — unless --only narrows away from it.
+#   teardown: the cluster is destroyed ONLY when explicitly targeted. Tearing down a
+#             higher layer must not reset it.
+_needs_kubespray() {
+    [[ "$IS_BYO" == "false" ]] || return 1
+    case "$ACTION" in
+        teardown) [[ "$TARGET" == "infrastructure" || "$TARGET" == "kubernetes" ]] ;;
+        *)        [[ "$ONLY" != "true" ]] \
+                      || [[ "$TARGET" == "kubernetes" || "$TARGET" == "infrastructure" ]] ;;
+    esac
+}
+
+# _completion_banner — single terminal point for install/teardown/validate.
+#
+# Deliberately not in site.yaml: `run site` fires twice on a cold install and three times
+# on teardown via the kubespray bridge, so a playbook-side banner would print once per pass.
+# validate lands here too, so the wording cannot hardcode install/teardown.
+_completion_banner() {
+    local headline
+    case "$ACTION" in
+        install)  headline="INSTALLATION COMPLETE" ;;
+        teardown) headline="TEARDOWN COMPLETE" ;;
+        *)        headline="${ACTION^^} COMPLETE" ;;
+    esac
+    # An action with no target would read "Target:" with nothing after it.
+    # Omit the line rather than inventing a value.
+    local -a target_line=()
+    [[ -z "$TARGET" ]] || target_line=("Target:  ${TARGET}")
+    banner "$headline" \
+           "" \
+           "${target_line[@]}" \
+           "Env:     ${ENV_NAME}" \
+           "Log:     ${LOG}"
+}
+
 main() {
     parse_args "$@"
 
     case "$ACTION" in
         configure)   configure;        exit 0 ;;
-        init)        init "$INIT_ARG" "${INIT_EXTRA[@]+"${INIT_EXTRA[@]}"}"; exit 0 ;;
+        init)        init;             exit 0 ;;
         show)        show_table;       exit 0 ;;
     esac
 
-    info "${ACTION^}: ${TARGET:-all}  (env=${ENV_NAME}, installer v${VERSION})"
+    info "${ACTION^}: ${TARGET:-cluster}  (env=${ENV_NAME}, installer ${INSTALLER_VERSION})"
 
     ensure_env_dir   "$ENV_NAME"
-    ensure_repos
+    ensure_repos "$TARGET"
+    # After ensure_repos, so ext/ components are discoverable; before the venv and sudo
+    # work, which a typo should not have to pay for.
+    [[ -z "$TARGET" ]] || _target_exists "$TARGET" \
+        || err "Unknown target '${TARGET}'. Layers: $(known_layers | tr '\n' ' ')— run './$(basename "$0") show' for components."
+    # A solution layer (one with a manifest) must also be one this env was inited for.
+    if [[ -n "$(layer_manifest "$TARGET")" ]] \
+       && ! grep -qxF -- "$TARGET" <<< "$(solution_layers)"; then
+        err "env/${ENV_NAME} was not provisioned for layer '${TARGET}'. Run:  ./$(basename "$0") init ${TARGET} --env ${ENV_NAME}"
+    fi
     ensure_deps
     ensure_sudo
     resolve_inventory
 
-    # TARGET is empty for `status`; fall back to "all" so the filename has no
+    # TARGET is empty for `status`; fall back so the filename has no
     # double dash (status--<ts>.log).
-    LOG="${ENV_LOG_DIR}/${ACTION}-${TARGET:-all}-$(date +%Y%m%d-%H%M%S).log"
+    LOG="${ENV_LOG_DIR}/${ACTION}-${TARGET:-cluster}-$(date +%Y%m%d-%H%M%S).log"
+    # Keep the 30 most recent; a failed run's log is the only record of why.
+    ls -1t "$ENV_LOG_DIR"/*.log 2>/dev/null | tail -n +31 | xargs -r rm -f || true
 
     local -a vars=(
+        -e "_skip_components=${SKIP}"
         -e "component_action=${ACTION}"
         -e "target=${TARGET}"
         -e "env_name=${ENV_NAME}"
@@ -791,15 +1425,17 @@ main() {
         -e "kubespray_dir=${SCRIPT_DIR}/.kubespray"
         -e "kubespray_custom_inventory=${INVENTORY}"
     )
-    # Load solution configs from the env only. init seeds env/<name>/config.<sol>.yaml
-    # from the ext repo baseline; install consumes that editable copy
-    if [[ -f "$REPOS_CONFIG" ]] && command -v yq &>/dev/null; then
-        local _sol _env_cfg
-        while IFS= read -r _sol; do
-            [[ -z "$_sol" ]] && continue
-            _env_cfg="${ENV_DIR}/config.${_sol}.yaml"
-            [[ -f "$_env_cfg" ]] && vars+=(-e "@$_env_cfg")
-        done < <(yq -r '.repos[].solution // ""' "$REPOS_CONFIG" 2>/dev/null)
+    # Solution configs, in the order the provisioning record lists them (dependencies
+    # first, so a layer's own config wins over its deps'). Collected before the loop:
+    # solution_configs errors on a config the record names but that is gone, and inside
+    # a process substitution that exit would be swallowed.
+    if command -v yq &>/dev/null; then
+        local _sol_cfgs; _sol_cfgs=$(solution_configs)
+        local _env_cfg
+        while IFS= read -r _env_cfg; do
+            [[ -n "$_env_cfg" ]] && vars+=(-e "@$_env_cfg")
+        done <<< "$_sol_cfgs"
+        vars+=(-e "_env_layers=$(solution_layers | paste -sd, -)")
     fi
     [[ -f "$GLOBAL_CONFIG" ]] && vars+=(-e "@$GLOBAL_CONFIG")
     # Only load nodes.yaml if it has actual YAML content (all-comments = null → Ansible rejects it)
@@ -807,23 +1443,9 @@ main() {
         vars+=(-e "@$ENV_DIR/nodes.yaml")
     fi
 
-    # Resolve kubeconfig path. If global_config.yaml declares existing_kubernetes,
-    # use that (BYO cluster mode). Otherwise default to the env-managed path.
-    local _byo_kc=""
-    if [[ -f "$GLOBAL_CONFIG" ]] && command -v yq &>/dev/null; then
-        _byo_kc="$(yq -r '.existing_kubernetes // ""' "$GLOBAL_CONFIG" 2>/dev/null)"
-    fi
-    local _is_byo=false
-    local KUBE_CFG
-    if [[ -n "$_byo_kc" ]]; then
-        _is_byo=true
-        KUBE_CFG="$_byo_kc"
-        info "BYO cluster mode — kubeconfig: ${KUBE_CFG}"
-    else
-        KUBE_CFG="${ENV_DIR}/kubeconfig.yaml"
-    fi
+    _resolve_kubeconfig
     vars+=(-e "kubernetes_kubeconfig=${KUBE_CFG}")
-    [[ -n "$_byo_kc" ]] && vars+=(-e "existing_kubernetes=${_byo_kc}")
+    [[ "$IS_BYO" == "true" ]] && vars+=(-e "existing_kubernetes=${KUBE_CFG}")
     # Export after the path is resolved so Ansible collections and kubectl
     # both see the correct kubeconfig. Kubespray's subshell unsets these (see
     # run_kubespray) so kubespray's own internal kubectl is unaffected.
@@ -831,26 +1453,23 @@ main() {
 
     # Status: reuses all the setup above, runs the status playbook, then exits.
     if [[ "$ACTION" == "status" ]]; then
+        if [[ ! -f "$KUBE_CFG" ]]; then
+            echo -e "\n${YEL}No kubeconfig found at ${KUBE_CFG} — nothing is installed yet.${RST}"
+            exit 0
+        fi
         run status "${vars[@]}" "${EXTRA_VARS[@]}"
         exit 0
     fi
 
-    # Kubespray orchestration: does this target need the kubespray bash bridge?
-    # Kubespray can't run inside Ansible (ansible-in-ansible swallows progress),
-    # so bash drives it: prep → cluster.yml/reset.yml → post. BYO skips it.
-    # Install: kubernetes is needed for any target (all depend on infra
-    #          transitively) unless --only narrows away from it.
-    # Teardown: the cluster is destroyed ONLY when explicitly targeting it, its
-    #           layer, or --all. Tearing down a higher layer must NOT reset it.
     local _includes_k8s=false
-    if [[ "$_is_byo" == "false" ]]; then
-        if [[ "$ACTION" == "teardown" ]]; then
-            [[ "$TARGET" == "all" || "$TARGET" == "infrastructure" || "$TARGET" == "kubernetes" ]] && _includes_k8s=true
-        elif [[ "$ONLY" == "true" ]]; then
-            [[ "$TARGET" == "kubernetes" || "$TARGET" == "infrastructure" ]] && _includes_k8s=true
-        else
-            _includes_k8s=true
-        fi
+    _needs_kubespray && _includes_k8s=true
+
+    if [[ "$ACTION" == "teardown" ]]; then
+        local _what="'${TARGET}' and everything above it, in env/${ENV_NAME}"
+        [[ "$_includes_k8s" == "true" ]] \
+            && _what="${_what}
+  This DESTROYS the Kubernetes cluster: kubespray reset runs with reset_confirmation=yes."
+        confirm "About to tear down ${_what}"
     fi
 
     # When the kubeconfig already exists, a plain single pass is enough: the
@@ -863,7 +1482,9 @@ main() {
     elif [[ "$_includes_k8s" == "true" && "$ACTION" == "teardown" ]]; then
         # Tear down non-kubernetes components first (need cluster alive), then reset.
         if [[ "$TARGET" != "kubernetes" ]]; then
-            run site "${vars[@]}" -e "_skip_components=kubernetes" -e "component_action=teardown" "${EXTRA_VARS[@]}"
+            # Merged, not replaced: this pass must still leave kubernetes for the reset.
+            run site "${vars[@]}" -e "_skip_components=kubernetes${SKIP:+,${SKIP}}" \
+                -e "component_action=teardown" "${EXTRA_VARS[@]}"
         fi
         run site "${vars[@]}" -e "target=kubernetes" -e "_kubespray_prep_only=true" -e "_include_deps=false" "${EXTRA_VARS[@]}"
         run_kubespray teardown
@@ -874,21 +1495,7 @@ main() {
         run site "${vars[@]}" "${EXTRA_VARS[@]}"
     fi
 
-    # Single terminal point for install/teardown. Deliberately NOT in site.yaml:
-    # `run site` fires up to 3 times on install and 4 on teardown (kubespray
-    # bridge above), so a playbook-side banner would print once per pass.
-    # `validate` lands here too, so don't hardcode install/teardown wording.
-    local _headline
-    case "$ACTION" in
-        install)  _headline="INSTALLATION COMPLETE" ;;
-        teardown) _headline="TEARDOWN COMPLETE" ;;
-        *)        _headline="${ACTION^^} COMPLETE" ;;
-    esac
-    banner "$_headline" \
-            "" \
-            "Target:  ${TARGET}" \
-            "Env:     ${ENV_NAME}" \
-            "Log:     ${LOG}"
+    _completion_banner
 }
 
 main "$@"

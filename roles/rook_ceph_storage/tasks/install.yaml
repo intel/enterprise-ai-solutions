@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Rook-Ceph Storage — Install
@@ -173,6 +175,22 @@
 
 # ─── Install Rook Operator (Helm) ─────────────────────────────────────────
 
+- name: "rook_ceph | Label namespace — PSS"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ rook_ceph_operator_namespace }}"
+        labels:
+          # OSDs need host block devices and the CSI plugin needs bidirectional mount
+          # propagation.
+          pod-security.kubernetes.io/enforce: "privileged"
+          pod-security.kubernetes.io/audit: "privileged"
+          pod-security.kubernetes.io/warn: "privileged"
+  when: enforce_pss | default(false) | bool
+
 - name: "rook_ceph | Install"
   when: not (_rook_operator_present | bool and _rook_cluster_present | bool and _rook_sc_present | bool)
   block:
@@ -185,6 +203,10 @@
       kubernetes.core.helm_repository:
         name: rook-release
         repo_url: "{{ rook_ceph_operator_chart_repo }}"
+      register: helm_repo_add_result
+      until: helm_repo_add_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "rook_ceph | Install Rook operator"
       when: not (_rook_operator_present | bool)
@@ -199,6 +221,10 @@
         values:
           tolerations:
             - operator: Exists
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "rook_ceph | Wait for operator deployment"
       kubernetes.core.k8s_info:
@@ -358,11 +384,17 @@
           metadata:
             annotations:
               storageclass.kubernetes.io/is-default-class: "false"
+      # json_query, not selectattr: Jinja splits an attribute path on '.', so
+      # 'metadata.annotations.storageclass.kubernetes.io/is-default-class'
+      # resolved to metadata -> annotations -> storageclass -> ... and never
+      # matched, leaving stale default StorageClasses in place. jmespath takes the
+      # annotation key as one quoted string. The annotation value is the string
+      # "true", not a boolean.
+      vars:
+        _default_sc_query: '[?metadata.annotations."storageclass.kubernetes.io/is-default-class" == ''true'']'
       loop: >-
         {{ _rook_all_sc.resources | default([])
-            | selectattr('metadata.annotations', 'defined')
-            | selectattr('metadata.annotations.storageclass.kubernetes.io/is-default-class', 'defined')
-            | selectattr('metadata.annotations.storageclass.kubernetes.io/is-default-class', 'eq', 'true')
+            | json_query(_default_sc_query)
             | rejectattr('metadata.name', 'eq', rook_ceph_default_storage_class)
             | list }}
       loop_control:

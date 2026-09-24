@@ -1,4 +1,4 @@
-# Deployment Guide — Install Intel® AI for Enterprise Solutions On-Premises
+# Deployment Guide - Install On-Premises
 
 [← Docs Index](../README.md)
 
@@ -11,10 +11,10 @@ This guide walks you through installing Intel® AI for Enterprise Solutions on-p
 The installer sets up these layers automatically, in dependency order:
 
 ```
-1. Infrastructure  — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
-2. Platform        — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, Observability
-3. Inference       — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
-4. Application     — opt-in layers (e.g. eRAG) — not included in --all by default
+1. Infrastructure                — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
+2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, Observability
+3. Inference                     — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
+4. Intel AI for Enterprise RAG   — opt-in RAG layer (vector DB, ingestion, chat, UI) — requires init erag + install erag
 ```
 
 You run **one command** and everything is installed.
@@ -68,8 +68,8 @@ cd enterprise-ai-solutions
 # Configure your machine (installs Python 3.11+, yq, kubectl, helm, sets up venv)
 ./es_auto_installer.sh configure
 
-# Create a new environment named "local"
-./es_auto_installer.sh init local
+# Create a new environment named "local" for inference
+./es_auto_installer.sh init inference
 ```
 
 This creates an environment at `env/local/` with:
@@ -128,7 +128,7 @@ Everything runs on one machine. No SSH setup needed.
 **Install:**
 
 ```bash
-./es_auto_installer.sh install --all --env local
+./es_auto_installer.sh install inference --env local
 ```
 
 Wait 15–20 minutes. When it finishes, check:
@@ -312,7 +312,7 @@ all:
 #### B.3 — Install
 
 ```bash
-./es_auto_installer.sh install --all --env local
+./es_auto_installer.sh install inference --env local
 ```
 
 Wait 15–25 minutes. When done:
@@ -348,7 +348,7 @@ cd enterprise-ai-solutions
 
 # Configure machine and create environment
 ./es_auto_installer.sh configure
-./es_auto_installer.sh init local
+./es_auto_installer.sh init inference
 
 # Create SSH key and copy to all cluster machines
 ssh-keygen -t ed25519 -f ~/.ssh/cluster_key -N ""
@@ -408,7 +408,7 @@ Most of the time you won't need this — only if there's a double-hop.
 #### C.3 — Install
 
 ```bash
-./es_auto_installer.sh install --all --env local
+./es_auto_installer.sh install inference --env local
 ```
 
 #### C.4 — Get kubectl working on the bastion
@@ -441,7 +441,7 @@ kubectl get pods -A
 Or use the built-in validate command:
 
 ```bash
-./es_auto_installer.sh validate --all --env local
+./es_auto_installer.sh validate inference --env local
 ```
 
 ---
@@ -494,7 +494,7 @@ Already have a running cluster and want to add workers? Easy.
 3. Re-run the installer — it detects new nodes and adds them:
 
    ```bash
-   ./es_auto_installer.sh install --all --env local
+   ./es_auto_installer.sh install inference --env local
    ```
 
 The installer is idempotent. Existing nodes are untouched; only new machines are provisioned.
@@ -504,8 +504,8 @@ The installer is idempotent. Existing nodes are untouched; only new machines are
 ## Teardown: Removing Everything
 
 ```bash
-# Remove the full stack
-./es_auto_installer.sh teardown --all --env local
+# Remove the full stack (infrastructure + platform + inference)
+./es_auto_installer.sh teardown infrastructure --env local
 
 # Remove just one component
 ./es_auto_installer.sh teardown llm_services --env local
@@ -537,7 +537,7 @@ tail -50 env/local/logs/install.log
 Then just re-run — the installer is safe to run multiple times:
 
 ```bash
-./es_auto_installer.sh install --all --env local
+./es_auto_installer.sh install inference --env local
 ```
 
 ### Pods stuck in "ImagePullBackOff"
@@ -557,7 +557,7 @@ This runs only the named target without traversing the dependency tree.
 ### Pass Ansible flags for more details
 
 ```bash
-./es_auto_installer.sh install --all --env local -- -vvv
+./es_auto_installer.sh install inference --env local -- -vvv
 ```
 
 The `--` separates installer flags from Ansible flags.
@@ -582,7 +582,7 @@ Each environment is isolated. Always specify `--env <name>` and use the correct 
 ```bash
 # For environment "prod"
 export KUBECONFIG=$(pwd)/env/prod/kubeconfig.yaml
-./es_auto_installer.sh install --all --env prod
+./es_auto_installer.sh install inference --env prod
 ```
 
 ---
@@ -603,19 +603,19 @@ env/<name>/logs/validate-all-20260817-151500.log
 
 ```bash
 # Environment setup
-./es_auto_installer.sh configure                # one-time machine prep
-./es_auto_installer.sh init <env>               # create new environment
-./es_auto_installer.sh show                     # list layers/components
+./es_auto_installer.sh configure                          # one-time machine prep
+./es_auto_installer.sh init <layer> --env <name>          # create new environment (layer: inference or erag)
+./es_auto_installer.sh show                               # list layers/components
 
 # Installation
-./es_auto_installer.sh install --all --env <name>           # install everything
-./es_auto_installer.sh install kubernetes --env <name>      # install just Kubernetes
-./es_auto_installer.sh install metallb --env <name> --only  # single component, skip deps
-./es_auto_installer.sh install --all --env <name> -- -vvv   # pass Ansible flags
+./es_auto_installer.sh install inference --env <name>           # install infrastructure + platform + inference
+./es_auto_installer.sh install kubernetes --env <name>          # install just Kubernetes
+./es_auto_installer.sh install metallb --env <name> --only      # single component, skip deps
+./es_auto_installer.sh install inference --env <name> -- -vvv   # pass Ansible flags
 
 # Operations
-./es_auto_installer.sh validate --all --env <name>  # check health
-./es_auto_installer.sh teardown --all --env <name>  # remove everything
+./es_auto_installer.sh validate inference --env <name>  # check health
+./es_auto_installer.sh teardown infrastructure --env <name>  # remove everything
 
 # Kubeconfig
 export KUBECONFIG=$(pwd)/env/<name>/kubeconfig.yaml
@@ -975,6 +975,23 @@ source ./ext/enterprise.ai-inference/model_manager/scripts/get-keycloak-token.sh
 ```bash
 source ./ext/enterprise.ai-inference/model_manager/scripts/get-keycloak-token.sh --lifespan 3600
 ```
+
+---
+
+## Deploying Intel® AI for Enterprise RAG
+
+Intel AI for Enterprise RAG adds document ingestion, vector search, RAG pipelines, and a web UI on top of the inference layer. It is opt-in and requires a separate initialization and installation.
+
+**Quick path:**
+
+```bash
+./es_auto_installer.sh init erag --env <name>
+./es_auto_installer.sh install erag --env <name>
+```
+
+The `init erag` command clones the inference and Intel AI for Enterprise RAG repositories (dependencies first), seeds `env/<name>/config.erag.yaml` from the selected pipeline flavour (default: `chatqna`), and records the provisioned layer in `env/<name>/.solutions.yaml`. The `install erag` command automatically pulls all dependencies (infrastructure → platform → inference) if not already deployed, then installs the RAG application layer.
+
+**See the full guide:** [Getting Started with RAG](../quickstart/getting_started_rag.md) covers prerequisites, flavour selection, per-layer install and teardown, configuration, and troubleshooting.
 
 ---
 

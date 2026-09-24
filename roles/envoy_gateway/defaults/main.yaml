@@ -19,11 +19,59 @@ gateway_request_timeout: "600s"
 # Authentication
 auth_provider: "none"                    # none | keycloak (JWT) | litellm (virtual key)
 
+# ── ONTAP S3 API listener (optional) ─────────────────────────────────────────
+# S3 SigV4 signs the request path verbatim. The shared HTTPS listeners run with
+# Envoy's default path normalization (merge_slashes and
+# path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT), so a key containing
+# '//' or '%2F' reaches the object store with a different canonical URI than the
+# client signed and the store answers SignatureDoesNotMatch - which reads as a
+# credentials problem. A ClientTrafficPolicy can relax those two rules, but only
+# per listener, so the S3 API gets a listener of its own rather than weakening
+# normalization for the UI, API and keycloak routes that share 'https'.
+#
+# Dot-segment resolution (Envoy's normalize_path) has no Gateway API knob at all
+# and is NOT addressed here; keys containing '..' are rejected by the data-prep
+# service before signing.
+gateway_s3_listener_name: "https-s3"
+# Subdomain the S3 API is published under. Owned here, in the platform layer,
+# because the listener is part of the gateway. A solution layer that publishes an
+# S3 API reads this value rather than the platform reading a solution variable.
+gateway_s3_subdomain: "s3"
+gateway_s3_hostname: "{{ gateway_s3_subdomain ~ '.' ~ base_domain_name }}"
+# ontap_s3_data_lif has to come from env/<env>/global_config.yaml: role defaults
+# are role-scoped, so netapp_trident_csi's copy is not in scope here and the
+# default below is what an unset value resolves to.
+# In routing_mode: path the S3 API shares the apex hostname with the UI, so a
+# dedicated listener is impossible - see the warning printed at install.
+gateway_s3_listener_enabled: >-
+  {{ (ontap_s3_data_lif | default('', true) | string | trim | length > 0)
+     and ((routing_mode | default('subdomain')) != 'path') }}
+
 # Routes that must bypass auth even when auth_provider != none.
 # Each entry: {name: <policy-name>, namespace: <route-ns>, route: <HTTPRoute-name>}
 # The role creates a SecurityPolicy per entry that overrides the gateway-level policy
 # for that specific HTTPRoute (e.g. a UI route that must be publicly reachable).
 gateway_no_auth_routes: []
+
+# ── Protected hostname ownership ─────────────────────────────────────────────
+# The shared listeners admit routes from every namespace (from: All) so tenants
+# can publish their own hostnames without operator intervention. The Gateway API
+# resolves two routes claiming the SAME hostname by match specificity, ignoring
+# which namespace they live in — so a route in any namespace that pins an exact
+# path (e.g. /v1/chat/completions) on a platform hostname out-ranks the platform's
+# own catch-all route and silently takes over the victim's traffic (and bearer
+# token). We reserve each platform hostname to its owning namespace with a
+# ValidatingAdmissionPolicy: an HTTPRoute claiming one of these hostnames from any
+# other namespace is rejected at admission. Tenants keep full freedom on hostnames
+# they do not own. Extend this list to reserve additional hostnames.
+gateway_route_admission_enabled: true
+gateway_protected_hostnames:
+  - hostname: "inference.{{ base_domain_name }}"
+    owner_namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+  - hostname: "keycloak.{{ base_domain_name }}"
+    owner_namespace: "keycloak"
+  - hostname: "grafana.{{ base_domain_name }}"
+    owner_namespace: "monitoring"
 
 # Keycloak defaults (for SecurityPolicy JWT config — overridden by keycloak role)
 keycloak_hostname: "keycloak.{{ base_domain_name }}"

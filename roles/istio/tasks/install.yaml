@@ -22,6 +22,10 @@
       kubernetes.core.helm_repository:
         name: "{{ istio_helm_repo_name }}"
         repo_url: "{{ istio_helm_repo_url }}"
+      register: helm_repo_add_result
+      until: helm_repo_add_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "istio | Ensure namespace exists"
       kubernetes.core.k8s:
@@ -52,6 +56,8 @@
           metadata:
             name: "{{ istio_namespace }}"
             labels:
+              # Ambient mode needs istio-cni (NET_ADMIN, SYS_ADMIN, hostPath) and
+              # ztunnel (hostNetwork).
               pod-security.kubernetes.io/enforce: "privileged"
               pod-security.kubernetes.io/audit: "privileged"
               pod-security.kubernetes.io/warn: "privileged"
@@ -76,6 +82,10 @@
         dependency_update: true
         wait: "{{ helm_wait }}"
         timeout: "{{ istio_wait_timeout }}"
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
 # Applied outside the install block so it is reconciled on every run (self-healing).
 - name: "istio | Allow plaintext at mesh-edge exceptions (STRICT overrides)"

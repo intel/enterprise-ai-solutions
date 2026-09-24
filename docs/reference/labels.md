@@ -1,4 +1,4 @@
-# Namespace Security Labels in Intel® AI for Enterprise Solutions
+# Namespace Security Labels
 
 [← Docs Index](../README.md)
 
@@ -15,7 +15,7 @@ Pod Security Admission (PSA) and Istio ambient labels applied to every namespace
 
 ---
 
-## Platform layer (`applications.ai.enterprise.ai-solutions`)
+## Platform layer (`enterprise-ai-solutions`)
 
 | Namespace | PSA enforce | PSA audit | PSA warn | Istio | Role |
 |---|---|---|---|---|---|
@@ -28,13 +28,13 @@ Pod Security Admission (PSA) and Istio ambient labels applied to every namespace
 | `keycloak` | `baseline` | `restricted` | `restricted` | `ambient` | `keycloak` |
 | `monitoring` | `privileged` | `privileged` | `privileged` | `ambient` | `observability` |
 | `minio` | `restricted` | `restricted` | `restricted` | `ambient` | `minio` |
-| `nfs-provisioner` | `restricted` | `restricted` | `restricted` | — | `nfs_storage` ² |
+| `csi-driver-nfs` | `privileged` | `privileged` | `privileged` | — | `nfs_storage` ² |
 
 ² Only created when `storage_backend: nfs`.
 
 ---
 
-## Inference layer (`applications.ai.enterprise.ai-inference`)
+## Inference layer (`enterprise-inference`)
 
 | Namespace | PSA enforce | PSA audit | PSA warn | Istio | Role |
 |---|---|---|---|---|---|
@@ -45,7 +45,9 @@ Pod Security Admission (PSA) and Istio ambient labels applied to every namespace
 
 ---
 
-## Application layer (`applications.ai.enterprise.ai-erag`)
+## Intel® AI for Enterprise RAG layer (`enterprise-rag`)
+
+The namespaces below only exist once `install erag` has run. They are not created by `install inference`.
 
 | Namespace | PSA enforce | PSA audit | PSA warn | Istio | Role |
 |---|---|---|---|---|---|
@@ -81,7 +83,7 @@ Pod Security Admission (PSA) and Istio ambient labels applied to every namespace
 
 | Profile | Used for |
 |---|---|
-| `privileged` | Workloads requiring `seccompProfile: Unconfined`, `NET_ADMIN`/`NET_RAW`, host PID/network, or root — CPU inference (vLLM), L2 speakers (MetalLB), service mesh + gateway data-planes (Envoy, APISIX, istio-cni/ztunnel), observability agents (node-exporter), object storage (SeaweedFS). |
+| `privileged` | Workloads requiring `seccompProfile: Unconfined`, `NET_ADMIN`/`NET_RAW`, host PID/network, or root — CPU inference (vLLM), L2 speakers (MetalLB), service mesh + gateway data-planes (Envoy, APISIX, istio-cni/ztunnel), observability agents (node-exporter), object storage (SeaweedFS), CSI node plugins (csi-driver-nfs: privileged, host network, `hostPath`, bidirectional mount propagation). |
 | `baseline` | Upstream operators/controllers that don't fully declare securityContext — blocks privilege escalation without rejecting third-party images. Applies to: Keycloak operator, KServe controller, LWS controller. |
 | `restricted` | Cloud-native workloads that declare full securityContext (non-root, caps.drop=ALL, seccompProfile). Applies to all application workloads and data-tier (CNPG, PostgreSQL, cert-manager). |
 

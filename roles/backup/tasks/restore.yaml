@@ -1,0 +1,325 @@
+---
+# =============================================================================
+# backup | Restore one profile from a backup
+# =============================================================================
+# Destructive by design: the releases and volumes the profile names are removed
+# before Velero replays over them. Restoring into a half-populated namespace
+# fails in confusing ways, which is why the cleanup list is part of the profile.
+# =============================================================================
+
+# --- Select the backup -------------------------------------------------------
+
+- name: "restore | {{ backup_profile.name }} | List this profile's backups"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: Backup
+    namespace: "{{ velero_namespace }}"
+    label_selectors:
+      - "{{ backup_profile_label_key }}={{ backup_profile.name }}"
+  register: _bk_candidates
+  when: velero_restore_from == ""
+
+- name: "restore | {{ backup_profile.name }} | Sort completed backups, newest first"
+  ansible.builtin.set_fact:
+    _bk_sorted: >-
+      {{ _bk_candidates.resources | default([])
+         | selectattr('status.phase', 'defined')
+         | selectattr('status.phase', 'equalto', 'Completed')
+         | selectattr('status.completionTimestamp', 'defined')
+         | sort(attribute='status.completionTimestamp', reverse=true)
+         | list }}
+  when: velero_restore_from == ""
+
+- name: "restore | {{ backup_profile.name }} | Fail if there is nothing to restore"
+  ansible.builtin.fail:
+    msg: |
+      No Completed backup labelled
+      {{ backup_profile_label_key }}={{ backup_profile.name }} in namespace
+      '{{ velero_namespace }}'.
+
+      Take one first: the same playbook with backup_action=backup.
+      Or name a backup explicitly, with velero_restore_from=<name>.
+      What exists:
+        kubectl -n {{ velero_namespace }} get backups
+  when:
+    - velero_restore_from == ""
+    - _bk_sorted | default([]) | length == 0
+
+- name: "restore | {{ backup_profile.name }} | Choose the backup"
+  ansible.builtin.set_fact:
+    _bk_from: >-
+      {{ velero_restore_from if velero_restore_from != ''
+         else (_bk_sorted | first).metadata.name }}
+
+- name: "restore | {{ backup_profile.name }} | Read the chosen backup"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: Backup
+    namespace: "{{ velero_namespace }}"
+    name: "{{ _bk_from }}"
+  register: _bk_chosen
+
+- name: "restore | {{ backup_profile.name }} | Assert it exists and completed"
+  ansible.builtin.assert:
+    that:
+      - _bk_chosen.resources | length > 0
+      - (_bk_chosen.resources[0].status.phase | default('')) == 'Completed'
+    fail_msg: >-
+      {{ ("Backup '" ~ _bk_from ~ "' does not exist in namespace '" ~ velero_namespace ~ "'.")
+         if _bk_chosen.resources | length == 0
+         else ("Backup '" ~ _bk_from ~ "' is in phase "
+               ~ (_bk_chosen.resources[0].status.phase | default('Unknown'))
+               ~ ", not Completed. Restoring from it is not safe.") }}
+
+# --- Read what the backup holds ----------------------------------------------
+# Through the server pod, so no local velero CLI is needed. This doubles as the
+# storage-readability check: metadata can exist while the store is unreachable,
+# and that is exactly the case where a restore would quietly do nothing.
+
+- name: "restore | {{ backup_profile.name }} | Read the backup's resource list"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ velero_namespace }}"
+    pod: "{{ _bk_velero_pod }}"
+    container: velero
+    command: >-
+      /velero backup describe {{ _bk_from }} --details -o json
+      {{ '--insecure-skip-tls-verify'
+         if (velero_external_bsl_enabled | bool) and (velero_external_bsl_tls_enabled | bool)
+         else '' }}
+  register: _bk_describe
+  changed_when: false
+
+- name: "restore | {{ backup_profile.name }} | Parse the resource list"
+  ansible.builtin.set_fact:
+    _bk_details: "{{ _bk_describe.stdout | from_json }}"
+
+- name: "restore | {{ backup_profile.name }} | Fail if the store is unreadable"
+  ansible.builtin.fail:
+    msg: |
+      Backup '{{ _bk_from }}' has metadata but its resource list cannot be read
+      from the backup store.
+      Error: {{ _bk_details.status.errorGettingResourceList | default('resource list empty') }}
+
+      This is the TLS/connectivity failure mode: the Backup object looks healthy
+      while the data behind it is unreachable. Check the store's phase, its
+      credentials, the CA certificate and no_proxy:
+        kubectl -n {{ velero_namespace }} get backupstoragelocations
+  when: (_bk_details.status.resourceList | default({}) | length) == 0
+
+# Entries look like "<namespace>/<name>". A plain loop keeps this readable and
+# needs nothing beyond kubernetes.core.
+- name: "restore | {{ backup_profile.name }} | Extract the PVCs to be replaced"
+  ansible.builtin.set_fact:
+    _bk_pvc_list: "{{ _bk_pvc_list | default([]) + [{'namespace': item.split('/')[0], 'name': item.split('/')[1]}] }}"
+  loop: "{{ _bk_details.status.resourceList['v1/PersistentVolumeClaim'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "restore | {{ backup_profile.name }} | Report the plan"
+  ansible.builtin.debug:
+    msg: |
+      Restoring profile '{{ backup_profile.name }}' from '{{ _bk_from }}'
+      (completed {{ _bk_chosen.resources[0].status.completionTimestamp | default('unknown') }}).
+
+      Will be DELETED first:
+      {% for ns in backup_profile.namespace_order %}
+      {% for item in backup_profile.cleanup[ns] | default([]) %}
+      {% if item is string %}
+        {{ ns }}: {{ item }}
+      {% else %}
+        {{ ns }}: {{ item.kind }}.{{ item.api_version }}/{{ item.name | default('selector: ' ~ (item.label_selectors | default([]) | join(','))) }}
+      {% endif %}
+      {% endfor %}
+      {% endfor %}
+      {% for pvc in _bk_pvc_list | default([]) %}
+        {{ pvc.namespace }}: PersistentVolumeClaim/{{ pvc.name }}
+      {% endfor %}
+
+# --- Cleanup ------------------------------------------------------------------
+
+# Flatten cleanup: {ns -> [ref, ...]} becomes [{ns, ref}, ...] in namespace order,
+# because the order the profile declares is the order things must come down in.
+- name: "restore | {{ backup_profile.name }} | Flatten the cleanup list in namespace order"
+  ansible.builtin.include_tasks: cleanup_collect.yaml
+  loop: "{{ backup_profile.namespace_order }}"
+  loop_control:
+    loop_var: _bk_cleanup_ns
+    label: "{{ _bk_cleanup_ns }}"
+
+- name: "restore | {{ backup_profile.name }} | Check the fully specified cleanup entries"
+  ansible.builtin.assert:
+    that:
+      - item.ref.kind | default('') | length > 0
+      - item.ref.api_version | default('') | length > 0
+      - (item.ref.name | default('') | length > 0) or (item.ref.label_selectors | default([]) | length > 0)
+    fail_msg: >-
+      Cleanup entry {{ item.ref }} in namespace {{ item.ns }} of profile
+      '{{ backup_profile.name }}' is a mapping, so it must give kind and
+      api_version, plus either name or label_selectors.
+  loop: "{{ _bk_cleanup_items | default([]) | rejectattr('ref', 'string') | list }}"
+  loop_control:
+    label: "{{ item.ns }}"
+
+# First, because a fully specified entry is usually an operator's own custom
+# resource: while it exists its controller recreates whatever the other entries
+# delete, including the volume this restore is about to replay.
+- name: "restore | {{ backup_profile.name }} | Delete fully specified resources"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.ref.api_version }}"
+    kind: "{{ item.ref.kind }}"
+    name: "{{ item.ref.name | default(omit) }}"
+    namespace: "{{ item.ns }}"
+    label_selectors: "{{ item.ref.label_selectors | default(omit) }}"
+    wait: true
+    wait_timeout: "{{ backup_cleanup_wait_timeout }}"
+  loop: "{{ _bk_cleanup_items | default([]) | rejectattr('ref', 'string') | list }}"
+  loop_control:
+    label: "{{ item.ns }}:{{ item.ref.kind }}/{{ item.ref.name | default(item.ref.label_selectors | default([]) | join(',')) }}"
+  failed_when: false
+
+- name: "restore | {{ backup_profile.name }} | Uninstall Helm releases"
+  kubernetes.core.helm:
+    name: "{{ item.ref.split('/') | last }}"
+    release_namespace: "{{ item.ns }}"
+    state: absent
+    wait: true
+    wait_timeout: "{{ backup_cleanup_wait_timeout }}s"
+  loop: "{{ _bk_cleanup_items | default([]) | selectattr('ref', 'string') | selectattr('ref', 'match', '^Helm/') | list }}"
+  loop_control:
+    label: "{{ item.ns }}:{{ item.ref }}"
+  failed_when: false
+
+- name: "restore | {{ backup_profile.name }} | Delete resources by label selector"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ 'apps/v1' if item.ref.split('/')[0] in ['Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet'] else 'v1' }}"
+    kind: "{{ item.ref.split('/')[0] }}"
+    namespace: "{{ item.ns }}"
+    label_selectors:
+      - "{{ item.ref.split('selector:')[1] | trim }}"
+    wait: true
+    wait_timeout: "{{ backup_cleanup_wait_timeout }}"
+  loop: >-
+    {{ _bk_cleanup_items | default([])
+       | selectattr('ref', 'string')
+       | selectattr('ref', 'search', '^[^/]+/selector:')
+       | list }}
+  loop_control:
+    label: "{{ item.ns }}:{{ item.ref }}"
+  failed_when: false
+
+- name: "restore | {{ backup_profile.name }} | Delete resources by name"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ 'apps/v1' if item.ref.split('/')[0] in ['Deployment', 'StatefulSet', 'DaemonSet'] else 'v1' }}"
+    kind: "{{ item.ref.split('/') | first }}"
+    name: "{{ item.ref.split('/') | last }}"
+    namespace: "{{ item.ns }}"
+    wait: true
+    wait_timeout: "{{ backup_cleanup_wait_timeout }}"
+  loop: >-
+    {{ _bk_cleanup_items | default([])
+       | selectattr('ref', 'string')
+       | rejectattr('ref', 'match', '^Helm/')
+       | rejectattr('ref', 'search', '^[^/]+/selector:')
+       | list }}
+  loop_control:
+    label: "{{ item.ns }}:{{ item.ref }}"
+  failed_when: false
+
+- name: "restore | {{ backup_profile.name }} | Delete the PVCs being restored"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ item.name }}"
+    namespace: "{{ item.namespace }}"
+  loop: "{{ _bk_pvc_list | default([]) }}"
+  loop_control:
+    label: "{{ item.namespace }}:{{ item.name }}"
+
+- name: "restore | {{ backup_profile.name }} | Wait for the PVCs to disappear"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ item.namespace }}"
+    name: "{{ item.name }}"
+  register: _bk_pvc_gone
+  until: _bk_pvc_gone.resources | length == 0
+  retries: "{{ backup_pvc_delete_retries }}"
+  delay: "{{ backup_pvc_delete_delay }}"
+  loop: "{{ _bk_pvc_list | default([]) }}"
+  loop_control:
+    label: "{{ item.namespace }}:{{ item.name }}"
+
+# --- Restore ------------------------------------------------------------------
+
+- name: "restore | {{ backup_profile.name }} | Create the Restore"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: velero.io/v1
+      kind: Restore
+      metadata:
+        name: "{{ _bk_restore_name }}"
+        namespace: "{{ velero_namespace }}"
+        labels: "{{ restore_labels | combine({backup_profile_label_key: backup_profile.name}) }}"
+      spec:
+        backupName: "{{ _bk_from }}"
+        excludedResources: "{{ backup_profile.exclude_resources | default([]) }}"
+        existingResourcePolicy: "{{ backup_existing_resource_policy }}"
+        itemOperationTimeout: "{{ backup_profile.item_operation_timeout }}"
+  vars:
+    _bk_restore_name: "{{ restore_name_prefix }}-{{ backup_profile.name }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
+  register: _bk_restore_created
+
+- name: "restore | {{ backup_profile.name }} | Note the Restore name"
+  ansible.builtin.set_fact:
+    _bk_restore: "{{ _bk_restore_created.result.metadata.name }}"
+
+- name: "restore | {{ backup_profile.name }} | Wait for the Restore to finish"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: Restore
+    namespace: "{{ velero_namespace }}"
+    name: "{{ _bk_restore }}"
+  register: _bk_restore_status
+  until: >-
+    _bk_restore_status.resources | length > 0 and
+    ((_bk_restore_status.resources[0].status.phase | default('')) == 'Completed' or
+     (_bk_restore_status.resources[0].status.phase | default('')) in backup_terminal_failure_phases)
+  retries: "{{ backup_monitor_retries }}"
+  delay: "{{ backup_monitor_delay }}"
+
+- name: "restore | {{ backup_profile.name }} | Fail on a failed Restore"
+  ansible.builtin.fail:
+    msg: |
+      Restore '{{ _bk_restore }}' ended in phase
+      {{ _bk_restore_status.resources[0].status.phase | default('Unknown') }}.
+
+      Details:
+        kubectl -n {{ velero_namespace }} describe restore {{ _bk_restore }}
+        kubectl -n {{ velero_namespace }} logs deploy/velero
+  when: (_bk_restore_status.resources[0].status.phase | default('')) in backup_terminal_failure_phases
+
+# --- post_restore hooks -------------------------------------------------------
+
+- name: "restore | {{ backup_profile.name }} | Run post_restore hooks"
+  ansible.builtin.include_tasks: hooks.yaml
+  vars:
+    _bk_hooks: "{{ backup_profile.post_restore | default([]) }}"
+    _bk_hook_phase: "post_restore"
+
+- name: "restore | {{ backup_profile.name }} | Done"
+  ansible.builtin.debug:
+    msg: |
+      Restore '{{ _bk_restore }}' Completed from backup '{{ _bk_from }}'.
+      Items restored: {{ _bk_restore_status.resources[0].status.progress.itemsRestored | default('n/a') }},
+      warnings: {{ _bk_restore_status.resources[0].status.warnings | default(0) }},
+      errors: {{ _bk_restore_status.resources[0].status.errors | default(0) }}.
+
+      Velero recreates objects, not readiness. Confirm the solution came back
+      before trusting the restore:
+        ./es_auto_installer.sh status --env {{ env_name | default('local') }}
+      and compare the record counts against what they were before.

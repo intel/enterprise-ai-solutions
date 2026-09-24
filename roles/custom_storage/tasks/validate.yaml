@@ -1,0 +1,11 @@
+---
+# =============================================================================
+# custom_storage | validate
+# =============================================================================
+# install.yaml installs nothing — it is already pure verification, and it reads
+# the live cluster, so re-running it is exactly what validating this backend
+# means. Kept as a separate file because component_action dispatches by name.
+# =============================================================================
+
+- name: "custom_storage | Re-check the storage contract"
+  ansible.builtin.include_tasks: install.yaml

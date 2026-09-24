@@ -1,0 +1,30 @@
+{#
+Copyright (C) 2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+
+All interpolations are `| to_json` quoted: an SVM name or a hostname-form LIF
+can otherwise read as a bool/int or carry a YAML indicator character. Every value
+here is an ONTAP object name or a shape-checked LIF; the credentials go through
+trident-secret.yaml.j2, which base64-encodes them instead.
+#}
+apiVersion: trident.netapp.io/v1
+kind: TridentBackendConfig
+metadata:
+  name: {{ trident_backend_name | to_json }}
+  namespace: {{ trident_namespace | to_json }}
+spec:
+  version: 1
+  backendName: {{ (trident_backend_name ~ '-backend') | to_json }}
+  storageDriverName: {{ ontap_driver | to_json }}
+  managementLIF: {{ ontap_management_lif | string | to_json }}
+  dataLIF: {{ ontap_data_lif | string | to_json }}
+  svm: {{ ontap_svm | string | to_json }}
+  useREST: {{ (ontap_use_rest | bool) | to_json }}
+{% if ontap_storage_prefix | default('', true) | string | length > 0 %}
+  storagePrefix: {{ ontap_storage_prefix | string | to_json }}
+{% endif %}
+{% if ontap_nfs_mount_options | default('', true) | string | length > 0 %}
+  nfsMountOptions: {{ ontap_nfs_mount_options | string | to_json }}
+{% endif %}
+  credentials:
+    name: {{ (trident_backend_name ~ '-secret') | to_json }}

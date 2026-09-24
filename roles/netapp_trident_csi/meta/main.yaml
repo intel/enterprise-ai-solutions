@@ -1,0 +1,6 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Layer and same-layer ordering come from configs/components.yaml; this role is
+# reached through the `storage` meta-role, so it declares no dependencies.
+dependencies: []
