@@ -191,35 +191,15 @@
   retries: "{{ helm_retries }}"
   delay: 15
 
-# ── Store per-consumer credentials as Secrets ─────────────────────────────────
-
-- name: "seaweedfs | Store consumer credentials as Secrets"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "object-store-{{ item.name }}-credentials"
-        namespace: "{{ seaweedfs_namespace }}"
-      type: Opaque
-      stringData:
-        accessKey: "{{ item.access_key }}"
-        secretKey: "{{ item.secret_key }}"
-        endpoint: "{{ _seaweedfs_endpoint }}"
-        buckets: "{{ item.buckets | join(',') }}"
-  loop: "{{ object_store_consumers }}"
-  loop_control:
-    label: "object-store-{{ item.name }}-credentials"
-
 # =============================================================================
 # Set provider-agnostic object_store_* facts.
 # Everything below this point in the play uses these vars — seaweedfs_* is done.
 # =============================================================================
 
-- name: "seaweedfs | Set object_store_endpoint"
+- name: "seaweedfs | Set object_store_* facts"
   ansible.builtin.set_fact:
     object_store_endpoint: "{{ _seaweedfs_endpoint }}"
+    object_store_namespace: "{{ seaweedfs_namespace }}"
 
 - name: "seaweedfs | Install complete"
   ansible.builtin.debug:

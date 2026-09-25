@@ -69,5 +69,7 @@
             name: "{{ item }}"
             namespace: "{{ seaweedfs_namespace }}"
             state: absent
-          loop: "{{ ['seaweedfs-credentials', seaweedfs_s3_config_secret] + (object_store_consumers | map(attribute='name') | map('regex_replace', '^(.*)$', 'object-store-\\1-credentials') | list) }}"
+          loop:
+            - "{{ object_store_credentials_secret | default('object-store-credentials') }}"
+            - "{{ seaweedfs_s3_config_secret }}"
           failed_when: false

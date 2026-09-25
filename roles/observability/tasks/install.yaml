@@ -201,19 +201,19 @@
   ansible.builtin.include_tasks: credentials.yaml
 
 # ── Also load object_store credentials from the backend's Secret ─────────────
-# The backend role (seaweedfs) runs before observability and stores the
+# The backend role (seaweedfs, …) runs before observability and stores the
 # loki/tempo keys there.
 
-- name: "observability | Load object_store credentials from {{ _obs_object_store_backend }} Secret"
+- name: "observability | Load object_store credentials Secret"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
-    name: "{{ _obs_object_store_backend }}-credentials"
-    namespace: "{{ seaweedfs_namespace }}"
+    name: "{{ object_store_credentials_secret }}"
+    namespace: "{{ object_store_namespace }}"
   register: _obs_object_store_secret
   failed_when: false
 
-- name: "observability | Set object_store credentials from {{ _obs_object_store_backend }} Secret"
+- name: "observability | Set object_store credentials from Secret"
   ansible.builtin.set_fact:
     object_store_endpoint: "{{ _obs_object_store_secret.resources[0].data.endpoint | b64decode }}"
     object_store_loki_access_key: "{{ _obs_object_store_secret.resources[0].data.lokiAccessKey | b64decode }}"

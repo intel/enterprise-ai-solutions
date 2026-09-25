@@ -22,6 +22,17 @@ object_store_backend: "seaweedfs"   # seaweedfs | rustfs | external
 # ── Endpoint (set by the active backend role) ─────────────────────────────────
 object_store_endpoint: ""           # e.g. http://telemetry-seaweedfs-s3.monitoring.svc.cluster.local:8333
 
+# ── Namespace + credentials Secret (set by the active backend role) ───────────
+# Consumers (observability, langfuse, …) look up the credentials Secret by these
+# names, so they don't have to know which backend is active. Default matches
+# the SeaweedFS role which colocates with observability in `monitoring`.
+#
+# The Secret holds the endpoint and one key pair per consumer:
+#   endpoint, <consumer>AccessKey, <consumer>SecretKey
+#   (e.g. lokiAccessKey/lokiSecretKey, langfuseAccessKey/langfuseSecretKey)
+object_store_namespace: "monitoring"
+object_store_credentials_secret: "object-store-credentials"
+
 # ── Per-consumer credentials ──────────────────────────────────────────────────
 # Consumer roles define the passwords in their own defaults.
 # The active backend role promotes them to object_store_* here.

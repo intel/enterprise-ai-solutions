@@ -44,16 +44,18 @@ observability_prometheus_retention: "30d"
 observability_prometheus_storage_size: "50Gi"
 
 # ── Object store credentials (set at runtime from the backend's Secret) ──────
-# The backend role stores the loki/tempo keys in <backend>-credentials in its
-# namespace. seaweedfs_namespace / seaweedfs_release_name are cross-role vars;
-# fallbacks here so the role doesn't fail if global_config is missing them.
+# The backend role stores the loki/tempo keys in the object_store_credentials_secret
+# Secret in object_store_namespace (see roles/object_store). These and
+# seaweedfs_namespace / seaweedfs_release_name are cross-role vars; fallbacks
+# here so the role doesn't fail if global_config is missing them.
+object_store_namespace: "monitoring"
+object_store_credentials_secret: "object-store-credentials"
 seaweedfs_namespace: "monitoring"
 seaweedfs_release_name: "telemetry"
 # Chart object name prefix, as in roles/seaweedfs.
 _obs_seaweedfs_fullname: "{{ seaweedfs_release_name if 'seaweedfs' in seaweedfs_release_name else seaweedfs_release_name ~ '-seaweedfs' }}"
 object_store_loki_secret_key: ""
 object_store_tempo_secret_key: ""
-_obs_object_store_backend: "{{ object_store_backend | default('seaweedfs') }}"
 
 # ── Loki ─────────────────────────────────────────────────────────────────────
 # WAL + index cache PVC (chunks stored in the object store)
