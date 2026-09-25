@@ -20,7 +20,7 @@
 object_store_backend: "seaweedfs"   # seaweedfs | rustfs | external
 
 # ── Endpoint (set by the active backend role) ─────────────────────────────────
-object_store_endpoint: ""           # e.g. http://seaweedfs-telemetry-s3.monitoring.svc.cluster.local:8333
+object_store_endpoint: ""           # e.g. http://telemetry-seaweedfs-s3.monitoring.svc.cluster.local:8333
 
 # ── Per-consumer credentials ──────────────────────────────────────────────────
 # Consumer roles define the passwords in their own defaults.

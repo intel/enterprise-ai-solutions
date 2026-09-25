@@ -336,7 +336,7 @@ postgresql_enabled: false       # using an external PostgreSQL
 ## Object store
 
 Backend for Loki log storage, Tempo traces, and Langfuse blobs. The platform
-deploys its own SeaweedFS (release `seaweedfs-telemetry` in the `monitoring`
+deploys its own SeaweedFS (release `telemetry` in the `monitoring`
 namespace), separate from the SeaweedFS that erag's EDP installs.
 
 ```yaml

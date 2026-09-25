@@ -19,7 +19,7 @@
 # =============================================================================
 
 seaweedfs_namespace: "monitoring"
-seaweedfs_release_name: "seaweedfs-telemetry"
+seaweedfs_release_name: "telemetry"
 
 # ── Helm repo ─────────────────────────────────────────────────────────────────
 seaweedfs_helm_repo: "https://seaweedfs.github.io/seaweedfs/helm"
@@ -47,5 +47,10 @@ seaweedfs_s3_config_secret: "seaweedfs-s3-secret"
 # ── Namespace ownership (private) ─────────────────────────────────────────────
 _seaweedfs_shared_namespace: "{{ seaweedfs_namespace == (observability_namespace | default('monitoring')) }}"
 
+# ── Chart object name prefix (private) ────────────────────────────────────────
+# Mirrors the chart's seaweedfs.fullname: the release name if it contains
+# "seaweedfs", else "<release>-seaweedfs" (telemetry → telemetry-seaweedfs).
+_seaweedfs_fullname: "{{ seaweedfs_release_name if 'seaweedfs' in seaweedfs_release_name else seaweedfs_release_name ~ '-seaweedfs' }}"
+
 # ── Internal service URL (private — do not reference outside this role) ───────
-_seaweedfs_endpoint: "http://{{ seaweedfs_release_name }}-s3.{{ seaweedfs_namespace }}.svc.cluster.local:{{ seaweedfs_s3_port }}"
+_seaweedfs_endpoint: "http://{{ _seaweedfs_fullname }}-s3.{{ seaweedfs_namespace }}.svc.cluster.local:{{ seaweedfs_s3_port }}"

@@ -19,7 +19,7 @@
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    name: "{{ seaweedfs_release_name }}-s3"
+    name: "{{ _seaweedfs_fullname }}-s3"
     namespace: "{{ seaweedfs_namespace }}"
   register: _seaweedfs_s3_deploy
 

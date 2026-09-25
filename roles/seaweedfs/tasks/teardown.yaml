@@ -59,7 +59,7 @@
             name: "{{ item }}"
             namespace: "{{ seaweedfs_namespace }}"
             state: absent
-          loop: "{{ _seaweedfs_pvcs.resources | default([]) | map(attribute='metadata.name') | select('search', seaweedfs_release_name) | list }}"
+          loop: "{{ _seaweedfs_pvcs.resources | default([]) | map(attribute='metadata.name') | select('search', _seaweedfs_fullname) | list }}"
           failed_when: false
 
         - name: "seaweedfs | Delete Secrets"
