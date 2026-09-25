@@ -48,6 +48,8 @@ Terms used across this documentation, in alphabetical order.
 
 **MetalLB.** The load balancer that hands out external IP addresses on bare metal, where no cloud load balancer exists.
 
+**SeaweedFS.** S3-compatible object storage used as the backend for logs, traces, and blobs.
+
 **model-manager.** The CLI that deploys, scales, lists, and undeploys models. It downloads weights, chooses serving parameters, and creates the serving resources, so no YAML is needed.
 
 **Model catalog (`models.yaml`).** The per-environment list of servable models with runtime, CPU and memory sizing, and server arguments. `model-manager deploy <name>` resolves names against it.
@@ -65,8 +67,6 @@ Terms used across this documentation, in alphabetical order.
 **Role.** An Ansible role under `roles/<name>/`, implementing one component. Its `tasks/main.yaml` dispatches to the file matching the action being run.
 
 **RWX (ReadWriteMany).** A volume access mode allowing several nodes to mount the same volume. Required for multi-node deployments, since model weights must be readable from every node.
-
-**SeaweedFS.** S3-compatible object storage used as the backend for logs, traces, and Langfuse blobs. The platform runs its own instance in `monitoring`; erag's EDP runs a separate one for documents.
 
 **Storage backend.** Where persistent data lives: `local-path` (single node), `nfs`, `ceph`, `netapp-trident`, or `custom` (a StorageClass your own CSI driver already provides). Set with `storage_backend`.
 
