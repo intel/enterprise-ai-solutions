@@ -3,27 +3,29 @@
 # object_store — Interface role (no deployment tasks)
 #
 # This role is a pure interface definition. The active backend role
-# (minio, rustfs, seaweedfs, …) handles all deployment and sets
+# (seaweedfs, rustfs, …) handles all deployment and sets
 # object_store_endpoint as an Ansible fact at the end of its install.
 #
 # HOW TO ADD A NEW BACKEND (e.g. rustfs):
 # ────────────────────────────────────────
-# 1. Create roles/rustfs/ following the same structure as roles/minio/
+# 1. Create roles/rustfs/ following the same structure as roles/seaweedfs/
 # 2. In roles/rustfs/tasks/install.yaml, at the end set:
 #      - ansible.builtin.set_fact:
 #          object_store_endpoint: "http://rustfs.{{ rustfs_namespace }}.svc.cluster.local:{{ rustfs_port }}"
 # 3. Read object_store_consumers to create users/buckets (copy the pattern
-#    from minio/tasks/install.yaml — the consumer list is backend-agnostic)
+#    from seaweedfs/tasks/install.yaml — the consumer list is backend-agnostic)
 # 4. In configs/components.yaml, add:
 #      - name: rustfs
 #        layer: platform
-#        enabled: "{{ (object_store_backend | default('minio')) == 'rustfs' }}"
+#        enabled: "{{ (object_store_backend | default('seaweedfs')) == 'rustfs' }}"
 #        depends_on: []
 # 5. In global_config.yaml, set: object_store_backend: "rustfs"
 #
-# That's it — consumer roles (Loki, Tempo) require zero changes.
+# 6. Add rustfs to observability's depends_on in configs/components.yaml.
+#
+# Consumer roles (Loki, Tempo) read the <backend>-credentials Secret.
 # =============================================================================
 
 - name: "object_store | Interface role — no tasks"
   ansible.builtin.debug:
-    msg: "object_store is an interface role. Active backend: {{ object_store_backend | default('minio') }}"
+    msg: "object_store is an interface role. Active backend: {{ object_store_backend | default('seaweedfs') }}"

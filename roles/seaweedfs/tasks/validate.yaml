@@ -1,0 +1,36 @@
+---
+# =============================================================================
+# SeaweedFS — Validate
+# =============================================================================
+
+- name: "seaweedfs | Check Helm release"
+  kubernetes.core.helm_info:
+    name: "{{ seaweedfs_release_name }}"
+    release_namespace: "{{ seaweedfs_namespace }}"
+  register: _seaweedfs_release
+
+- name: "seaweedfs | Assert SeaweedFS is installed"
+  ansible.builtin.assert:
+    that: _seaweedfs_release.status is defined
+    fail_msg: "SeaweedFS is not installed in namespace {{ seaweedfs_namespace }}"
+    success_msg: "SeaweedFS Helm release found"
+
+- name: "seaweedfs | Check S3 gateway Deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ _seaweedfs_fullname }}-s3"
+    namespace: "{{ seaweedfs_namespace }}"
+  register: _seaweedfs_s3_deploy
+
+- name: "seaweedfs | Assert S3 gateway has ready replicas"
+  ansible.builtin.assert:
+    that:
+      - _seaweedfs_s3_deploy.resources | length > 0
+      - (_seaweedfs_s3_deploy.resources[0].status.readyReplicas | default(0) | int) >= 1
+    fail_msg: "SeaweedFS S3 gateway has no ready replicas"
+    success_msg: "SeaweedFS S3 gateway ready ({{ _seaweedfs_s3_deploy.resources[0].status.readyReplicas | default(0) }} replicas)"
+
+- name: "seaweedfs | Validation passed"
+  ansible.builtin.debug:
+    msg: "SeaweedFS validation passed. Endpoint: {{ _seaweedfs_endpoint }}"

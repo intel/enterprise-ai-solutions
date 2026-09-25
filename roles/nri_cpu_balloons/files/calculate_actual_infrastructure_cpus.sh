@@ -23,8 +23,7 @@ INFRA_NAMESPACES=(
     "envoy-gateway-system"
     "keycloak"
     "kserve"
-    "minio"
-    "monitoring"      # Observability (optional)
+    "monitoring"      # Observability + platform SeaweedFS (default object-store backend)
 )
 
 # Model workload namespaces (EXCLUDE these)

@@ -48,7 +48,7 @@ Terms used across this documentation, in alphabetical order.
 
 **MetalLB.** The load balancer that hands out external IP addresses on bare metal, where no cloud load balancer exists.
 
-**MinIO.** S3-compatible object storage used as the backend for logs, traces, and blobs.
+**SeaweedFS.** S3-compatible object storage used as the backend for logs, traces, and blobs.
 
 **model-manager.** The CLI that deploys, scales, lists, and undeploys models. It downloads weights, chooses serving parameters, and creates the serving resources, so no YAML is needed.
 
