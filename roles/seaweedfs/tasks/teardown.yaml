@@ -27,49 +27,39 @@
         timeout: "{{ helm_timeout }}"
       failed_when: false
 
-    - name: "seaweedfs | Delete namespace"
-      kubernetes.core.k8s:
-        kind: Namespace
-        name: "{{ seaweedfs_namespace }}"
-        state: absent
+    # The namespace belongs to observability: remove only what this role
+    # created. StatefulSet PVCs outlive `helm uninstall`, so they are deleted
+    # explicitly.
+    - name: "seaweedfs | Load object_store interface vars"
+      ansible.builtin.include_vars:
+        file: "{{ role_path }}/../object_store/defaults/main.yaml"
+
+    - name: "seaweedfs | Find PVCs"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: "{{ seaweedfs_namespace }}"
+      register: _seaweedfs_pvcs
       failed_when: false
-      when: not (_seaweedfs_shared_namespace | bool)
 
-    # Shared namespace: remove only what this role created. StatefulSet PVCs
-    # outlive `helm uninstall`, so they are deleted explicitly.
-    - name: "seaweedfs | Remove own resources from shared namespace"
-      when: _seaweedfs_shared_namespace | bool
-      block:
-        - name: "seaweedfs | Load object_store interface vars"
-          ansible.builtin.include_vars:
-            file: "{{ role_path }}/../object_store/defaults/main.yaml"
+    - name: "seaweedfs | Delete PVCs"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ item }}"
+        namespace: "{{ seaweedfs_namespace }}"
+        state: absent
+      loop: "{{ _seaweedfs_pvcs.resources | default([]) | map(attribute='metadata.name') | select('search', _seaweedfs_fullname) | list }}"
+      failed_when: false
 
-        - name: "seaweedfs | Find PVCs"
-          kubernetes.core.k8s_info:
-            api_version: v1
-            kind: PersistentVolumeClaim
-            namespace: "{{ seaweedfs_namespace }}"
-          register: _seaweedfs_pvcs
-          failed_when: false
-
-        - name: "seaweedfs | Delete PVCs"
-          kubernetes.core.k8s:
-            api_version: v1
-            kind: PersistentVolumeClaim
-            name: "{{ item }}"
-            namespace: "{{ seaweedfs_namespace }}"
-            state: absent
-          loop: "{{ _seaweedfs_pvcs.resources | default([]) | map(attribute='metadata.name') | select('search', _seaweedfs_fullname) | list }}"
-          failed_when: false
-
-        - name: "seaweedfs | Delete Secrets"
-          kubernetes.core.k8s:
-            api_version: v1
-            kind: Secret
-            name: "{{ item }}"
-            namespace: "{{ seaweedfs_namespace }}"
-            state: absent
-          loop:
-            - "{{ object_store_credentials_secret | default('object-store-credentials') }}"
-            - "{{ seaweedfs_s3_config_secret }}"
-          failed_when: false
+    - name: "seaweedfs | Delete Secrets"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Secret
+        name: "{{ item }}"
+        namespace: "{{ seaweedfs_namespace }}"
+        state: absent
+      loop:
+        - "{{ object_store_credentials_secret | default('object-store-credentials') }}"
+        - "{{ seaweedfs_s3_config_secret }}"
+      failed_when: false

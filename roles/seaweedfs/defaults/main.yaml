@@ -11,8 +11,8 @@
 # cluster-scoped RBAC named after the release.
 #
 # It runs in the observability namespace next to Loki/Tempo. That namespace
-# is owned by the observability role (PSS privileged), so this role then
-# leaves its labels alone and removes only its own resources on teardown.
+# and its labels (PSS, Istio) are owned by the observability role: this role
+# never labels or deletes it, and removes only its own resources on teardown.
 #
 # This role sets the provider-agnostic object_store_* variables on completion
 # so that consumers never reference seaweedfs_* directly.
@@ -42,9 +42,6 @@ seaweedfs_s3_port: 8333
 # ── S3 identities Secret ──────────────────────────────────────────────────────
 # Mounted by the S3 gateway as /etc/sw/seaweedfs_s3_config.
 seaweedfs_s3_config_secret: "seaweedfs-s3-secret"
-
-# ── Namespace ownership (private) ─────────────────────────────────────────────
-_seaweedfs_shared_namespace: "{{ seaweedfs_namespace == (observability_namespace | default('monitoring')) }}"
 
 # ── Chart object name prefix (private) ────────────────────────────────────────
 # Mirrors the chart's seaweedfs.fullname: the release name if it contains

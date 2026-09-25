@@ -19,6 +19,7 @@
 
 # ── Pre-flight ────────────────────────────────────────────────────────────────
 
+# Runs before observability on a fresh install; observability labels it.
 - name: "seaweedfs | Create namespace"
   kubernetes.core.k8s:
     state: present
@@ -27,34 +28,6 @@
       kind: Namespace
       metadata:
         name: "{{ seaweedfs_namespace }}"
-
-- name: "seaweedfs | Label namespace — Istio"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ seaweedfs_namespace }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
-  when: istio_enabled | default(false) | bool
-
-- name: "seaweedfs | Label namespace — PSS"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ seaweedfs_namespace }}"
-        labels:
-          pod-security.kubernetes.io/enforce: "restricted"
-          pod-security.kubernetes.io/audit: "restricted"
-          pod-security.kubernetes.io/warn: "restricted"
-  when:
-    - enforce_pss | default(false) | bool
-    - not (_seaweedfs_shared_namespace | bool)
 
 - name: "seaweedfs | Bootstrap credentials"
   ansible.builtin.include_tasks: credentials.yaml
