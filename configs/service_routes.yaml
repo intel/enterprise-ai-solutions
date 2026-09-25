@@ -1,0 +1,42 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Service Routing Registry — single source of truth for gateway publishing
+# =============================================================================
+# How each service is exposed through the Envoy Gateway. Shipped WITH the code
+# (loaded by playbooks/includes/preflight.yaml), NOT seeded per-env — so new
+# services and wiring changes reach every cluster on upgrade with no per-env
+# edits.
+#
+# Per-CLUSTER values live in env/<env>/global_config.yaml, not here:
+#   base_domain_name  the cluster's domain
+#   routing_mode      'subdomain' (<service>.<domain>) or 'path' (<domain>/<service>)
+# To vary a SINGLE service on ONE cluster (custom path, or keep it on a
+# subdomain while the rest go path-based), add a service_route_overrides entry
+# in that env's global_config.yaml — do not fork this file.
+#
+# The subdomain-vs-apex derivation itself lives in one place:
+# filter_plugins/service_route.py (the `service_route` Jinja filter).
+#
+# Fields per service:
+#   path       logical path in path mode, e.g. /keycloak ('/' = served at apex root)
+#   subdomain  subdomain label in subdomain mode → <subdomain>.<base_domain_name>
+#   service    backend Kubernetes Service name
+#   port       backend Service port
+#   namespace  namespace the Service (and its HTTPRoute) live in
+# =============================================================================
+service_routes:
+  keycloak:
+    path: /keycloak
+    subdomain: keycloak
+    service: keycloak-service
+    port: 8080
+    namespace: keycloak
+
+  grafana:
+    path: /grafana
+    subdomain: grafana
+    service: kube-prometheus-stack-grafana
+    port: 80
+    namespace: monitoring

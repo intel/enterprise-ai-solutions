@@ -20,6 +20,13 @@
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/../configs/components.yaml"
 
+# Shipped-with-code routing registry (service → path/subdomain/backend). Kept out
+# of the per-env global_config so new services reach every cluster on upgrade;
+# per-cluster tweaks go through service_route_overrides in global_config.yaml.
+- name: "Preflight - Load service routing registry"
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../configs/service_routes.yaml"
+
 - name: "Preflight - Ensure log and tmp directories exist"
   ansible.builtin.file:
     path: "{{ item }}"

@@ -51,6 +51,17 @@ storage_backend: local-path               # local-path (single-node) | nfs | cep
 #   OS trust store to drop the certificate warnings.
 gateway_tls_mode: "selfsigned"            # selfsigned | custom
 base_domain_name: "solutions.ai"
+# Routing mode: 'subdomain' (default) publishes each service at
+# <service>.<base_domain_name>; 'path' publishes them all under the single apex
+# base_domain_name at /<service> (e.g. https://<base_domain_name>/keycloak).
+routing_mode: "subdomain"
+# Optional per-service routing overrides (advanced; most clusters set none).
+# The shared service→path/subdomain/backend registry ships in
+# configs/service_routes.yaml. Use this ONLY to make one service on THIS cluster
+# differ from that shipped default. Keys mirror the registry fields:
+# service_route_overrides:
+#   keycloak: { path: /auth }                              # serve at /auth, not /keycloak
+#   grafana:  { mode: subdomain, subdomain: dashboards }   # keep Grafana on a subdomain
 gateway_request_timeout: "600s"           # Envoy default is 15s — too short for LLM
 
 # --- Custom TLS (only used when gateway_tls_mode=custom) ---
