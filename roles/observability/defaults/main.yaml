@@ -49,7 +49,7 @@ observability_prometheus_storage_size: "50Gi"
 # seaweedfs_namespace / seaweedfs_release_name are cross-role vars; fallbacks
 # here so the role doesn't fail if global_config is missing them.
 object_store_namespace: "monitoring"
-object_store_credentials_secret: "object-store-credentials"
+object_store_credentials_secret: "object-store-credentials"  # checkov:skip=CKV_SECRET_6: Secret name, not a value
 seaweedfs_namespace: "monitoring"
 seaweedfs_release_name: "telemetry"
 # Chart object name prefix, as in roles/seaweedfs.

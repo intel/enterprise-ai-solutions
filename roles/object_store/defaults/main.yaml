@@ -31,7 +31,7 @@ object_store_endpoint: ""           # e.g. http://telemetry-seaweedfs-s3.monitor
 #   endpoint, <consumer>AccessKey, <consumer>SecretKey
 #   (e.g. lokiAccessKey/lokiSecretKey, langfuseAccessKey/langfuseSecretKey)
 object_store_namespace: "monitoring"
-object_store_credentials_secret: "object-store-credentials"
+object_store_credentials_secret: "object-store-credentials"  # checkov:skip=CKV_SECRET_6: Secret name, not a value
 
 # ── Per-consumer credentials ──────────────────────────────────────────────────
 # Consumer roles define the passwords in their own defaults.
