@@ -25,8 +25,7 @@ seaweedfs_release_name: "telemetry"
 seaweedfs_helm_repo: "https://seaweedfs.github.io/seaweedfs/helm"
 
 # ── Chart version ─────────────────────────────────────────────────────────────
-# Keep in sync with seaweedfs.version in ext/enterprise.ai-erag
-# deployment/components/edp/values.yaml.
+# seaweedfs 4.37.0 → SeaweedFS app 4.37
 seaweedfs_chart_version: "4.37.0"
 
 # ── Storage ───────────────────────────────────────────────────────────────────
