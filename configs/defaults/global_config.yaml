@@ -98,9 +98,8 @@ kubernetes_cpu_policy: "nri-balloons"
 kubernetes_accelerator: "cpu"
 
 # --- Object Store ---
-# Backend for Loki, Tempo, Langfuse blob storage. Only "seaweedfs" is
-# implemented; it deploys its own instance in the monitoring namespace,
-# separate from erag's EDP one.
+# Backend for Loki, Tempo, Langfuse blob storage.
+# Options: seaweedfs (default) | rustfs | external
 object_store_backend: "seaweedfs"
 seaweedfs_volume_storage_size: "10Gi"
 
