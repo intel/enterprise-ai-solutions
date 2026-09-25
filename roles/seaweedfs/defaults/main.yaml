@@ -40,8 +40,10 @@ seaweedfs_volume_storage_size: "10Gi"
 seaweedfs_s3_port: 8333
 
 # ── S3 identities Secret ──────────────────────────────────────────────────────
-# Mounted by the S3 gateway as /etc/sw/seaweedfs_s3_config.
-seaweedfs_s3_config_secret: "seaweedfs-s3-secret"
+# Mounted by the S3 gateway as /etc/sw/seaweedfs_s3_config. Named after the
+# release so it can't be confused with erag's or velero's seaweedfs-s3-secret
+# (telemetry → telemetry-seaweedfs-s3-secret).
+seaweedfs_s3_config_secret: "{{ _seaweedfs_fullname }}-s3-secret"
 
 # ── Chart object name prefix (private) ────────────────────────────────────────
 # Mirrors the chart's seaweedfs.fullname: the release name if it contains
