@@ -212,7 +212,7 @@ enterprise-ai-solutions/
     │       └── teardown.yaml
     ├── object_store/
     │   └── tasks/
-    │       └── install.yaml                    # Object store interface (seaweedfs)
+    │       └── install.yaml                    # Object store interface (seaweedfs/rustfs/external)
     ├── seaweedfs/
     │   └── tasks/
     │       ├── install.yaml                    # S3-compatible object storage
@@ -566,7 +566,7 @@ All roles follow the same pattern: `defaults/main.yaml` for config, `tasks/main.
 | `envoy_gateway` | Helm install from OCI registry, waits for deployment rollout, TLS config, SecurityPolicy for auth. |
 | `postgresql` | CNPG operator + PostgreSQL clusters for Keycloak, LiteLLM, Langfuse. |
 | `keycloak` | Keycloak operator + instance. Auto-disabled when `auth_provider=litellm`. |
-| `object_store` | Selects and configures the object store backend (seaweedfs). |
+| `object_store` | Selects and configures the object store backend (seaweedfs/rustfs/external). |
 | `seaweedfs` | S3-compatible object storage for Loki, Tempo, Langfuse blob storage. |
 | `observability` | Prometheus + Grafana + Loki + Tempo stack. |
 | `nri_cpu_balloons` | NRI CPU-balloons plugin. Generates per-node `BalloonsPolicy` CRs based on NUMA topology. Enabled only when `kubernetes_cpu_policy=nri-balloons`. |

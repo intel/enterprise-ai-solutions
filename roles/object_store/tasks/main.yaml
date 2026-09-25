@@ -3,7 +3,7 @@
 # object_store — Interface role (no deployment tasks)
 #
 # This role is a pure interface definition. The active backend role
-# (seaweedfs today) handles all deployment and sets
+# (seaweedfs, rustfs, …) handles all deployment and sets
 # object_store_endpoint as an Ansible fact at the end of its install.
 #
 # HOW TO ADD A NEW BACKEND (e.g. rustfs):

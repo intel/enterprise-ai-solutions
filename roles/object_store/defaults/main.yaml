@@ -4,7 +4,7 @@
 # =============================================================================
 # This is the ONLY set of variables that consumer roles (Loki, Tempo, …)
 # should reference. They are backend-agnostic — set at runtime by whichever
-# backend role is active (seaweedfs today).
+# backend role is active (seaweedfs, rustfs, …).
 #
 # To migrate to a new backend:
 #   1. Set object_store_backend: <new> in global_config.yaml
@@ -17,7 +17,7 @@
 # =============================================================================
 
 # ── Backend selector (set in global_config.yaml) ──────────────────────────────
-object_store_backend: "seaweedfs"   # seaweedfs
+object_store_backend: "seaweedfs"   # seaweedfs | rustfs | external
 
 # ── Endpoint (set by the active backend role) ─────────────────────────────────
 object_store_endpoint: ""           # e.g. http://seaweedfs-telemetry-s3.monitoring.svc.cluster.local:8333

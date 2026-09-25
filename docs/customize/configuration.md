@@ -154,7 +154,7 @@ kubernetes_kube_proxy_mode: "nftables"    # "nftables" | "iptables" | "ipvs"
 node_topology_enabled: true               # Soft affinity for platform vs inference pods
 
 # --- Object Store (for Loki, Tempo, Langfuse) ---
-object_store_backend: "seaweedfs"         # only "seaweedfs" is implemented
+object_store_backend: "seaweedfs"         # "seaweedfs" | "rustfs" | "external"
 seaweedfs_volume_storage_size: "10Gi"
 
 # --- BYO Cluster (skip Kubernetes provisioning) ---
@@ -340,7 +340,7 @@ deploys its own SeaweedFS (release `seaweedfs-telemetry` in the `monitoring`
 namespace), separate from the SeaweedFS that erag's EDP installs.
 
 ```yaml
-object_store_backend: "seaweedfs"          # only backend implemented
+object_store_backend: "seaweedfs"          # "seaweedfs" | "rustfs" | "external"
 seaweedfs_volume_storage_size: "10Gi"      # data PVC; fixed after first install
 ```
 
