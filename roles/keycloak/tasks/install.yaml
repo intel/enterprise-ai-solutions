@@ -210,6 +210,24 @@
 
 # ── HTTPRoute (expose via gateway) — runs even on re-install ──────────────────
 
+# In path mode Keycloak mounts on the shared apex listener, which admits routes
+# only from labelled namespaces (see gateway_apex_route_label_* / gateway.yaml.j2).
+# Stamp the label before creating the route so it can attach. Not needed in
+# subdomain mode, where the route pins the *.<base> wildcard listener instead.
+- name: "keycloak | Label namespace — allow apex-listener routes (path mode)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ keycloak_namespace }}"
+        labels:
+          "{{ gateway_apex_route_label_key | default('gateway-apex-routes') }}": "{{ gateway_apex_route_label_value | default('allowed') }}"
+  when:
+    - gateway_create | default(false)
+    - keycloak_section_name == 'https-apex'
+
 - name: "keycloak | Create HTTPRoute for gateway"
   kubernetes.core.k8s:
     state: present
