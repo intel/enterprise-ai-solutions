@@ -13,6 +13,7 @@
 # It runs in the observability namespace next to Loki/Tempo. That namespace
 # and its labels (PSS, Istio) are owned by the observability role: this role
 # never labels or deletes it, and removes only its own resources on teardown.
+# In any other namespace it only adds the Istio ambient label.
 #
 # This role sets the provider-agnostic object_store_* variables on completion
 # so that consumers never reference seaweedfs_* directly.

@@ -29,6 +29,21 @@
       metadata:
         name: "{{ seaweedfs_namespace }}"
 
+# In the observability namespace, observability sets the labels.
+- name: "seaweedfs | Label namespace — Istio"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ seaweedfs_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when:
+    - istio_enabled | default(false) | bool
+    - seaweedfs_namespace != (observability_namespace | default('monitoring'))
+
 - name: "seaweedfs | Bootstrap credentials"
   ansible.builtin.include_tasks: credentials.yaml
 
