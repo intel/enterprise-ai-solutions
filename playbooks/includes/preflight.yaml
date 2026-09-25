@@ -143,7 +143,7 @@
       {% endif %}
       Fix your env/{{ env_name | default('<name>') }}/global_config.yaml:
         - Replace `object_store_backend: "minio"` with `object_store_backend: "seaweedfs"`.
-        - Rename `minio_storage_size` → `seaweedfs_volume_size`.
+        - Rename `minio_storage_size` → `seaweedfs_volume_storage_size`.
       Or regenerate the env from scratch: ./es_auto_installer.sh init <layer> --env {{ env_name | default('<new-env>') }}.
     quiet: true
 
@@ -153,7 +153,7 @@
       - (object_store_backend | default('seaweedfs')) in ['seaweedfs', 'rustfs', 'external']
     fail_msg: >-
       Invalid object_store_backend='{{ object_store_backend | default('') }}'.
-      Must be one of: seaweedfs (default) or external.
+      Must be one of: seaweedfs (default), rustfs or external.
     quiet: true
 
 # ── CPU Policy Resolution ─────────────────────────────────────────────────────
