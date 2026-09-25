@@ -125,6 +125,37 @@
           {% endif %}
       when: _internet_check.status | default(-1) not in [200, 301, 302, 303, 307, 429]
 
+# ── Object Store Backend ──────────────────────────────────────────────────────
+# MinIO was replaced by SeaweedFS (upstream CE archive). Catch stale env configs
+# that still declare object_store_backend=minio
+
+- name: "Preflight - Object store: reject legacy MinIO configuration for object store"
+  ansible.builtin.assert:
+    that:
+      - (object_store_backend | default('seaweedfs') | lower) != 'minio'
+      - minio_storage_size is not defined
+    fail_msg: |-
+      MinIO is no longer supported as an object-store backend (upstream Community
+      Edition is being archived). Detected legacy configuration:
+        object_store_backend: {{ object_store_backend | default('<unset>') }}
+      {% if minio_storage_size is defined %}
+        minio_storage_size: {{ minio_storage_size }}
+      {% endif %}
+      Fix your env/{{ env_name | default('<name>') }}/global_config.yaml:
+        - Replace `object_store_backend: "minio"` with `object_store_backend: "seaweedfs"`.
+        - Rename `minio_storage_size` → `seaweedfs_volume_size`.
+      Or regenerate the env from scratch: ./es_auto_installer.sh init <layer> --env {{ env_name | default('<new-env>') }}.
+    quiet: true
+
+- name: "Preflight - Object store: validate backend value"
+  ansible.builtin.assert:
+    that:
+      - (object_store_backend | default('seaweedfs')) in ['seaweedfs', 'rustfs', 'external']
+    fail_msg: >-
+      Invalid object_store_backend='{{ object_store_backend | default('') }}'.
+      Must be one of: seaweedfs (default) or external.
+    quiet: true
+
 # ── CPU Policy Resolution ─────────────────────────────────────────────────────
 # Derive every CPU-pinning variable from the single `kubernetes_cpu_policy`
 # switch, so the operator never has to keep nri_cpu_balloons_enabled and the
