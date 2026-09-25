@@ -102,7 +102,7 @@ kubernetes_accelerator: "cpu"
 # implemented; it deploys its own instance in the monitoring namespace,
 # separate from erag's EDP one.
 object_store_backend: "seaweedfs"
-# seaweedfs_volume_storage_size: "10Gi"
+seaweedfs_volume_storage_size: "10Gi"
 
 # --- Keycloak (only used when auth_provider=keycloak) ---
 # keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted

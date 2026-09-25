@@ -155,7 +155,7 @@ node_topology_enabled: true               # Soft affinity for platform vs infere
 
 # --- Object Store (for Loki, Tempo, Langfuse) ---
 object_store_backend: "seaweedfs"         # only "seaweedfs" is implemented
-# seaweedfs_volume_storage_size: "10Gi"
+seaweedfs_volume_storage_size: "10Gi"
 
 # --- BYO Cluster (skip Kubernetes provisioning) ---
 # existing_kubernetes: "/path/to/kubeconfig"
