@@ -215,6 +215,12 @@
 # Stamp the label before creating the route so it can attach. Not needed in
 # subdomain mode, where the route pins the *.<base> wildcard listener instead.
 - name: "keycloak | Label namespace — allow apex-listener routes (path mode)"
+  vars:
+    # Built as a dict value, not a templated mapping key — Ansible does not
+    # template dict keys, so the inline "{{ key }}:" form leaves it literal.
+    _keycloak_apex_label: >-
+      {{ {(gateway_apex_route_label_key | default('gateway-apex-routes')):
+          (gateway_apex_route_label_value | default('allowed'))} }}
   kubernetes.core.k8s:
     state: present
     definition:
@@ -222,8 +228,7 @@
       kind: Namespace
       metadata:
         name: "{{ keycloak_namespace }}"
-        labels:
-          "{{ gateway_apex_route_label_key | default('gateway-apex-routes') }}": "{{ gateway_apex_route_label_value | default('allowed') }}"
+        labels: "{{ _keycloak_apex_label }}"
   when:
     - gateway_create | default(false)
     - keycloak_section_name == 'https-apex'
