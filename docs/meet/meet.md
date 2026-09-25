@@ -41,7 +41,7 @@ The installer deploys enabled layers in dependency order:
 ```
 Infrastructure  (Kubernetes, storage)
       ↓
-Platform services  (cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, Observability)
+Platform services  (cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability)
       ↓
 Inference  (KServe, Envoy AI Gateway, LiteLLM, Langfuse, model runtimes)
       ↓
@@ -119,7 +119,7 @@ github.com/intel/enterprise-ai-solutions      <- start here; run all commands fr
 | 6 | **Envoy Gateway** | Kubernetes Gateway API — HTTPS ingress, TLS termination, JWT auth |
 | 7 | **PostgreSQL (CNPG)** | Managed database for Keycloak, LiteLLM, Langfuse |
 | 8 | **Keycloak** | OIDC/OAuth2 identity provider — SSO, RBAC, API keys |
-| 9 | **MinIO** | S3-compatible object store for model weights and log storage |
+| 9 | **SeaweedFS** | S3-compatible object store for logs, traces and Langfuse blobs |
 | 10 | **Observability** | Prometheus + Grafana + Loki + Tempo + OpenTelemetry + Prometheus Adapter |
 | 11 | **Envoy AI Gateway** | AI-aware routing — token-based load balancing, model-level rate limiting |
 | 12 | **KServe** | Model serving platform — InferenceService & LLMInferenceService CRDs |

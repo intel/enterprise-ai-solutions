@@ -4,7 +4,7 @@
 # =============================================================================
 # This is the ONLY set of variables that consumer roles (Loki, Tempo, …)
 # should reference. They are backend-agnostic — set at runtime by whichever
-# backend role is active (minio, rustfs, seaweedfs, …).
+# backend role is active (seaweedfs today).
 #
 # To migrate to a new backend:
 #   1. Set object_store_backend: <new> in global_config.yaml
@@ -17,10 +17,10 @@
 # =============================================================================
 
 # ── Backend selector (set in global_config.yaml) ──────────────────────────────
-object_store_backend: "minio"       # minio | rustfs | seaweedfs | external
+object_store_backend: "seaweedfs"   # seaweedfs
 
 # ── Endpoint (set by the active backend role) ─────────────────────────────────
-object_store_endpoint: ""           # e.g. http://minio.minio.svc.cluster.local:9000
+object_store_endpoint: ""           # e.g. http://seaweedfs-telemetry-s3.monitoring.svc.cluster.local:8333
 
 # ── Per-consumer credentials ──────────────────────────────────────────────────
 # Consumer roles define the passwords in their own defaults.
@@ -39,6 +39,13 @@ object_store_tempo_secret_key: ""
 object_store_tempo_buckets:
   - tempo-traces
 
+# Langfuse (trace/media blobs). Registered even when Langfuse is disabled, so
+# enabling it later needs no platform re-install.
+object_store_langfuse_access_key: "langfuse"
+object_store_langfuse_secret_key: ""
+object_store_langfuse_buckets:
+  - langfuse
+
 # =============================================================================
 # Consumer registry — read by the active backend to create users + buckets.
 # Add a new consumer by appending an entry here. No changes to the backend
@@ -54,3 +61,8 @@ object_store_consumers:
     access_key: "{{ object_store_tempo_access_key }}"
     secret_key: "{{ object_store_tempo_secret_key }}"
     buckets: "{{ object_store_tempo_buckets }}"
+
+  - name: langfuse
+    access_key: "{{ object_store_langfuse_access_key }}"
+    secret_key: "{{ object_store_langfuse_secret_key }}"
+    buckets: "{{ object_store_langfuse_buckets }}"

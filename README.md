@@ -32,7 +32,7 @@ The stack installs in four ordered layers, in the order they are deployed:
 | # | Layer | Components | Source | Documentation |
 | --- | --- | --- | --- | --- |
 | 1 | **Infrastructure** | Kubernetes (via Kubespray) · Storage (local-path · NFS · Ceph · NetApp ONTAP) · Intel® Xeon® | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
-| 2 | **Platform** | Istio ambient mesh, Envoy Gateway, PostgreSQL, Keycloak, MinIO, observability | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
+| 2 | **Platform** | Istio ambient mesh, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
 | 3 | **Inference** | Envoy AI Gateway, KServe, vLLM / OpenVINO™ Model Server — exposes the model endpoint on top of which services like RAG and agents can be built | [enterprise-inference](https://github.com/intel/enterprise-inference) | [Deploy a Model](docs/deploy/deploy_models.md) |
 | 4 | **Intel® AI for Enterprise RAG** *(opt-in)* | Vector database, document ingestion (EDP), RAG pipeline orchestration (GMC), MCP gateway, chat history, web UI — requires `init erag` and `install erag` | [enterprise-rag](https://github.com/intel/enterprise-rag) | [Getting Started with RAG](docs/quickstart/getting_started_rag.md) |
 

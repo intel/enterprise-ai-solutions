@@ -43,15 +43,18 @@ observability_grafana_hostname: "grafana.{{ base_domain_name | default('solution
 observability_prometheus_retention: "30d"
 observability_prometheus_storage_size: "50Gi"
 
-# ── Object store credentials (set at runtime from minio-credentials Secret) ──
-# minio_namespace is a cross-role var defined in global_config.yaml.
-# Fallback here so the role doesn't fail if global_config is missing it.
-minio_namespace: "minio"
+# ── Object store credentials (set at runtime from the backend's Secret) ──────
+# The backend role stores the loki/tempo keys in <backend>-credentials in its
+# namespace. seaweedfs_namespace / seaweedfs_release_name are cross-role vars;
+# fallbacks here so the role doesn't fail if global_config is missing them.
+seaweedfs_namespace: "monitoring"
+seaweedfs_release_name: "seaweedfs-telemetry"
 object_store_loki_secret_key: ""
 object_store_tempo_secret_key: ""
+_obs_object_store_backend: "{{ object_store_backend | default('seaweedfs') }}"
 
 # ── Loki ─────────────────────────────────────────────────────────────────────
-# WAL + index cache PVC (chunks stored in MinIO)
+# WAL + index cache PVC (chunks stored in the object store)
 observability_loki_storage_size: "5Gi"
 observability_loki_retention_hours: 720    # 30 days
 # Memcached caches — disabled by default for SingleBinary mode.

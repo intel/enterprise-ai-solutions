@@ -75,7 +75,7 @@ The installer deploys in layers, each building on the previous:
 | Layer | Components | Purpose |
 |-------|-----------|---------|
 | **infrastructure** | Kubernetes (Kubespray), storage (local-path / NFS / Ceph) | Cluster foundation |
-| **platform** | cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, object store (MinIO), Observability | Shared services |
+| **platform** | cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, object store (SeaweedFS), Observability | Shared services |
 | **inference** | KServe, Envoy AI Gateway, LLM services, NRI CPU balloons | Model serving |
 | **erag** | models, APISIX, vector DBs, NATS, fingerprint, HPA, pipelines, EDP, chat history, UI | RAG application |
 

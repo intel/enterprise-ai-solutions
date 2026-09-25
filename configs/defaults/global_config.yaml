@@ -98,9 +98,11 @@ kubernetes_cpu_policy: "nri-balloons"
 kubernetes_accelerator: "cpu"
 
 # --- Object Store ---
-# Backend for Loki, Tempo, Langfuse blob storage.
-object_store_backend: "minio"
-minio_storage_size: "10Gi"
+# Backend for Loki, Tempo, Langfuse blob storage. Only "seaweedfs" is
+# implemented; it deploys its own instance in the monitoring namespace,
+# separate from erag's EDP one.
+object_store_backend: "seaweedfs"
+# seaweedfs_volume_storage_size: "10Gi"
 
 # --- Keycloak (only used when auth_provider=keycloak) ---
 # keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted

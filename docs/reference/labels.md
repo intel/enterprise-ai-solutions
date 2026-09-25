@@ -27,7 +27,6 @@ Pod Security Admission (PSA) and Istio ambient labels applied to every namespace
 | `postgresql` | `restricted` | `restricted` | `restricted` | `ambient` | `postgresql` |
 | `keycloak` | `baseline` | `restricted` | `restricted` | `ambient` | `keycloak` |
 | `monitoring` | `privileged` | `privileged` | `privileged` | `ambient` | `observability` |
-| `minio` | `restricted` | `restricted` | `restricted` | `ambient` | `minio` |
 | `csi-driver-nfs` | `privileged` | `privileged` | `privileged` | — | `nfs_storage` ² |
 
 ² Only created when `storage_backend: nfs`.

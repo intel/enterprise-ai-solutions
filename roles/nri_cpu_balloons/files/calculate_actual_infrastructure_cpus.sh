@@ -23,7 +23,6 @@ INFRA_NAMESPACES=(
     "envoy-gateway-system"
     "keycloak"
     "kserve"
-    "minio"
     "monitoring"      # Observability (optional)
 )
 

@@ -8,7 +8,7 @@ Intel® AI for Enterprise Solutions is a modular, extensible deployment framewor
 
 This repository provides:
 - **Infrastructure layer** - Kubernetes (via Kubespray), storage (local-path, NFS, Ceph or NetApp ONTAP via Trident)
-- **Platform layer** — Cert-manager, Istio (ambient), MetalLB, Envoy Gateway, PostgreSQL, Keycloak, Object Store (Minio), Observability
+- **Platform layer** — Cert-manager, Istio (ambient), MetalLB, Envoy Gateway, PostgreSQL, Keycloak, Object Store (SeaweedFS), Observability
 - **Multi-environment support** — Isolated configs under `env/<name>/`
 - **Cross-repo orchestration** — Auto-discovers and integrates external solution repos
 
@@ -36,7 +36,7 @@ infrastructure  →  platform  →  inference  →  erag (opt-in)
                   postgresql      keycloak_cfg   app_apisix
                   keycloak*       llm_services   app_chat_history
                   object_store    nri_cpu_balloons  app_nats
-                  minio                          app_fingerprint
+                  seaweedfs                      app_fingerprint
                   observability                  app_hpa
                   velero†                        app_pipeline
                                                  app_edp
@@ -99,7 +99,7 @@ playbooks/site.yaml (universal dispatcher)
 │   ├─ role: postgresql           → tasks/install.yaml (CNPG operator + clusters)
 │   ├─ role: keycloak             → tasks/install.yaml (skipped when auth_provider=litellm)
 │   ├─ role: object_store         → tasks/install.yaml (backend selection)
-│   ├─ role: minio                → tasks/install.yaml (S3-compatible object storage)
+│   ├─ role: seaweedfs            → tasks/install.yaml (S3-compatible object storage)
 │   └─ role: observability        → tasks/install.yaml (prometheus/grafana/loki/tempo)
 │
 ├─ [Inference Layer]
@@ -212,8 +212,8 @@ enterprise-ai-solutions/
     │       └── teardown.yaml
     ├── object_store/
     │   └── tasks/
-    │       └── install.yaml                    # Backend selector (minio/rustfs/seaweedfs)
-    ├── minio/
+    │       └── install.yaml                    # Object store interface (seaweedfs)
+    ├── seaweedfs/
     │   └── tasks/
     │       ├── install.yaml                    # S3-compatible object storage
     │       └── teardown.yaml
@@ -344,7 +344,7 @@ Components are defined in `components.yaml` files (this repo + ext repos). Each 
 | Layer | Components | Installation |
 |-------|-----------|--------------|
 | infrastructure | kubernetes, storage | Auto-pulled by `install inference` or `install erag` |
-| platform | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak*, object_store, minio, observability | Auto-pulled by `install inference` or `install erag` |
+| platform | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak*, object_store, seaweedfs, observability | Auto-pulled by `install inference` or `install erag` |
 | inference | keycloak_config*, envoy_ai_gateway, kserve, litellm**, langfuse**, llm_services, nri_cpu_balloons*** | `install inference` (explicitly named, or auto-pulled by `install erag`) |
 | erag | app_inference_models, app_pre_install, app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats, app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher, app_post_install | `install erag` (opt-in, requires `init erag` first) |
 
@@ -566,8 +566,8 @@ All roles follow the same pattern: `defaults/main.yaml` for config, `tasks/main.
 | `envoy_gateway` | Helm install from OCI registry, waits for deployment rollout, TLS config, SecurityPolicy for auth. |
 | `postgresql` | CNPG operator + PostgreSQL clusters for Keycloak, LiteLLM, Langfuse. |
 | `keycloak` | Keycloak operator + instance. Auto-disabled when `auth_provider=litellm`. |
-| `object_store` | Selects and configures the object store backend (minio/rustfs/seaweedfs). |
-| `minio` | S3-compatible object storage for Loki, Tempo, Langfuse blob storage. |
+| `object_store` | Selects and configures the object store backend (seaweedfs). |
+| `seaweedfs` | S3-compatible object storage for Loki, Tempo, Langfuse blob storage. |
 | `observability` | Prometheus + Grafana + Loki + Tempo stack. |
 | `nri_cpu_balloons` | NRI CPU-balloons plugin. Generates per-node `BalloonsPolicy` CRs based on NUMA topology. Enabled only when `kubernetes_cpu_policy=nri-balloons`. |
 

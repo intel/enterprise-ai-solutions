@@ -200,26 +200,27 @@
 - name: "observability | Bootstrap credentials"
   ansible.builtin.include_tasks: credentials.yaml
 
-# ── Also load object_store credentials from minio Secret ─────────────────────
-# minio role runs before observability and stores loki/tempo keys there.
+# ── Also load object_store credentials from the backend's Secret ─────────────
+# The backend role (seaweedfs) runs before observability and stores the
+# loki/tempo keys there.
 
-- name: "observability | Load object_store credentials from minio Secret"
+- name: "observability | Load object_store credentials from {{ _obs_object_store_backend }} Secret"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
-    name: minio-credentials
-    namespace: "{{ minio_namespace }}"
-  register: _obs_minio_secret
+    name: "{{ _obs_object_store_backend }}-credentials"
+    namespace: "{{ seaweedfs_namespace }}"
+  register: _obs_object_store_secret
   failed_when: false
 
-- name: "observability | Set object_store credentials from minio Secret"
+- name: "observability | Set object_store credentials from {{ _obs_object_store_backend }} Secret"
   ansible.builtin.set_fact:
-    object_store_endpoint: "{{ _obs_minio_secret.resources[0].data.endpoint | b64decode }}"
-    object_store_loki_access_key: "{{ _obs_minio_secret.resources[0].data.lokiAccessKey | b64decode }}"
-    object_store_loki_secret_key: "{{ _obs_minio_secret.resources[0].data.lokiSecretKey | b64decode }}"
-    object_store_tempo_access_key: "{{ _obs_minio_secret.resources[0].data.tempoAccessKey | b64decode }}"
-    object_store_tempo_secret_key: "{{ _obs_minio_secret.resources[0].data.tempoSecretKey | b64decode }}"
-  when: (_obs_minio_secret.resources | default([])) | length > 0
+    object_store_endpoint: "{{ _obs_object_store_secret.resources[0].data.endpoint | b64decode }}"
+    object_store_loki_access_key: "{{ _obs_object_store_secret.resources[0].data.lokiAccessKey | b64decode }}"
+    object_store_loki_secret_key: "{{ _obs_object_store_secret.resources[0].data.lokiSecretKey | b64decode }}"
+    object_store_tempo_access_key: "{{ _obs_object_store_secret.resources[0].data.tempoAccessKey | b64decode }}"
+    object_store_tempo_secret_key: "{{ _obs_object_store_secret.resources[0].data.tempoSecretKey | b64decode }}"
+  when: (_obs_object_store_secret.resources | default([])) | length > 0
 
 # ── Helm repos ───────────────────────────────────────────────────────────────
 
@@ -461,7 +462,7 @@
             replicas: 1
             affinity: "{{ _platform_affinity | default({}) }}"
             persistence:
-              # WAL and index cache only — chunks go to MinIO
+              # WAL and index cache only — chunks go to the object store
               enabled: true
               size: "{{ observability_loki_storage_size }}"
           # Disable gateway — nginx crashes when kube-dns is not present (cluster uses coredns).
@@ -510,7 +511,7 @@
     msg: "Loki already deployed in {{ observability_namespace }} — skipping."
   when: _obs_loki_release.status is defined and _obs_loki_release.status is not none
 
-# ── PrometheusRule: Loki + MinIO PVC usage alerts ─────────────────────────────
+# ── PrometheusRule: Loki + object store PVC usage alerts ──────────────────────
 
 - name: "observability | Apply Loki PVC usage PrometheusRule"
   kubernetes.core.k8s:
@@ -794,34 +795,6 @@
         endpoints:
           - port: metrics
             path: /metrics
-            interval: 30s
-
-# MinIO ServiceMonitor — created here (after Prometheus Operator CRDs are installed)
-# because minio role runs before observability and disables the built-in serviceMonitor.
-- name: "observability | Create MinIO ServiceMonitor"
-  when: object_store_backend | default('minio') == 'minio'
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
-      metadata:
-        name: minio
-        namespace: "{{ observability_namespace }}"
-        labels:
-          app: minio
-      spec:
-        selector:
-          matchLabels:
-            app: minio
-            monitoring: "true"
-            release: minio
-        namespaceSelector:
-          matchNames:
-            - "{{ minio_namespace | default('minio') }}"
-        endpoints:
-          - port: http
-            path: /minio/v2/metrics/cluster
             interval: 30s
 
 - name: "observability | Install complete"

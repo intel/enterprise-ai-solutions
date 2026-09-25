@@ -12,7 +12,7 @@ The installer sets up these layers automatically, in dependency order:
 
 ```
 1. Infrastructure                — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
-2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, MinIO, Observability
+2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability
 3. Inference                     — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
 4. Intel AI for Enterprise RAG   — opt-in RAG layer (vector DB, ingestion, chat, UI) — requires init erag + install erag
 ```

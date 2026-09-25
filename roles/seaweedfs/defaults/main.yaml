@@ -1,0 +1,51 @@
+---
+# =============================================================================
+# SeaweedFS Role Defaults
+# =============================================================================
+# Deploys SeaweedFS as the S3-compatible object store for platform consumers
+# (Loki, Tempo, …). Ported from the erag app_edp SeaweedFS install: same
+# chart and version, a single replica of every component.
+#
+# This is a separate instance from erag's EDP SeaweedFS (release/namespace
+# "seaweedfs"). The release name must differ from erag's: the chart creates
+# cluster-scoped RBAC named after the release.
+#
+# It runs in the observability namespace next to Loki/Tempo. That namespace
+# is owned by the observability role (PSS privileged), so this role then
+# leaves its labels alone and removes only its own resources on teardown.
+#
+# This role sets the provider-agnostic object_store_* variables on completion
+# so that consumers never reference seaweedfs_* directly.
+# =============================================================================
+
+seaweedfs_namespace: "monitoring"
+seaweedfs_release_name: "seaweedfs-telemetry"
+
+# ── Helm repo ─────────────────────────────────────────────────────────────────
+seaweedfs_helm_repo: "https://seaweedfs.github.io/seaweedfs/helm"
+
+# ── Chart version ─────────────────────────────────────────────────────────────
+# Keep in sync with seaweedfs.version in ext/enterprise.ai-erag
+# deployment/components/edp/values.yaml.
+seaweedfs_chart_version: "4.37.0"
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+# StatefulSet volumeClaimTemplates are immutable: changing a size after the
+# first install needs the StatefulSet recreated (PVCs are kept).
+seaweedfs_master_storage_size: "1Gi"
+seaweedfs_master_volume_size_limit_mb: 1024
+seaweedfs_filer_storage_size: "5Gi"
+seaweedfs_volume_storage_size: "10Gi"
+
+# ── Service ports ─────────────────────────────────────────────────────────────
+seaweedfs_s3_port: 8333
+
+# ── S3 identities Secret ──────────────────────────────────────────────────────
+# Mounted by the S3 gateway as /etc/sw/seaweedfs_s3_config.
+seaweedfs_s3_config_secret: "seaweedfs-s3-secret"
+
+# ── Namespace ownership (private) ─────────────────────────────────────────────
+_seaweedfs_shared_namespace: "{{ seaweedfs_namespace == (observability_namespace | default('monitoring')) }}"
+
+# ── Internal service URL (private — do not reference outside this role) ───────
+_seaweedfs_endpoint: "http://{{ seaweedfs_release_name }}-s3.{{ seaweedfs_namespace }}.svc.cluster.local:{{ seaweedfs_s3_port }}"
