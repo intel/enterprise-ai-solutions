@@ -27,6 +27,19 @@
         state: absent
       failed_when: false
 
+    - name: "envoy_gateway | Delete LiteLLM extAuth shim"
+      kubernetes.core.k8s:
+        api_version: "{{ item.api }}"
+        kind: "{{ item.kind }}"
+        name: litellm-authz
+        namespace: "{{ gateway_namespace }}"
+        state: absent
+      loop:
+        - { api: apps/v1, kind: Deployment }
+        - { api: v1, kind: Service }
+        - { api: v1, kind: ConfigMap }
+      failed_when: false
+
     - name: "envoy_gateway | Delete S3 listener ClientTrafficPolicy"
       kubernetes.core.k8s:
         api_version: gateway.envoyproxy.io/v1alpha1

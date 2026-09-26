@@ -19,6 +19,19 @@ gateway_request_timeout: "600s"
 # Authentication
 auth_provider: "none"                    # none | keycloak (JWT) | litellm (virtual key)
 
+# ── LiteLLM extAuth shim (auth_provider: litellm) ────────────────────────────
+# LiteLLM virtual keys are opaque tokens, so only LiteLLM can validate them, and
+# it exposes no endpoint usable as an Envoy ext_authz target: routes are exact
+# match (any appended path 404s) and the sole validator, POST /key/health, is
+# one fixed method. This tiny service bridges the gap — it answers any ext_authz
+# probe by relaying the caller's Authorization to /key/health and returns 200
+# only on 200. It fails closed: missing token or any LiteLLM error → deny.
+gateway_litellm_authz_image: "python:3.12-slim"
+gateway_litellm_service: "litellm"
+gateway_litellm_namespace: "litellm"
+gateway_litellm_port: 4000
+gateway_litellm_authz_timeout: "8"       # seconds to wait on /key/health
+
 # ── ONTAP S3 API listener (optional) ─────────────────────────────────────────
 # S3 SigV4 signs the request path verbatim. The shared HTTPS listeners run with
 # Envoy's default path normalization (merge_slashes and

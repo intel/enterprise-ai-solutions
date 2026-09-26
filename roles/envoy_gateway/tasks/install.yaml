@@ -421,8 +421,22 @@
     definition: "{{ lookup('ansible.builtin.template', 'backend-traffic-policy.yaml.j2') | from_yaml }}"
   when: gateway_create
 
+# ── LiteLLM extAuth shim ──────────────────────────────────────────────────────
+# Deployed before the SecurityPolicy so its backendRef resolves. It fails closed,
+# so requests are denied until LiteLLM (inference layer) is up — as intended.
+
+- name: "envoy_gateway | Deploy LiteLLM extAuth shim"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'litellm-authz.yaml.j2') | from_yaml_all | list }}"
+  when: auth_provider == 'litellm' and gateway_create
+
 # ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
 
+# The template nulls the inactive auth stanza (jwt vs extAuth) so a merge-patch
+# on an auth_provider switch clears the old mode's block. A leftover jwt stanza
+# strips Authorization before ext_authz, which makes the litellm shim deny every
+# request — so the switch must prune it, not just add the new stanza.
 - name: "envoy_gateway | Apply SecurityPolicy ({{ auth_provider }})"
   kubernetes.core.k8s:
     state: present

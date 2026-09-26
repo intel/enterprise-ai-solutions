@@ -10,6 +10,8 @@ spec:
       kind: Gateway
       name: {{ gateway_name }}
 {% if auth_provider == 'keycloak' %}
+  # extAuth explicitly nulled so a switch from litellm prunes the old stanza.
+  extAuth: null
   jwt:
     providers:
       - name: keycloak
@@ -19,13 +21,15 @@ spec:
         remoteJWKS:
           uri: "http://keycloak-service.{{ keycloak_namespace | default('keycloak') }}.svc.cluster.local:8080/realms/{{ keycloak_realm }}/protocol/openid-connect/certs"
 {% elif auth_provider == 'litellm' %}
+  # jwt explicitly nulled so a switch from keycloak prunes the old stanza; a
+  # leftover jwt filter strips Authorization before the extAuth shim sees it.
+  jwt: null
   extAuth:
     http:
+      # litellm-authz relays the caller's Authorization to LiteLLM /key/health
+      # and answers any path/method — LiteLLM has no direct ext_authz endpoint.
       backendRef:
-        name: litellm
-        namespace: litellm
-        port: 4000
-      headersToBackend:
-        - Authorization
-      path: /key/verify
+        name: litellm-authz
+        namespace: {{ gateway_namespace }}
+        port: 8080
 {% endif %}
