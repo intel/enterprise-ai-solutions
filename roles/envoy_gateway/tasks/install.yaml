@@ -289,9 +289,9 @@
 
 # The gateway-level JWT SecurityPolicy targets the whole Gateway, so without an
 # override the redirect route answers 401 before it can 301. Exempt it so a
-# plaintext client is bounced to HTTPS instead of being rejected. Only needed
-# when an auth provider is attached; with auth_provider: none there is no
-# gateway policy to override.
+# plaintext client is bounced to HTTPS instead of being rejected. Only needed in
+# keycloak mode: that is the only mode that attaches a gateway-wide policy. In
+# litellm/none mode there is no gateway policy to override.
 - name: "envoy_gateway | Exempt the HTTP→HTTPS redirect route from gateway auth"
   kubernetes.core.k8s:
     state: present
@@ -306,7 +306,7 @@
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             name: http-to-https-redirect
-  when: gateway_create and auth_provider in ['keycloak', 'litellm']
+  when: gateway_create and auth_provider == 'keycloak'
 
 # ── Protected hostname ownership (cross-namespace route takeover) ─────────────
 # Reserve each platform hostname to its owning namespace so a route in another
@@ -422,18 +422,40 @@
   when: gateway_create
 
 # ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
+# Only keycloak attaches a gateway-wide auth policy. In litellm mode the gateway
+# is TLS + routing only: every published route self-authenticates — LiteLLM
+# (litellm.<domain>) validates its virtual keys and the observability UIs
+# (langfuse, grafana) own their logins — so no route is left unauthenticated and
+# there is nothing for a gateway policy to guard. The inference layer publishes
+# the direct-to-ai-gateway route (inference.<domain>) in keycloak mode only.
 
-- name: "envoy_gateway | Apply SecurityPolicy ({{ auth_provider }})"
+- name: "envoy_gateway | Apply gateway JWT SecurityPolicy (keycloak)"
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | list }}"
-  when: auth_provider in ['keycloak', 'litellm'] and gateway_create
+  when: auth_provider == 'keycloak' and gateway_create
 
-- name: "envoy_gateway | Apply no-auth SecurityPolicy overrides"
+- name: "envoy_gateway | Apply no-auth SecurityPolicy overrides (keycloak)"
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('ansible.builtin.template', 'security-policy-no-auth.yaml.j2') | from_yaml_all | list }}"
-  when: auth_provider in ['keycloak', 'litellm'] and gateway_no_auth_routes | length > 0 and gateway_create
+  when: auth_provider == 'keycloak' and gateway_no_auth_routes | length > 0 and gateway_create
+
+# Prune a gateway-wide auth policy left by a previous keycloak install when the
+# cluster is reconfigured to litellm or none. A stale jwt policy would enforce
+# JWT on every route and break LiteLLM's self-authenticating endpoint; the
+# merge-patch that reconciles the active mode never removes a whole resource.
+- name: "envoy_gateway | Remove gateway auth SecurityPolicy when not keycloak"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+  # The CRD is absent on a platform-only install that never attached auth, and
+  # the policy is absent on any install that was never in keycloak mode.
+  failed_when: false
+  when: gateway_create and auth_provider != 'keycloak'
 
 # ServiceMonitors require Prometheus Operator CRDs which are installed by the
 # observability role (runs after envoy_gateway). Skip silently if not yet present.
