@@ -1,0 +1,198 @@
+---
+# =============================================================================
+# SeaweedFS — Install
+# Deploys SeaweedFS and wires up the object_store_* interface vars so that
+# consumer roles (Loki, Tempo, …) never reference seaweedfs_* directly.
+#
+# Values mirror erag's app_edp seaweedfs-values.yaml.j2 minus the EDP-only
+# parts (filer webhook, admin UI). This instance is independent of erag's.
+# =============================================================================
+
+# ── Load object_store interface defaults ─────────────────────────────────────
+# include_role only auto-loads the included role's own defaults. Explicitly
+# load object_store defaults so object_store_consumers and object_store_*
+# vars are available to this task file.
+
+- name: "seaweedfs | Load object_store interface vars"
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../object_store/defaults/main.yaml"
+
+# ── Pre-flight ────────────────────────────────────────────────────────────────
+
+# Runs before observability on a fresh install; observability labels it.
+- name: "seaweedfs | Create namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ seaweedfs_namespace }}"
+
+# In the observability namespace, observability sets the labels.
+- name: "seaweedfs | Label namespace — Istio"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ seaweedfs_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when:
+    - istio_enabled | default(false) | bool
+    - seaweedfs_namespace != (observability_namespace | default('monitoring'))
+
+- name: "seaweedfs | Bootstrap credentials"
+  ansible.builtin.include_tasks: credentials.yaml
+
+# =============================================================================
+# S3 identities — translate object_store_consumers into SeaweedFS identities
+# scoped to each consumer's buckets.
+# =============================================================================
+
+- name: "seaweedfs | Build S3 config"
+  ansible.builtin.set_fact:
+    _seaweedfs_s3_config: >-
+      {%- set result = [] -%}
+      {%- for c in object_store_consumers -%}
+        {%- set actions = [] -%}
+        {%- for b in c.buckets -%}
+          {%- for a in ['Read', 'Write', 'List', 'Tagging'] -%}
+            {%- set _ = actions.append(a ~ ':' ~ b) -%}
+          {%- endfor -%}
+        {%- endfor -%}
+        {%- set _ = result.append({
+          'name': c.name,
+          'credentials': [{'accessKey': c.access_key, 'secretKey': c.secret_key}],
+          'actions': actions
+        }) -%}
+      {%- endfor -%}
+      {{ {'identities': result} }}
+
+- name: "seaweedfs | Store S3 config Secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ seaweedfs_s3_config_secret }}"
+        namespace: "{{ seaweedfs_namespace }}"
+      type: Opaque
+      stringData:
+        seaweedfs_s3_config: "{{ _seaweedfs_s3_config | to_json }}"
+
+# ── Helm repo ─────────────────────────────────────────────────────────────────
+
+- name: "seaweedfs | Add SeaweedFS Helm repo"
+  kubernetes.core.helm_repository:
+    name: seaweedfs
+    repo_url: "{{ seaweedfs_helm_repo }}"
+  register: helm_repo_add_result
+  until: helm_repo_add_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
+
+# =============================================================================
+# Deploy SeaweedFS
+# =============================================================================
+
+- name: "seaweedfs | Deploy SeaweedFS"
+  vars:
+    _pod_security_context:
+      enabled: true
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    _container_security_context:
+      enabled: true
+      runAsNonRoot: true
+      runAsUser: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      seccompProfile:
+        type: RuntimeDefault
+  kubernetes.core.helm:
+    name: "{{ seaweedfs_release_name }}"
+    chart_ref: seaweedfs/seaweedfs
+    release_namespace: "{{ seaweedfs_namespace }}"
+    create_namespace: false
+    chart_version: "{{ seaweedfs_chart_version }}"
+    wait: "{{ helm_wait }}"
+    timeout: "{{ helm_timeout }}"
+    values:
+      master:
+        data:
+          type: persistentVolumeClaim
+          size: "{{ seaweedfs_master_storage_size }}"
+        volumeSizeLimitMB: "{{ seaweedfs_master_volume_size_limit_mb }}"
+        logs:
+          type: emptyDir
+        podSecurityContext: "{{ _pod_security_context }}"
+        containerSecurityContext: "{{ _container_security_context }}"
+      volume:
+        dataDirs:
+          - name: data
+            type: persistentVolumeClaim
+            size: "{{ seaweedfs_volume_storage_size }}"
+            maxVolumes: 0
+        podSecurityContext: "{{ _pod_security_context }}"
+        containerSecurityContext: "{{ _container_security_context }}"
+      filer:
+        data:
+          type: persistentVolumeClaim
+          size: "{{ seaweedfs_filer_storage_size }}"
+        logs:
+          type: emptyDir
+        podSecurityContext: "{{ _pod_security_context }}"
+        containerSecurityContext: "{{ _container_security_context }}"
+      s3:
+        enabled: true
+        port: "{{ seaweedfs_s3_port }}"
+        enableAuth: true
+        createSecret: false
+        existingConfigSecret: "{{ seaweedfs_s3_config_secret }}"
+        # Created by the chart's post-install/post-upgrade hook.
+        createBuckets: "{{ object_store_consumers | map(attribute='buckets') | flatten | map('community.general.dict_kv', 'name') | list }}"
+        extraArgs:
+          - "-tlsVerifyClientCert=false"
+        # Any type other than hostPath/emptyDir logs to stderr with no
+        # volume; the chart's hostPath default is rejected by PSS restricted.
+        logs:
+          type: stderr
+        # The gateway reads its identities only at startup — roll it when
+        # they change.
+        podAnnotations:
+          checksum/s3-config: "{{ _seaweedfs_s3_config | to_json | hash('sha256') }}"
+        podSecurityContext: "{{ _pod_security_context }}"
+        containerSecurityContext: "{{ _container_security_context }}"
+        ingress:
+          enabled: false
+  register: helm_install_result
+  until: helm_install_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
+
+# =============================================================================
+# Set provider-agnostic object_store_* facts.
+# Everything below this point in the play uses these vars — seaweedfs_* is done.
+# =============================================================================
+
+- name: "seaweedfs | Set object_store_* facts"
+  ansible.builtin.set_fact:
+    object_store_endpoint: "{{ _seaweedfs_endpoint }}"
+    object_store_namespace: "{{ seaweedfs_namespace }}"
+
+- name: "seaweedfs | Install complete"
+  ansible.builtin.debug:
+    msg: >-
+      SeaweedFS deployed in namespace '{{ seaweedfs_namespace }}'.
+      object_store_endpoint: {{ object_store_endpoint }}
+      Consumers: {{ object_store_consumers | map(attribute='name') | join(', ') }}
+      Buckets: {{ object_store_consumers | map(attribute='buckets') | flatten | join(', ') }}

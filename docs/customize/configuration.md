@@ -154,8 +154,8 @@ kubernetes_kube_proxy_mode: "nftables"    # "nftables" | "iptables" | "ipvs"
 node_topology_enabled: true               # Soft affinity for platform vs inference pods
 
 # --- Object Store (for Loki, Tempo, Langfuse) ---
-object_store_backend: "minio"             # "minio" | "rustfs" | "seaweedfs" | "external"
-minio_storage_size: "10Gi"
+object_store_backend: "seaweedfs"         # "seaweedfs" | "rustfs" | "external"
+seaweedfs_volume_storage_size: "10Gi"
 
 # --- BYO Cluster (skip Kubernetes provisioning) ---
 # existing_kubernetes: "/path/to/kubeconfig"
@@ -335,11 +335,13 @@ postgresql_enabled: false       # using an external PostgreSQL
 
 ## Object store
 
-Backend for Loki log storage, Tempo traces, and Langfuse blobs.
+Backend for Loki log storage, Tempo traces, and Langfuse blobs. The platform
+deploys its own SeaweedFS (release `telemetry` in the `monitoring`
+namespace), separate from the SeaweedFS that erag's EDP installs.
 
 ```yaml
-object_store_backend: "minio"    # minio (default) | rustfs | seaweedfs | external
-minio_storage_size: "10Gi"
+object_store_backend: "seaweedfs"          # "seaweedfs" | "rustfs" | "external"
+seaweedfs_volume_storage_size: "10Gi"      # data PVC; fixed after first install
 ```
 
 ---

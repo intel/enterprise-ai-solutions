@@ -99,8 +99,9 @@ kubernetes_accelerator: "cpu"
 
 # --- Object Store ---
 # Backend for Loki, Tempo, Langfuse blob storage.
-object_store_backend: "minio"
-minio_storage_size: "10Gi"
+# Options: seaweedfs (default) | rustfs | external
+object_store_backend: "seaweedfs"
+seaweedfs_volume_storage_size: "10Gi"
 
 # --- Keycloak (only used when auth_provider=keycloak) ---
 # keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted

@@ -82,7 +82,7 @@ Deploy components. Dependencies are resolved automatically.
 | Target | What it covers |
 |---|---|
 | `infrastructure` | kubernetes, storage |
-| `platform` | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak, object_store, minio, observability |
+| `platform` | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak, object_store, seaweedfs, observability |
 | `inference` | keycloak_config, envoy_ai_gateway, kserve, litellm, langfuse, llm_services, nri_cpu_balloons |
 | `erag` | app_inference_models, app_pre_install, app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats, app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher, app_post_install (opt-in, from ext repo) |
 | `<component>` | Any individual component name (e.g. `kserve`, `grafana`, `metallb`) |

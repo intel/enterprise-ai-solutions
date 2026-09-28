@@ -73,15 +73,15 @@ components:
     enabled: true
     depends_on: []
 
-  - name: minio
+  - name: seaweedfs
     layer: platform
-    enabled: "{{ (object_store_backend | default('minio')) == 'minio' }}"
+    enabled: "{{ (object_store_backend | default('seaweedfs')) == 'seaweedfs' }}"
     depends_on: [object_store]
 
   - name: observability
     layer: platform
     enabled: "{{ observability_enabled | default(true) | bool }}"
-    depends_on: [cert_manager, metallb, minio]
+    depends_on: [cert_manager, metallb, seaweedfs]
 
   - name: velero
     layer: platform
