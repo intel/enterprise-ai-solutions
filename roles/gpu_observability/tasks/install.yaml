@@ -1,0 +1,66 @@
+---
+# =============================================================================
+# GPU Observability — Install
+# =============================================================================
+# Deploys DCGM Grafana dashboard and GPU alert rules into the observability
+# namespace. Only for NVIDIA GPUs (Intel XPU uses different metrics).
+#
+# The DCGM ServiceMonitor is created by the GPU Operator Helm chart itself
+# (dcgmExporter.enabled=true), so we do not create one here. We only add:
+#   1. PrometheusRule with GPU health alerts
+#   2. Grafana dashboard ConfigMap
+# =============================================================================
+
+- name: "gpu_observability | Read GPU vendor from generated flags"
+  ansible.builtin.shell: |
+    grep '^rack_scale_gpu_vendor=' {{ env_dir }}/inventory/metadata/rack-scale-flags.env 2>/dev/null | cut -d= -f2
+  register: _gpu_vendor_from_file
+  changed_when: false
+  failed_when: false
+
+- name: "gpu_observability | Set GPU vendor fact"
+  ansible.builtin.set_fact:
+    _gpu_vendor: "{{ _gpu_vendor_from_file.stdout | default('') | trim }}"
+
+- name: "gpu_observability | Skip — no NVIDIA GPU detected"
+  ansible.builtin.meta: end_role
+  when: _gpu_vendor != 'nvidia'
+
+- name: "gpu_observability | NVIDIA alerts and dashboards"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    # ── GPU Alert Rules ──────────────────────────────────────────────────────
+
+    - name: "gpu_observability | Apply GPU alert rules"
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ role_path }}/files/gpu-alerts.yaml"
+      when: gpu_observability_alerts_enabled | bool
+
+    # ── Grafana Dashboard ────────────────────────────────────────────────────
+
+    - name: "gpu_observability | Create NVIDIA DCGM Grafana dashboard ConfigMap"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: grafana-dashboard-nvidia-dcgm
+            namespace: "{{ gpu_observability_namespace }}"
+            labels:
+              grafana_dashboard: "1"
+              app.kubernetes.io/name: gpu-observability
+              app.kubernetes.io/part-of: observability
+          data:
+            nvidia-dcgm.json: "{{ lookup('file', role_path + '/files/nvidia-dcgm.json') }}"
+      when: gpu_observability_grafana_dashboard_enabled | bool
+
+    - name: "gpu_observability | ━━━ DONE ━━━"
+      ansible.builtin.debug:
+        msg:
+          - "GPU observability deployed (NVIDIA)."
+          - "Alerts: {{ gpu_observability_alerts_enabled }}"
+          - "Dashboard: {{ gpu_observability_grafana_dashboard_enabled }}"
+          - "Namespace: {{ gpu_observability_namespace }}"

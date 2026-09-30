@@ -50,7 +50,7 @@ cd applications.ai.enterprise.ai-solutions
 
 # Create environment and enable rack-scale
 ./es_auto_installer.sh init inference --env rack
-vim env/rack/global_config.yaml           # set rack_scale_enabled: true, proxy if needed
+vim env/rack/global_config.yaml           # set rack_scale_enabled: true, metallb_ip_range, proxy
 
 # Write your hardware profile
 cp configs/defaults/rack-profile.yaml.example env/rack/rack-profile.yaml
@@ -67,6 +67,12 @@ vim env/rack/rack-profile.yaml            # edit for your hardware — see below
 > `rack-profile.yaml` replaces `nodes.yaml` for rack-scale. Leave `nodes.yaml`
 > empty (or don't create it) — the fabric_inventory role generates the Kubespray
 > inventory from your rack profile.
+
+> [!Important]
+> **Ceph storage:** `rook_ceph_devices` must still be set in `global_config.yaml`
+> even though storage nodes and devices are defined in `rack-profile.yaml`. The
+> Ceph network CIDRs are derived automatically from the profile, but the device
+> list is not yet. This duplication will be removed in a future release.
 
 ---
 
@@ -356,6 +362,7 @@ and continue.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `rack_scale_enabled is true but rack-profile.yaml not found` | Missing profile | Copy `configs/defaults/rack-profile.yaml.example` to `env/<env>/rack-profile.yaml` |
+| `rack_scale_enabled=true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to a management-subnet IP (e.g. `172.18.168.1/32`) |
 | Kubespray can't SSH to workers | Star hub not forwarding | Check hub: `sysctl net.ipv4.ip_forward` (must be 1), `iptables -S FORWARD` (must have ACCEPT rules) |
 | `star cable faults: both ends must share...` | /30 subnet mismatch | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
 | `duplicate fabric_ip` | Two nodes share an IP | Check `rack-profile.yaml` for collisions |
@@ -403,5 +410,6 @@ kubernetes → storage
 | Variable | Default | Location | Purpose |
 |----------|---------|----------|---------|
 | `rack_scale_enabled` | `false` | `global_config.yaml` | Master gate for all fabric components |
+| `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale.** Management-subnet IP for LoadBalancer VIP (e.g. `172.18.168.1/32`). Auto-detection picks fabric IPs which are unreachable from outside the rack. |
 | `storage_backend` | `local-path` | `global_config.yaml` | Set to `ceph` for fabric-attached storage |
 | `rack-profile.yaml` | (none) | `env/<env>/` | Hardware profile — see above |
