@@ -12,7 +12,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: gpu-alerts
-  namespace: observability
+  namespace: monitoring
   labels:
     release: observability
     app.kubernetes.io/name: gpu-alerts

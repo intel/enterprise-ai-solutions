@@ -6,7 +6,7 @@
 # Auto-enabled alongside gpu_operator when accelerator: is detected.
 # =============================================================================
 
-gpu_observability_namespace: "observability"
+gpu_observability_namespace: "monitoring"
 gpu_observability_grafana_dashboard_enabled: true
 gpu_observability_alerts_enabled: true
 

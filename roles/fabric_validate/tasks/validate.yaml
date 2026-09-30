@@ -253,7 +253,7 @@
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   delegate_to: localhost
   changed_when: true
-  loop: "{{ groups['k8s_cluster'] | default([]) }}"
+  loop: "{{ groups['k8s_cluster'] | default([]) | reject('equalto', 'localhost') | list }}"
   loop_control:
     label: "{{ item }}"
   when: >-
