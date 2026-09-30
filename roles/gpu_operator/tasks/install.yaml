@@ -1,0 +1,156 @@
+---
+# =============================================================================
+# GPU Operator — Install
+# =============================================================================
+# Vendor-switched: nvidia → GPU Operator Helm chart; intel → device plugin manifest.
+# Vendor detected automatically from rack-profile.yaml by the parser.
+# =============================================================================
+
+- name: "gpu_operator | Skip — no GPU vendor detected"
+  ansible.builtin.debug:
+    msg: "No accelerator: field in rack-profile.yaml — GPU operator not needed."
+  when: (rack_scale_gpu_vendor | default('')) | length == 0
+
+- name: "gpu_operator | End role (no GPU)"
+  ansible.builtin.meta: end_role
+  when: (rack_scale_gpu_vendor | default('')) | length == 0
+
+- name: "gpu_operator | Detected vendor: {{ rack_scale_gpu_vendor }}"
+  ansible.builtin.debug:
+    msg:
+      - "GPU vendor: {{ rack_scale_gpu_vendor }}"
+      - "GPU model: {{ rack_scale_gpu_model | default('unknown') }}"
+      - "GPU form: {{ rack_scale_gpu_form | default('unknown') }}"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NVIDIA GPU Operator
+# ═════════════════════════════════════════════════════════════════════════════
+
+- name: "gpu_operator | NVIDIA"
+  when: rack_scale_gpu_vendor == 'nvidia'
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "gpu_operator | nvidia | Add Helm repository"
+      ansible.builtin.command:
+        cmd: >-
+          helm repo add {{ gpu_operator_helm_repo_name }}
+          {{ gpu_operator_helm_repo }}
+      register: _gpu_helm_repo
+      changed_when: "'already exists' not in _gpu_helm_repo.stdout"
+
+    - name: "gpu_operator | nvidia | Update Helm repositories"
+      ansible.builtin.command: helm repo update
+      changed_when: false
+
+    - name: "gpu_operator | nvidia | Create namespace"
+      kubernetes.core.k8s:
+        name: "{{ gpu_operator_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: "gpu_operator | nvidia | Copy DCGM metrics CSV"
+      ansible.builtin.copy:
+        src: dcgm-metrics.csv
+        dest: /tmp/dcgm-metrics.csv
+        mode: "0644"
+
+    - name: "gpu_operator | nvidia | Create DCGM custom metrics ConfigMap"
+      ansible.builtin.shell:
+        cmd: |
+          kubectl create configmap dcgm-metrics-config \
+            --from-file=dcgm-metrics.csv=/tmp/dcgm-metrics.csv \
+            -n {{ gpu_operator_namespace }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+        executable: /bin/bash
+      changed_when: true
+
+    - name: "gpu_operator | nvidia | Deploy GPU Operator via Helm"
+      ansible.builtin.command:
+        cmd: >-
+          helm upgrade --install {{ gpu_operator_release_name }}
+          {{ gpu_operator_chart }}
+          --namespace {{ gpu_operator_namespace }}
+          --version {{ gpu_operator_version }}
+          --set driver.enabled={{ gpu_operator_driver_enabled | lower }}
+          --set toolkit.enabled={{ gpu_operator_toolkit_enabled | lower }}
+          --set devicePlugin.enabled={{ gpu_operator_device_plugin_enabled | lower }}
+          --set migManager.enabled={{ gpu_operator_mig_enabled | lower }}
+          --set nodeStatusExporter.enabled=true
+          --set dcgmExporter.enabled={{ gpu_operator_dcgm_exporter_enabled | lower }}
+          --set dcgmExporter.config.name=dcgm-metrics-config
+          --wait
+          --timeout {{ gpu_operator_wait_timeout }}
+      register: _gpu_helm_install
+      changed_when: "'has been upgraded' in _gpu_helm_install.stdout or 'STATUS: deployed' in _gpu_helm_install.stdout"
+
+    - name: "gpu_operator | nvidia | Wait for NFD worker DaemonSet"
+      ansible.builtin.command:
+        cmd: >-
+          kubectl rollout status
+          daemonset/gpu-operator-node-feature-discovery-worker
+          -n {{ gpu_operator_namespace }}
+          --timeout=300s
+      register: _gpu_nfd_rollout
+      failed_when: _gpu_nfd_rollout.rc != 0
+      ignore_errors: true
+
+    - name: "gpu_operator | nvidia | Verify GPU Operator pods"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ gpu_operator_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=gpu-operator"
+      register: _gpu_operator_pods
+
+    - name: "gpu_operator | nvidia | ━━━ DONE ━━━"
+      ansible.builtin.debug:
+        msg:
+          - "NVIDIA GPU Operator {{ gpu_operator_version }} deployed."
+          - "Namespace: {{ gpu_operator_namespace }}"
+          - "Pods: {{ _gpu_operator_pods.resources | map(attribute='metadata.name') | list }}"
+          - "DCGM exporter: {{ gpu_operator_dcgm_exporter_enabled }}"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Intel GPU Plugin
+# ═════════════════════════════════════════════════════════════════════════════
+
+- name: "gpu_operator | Intel"
+  when: rack_scale_gpu_vendor == 'intel'
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "gpu_operator | intel | Deploy Intel GPU Plugin DaemonSet"
+      ansible.builtin.command:
+        cmd: "kubectl apply -f {{ intel_gpu_plugin_manifest }}"
+      register: _intel_gpu_deploy
+      retries: 3
+      delay: 10
+      until: _intel_gpu_deploy.rc == 0
+      changed_when: >-
+        'configured' in _intel_gpu_deploy.stdout
+        or 'created' in _intel_gpu_deploy.stdout
+
+    - name: "gpu_operator | intel | Wait for DaemonSet rollout"
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          read -r ns name <<< "$(kubectl get daemonsets -A \
+            -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+            | grep -i intel-gpu-plugin | head -1)"
+          if [ -n "$ns" ] && [ -n "$name" ]; then
+            kubectl rollout status "daemonset/$name" -n "$ns" --timeout=180s
+          else
+            echo "intel-gpu-plugin DaemonSet not found yet; skipping rollout wait"
+          fi
+        executable: /bin/bash
+      register: _intel_gpu_rollout
+      changed_when: false
+      ignore_errors: true
+
+    - name: "gpu_operator | intel | ━━━ DONE ━━━"
+      ansible.builtin.debug:
+        msg:
+          - "Intel GPU Plugin deployed (ref: {{ intel_gpu_plugin_ref }})."
+          - "Verify: kubectl describe node <node> | grep gpu.intel.com"
