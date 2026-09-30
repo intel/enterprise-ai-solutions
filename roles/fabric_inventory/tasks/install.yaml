@@ -22,6 +22,20 @@
       env directory, or set rack_scale_enabled: false in global_config.yaml.
   when: not _rack_profile_stat.stat.exists
 
+- name: "fabric_inventory | Fail if metallb_ip_range not set"
+  ansible.builtin.fail:
+    msg: |-
+      rack_scale_enabled=true but metallb_ip_range is not set.
+
+      With rack-scale networking, node InternalIPs are on the fabric subnet
+      which is not reachable from outside the rack. MetalLB auto-detection
+      would pick a fabric IP as the VIP, making LoadBalancer services unreachable.
+
+      Set metallb_ip_range in global_config.yaml to a management-subnet IP:
+        metallb_ip_range: "172.18.168.1/32"
+        metallb_ip_range: "172.18.168.240-172.18.168.250"
+  when: metallb_ip_range | default('', true) | length == 0
+
 # ── Load rack-profile.yaml ───────────────────────────────────────────────────
 
 - name: "fabric_inventory | Load rack-profile.yaml"
