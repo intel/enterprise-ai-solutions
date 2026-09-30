@@ -259,6 +259,7 @@ Labels are applied **idempotently** — re-running installer won't duplicate or 
 | Enable/disable node topology and set related flags in `global_config.yaml` | [Configuration Reference](configuration.md) |
 | Pin model pods to specific CPUs/NUMA domains once they land on the right node | [NRI CPU Balloons](nri_cpu_balloons.md) |
 | Deploy across multiple nodes in the first place | [Multi-Node & BYO Cluster](../deploy/topologies.md) |
+| Add or remove nodes from an already-provisioned cluster | [Node Scaling](node_scaling.md) |
 | See where node-level placement fits in the overall design | [Architecture & Design Document](../reference/architecture.md) |
 
 ## External References
