@@ -1,0 +1,26 @@
+---
+# =============================================================================
+# GPU Operator Role Defaults
+# =============================================================================
+# Auto-enabled when rack-profile.yaml defines nodes with an accelerator: field.
+# Vendor is derived by the parser: rack_scale_gpu_vendor = nvidia | intel | amd
+# =============================================================================
+
+# --- NVIDIA GPU Operator ---
+gpu_operator_namespace: "gpu-operator"
+gpu_operator_version: "v25.3.0"
+gpu_operator_helm_repo: "https://helm.ngc.nvidia.com/nvidia"
+gpu_operator_helm_repo_name: "nvidia"
+gpu_operator_chart: "nvidia/gpu-operator"
+gpu_operator_release_name: "gpu-operator"
+gpu_operator_driver_enabled: true
+gpu_operator_toolkit_enabled: true
+gpu_operator_device_plugin_enabled: true
+gpu_operator_mig_enabled: false
+gpu_operator_dcgm_exporter_enabled: true
+gpu_operator_wait_timeout: "10m"
+
+# --- Intel GPU Plugin ---
+intel_gpu_plugin_ref: "main"
+intel_gpu_plugin_manifest: >-
+  https://raw.githubusercontent.com/intel/intel-device-plugins-for-kubernetes/{{ intel_gpu_plugin_ref }}/deployments/gpu_plugin/base/intel-gpu-plugin.yaml
