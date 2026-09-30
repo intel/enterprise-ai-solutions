@@ -1,0 +1,306 @@
+---
+# =============================================================================
+# fabric_inventory | install
+# =============================================================================
+# Reads rack-profile.yaml, validates, parses, and writes all fabric artifacts
+# to the env directory. The kubernetes role consumes the generated hosts.yaml
+# as a manual inventory (Mode 3).
+# =============================================================================
+
+# ── Pre-flight: rack-profile.yaml must exist ─────────────────────────────────
+
+- name: "fabric_inventory | Check rack-profile.yaml exists"
+  ansible.builtin.stat:
+    path: "{{ rack_profile_path }}"
+  register: _rack_profile_stat
+
+- name: "fabric_inventory | Fail if rack-profile.yaml missing"
+  ansible.builtin.fail:
+    msg: >-
+      rack_scale_enabled is true but rack-profile.yaml not found at
+      {{ rack_profile_path }}. Either place your rack-profile.yaml in the
+      env directory, or set rack_scale_enabled: false in global_config.yaml.
+  when: not _rack_profile_stat.stat.exists
+
+# ── Load rack-profile.yaml ───────────────────────────────────────────────────
+
+- name: "fabric_inventory | Load rack-profile.yaml"
+  ansible.builtin.include_vars:
+    file: "{{ rack_profile_path }}"
+    name: _rack_profile_raw
+
+# ── Validate ─────────────────────────────────────────────────────────────────
+
+- name: "fabric_inventory | Validate rack-profile.yaml"
+  ansible.builtin.set_fact:
+    _rack_validation: "{{ _rack_profile_raw | rack_profile_validate }}"
+
+- name: "fabric_inventory | Log validation warnings"
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item }}"
+  loop: "{{ _rack_validation.warnings }}"
+  when: _rack_validation.warnings | length > 0
+
+- name: "fabric_inventory | Fail on validation errors"
+  ansible.builtin.fail:
+    msg: >-
+      rack-profile.yaml validation failed ({{ _rack_validation.errors | length }} error(s)):
+      {% for e in _rack_validation.errors %}
+        • {{ e }}
+      {% endfor %}
+      No files were generated. Fix the above and re-run.
+  when: not _rack_validation.valid
+
+# ── Parse — generate all artifacts ───────────────────────────────────────────
+
+- name: "fabric_inventory | Parse rack-profile.yaml"
+  ansible.builtin.set_fact:
+    _rack_parsed: "{{ _rack_profile_raw | rack_profile_parse }}"
+
+- name: "fabric_inventory | Log parse warnings"
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item }}"
+  loop: "{{ _rack_parsed.warnings }}"
+  when: _rack_parsed.warnings | length > 0
+
+- name: "fabric_inventory | ━━━ Summary ━━━"
+  ansible.builtin.debug:
+    msg:
+      - "Site: {{ _rack_parsed.summary.site }}"
+      - "Topology: {{ _rack_parsed.summary.topology }}"
+      - "Calico: {{ _rack_parsed.summary.calico_mode }}"
+      - "Nodes: {{ _rack_parsed.summary.node_count }}"
+      - "GPU: {{ _rack_parsed.summary.gpu_vendor | default('none', true) }} {{ _rack_parsed.summary.gpu_model | default('') }} {{ _rack_parsed.summary.gpu_form | default('') }}"
+
+# ── Ensure output directories ────────────────────────────────────────────────
+
+- name: "fabric_inventory | Create output directories"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ env_dir }}/inventory"
+    - "{{ env_dir }}/inventory/metadata"
+    - "{{ env_dir }}/inventory/metadata/vars"
+    - "{{ rack_scale_netplan_dir }}"
+    - "{{ rack_scale_bgp_peers_dir }}"
+
+# ── Write core artifacts ─────────────────────────────────────────────────────
+
+- name: "fabric_inventory | Write hosts.yaml"
+  ansible.builtin.copy:
+    content: "{{ _rack_parsed.hosts_yaml }}"
+    dest: "{{ rack_scale_inventory_path }}"
+    mode: "0644"
+    backup: true
+
+- name: "fabric_inventory | Write k8s-net-calico.yml (metadata)"
+  ansible.builtin.copy:
+    content: "{{ _rack_parsed.calico_yml }}"
+    dest: "{{ rack_scale_calico_path }}"
+    mode: "0644"
+
+# Also write to kubespray's group_vars path so cluster.yml picks it up.
+# Kubespray loads group_vars from the inventory dir in alphabetical order;
+# k8s-net-calico.yml sorts after k8s-cluster.yml and wins.
+- name: "fabric_inventory | Ensure kubespray group_vars directory"
+  ansible.builtin.file:
+    path: "{{ env_dir }}/inventory/group_vars/k8s_cluster"
+    state: directory
+    mode: "0755"
+
+- name: "fabric_inventory | Write k8s-net-calico.yml (kubespray group_vars)"
+  ansible.builtin.copy:
+    content: "{{ _rack_parsed.calico_yml }}"
+    dest: "{{ env_dir }}/inventory/group_vars/k8s_cluster/k8s-net-calico.yml"
+    mode: "0644"
+
+- name: "fabric_inventory | Write k8s-net-fabric.yml"
+  ansible.builtin.copy:
+    content: "{{ _rack_parsed.fabric_yml }}"
+    dest: "{{ rack_scale_fabric_path }}"
+    mode: "0644"
+
+- name: "fabric_inventory | Write ceph-storage.yml"
+  ansible.builtin.copy:
+    content: "{{ _rack_parsed.ceph_yml }}"
+    dest: "{{ rack_scale_ceph_path }}"
+    mode: "0644"
+
+- name: "fabric_inventory | Write rack-scale-flags.env"
+  ansible.builtin.copy:
+    content: "{{ _rack_parsed.flags_env }}"
+    dest: "{{ rack_scale_flags_path }}"
+    mode: "0644"
+
+# ── Write per-node netplan files ─────────────────────────────────────────────
+
+- name: "fabric_inventory | Write netplan files"
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "{{ env_dir }}/inventory/{{ item.key }}"
+    mode: "0644"
+  loop: "{{ _rack_parsed.netplan_files | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# ── Write per-node BGP peer CRDs ────────────────────────────────────────────
+
+- name: "fabric_inventory | Write BGP peer CRDs"
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "{{ env_dir }}/inventory/{{ item.key }}"
+    mode: "0644"
+  loop: "{{ _rack_parsed.bgp_peer_files | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: _rack_parsed.bgp_peer_files | length > 0
+
+# ── Clean stale files from managed directories ───────────────────────────────
+# Files from nodes that have been removed from the rack-profile since the last
+# run. Only files NOT in the current output set are removed.
+
+- name: "fabric_inventory | Find existing netplan files"
+  ansible.builtin.find:
+    paths: "{{ rack_scale_netplan_dir }}"
+    patterns: "*.yaml"
+  register: _existing_netplan
+
+- name: "fabric_inventory | Build expected netplan basenames"
+  ansible.builtin.set_fact:
+    _expected_netplan: "{{ _rack_parsed.netplan_files.keys() | map('basename') | list }}"
+
+- name: "fabric_inventory | Remove stale netplan files"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ _existing_netplan.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: item.path | basename not in _expected_netplan
+
+- name: "fabric_inventory | Find existing BGP peer files"
+  ansible.builtin.find:
+    paths: "{{ rack_scale_bgp_peers_dir }}"
+    patterns: "*.yaml"
+  register: _existing_bgp_peers
+
+- name: "fabric_inventory | Build expected BGP peer basenames"
+  ansible.builtin.set_fact:
+    _expected_bgp_peers: "{{ _rack_parsed.bgp_peer_files.keys() | map('basename') | list }}"
+
+- name: "fabric_inventory | Remove stale BGP peer files"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ _existing_bgp_peers.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: item.path | basename not in _expected_bgp_peers
+
+# ── Register parsed nodes into the running inventory ────────────────────────
+# The UR playbook runs on localhost.  Downstream pre-K8s roles (fabric_netplan,
+# fabric_sysctl) need to delegate_to cluster nodes, but groups like
+# kube_control_plane don't exist until kubespray runs with the generated
+# hosts.yaml.  We bridge the gap by loading the generated inventory and
+# registering every host with add_host so Ansible groups are available
+# immediately for delegate_to in the same play.
+
+- name: "fabric_inventory | Load generated inventory for in-play registration"
+  ansible.builtin.include_vars:
+    file: "{{ rack_scale_inventory_path }}"
+    name: _generated_inv
+
+- name: "fabric_inventory | Register cluster nodes into running inventory"
+  ansible.builtin.add_host:
+    name: "{{ item.key }}"
+    groups: >-
+      {{ (_generated_inv.all.children | dict2items
+          | selectattr('value.hosts', 'defined')
+          | selectattr('value.hosts', 'contains', item.key)
+          | map(attribute='key') | list)
+         + ['all']
+         + (['k8s_cluster'] if (item.key in (_generated_inv.all.children.get('kube_control_plane', {}).get('hosts', {}).keys() | list
+                                             + _generated_inv.all.children.get('kube_node', {}).get('hosts', {}).keys() | list)) else []) }}
+    ansible_host: "{{ item.value.ansible_host | default(omit) }}"
+    ansible_connection: ssh
+    ansible_user: "{{ item.value.ansible_user | default(omit) }}"
+    ansible_ssh_private_key_file: "{{ item.value.ansible_ssh_private_key_file | default(omit) }}"
+    ansible_become: "{{ item.value.ansible_become | default(true) }}"
+    ip: "{{ item.value.ip | default(omit) }}"
+    access_ip: "{{ item.value.access_ip | default(omit) }}"
+    node_hostname: "{{ item.value.node_hostname | default(item.key) }}"
+    node_fabric_nics: "{{ item.value.node_fabric_nics | default(omit) }}"
+    node_family: "{{ item.value.node_family | default(omit) }}"
+    node_sku: "{{ item.value.node_sku | default(omit) }}"
+    node_accelerator: "{{ item.value.node_accelerator | default(omit) }}"
+    node_gpu_vendor: "{{ item.value.node_gpu_vendor | default(omit) }}"
+    node_gpu_model: "{{ item.value.node_gpu_model | default(omit) }}"
+    node_gpu_form: "{{ item.value.node_gpu_form | default(omit) }}"
+    node_gpu_count: "{{ item.value.node_gpu_count | default(omit) }}"
+    devices: "{{ item.value.devices | default(omit) }}"
+  loop: "{{ _generated_inv.all.hosts | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+
+- name: "fabric_inventory | Report registered groups"
+  ansible.builtin.debug:
+    msg:
+      - "kube_control_plane: {{ groups.get('kube_control_plane', []) | join(', ') }}"
+      - "kube_node: {{ groups.get('kube_node', []) | join(', ') }}"
+      - "k8s_cluster: {{ groups.get('k8s_cluster', []) | join(', ') }}"
+      - "etcd: {{ groups.get('etcd', []) | join(', ') }}"
+      - "ceph_storage_nodes: {{ groups.get('ceph_storage_nodes', []) | join(', ') }}"
+      - "ecmp_nodes: {{ groups.get('ecmp_nodes', []) | join(', ') }}"
+      - "fabric_routers: {{ groups.get('fabric_routers', []) | join(', ') }}"
+
+# ── Export facts for downstream roles ────────────────────────────────────────
+
+- name: "fabric_inventory | Export rack-scale facts"
+  ansible.builtin.set_fact:
+    rack_scale_topology: "{{ _rack_parsed.summary.topology }}"
+    rack_scale_calico_mode: "{{ _rack_parsed.summary.calico_mode }}"
+    rack_scale_gpu_vendor: "{{ _rack_parsed.summary.gpu_vendor }}"
+    rack_scale_gpu_model: "{{ _rack_parsed.summary.gpu_model }}"
+    rack_scale_gpu_form: "{{ _rack_parsed.summary.gpu_form }}"
+    rack_scale_site: "{{ _rack_parsed.summary.site }}"
+    rook_ceph_public_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_public_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
+    rook_ceph_cluster_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_cluster_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
+
+# ── Inject fabric CIDRs into no_proxy ───────────────────────────────────────
+# Behind a corporate proxy, fabric subnet CIDRs must be in no_proxy or
+# kubespray and pods can't reach fabric IPs.  The parser computes fabric
+# supernets; we append them to the operator's no_proxy if it's set.
+
+- name: "fabric_inventory | Read current no_proxy"
+  ansible.builtin.set_fact:
+    _current_no_proxy: "{{ no_proxy | default('') }}"
+
+- name: "fabric_inventory | Extract fabric CIDRs from fabric vars"
+  ansible.builtin.set_fact:
+    _fabric_cidrs: "{{ _rack_parsed.fabric_yml | regex_findall('- ([0-9./]+)') }}"
+
+- name: "fabric_inventory | Append fabric CIDRs to no_proxy"
+  ansible.builtin.set_fact:
+    no_proxy: "{{ (_current_no_proxy.split(',') | map('trim') | select | list + _fabric_cidrs) | unique | join(',') }}"
+  when:
+    - _current_no_proxy | length > 0
+    - _fabric_cidrs | length > 0
+
+- name: "fabric_inventory | Log no_proxy update"
+  ansible.builtin.debug:
+    msg: "Appended {{ _fabric_cidrs | length }} fabric CIDR(s) to no_proxy: {{ _fabric_cidrs | join(', ') }}"
+  when:
+    - _current_no_proxy | length > 0
+    - _fabric_cidrs | length > 0
+
+- name: "fabric_inventory | ━━━ DONE ━━━"
+  ansible.builtin.debug:
+    msg: >-
+      Generated {{ _rack_parsed.netplan_files | length }} netplan files,
+      {{ _rack_parsed.bgp_peer_files | length }} BGP peer CRDs,
+      hosts.yaml ({{ _rack_parsed.summary.node_count }} nodes),
+      calico ({{ _rack_parsed.summary.calico_mode }}),
+      ceph, fabric vars, flags.

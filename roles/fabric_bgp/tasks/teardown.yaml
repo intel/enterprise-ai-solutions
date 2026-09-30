@@ -1,0 +1,30 @@
+---
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# fabric_bgp — Teardown
+#
+# Removes BGPPeer CRDs that were applied by this role.  Succeeds silently
+# when no CRDs exist (already torn down or never applied).
+
+- name: "fabric_bgp | teardown | Find generated BGPPeer CRD files"
+  ansible.builtin.find:
+    paths: "{{ rack_scale_bgp_peers_dir }}"
+    patterns: "*.yaml"
+  register: _bgp_peer_files
+
+- name: "fabric_bgp | teardown | Delete BGPPeer CRDs"
+  kubernetes.core.k8s:
+    state: absent
+    src: "{{ item.path }}"
+    kubeconfig: "{{ kubernetes_kubeconfig }}"
+  loop: "{{ _bgp_peer_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: _bgp_peer_files.files | length > 0
+  failed_when: false
+
+- name: "fabric_bgp | teardown | No BGPPeer CRDs to remove"
+  ansible.builtin.debug:
+    msg: "No BGPPeer CRD files found — nothing to tear down."
+  when: _bgp_peer_files.files | length == 0

@@ -1,0 +1,280 @@
+---
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# fabric_validate — Validate
+#
+# End-to-end fabric health verification.  Read-only — never mutates the cluster.
+# Ported from verify-fabric.yml + validate-stack/layer-fabric.yml.
+#
+# Checks per topology:
+#   Star:  hub ip_forward, rp_filter, iptables FORWARD, persistence
+#   Clos:  BIRD daemon, ECMP hash policy, BGP Established, bird routes
+#   Both:  jumbo MTU (8950-byte ping), NIC MTU & speed, spoke-to-spoke ping,
+#          fabric IP reachability from deploy node
+
+# ─── Fabric IP reachability from deploy node ────────────────────────────────
+# Verifies every node's fabric access_ip is reachable BEFORE anything depends
+# on it.  Quorum members (etcd/CP) fail hard; workers warn and continue.
+
+- name: "fabric_validate | validate | Check fabric IP reachability"
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[item].access_ip | default(hostvars[item].ansible_host | default('')) }}"
+    port: 22
+    timeout: "{{ rack_scale_validate_timeout }}"
+  delegate_to: localhost
+  failed_when: false
+  register: _fabric_reach
+  loop: "{{ groups['k8s_cluster'] | default(['localhost']) }}"
+  loop_control:
+    label: "{{ item }} ({{ hostvars[item].access_ip | default('unknown') }})"
+
+- name: "fabric_validate | validate | Fail on unreachable quorum members"
+  ansible.builtin.fail:
+    msg: >-
+      Fabric IP {{ hostvars[item.item].access_ip }} on {{ item.item }}
+      is not reachable from the deploy node on port 22.
+      This node is an etcd/control-plane member — deployment cannot succeed.
+      On a star topology, check the hub (fabric_routers group) first:
+      iptables -S FORWARD and sysctl net.ipv4.ip_forward.
+  when:
+    - item is failed
+    - item.item in (groups.get('etcd', []) + groups.get('kube_control_plane', []))
+  loop: "{{ _fabric_reach.results }}"
+  loop_control:
+    label: "{{ item.item | default('unknown') }}"
+
+- name: "fabric_validate | validate | Warn on unreachable non-quorum nodes"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ hostvars[item.item].access_ip | default('?') }} on {{ item.item }}
+      not reachable from deploy node.  Non-quorum node — continuing, but investigate
+      if kubelet registration or Calico peering fails later.
+  when:
+    - item is failed
+    - item.item not in (groups.get('etcd', []) + groups.get('kube_control_plane', []))
+  loop: "{{ _fabric_reach.results }}"
+  loop_control:
+    label: "{{ item.item | default('unknown') }}"
+
+# ─── Per-node fabric checks (delegated to each cluster member) ──────────────
+
+- name: "fabric_validate | validate | Run fabric checks on each node"
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      HN=$(hostname -s)
+      ERRORS=0
+
+      # --- Star topology: hub checks ---
+      {% if rack_scale_topology | default('star') == 'star' %}
+      {% if 'fabric_routers' in groups and item in groups.get('fabric_routers', []) %}
+      IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "0")
+      if [ "$IP_FWD" != "1" ]; then
+        echo "FAIL: ip_forward=$IP_FWD on hub $HN (expected 1)"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: ip_forward=1 on hub $HN"
+      fi
+
+      RP_FILTER=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null || echo "0")
+      if [ "$RP_FILTER" != "2" ]; then
+        echo "FAIL: rp_filter=$RP_FILTER on hub $HN (expected 2)"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: rp_filter=2 on hub $HN"
+      fi
+
+      FWD_RULES=$(iptables -S FORWARD 2>/dev/null | grep -c ACCEPT || echo "0")
+      if [ "$FWD_RULES" -eq 0 ]; then
+        echo "FAIL: no iptables FORWARD ACCEPT rules on hub $HN"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: $FWD_RULES iptables FORWARD ACCEPT rules on hub $HN"
+      fi
+
+      PERSIST=$(iptables-save 2>/dev/null | grep -c 'FORWARD.*ACCEPT' || echo "0")
+      if [ "$PERSIST" -eq 0 ]; then
+        echo "FAIL: iptables rules not persisted on hub $HN"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: iptables rules persisted on hub $HN"
+      fi
+      {% endif %}
+      {% endif %}
+
+      # --- Clos topology checks ---
+      {% if rack_scale_topology | default('star') == 'clos' %}
+      BIRD=$(systemctl is-active bird 2>/dev/null || echo "inactive")
+      if [ "$BIRD" != "active" ]; then
+        echo "FAIL: BIRD daemon $BIRD on $HN"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: BIRD daemon active on $HN"
+      fi
+
+      ECMP=$(sysctl -n net.ipv4.fib_multipath_hash_policy 2>/dev/null || echo "0")
+      if [ "$ECMP" != "1" ]; then
+        echo "FAIL: fib_multipath_hash_policy=$ECMP on $HN (expected 1)"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: ECMP hash policy=1 on $HN"
+      fi
+
+      BIRD_ROUTES=$(ip route show proto bird 2>/dev/null | grep -cv 'blackhole' || echo "0")
+      if [ "$BIRD_ROUTES" -eq 0 ]; then
+        echo "FAIL: no BIRD routes on $HN"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: $BIRD_ROUTES BIRD routes on $HN"
+      fi
+      {% endif %}
+
+      # --- Jumbo MTU test (both topologies) ---
+      {% set mtu_target_group = 'fabric_routers' if (rack_scale_topology | default('star')) == 'star' else 'all' %}
+      {% set mtu_candidates = groups.get(mtu_target_group, groups.get('all', [])) %}
+      {% if mtu_candidates | length > 0 %}
+      {% set mtu_peer = mtu_candidates | first %}
+      MTU_IP="{{ hostvars[mtu_peer].access_ip | default('') }}"
+      if [ "$HN" = "{{ hostvars[mtu_peer].node_hostname | default(mtu_peer) }}" ]; then
+        {% set alt_peers = groups.get('all', []) | difference([mtu_peer]) %}
+        {% if alt_peers | length > 0 %}
+        MTU_IP="{{ hostvars[alt_peers | first].access_ip | default('') }}"
+        {% else %}
+        MTU_IP=""
+        {% endif %}
+      fi
+      if [ -n "$MTU_IP" ]; then
+        if ping -M do -s {{ rack_scale_validate_mtu_size }} -c 2 -W 5 "$MTU_IP" >/dev/null 2>&1; then
+          echo "OK: jumbo frame ({{ rack_scale_validate_mtu_size }}B) to $MTU_IP from $HN"
+        else
+          echo "FAIL: jumbo frame ({{ rack_scale_validate_mtu_size }}B) to $MTU_IP from $HN — check switch/NIC MTU >= 9000"
+          ERRORS=$((ERRORS+1))
+        fi
+      fi
+      {% endif %}
+
+      # --- NIC MTU & speed ---
+      MTU_BAD=""
+      for DEV in $(ip -o link show up | awk -F': ' '{print $2}' | grep -v 'lo\|cali\|vxlan\|tunl\|docker\|br-\|veth'); do
+        MTU=$(cat /sys/class/net/$DEV/mtu 2>/dev/null || echo "?")
+        SPEED=$(cat /sys/class/net/$DEV/speed 2>/dev/null || echo "?")
+        [ "$SPEED" = "-1" ] && SPEED="virtual"
+        IS_MGMT=$(ip route show default | grep -c "$DEV" || echo "0")
+        if [ "$MTU" != "9000" ] && [ "$SPEED" != "virtual" ] && [ "$SPEED" != "?" ] && [ "$IS_MGMT" = "0" ]; then
+          MTU_BAD="${MTU_BAD}${DEV}:mtu=${MTU} "
+        fi
+      done
+      if [ -n "$MTU_BAD" ]; then
+        echo "FAIL: fabric NIC MTU != 9000 on $HN: $MTU_BAD"
+        ERRORS=$((ERRORS+1))
+      else
+        echo "OK: all fabric NIC MTU=9000 on $HN"
+      fi
+
+      # --- Spoke-to-spoke ping ---
+      PASS=0; FAIL_IPS=""
+      {% for host in groups.get('all', []) %}
+      {% if host != item %}
+      PEER="{{ hostvars[host].access_ip | default(hostvars[host].ansible_host | default('')) }}"
+      if [ -n "$PEER" ]; then
+        if ping -c 1 -W 3 "$PEER" >/dev/null 2>&1; then
+          PASS=$((PASS+1))
+        else
+          FAIL_IPS="${FAIL_IPS}$PEER "
+        fi
+      fi
+      {% endif %}
+      {% endfor %}
+      TOTAL=$((PASS + $(echo "$FAIL_IPS" | wc -w)))
+      if [ -z "$FAIL_IPS" ]; then
+        echo "OK: spoke-to-spoke ping from $HN passed=$PASS/$TOTAL"
+      else
+        echo "FAIL: spoke-to-spoke ping from $HN passed=$PASS/$TOTAL unreachable=$FAIL_IPS"
+        ERRORS=$((ERRORS+1))
+      fi
+
+      exit $ERRORS
+    executable: /bin/bash
+  become: true
+  changed_when: false
+  failed_when: false
+  register: _fabric_check_results
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['k8s_cluster'] | default(['localhost']) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "fabric_validate | validate | Report per-node results"
+  ansible.builtin.debug:
+    msg: "{{ item.stdout_lines | default([]) }}"
+  loop: "{{ _fabric_check_results.results }}"
+  loop_control:
+    label: "{{ item.item | default('unknown') }}"
+
+- name: "fabric_validate | validate | Check for failures"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      Fabric validation FAILED on {{ item.item }} with {{ item.rc }} error(s).
+      {{ item.stdout_lines | default([]) | select('match', '^FAIL:') | list | join('; ') }}
+    success_msg: "Fabric validation passed on {{ item.item }}."
+  loop: "{{ _fabric_check_results.results }}"
+  loop_control:
+    label: "{{ item.item | default('unknown') }}"
+
+# ─── Apply node labels from parser-generated hostvars ──────────────────────
+# The parser sets node_family, node_gpu_vendor, node_gpu_model, node_gpu_form
+# as hostvars in hosts.yaml.  These are Ansible variables, not Kubernetes
+# labels.  Apply them here (after K8s is up) so GPU operator nodeSelector
+# and inference scheduling can find the right nodes.
+
+- name: "fabric_validate | validate | Apply silicon/GPU node labels"
+  ansible.builtin.command:
+    cmd: >-
+      kubectl label node {{ item }}
+      {% if hostvars[item].node_family is defined and hostvars[item].node_family | length > 0 %}
+      cpu-gen={{ hostvars[item].node_family }}
+      {% endif %}
+      {% if hostvars[item].node_sku is defined and hostvars[item].node_sku | length > 0 %}
+      cpu-sku={{ hostvars[item].node_sku }}
+      {% endif %}
+      {% if hostvars[item].node_accelerator is defined and hostvars[item].node_accelerator | length > 0 %}
+      gpu-vendor={{ hostvars[item].node_gpu_vendor }}
+      gpu-model={{ hostvars[item].node_gpu_model }}
+      {% if hostvars[item].node_gpu_form is defined and hostvars[item].node_gpu_form | length > 0 %}
+      gpu-form={{ hostvars[item].node_gpu_form }}
+      {% endif %}
+      gpu-count={{ hostvars[item].node_gpu_count | default('0') }}
+      {% endif %}
+      --overwrite
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  delegate_to: localhost
+  changed_when: true
+  loop: "{{ groups['k8s_cluster'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: >-
+    hostvars[item].node_family is defined or
+    hostvars[item].node_accelerator is defined
+
+- name: "fabric_validate | validate | Report applied labels"
+  ansible.builtin.command:
+    cmd: kubectl get nodes --show-labels
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  delegate_to: localhost
+  changed_when: false
+  register: _node_labels
+
+- name: "fabric_validate | validate | Node labels"
+  ansible.builtin.debug:
+    msg: "{{ _node_labels.stdout_lines }}"
+
+- name: "fabric_validate | validate | ━━━ PASS ━━━"
+  ansible.builtin.debug:
+    msg:
+      - "Fabric validation passed on all {{ _fabric_check_results.results | length }} node(s)."
+      - "Topology: {{ rack_scale_topology | default('star') }}"

@@ -1,0 +1,36 @@
+---
+# =============================================================================
+# fabric_inventory | teardown
+# =============================================================================
+# Removes fabric artifacts from the env directory. Does NOT remove hosts.yaml
+# — the kubernetes role owns that lifecycle.
+# =============================================================================
+
+- name: "fabric_inventory | Remove netplan directory"
+  ansible.builtin.file:
+    path: "{{ rack_scale_netplan_dir }}"
+    state: absent
+
+- name: "fabric_inventory | Remove BGP peers directory"
+  ansible.builtin.file:
+    path: "{{ rack_scale_bgp_peers_dir }}"
+    state: absent
+
+- name: "fabric_inventory | Remove fabric metadata files"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ rack_scale_fabric_path }}"
+    - "{{ rack_scale_calico_path }}"
+    - "{{ rack_scale_ceph_path }}"
+    - "{{ rack_scale_flags_path }}"
+
+- name: "fabric_inventory | Remove Calico group_vars"
+  ansible.builtin.file:
+    path: "{{ env_dir }}/inventory/group_vars/k8s_cluster/k8s-net-calico.yml"
+    state: absent
+
+- name: "fabric_inventory | Teardown complete"
+  ansible.builtin.debug:
+    msg: "Fabric inventory artifacts removed. hosts.yaml preserved (owned by kubernetes role)."

@@ -1,0 +1,102 @@
+---
+# =============================================================================
+# Fabric Sysctl — Validate
+# =============================================================================
+
+# ── ECMP nodes ───────────────────────────────────────────────────────────────
+
+- name: "fabric_sysctl | validate | Check ECMP sysctl on dual-homed nodes"
+  ansible.builtin.command: sysctl -n net.ipv4.fib_multipath_hash_policy
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['ecmp_nodes'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _ecmp_check
+  changed_when: false
+
+- name: "fabric_sysctl | validate | Assert ECMP hash policy"
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim == "1"
+    fail_msg: "{{ item.item }}: fib_multipath_hash_policy={{ item.stdout | trim }}, expected 1"
+    success_msg: "{{ item.item }}: ECMP L4 hashing active"
+  loop: "{{ _ecmp_check.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# ── Star hub ─────────────────────────────────────────────────────────────────
+
+- name: "fabric_sysctl | validate | Check ip_forward on star hub"
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _fwd_check
+  changed_when: false
+
+- name: "fabric_sysctl | validate | Assert ip_forward=1"
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim == "1"
+    fail_msg: "{{ item.item }}: ip_forward={{ item.stdout | trim }}, expected 1"
+    success_msg: "{{ item.item }}: ip_forward enabled"
+  loop: "{{ _fwd_check.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "fabric_sysctl | validate | Check rp_filter on star hub"
+  ansible.builtin.command: sysctl -n net.ipv4.conf.all.rp_filter
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _rpf_check
+  changed_when: false
+
+- name: "fabric_sysctl | validate | Assert rp_filter=2"
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim == "2"
+    fail_msg: "{{ item.item }}: rp_filter={{ item.stdout | trim }}, expected 2 (loose)"
+    success_msg: "{{ item.item }}: loose reverse-path filter active"
+  loop: "{{ _rpf_check.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "fabric_sysctl | validate | Check FORWARD ACCEPT rules on star hub"
+  ansible.builtin.shell: >
+    set -o pipefail;
+    iptables -S FORWARD | grep -c 'ai-solutions: fabric transit' || echo "0"
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _fwd_rules_check
+  changed_when: false
+
+- name: "fabric_sysctl | validate | Assert FORWARD rules present"
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | trim | int) > 0
+    fail_msg: "{{ item.item }}: no fabric FORWARD ACCEPT rules found — spoke-to-spoke traffic will fail"
+    success_msg: "{{ item.item }}: {{ item.stdout | trim }} fabric FORWARD rules active"
+  loop: "{{ _fwd_rules_check.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - groups['fabric_routers'] | default([]) | length > 0
+    - rack_scale_fabric_cidrs | default([]) | length > 0
+
+- name: "fabric_sysctl | validate | ━━━ PASS ━━━"
+  ansible.builtin.debug:
+    msg: >-
+      Fabric sysctl validation passed.
+      ECMP nodes: {{ groups['ecmp_nodes'] | default([]) | length }}.
+      Fabric routers: {{ groups['fabric_routers'] | default([]) | length }}.

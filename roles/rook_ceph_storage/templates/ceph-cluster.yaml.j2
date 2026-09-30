@@ -9,6 +9,15 @@ spec:
     image: {{ rook_ceph_image }}
     allowUnsupported: false
   dataDirHostPath: /var/lib/rook
+{% if rook_ceph_public_network | default('') | length > 0 %}
+  network:
+    provider: host
+{% if rook_ceph_cluster_network | default('') | length > 0 %}
+    selectors:
+      public: {{ rook_ceph_public_network }}
+      cluster: {{ rook_ceph_cluster_network }}
+{% endif %}
+{% endif %}
 {# Sized off storage nodes, not cluster nodes — placement.all confines every
    daemon to them, so a 2-storage-node tier must co-locate mons to reach quorum. #}
   mon:

@@ -1,0 +1,40 @@
+---
+# =============================================================================
+# Fabric Netplan — Validate
+# =============================================================================
+# Confirms fabric address is present on each node's NIC. Does not check
+# cross-node reachability — that is fabric_validate's job.
+# =============================================================================
+
+- name: "fabric_netplan | validate | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _fabric_all_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | unique }}
+
+- name: "fabric_netplan | validate | Check fabric address on each node"
+  ansible.builtin.command: ip -o addr show
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _addr_checks
+  changed_when: false
+
+- name: "fabric_netplan | validate | Assert fabric address present"
+  ansible.builtin.assert:
+    that:
+      - (hostvars[item.item].access_ip ~ '/') in (item.stdout | default(''))
+    fail_msg: >-
+      Fabric address {{ hostvars[item.item].access_ip }} not found on {{ item.item }}.
+      Check: ip -o addr show on that node.
+    success_msg: "{{ item.item }}: {{ hostvars[item.item].access_ip }} present"
+  loop: "{{ _addr_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "fabric_netplan | validate | ━━━ PASS ━━━"
+  ansible.builtin.debug:
+    msg: "Fabric netplan validation passed — all {{ _fabric_all_nodes | length }} nodes have fabric addresses."

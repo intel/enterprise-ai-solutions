@@ -1,0 +1,81 @@
+---
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# fabric_bgp — Validate
+#
+# Verifies that applied BGPPeer CRDs exist in the cluster and, when possible,
+# checks that BGP sessions are Established via calicoctl.
+
+- name: "fabric_bgp | validate | Find expected BGPPeer CRD files"
+  ansible.builtin.find:
+    paths: "{{ rack_scale_bgp_peers_dir }}"
+    patterns: "*.yaml"
+  register: _bgp_peer_files
+
+- name: "fabric_bgp | validate | Skip if no BGPPeer CRDs expected"
+  ansible.builtin.debug:
+    msg: "No BGPPeer CRD files — BGP validation skipped (VXLAN mode or single-NIC)."
+  when: _bgp_peer_files.files | length == 0
+
+- name: "fabric_bgp | validate | Check BGPPeer resources exist in cluster"
+  kubernetes.core.k8s_info:
+    api_version: crd.projectcalico.org/v1
+    kind: BGPPeer
+    kubeconfig: "{{ kubernetes_kubeconfig }}"
+  register: _bgp_peers_in_cluster
+  when: _bgp_peer_files.files | length > 0
+
+- name: "fabric_bgp | validate | Assert BGPPeer count matches"
+  ansible.builtin.assert:
+    that:
+      - (_bgp_peers_in_cluster.resources | length) >= (_bgp_peer_files.files | length)
+    fail_msg: >-
+      Expected at least {{ _bgp_peer_files.files | length }} BGPPeer resources
+      but found {{ _bgp_peers_in_cluster.resources | length }}.
+      Re-run install to apply missing CRDs.
+    success_msg: >-
+      {{ _bgp_peers_in_cluster.resources | length }} BGPPeer resource(s) present
+      (expected {{ _bgp_peer_files.files | length }}).
+  when: _bgp_peer_files.files | length > 0
+
+- name: "fabric_bgp | validate | Check calicoctl availability"
+  ansible.builtin.command:
+    cmd: which calicoctl
+  changed_when: false
+  failed_when: false
+  register: _calicoctl_check
+  when: _bgp_peer_files.files | length > 0
+
+- name: "fabric_bgp | validate | Check BGP session status via calicoctl"
+  ansible.builtin.shell:
+    cmd: |
+      calicoctl node status 2>/dev/null | grep -c 'Established' || echo "0"
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  register: _bgp_established
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['kube_node'] | default(groups.get('k8s_cluster', ['localhost'])) }}"
+  when:
+    - _bgp_peer_files.files | length > 0
+    - _calicoctl_check.rc == 0
+
+- name: "fabric_bgp | validate | Report BGP session counts"
+  ansible.builtin.debug:
+    msg: "{{ item.item }}: {{ item.stdout | default('0') }} Established BGP session(s)"
+  loop: "{{ _bgp_established.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('unknown') }}"
+  when:
+    - _bgp_established is defined
+    - _bgp_established.results is defined
+
+- name: "fabric_bgp | validate | calicoctl not available — skipping session check"
+  ansible.builtin.debug:
+    msg: >-
+      calicoctl not found on the deploy node — cannot verify BGP session state.
+      BGPPeer CRD count verified; session health requires calicoctl.
+  when:
+    - _bgp_peer_files.files | length > 0
+    - _calicoctl_check.rc != 0

@@ -19,6 +19,14 @@ rook_ceph_image: "quay.io/ceph/ceph:v19.2.1"
 #     node-2: [/dev/nvme1n1]
 rook_ceph_devices: {}
 
+# --- Fabric-Aware Networking (optional, set by rack-profile parser) ---
+# When non-empty, Ceph daemons bind to the fabric network instead of the
+# default pod network. Set automatically by fabric_inventory when
+# rack_scale_enabled=true and storage.ceph_public_network is defined in
+# rack-profile.yaml. Leave empty for standard (non-fabric) Ceph deployments.
+rook_ceph_public_network: ""
+rook_ceph_cluster_network: ""
+
 # Label applied to every node in rook_ceph_devices; Ceph daemons require it.
 rook_ceph_storage_node_label_key: "type"
 rook_ceph_storage_node_label_value: "storage-node"

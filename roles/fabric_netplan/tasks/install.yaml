@@ -1,0 +1,111 @@
+---
+# =============================================================================
+# Fabric Netplan — Install
+# =============================================================================
+# Pushes per-node fabric netplan config, then applies it.
+#
+# All nodes (including the bastion) are reached via delegate_to + SSH.
+# The parser no longer emits ansible_connection: local, so every node is
+# uniform. Uses content: with lookup('file', ...) which reads on the
+# controller and writes on the delegate target — same pattern as the UR's
+# kubernetes role for SSH preflight and CPU reservation.
+# =============================================================================
+
+- name: "fabric_netplan | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _fabric_all_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | union(groups.get('ceph_storage_nodes', []))
+         | unique }}
+
+- name: "fabric_netplan | Check netplan source exists for each node"
+  ansible.builtin.stat:
+    path: "{{ rack_scale_netplan_dir }}/{{ hostvars[item].node_hostname | default(item) }}.yaml"
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _netplan_sources
+
+- name: "fabric_netplan | Fail if any netplan file is missing"
+  ansible.builtin.fail:
+    msg: >-
+      No netplan file for node {{ item.item }}
+      (hostname: {{ hostvars[item.item].node_hostname | default(item.item) }})
+  loop: "{{ _netplan_sources.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
+- name: "fabric_netplan | Deploy netplan to each node"
+  ansible.builtin.copy:
+    content: "{{ lookup('file', rack_scale_netplan_dir ~ '/' ~ hostvars[item].node_hostname ~ '.yaml') }}"
+    dest: "{{ rack_scale_netplan_dest }}"
+    owner: root
+    group: root
+    mode: '0600'
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }} ({{ hostvars[item].node_hostname }})"
+  register: _netplan_deployed
+
+- name: "fabric_netplan | Remove old 60-fabric.yaml if present"
+  ansible.builtin.file:
+    path: /etc/netplan/60-fabric.yaml
+    state: absent
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "fabric_netplan | Validate netplan config before applying"
+  ansible.builtin.command: netplan generate
+  delegate_to: "{{ item.item }}"
+  become: true
+  loop: "{{ _netplan_deployed.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.changed
+  changed_when: false
+
+- name: "fabric_netplan | Apply netplan on nodes where config changed"
+  ansible.builtin.command: netplan apply
+  delegate_to: "{{ item.item }}"
+  become: true
+  loop: "{{ _netplan_deployed.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.changed
+  changed_when: true
+
+- name: "fabric_netplan | Wait for interfaces to settle"
+  ansible.builtin.pause:
+    seconds: "{{ rack_scale_netplan_settle_seconds }}"
+  when: _netplan_deployed.results | selectattr('changed', 'equalto', true) | list | length > 0
+
+- name: "fabric_netplan | Confirm fabric address on each node"
+  ansible.builtin.command: ip -o addr show
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _addr_checks
+  changed_when: false
+
+- name: "fabric_netplan | Fail if fabric address not present"
+  ansible.builtin.fail:
+    msg: >-
+      Netplan applied on {{ item.item }} ({{ hostvars[item.item].node_hostname }}) but
+      {{ hostvars[item.item].access_ip }} is not present on any interface.
+  loop: "{{ _addr_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: (hostvars[item.item].access_ip ~ '/') not in (item.stdout | default(''))
+
+- name: "fabric_netplan | ━━━ DONE ━━━"
+  ansible.builtin.debug:
+    msg: "Netplan deployed to {{ _fabric_all_nodes | length }} nodes"

@@ -1,0 +1,56 @@
+---
+# =============================================================================
+# fabric_inventory | validate
+# =============================================================================
+# Dry-run validation of rack-profile.yaml. Read-only — never writes files.
+# =============================================================================
+
+- name: "fabric_inventory | validate | Check rack-profile.yaml exists"
+  ansible.builtin.stat:
+    path: "{{ rack_profile_path }}"
+  register: _rack_profile_stat
+
+- name: "fabric_inventory | validate | Fail if rack-profile.yaml missing"
+  ansible.builtin.fail:
+    msg: >-
+      rack_scale_enabled is true but rack-profile.yaml not found at
+      {{ rack_profile_path }}.
+  when: not _rack_profile_stat.stat.exists
+
+- name: "fabric_inventory | validate | Load rack-profile.yaml"
+  ansible.builtin.include_vars:
+    file: "{{ rack_profile_path }}"
+    name: _rack_profile_raw
+
+- name: "fabric_inventory | validate | Run validation"
+  ansible.builtin.set_fact:
+    _rack_validation: "{{ _rack_profile_raw | rack_profile_validate }}"
+
+- name: "fabric_inventory | validate | Log warnings"
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item }}"
+  loop: "{{ _rack_validation.warnings }}"
+  when: _rack_validation.warnings | length > 0
+
+- name: "fabric_inventory | validate | Fail on errors"
+  ansible.builtin.fail:
+    msg: >-
+      rack-profile.yaml validation failed ({{ _rack_validation.errors | length }} error(s)):
+      {% for e in _rack_validation.errors %}
+        • {{ e }}
+      {% endfor %}
+  when: not _rack_validation.valid
+
+- name: "fabric_inventory | validate | Parse for summary"
+  ansible.builtin.set_fact:
+    _rack_summary: "{{ (_rack_profile_raw | rack_profile_parse).summary }}"
+
+- name: "fabric_inventory | validate | ━━━ PASS ━━━"
+  ansible.builtin.debug:
+    msg:
+      - "rack-profile.yaml validation passed."
+      - "  Site: {{ _rack_summary.site }}"
+      - "  Topology: {{ _rack_summary.topology }}"
+      - "  Calico: {{ _rack_summary.calico_mode }}"
+      - "  Nodes: {{ _rack_summary.node_count }}"
+      - "  GPU: {{ _rack_summary.gpu_vendor | default('none', true) }} {{ _rack_summary.gpu_model | default('') }} {{ _rack_summary.gpu_form | default('') }}"

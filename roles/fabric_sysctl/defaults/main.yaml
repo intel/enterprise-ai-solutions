@@ -1,0 +1,9 @@
+---
+# =============================================================================
+# Fabric Sysctl — Defaults
+# =============================================================================
+# These are typically set by the rack-profile parser output, not by the operator.
+
+rack_scale_topology: "star"
+rack_scale_fabric_cidrs: []
+rack_scale_calico_mode: "vxlan"

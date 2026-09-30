@@ -1,0 +1,7 @@
+---
+# =============================================================================
+# Fabric Netplan — Main Dispatcher
+# =============================================================================
+
+- name: "fabric_netplan | {{ component_action }}"
+  ansible.builtin.include_tasks: "{{ component_action }}.yaml"

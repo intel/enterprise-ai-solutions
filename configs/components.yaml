@@ -26,11 +26,42 @@ layers:
   # Opt-in layers are declared by their own ext repo's components.yaml
 
 components:
-  # --- Infrastructure ---
+  # --- Infrastructure: Rack-Scale Fabric (disabled by default) ---
+  # Gated on rack_scale_enabled. When false, all fabric components are skipped
+  # and the infrastructure layer behaves identically to before this addition.
+  # Pre-K8s fabric: inventory → netplan → sysctl must run BEFORE kubernetes.
+  # In star topology the hub must have fabric NICs + ip_forward configured
+  # before kubespray can SSH to worker nodes through it.
+  - name: fabric_inventory
+    layer: infrastructure
+    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    depends_on: []
+
+  - name: fabric_netplan
+    layer: infrastructure
+    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    depends_on: [fabric_inventory]
+
+  - name: fabric_sysctl
+    layer: infrastructure
+    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    depends_on: [fabric_netplan]
+
   - name: kubernetes
     layer: infrastructure
     enabled: true
-    depends_on: []
+    depends_on: [fabric_sysctl]
+
+  # Post-K8s fabric: BGP needs kubectl, validate needs the cluster up.
+  - name: fabric_bgp
+    layer: infrastructure
+    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    depends_on: [kubernetes]
+
+  - name: fabric_validate
+    layer: infrastructure
+    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    depends_on: [kubernetes, fabric_bgp]
 
   - name: storage
     layer: infrastructure

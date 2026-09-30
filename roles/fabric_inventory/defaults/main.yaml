@@ -1,0 +1,19 @@
+---
+# =============================================================================
+# Fabric Inventory Role Defaults
+# =============================================================================
+# Generates Kubespray inventory and fabric artifacts from rack-profile.yaml.
+# Runs before the kubernetes role when rack_scale_enabled is true.
+# =============================================================================
+
+rack_scale_enabled: false
+
+rack_profile_path: "{{ env_dir }}/rack-profile.yaml"
+
+rack_scale_inventory_path: "{{ env_dir }}/inventory/hosts.yaml"
+rack_scale_calico_path: "{{ env_dir }}/inventory/metadata/k8s-net-calico.yml"
+rack_scale_fabric_path: "{{ env_dir }}/inventory/metadata/k8s-net-fabric.yml"
+rack_scale_ceph_path: "{{ env_dir }}/inventory/metadata/vars/ceph-storage.yml"
+rack_scale_flags_path: "{{ env_dir }}/inventory/metadata/rack-scale-flags.env"
+rack_scale_netplan_dir: "{{ env_dir }}/inventory/netplan"
+rack_scale_bgp_peers_dir: "{{ env_dir }}/inventory/metadata/bgp-peers"

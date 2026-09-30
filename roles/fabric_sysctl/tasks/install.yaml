@@ -1,0 +1,238 @@
+---
+# =============================================================================
+# Fabric Sysctl — Install
+# =============================================================================
+# Two independent concerns for two different node groups:
+#
+#   1. ECMP flow hashing → ecmp_nodes
+#      Nodes with >=2 fabric NICs in BGP mode. Parser derives this group;
+#      membership is a fabric property, not a CPU family.
+#
+#   2. Router forwarding → fabric_routers
+#      The hub in a star topology. Needs ip_forward and loose RPF because
+#      replies may arrive on a different leg than the request left by.
+#      Also needs FORWARD chain ACCEPT rules scoped to fabric CIDRs.
+#
+# Both groups are absent unless the topology calls for them, so this role is
+# a no-op on single-homed Clos sites and clusters with no star hub.
+# =============================================================================
+
+# ── ECMP (Clos: nodes with dual uplinks) ────────────────────────────────────
+
+- name: "fabric_sysctl | ECMP | Configure L4 flow hashing"
+  ansible.posix.sysctl:
+    name: net.ipv4.fib_multipath_hash_policy
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-fabric-ecmp.conf
+    reload: true
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['ecmp_nodes'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "fabric_sysctl | ECMP | Set loose reverse-path filter"
+  ansible.posix.sysctl:
+    name: net.ipv4.conf.all.rp_filter
+    value: "2"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-fabric-ecmp.conf
+    reload: true
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['ecmp_nodes'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ── Star hub: IP forwarding + FORWARD chain ─────────────────────────────────
+
+- name: "fabric_sysctl | Star hub | Enable IPv4 forwarding"
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-fabric-router.conf
+    reload: true
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "fabric_sysctl | Star hub | Set loose reverse-path filter"
+  ansible.posix.sysctl:
+    name: net.ipv4.conf.all.rp_filter
+    value: "2"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-fabric-router.conf
+    reload: true
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "fabric_sysctl | Star hub | Warn if fabric CIDRs unavailable"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: rack_scale_fabric_cidrs is empty — skipping FORWARD chain rules.
+      If spoke-to-spoke traffic fails, check 'iptables -S FORWARD' on the hub
+      and verify fabric_inventory generated k8s-net-fabric.yml.
+  when:
+    - groups['fabric_routers'] | default([]) | length > 0
+    - rack_scale_fabric_cidrs | default([]) | length == 0
+
+# A rule per (source, destination) pair over fabric prefixes. In a star every
+# spoke-to-spoke flow transits the hub, so all ordered pairs are needed.
+# The iptables module is idempotent on comment+match, so re-runs don't duplicate.
+- name: "fabric_sysctl | Star hub | Allow fabric transit through FORWARD chain"
+  ansible.builtin.iptables:
+    chain: FORWARD
+    source: "{{ item.1.0 }}"
+    destination: "{{ item.1.1 }}"
+    jump: ACCEPT
+    action: insert
+    comment: "ai-solutions: fabric transit ({{ item.1.0 }} -> {{ item.1.1 }})"
+    state: present
+  delegate_to: "{{ item.0 }}"
+  become: true
+  loop: >-
+    {{ groups['fabric_routers'] | default([])
+       | product(rack_scale_fabric_cidrs | default([]) | product(rack_scale_fabric_cidrs | default([])) | list)
+       | list }}
+  loop_control:
+    label: "{{ item.0 }}: {{ item.1.0 }} -> {{ item.1.1 }}"
+  when: rack_scale_fabric_cidrs | default([]) | length > 0
+
+# ── Persist iptables rules ──────────────────────────────────────────────────
+
+- name: "fabric_sysctl | Star hub | Gather OS facts for persistence"
+  ansible.builtin.setup:
+    gather_subset: ['!all', 'os_family']
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - groups['fabric_routers'] | default([]) | length > 0
+    - rack_scale_fabric_cidrs | default([]) | length > 0
+
+- name: "fabric_sysctl | Star hub | Persist rules (Debian/Ubuntu)"
+  when:
+    - groups['fabric_routers'] | default([]) | length > 0
+    - rack_scale_fabric_cidrs | default([]) | length > 0
+  block:
+    - name: "fabric_sysctl | Install iptables-persistent"
+      ansible.builtin.apt:
+        name: iptables-persistent
+        state: present
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['fabric_routers'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].ansible_facts.os_family | default('') == 'Debian'
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: "fabric_sysctl | Ensure /etc/iptables directory"
+      ansible.builtin.file:
+        path: /etc/iptables
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['fabric_routers'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].ansible_facts.os_family | default('') == 'Debian'
+
+    - name: "fabric_sysctl | Save iptables rules"
+      ansible.builtin.shell: >
+        set -o pipefail;
+        iptables-save > /etc/iptables/rules.v4
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['fabric_routers'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].ansible_facts.os_family | default('') == 'Debian'
+      changed_when: true
+
+    - name: "fabric_sysctl | Enable netfilter-persistent"
+      ansible.builtin.systemd:
+        name: netfilter-persistent
+        enabled: true
+        state: started
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['fabric_routers'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].ansible_facts.os_family | default('') == 'Debian'
+
+- name: "fabric_sysctl | Star hub | Persist rules (RHEL)"
+  when:
+    - groups['fabric_routers'] | default([]) | length > 0
+    - rack_scale_fabric_cidrs | default([]) | length > 0
+  block:
+    - name: "fabric_sysctl | Install iptables-services"
+      ansible.builtin.package:
+        name: iptables-services
+        state: present
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['fabric_routers'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].ansible_facts.os_family | default('') == 'RedHat'
+
+    - name: "fabric_sysctl | Save iptables rules"
+      ansible.builtin.shell: >
+        set -o pipefail;
+        iptables-save > /etc/sysconfig/iptables
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['fabric_routers'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].ansible_facts.os_family | default('') == 'RedHat'
+      changed_when: true
+
+    - name: "fabric_sysctl | Enable iptables service"
+      ansible.builtin.systemd:
+        name: iptables
+        enabled: true
+        state: started
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['fabric_routers'] | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: hostvars[item].ansible_facts.os_family | default('') == 'RedHat'
+
+- name: "fabric_sysctl | Star hub | Show FORWARD chain state"
+  ansible.builtin.command: iptables -S FORWARD
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _forward_state
+  changed_when: false
+
+- name: "fabric_sysctl | Star hub | Report FORWARD chain"
+  ansible.builtin.debug:
+    msg: "{{ item.item }}: {{ item.stdout_lines }}"
+  loop: "{{ _forward_state.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: _forward_state.results | default([]) | length > 0

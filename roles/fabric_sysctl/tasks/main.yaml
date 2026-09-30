@@ -1,0 +1,7 @@
+---
+# =============================================================================
+# Fabric Sysctl — Main Dispatcher
+# =============================================================================
+
+- name: "fabric_sysctl | {{ component_action }}"
+  ansible.builtin.include_tasks: "{{ component_action }}.yaml"

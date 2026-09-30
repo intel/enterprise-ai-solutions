@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# Fabric Netplan — Teardown
+# =============================================================================
+
+- name: "fabric_netplan | teardown | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _fabric_all_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | unique }}
+
+- name: "fabric_netplan | teardown | Remove 99-fabric.yaml from all nodes"
+  ansible.builtin.file:
+    path: "{{ rack_scale_netplan_dest }}"
+    state: absent
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _netplan_removed
+
+- name: "fabric_netplan | teardown | Remove old 60-fabric.yaml from all nodes"
+  ansible.builtin.file:
+    path: "{{ rack_scale_netplan_old }}"
+    state: absent
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "fabric_netplan | teardown | Re-apply netplan on nodes where config was removed"
+  ansible.builtin.command: netplan apply
+  delegate_to: "{{ item.item }}"
+  become: true
+  loop: "{{ _netplan_removed.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.changed
+  changed_when: true

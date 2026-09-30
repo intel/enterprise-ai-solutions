@@ -1,0 +1,9 @@
+---
+# =============================================================================
+# Fabric Netplan — Defaults
+# =============================================================================
+
+rack_scale_netplan_dir: "{{ env_dir }}/inventory/netplan"
+rack_scale_netplan_dest: /etc/netplan/99-fabric.yaml
+rack_scale_netplan_old: /etc/netplan/60-fabric.yaml
+rack_scale_netplan_settle_seconds: 3

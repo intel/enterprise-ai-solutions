@@ -1,0 +1,83 @@
+---
+# =============================================================================
+# Fabric Sysctl — Teardown
+# =============================================================================
+
+# ── Remove ECMP settings ────────────────────────────────────────────────────
+
+- name: "fabric_sysctl | teardown | Remove ECMP sysctl config"
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-fabric-ecmp.conf
+    state: absent
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['ecmp_nodes'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _ecmp_removed
+
+- name: "fabric_sysctl | teardown | Reload sysctl on ECMP nodes"
+  ansible.builtin.command: sysctl --system
+  delegate_to: "{{ item.item }}"
+  become: true
+  loop: "{{ _ecmp_removed.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.changed
+  changed_when: true
+
+# ── Remove star hub settings ────────────────────────────────────────────────
+
+- name: "fabric_sysctl | teardown | Remove fabric FORWARD rules from iptables"
+  ansible.builtin.iptables:
+    chain: FORWARD
+    source: "{{ item.1.0 }}"
+    destination: "{{ item.1.1 }}"
+    jump: ACCEPT
+    comment: "ai-solutions: fabric transit ({{ item.1.0 }} -> {{ item.1.1 }})"
+    state: absent
+  delegate_to: "{{ item.0 }}"
+  become: true
+  loop: >-
+    {{ groups['fabric_routers'] | default([])
+       | product(rack_scale_fabric_cidrs | default([]) | product(rack_scale_fabric_cidrs | default([])) | list)
+       | list }}
+  loop_control:
+    label: "{{ item.0 }}: {{ item.1.0 }} -> {{ item.1.1 }}"
+  when: rack_scale_fabric_cidrs | default([]) | length > 0
+  ignore_errors: true
+
+- name: "fabric_sysctl | teardown | Remove router sysctl config"
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-fabric-router.conf
+    state: absent
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _router_removed
+
+- name: "fabric_sysctl | teardown | Reload sysctl on router nodes"
+  ansible.builtin.command: sysctl --system
+  delegate_to: "{{ item.item }}"
+  become: true
+  loop: "{{ _router_removed.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.changed
+  changed_when: true
+
+- name: "fabric_sysctl | teardown | Re-save iptables after rule removal"
+  ansible.builtin.shell: >
+    set -o pipefail;
+    if [ -d /etc/iptables ]; then iptables-save > /etc/iptables/rules.v4;
+    elif [ -d /etc/sysconfig ]; then iptables-save > /etc/sysconfig/iptables; fi
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: true

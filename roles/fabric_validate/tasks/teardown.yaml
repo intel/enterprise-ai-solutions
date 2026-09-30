@@ -1,0 +1,4 @@
+---
+- name: "fabric_validate | teardown | No-op (validate-only role)"
+  ansible.builtin.debug:
+    msg: "fabric_validate has no teardown action — nothing to remove."

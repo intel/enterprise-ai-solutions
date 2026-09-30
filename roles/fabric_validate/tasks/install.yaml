@@ -1,0 +1,4 @@
+---
+- name: "fabric_validate | install | No-op (validate-only role)"
+  ansible.builtin.debug:
+    msg: "fabric_validate has no install action — use validate."

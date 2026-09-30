@@ -1,0 +1,148 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# rack-profile.yaml — Single source of truth for rack-scale deployments.
+#
+# Copy to env/<env>/rack-profile.yaml and edit for your hardware.
+# The fabric_inventory role parses this file and generates:
+#   - Kubespray inventory (hosts.yaml) with fabric NICs and silicon metadata
+#   - Calico CNI config (BGP or VXLAN, pod/service CIDRs, MTU)
+#   - Per-node netplan files (fabric NIC addressing + routes)
+#   - Per-node BGPPeer CRDs (Clos topology only)
+#   - Ceph storage config (OSD devices, fabric network bindings)
+#
+# Requires: rack_scale_enabled: true in global_config.yaml
+#
+# Two topologies are supported:
+#   star  — switchless hub-and-spoke, point-to-point /30 links, VXLAN overlay
+#   clos  — leaf/spine with ToR switches, native BGP, ECMP dual uplinks
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# STAR TOPOLOGY EXAMPLE (switchless, 3 masters + 2 workers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+site:
+  name: my-site
+
+network:
+  topology: star                    # star | clos
+  calico_mode: vxlan                # vxlan (star) | bgp (clos)
+  pod_cidr: 10.244.0.0/16
+  service_cidr: 10.233.0.0/18
+  mtu: 9000
+  fabric_prefix: 30                 # /30 for star (point-to-point), /16 for clos
+  netplan_renderer: networkd        # networkd | NetworkManager
+  control_plane_on_fabric: true     # bind kubelet/etcd to fabric IP (recommended)
+
+# SSH defaults for remote nodes (not needed for the bastion / local: true node)
+access:
+  ansible_user: ubuntu
+  ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+
+# ─── Node profiles (optional) ────────────────────────────────────────────────
+# Define silicon once, reference from nodes via `profile:`.
+# node_profiles:
+#   cpu-gnr-ap-6980P:
+#     node_family: cpu-gnr-ap
+#     sku: 6980P
+#   gpu-b300-hgx:
+#     node_family: cpu-gnr-sp
+#     sku: 6776P
+#     accelerator: nvidia-b300-hgx    # vendor-model[-form]
+#     gpu_count: 8
+
+# ─── Racks ────────────────────────────────────────────────────────────────────
+racks:
+  rack-01:
+    description: "Control plane + storage + compute"
+    nodes:
+
+      master1:
+        hostname: node-cp1
+        mgmt_ip: 10.0.0.10
+        local: true                   # Ansible bastion — runs locally
+        roles: [kube_control_plane, etcd, storage]
+        fabric_nics:
+          - nic: ens801f0              # 100G NIC name (ip link show)
+            fabric_ip: 10.201.1.1
+            prefix: 30
+            peer: worker1             # node at the other end of this cable
+
+      master2:
+        hostname: node-cp2
+        mgmt_ip: 10.0.0.11
+        roles: [kube_control_plane, etcd, storage]
+        fabric_nics:
+          - nic: ens801f0
+            fabric_ip: 10.201.1.5
+            prefix: 30
+            peer: worker1
+
+      worker1:
+        hostname: node-gpu1
+        mgmt_ip: 10.0.0.20
+        roles: [kube_node]
+        fabric_router: true           # star hub — exactly one node sets this
+        fabric_nics:
+          - nic: ens801f0             # cable to master1
+            fabric_ip: 10.201.1.2
+            prefix: 30
+            peer: master1
+          - nic: ens801f1             # cable to master2
+            fabric_ip: 10.201.1.6
+            prefix: 30
+            peer: master2
+        # profile: gpu-b300-hgx      # uncomment to assign a GPU node profile
+
+# ─── Storage ──────────────────────────────────────────────────────────────────
+storage:
+  ceph_fabric_nic: ens801f0           # NIC that Ceph daemons bind to
+  ceph_public_network: 10.201.1.0/28
+  ceph_cluster_network: 10.201.1.0/28
+
+  # OS disk is typically nvme0n1 — NEVER list it here.
+  nodes:
+    - name: master1
+      devices: [nvme1n1]
+    - name: master2
+      devices: [nvme1n1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLOS TOPOLOGY EXAMPLE (uncomment and replace the star config above)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# network:
+#   topology: clos
+#   calico_mode: bgp
+#   pod_cidr: 10.244.0.0/16
+#   service_cidr: 10.233.0.0/18
+#   mtu: 9000
+#   fabric_prefix: 16
+#   control_plane_on_fabric: true
+#   leafs:
+#     - name: leaf-a
+#       asn: 65001
+#       peer_ip: 10.201.0.1
+#       fabric_subnet: 10.201.0.0/16
+#     - name: leaf-b
+#       asn: 65002
+#       peer_ip: 10.202.0.1
+#       fabric_subnet: 10.202.0.0/16
+#   bgp:
+#     cluster_asn: 65100
+#
+# racks:
+#   rack-01:
+#     nodes:
+#       worker1:
+#         hostname: node-w1
+#         mgmt_ip: 10.0.0.20
+#         roles: [kube_node]
+#         fabric_nics:
+#           - nic: ens801f0
+#             fabric_ip: 10.201.0.10
+#             leaf: leaf-a             # which ToR switch this NIC connects to
+#           - nic: ens801f1
+#             fabric_ip: 10.202.0.10
+#             leaf: leaf-b             # dual-homed for ECMP

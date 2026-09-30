@@ -1,0 +1,17 @@
+---
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# fabric_validate — Defaults
+#
+# End-to-end fabric health verification.  Read-only — never mutates the cluster.
+
+rack_scale_topology: "star"
+
+# Payload size for jumbo-frame MTU test (ping -M do -s <size>).
+# 8950 + 28 (IP+ICMP header) + 14 (Ethernet) = ~8992 on the wire,
+# well within 9000-byte MTU.  Proves jumbo frames traverse the fabric.
+rack_scale_validate_mtu_size: 8950
+
+# Seconds to wait for fabric IP reachability before declaring failure.
+rack_scale_validate_timeout: 15

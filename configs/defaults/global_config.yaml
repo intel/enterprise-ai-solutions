@@ -74,6 +74,14 @@ postgresql_databases:
   - name: langfuse
     user: langfuse
 
+# --- Rack-Scale Fabric ---
+# Set to true for rack-scale deployments with high-speed fabric networking.
+# Requires a rack-profile.yaml in the env directory. When false (default),
+# all fabric components are skipped and the stack behaves identically to a
+# standard deployment. GPU operator auto-enables when the rack-profile
+# defines nodes with an accelerator: field — no separate flag needed.
+rack_scale_enabled: false
+
 # =============================================================================
 # Advanced Options (most users won't need to change these)
 # =============================================================================
