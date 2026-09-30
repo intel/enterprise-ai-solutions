@@ -119,22 +119,6 @@
     - name: "metallb | Proceed with install"
       when: (_existing_lb | default('', true) | trim | length == 0) or _metallb_existing.status is defined
       block:
-        - name: "metallb | Fail — rack-scale requires explicit metallb_ip_range"
-          ansible.builtin.fail:
-            msg: |-
-              rack_scale_enabled=true but metallb_ip_range is not set.
-
-              With rack-scale networking, node InternalIPs are on the fabric subnet
-              which is not reachable from outside the rack. Auto-detection would pick
-              a fabric IP as the VIP, making LoadBalancer services unreachable.
-
-              Set metallb_ip_range in global_config.yaml to a management-subnet IP:
-                metallb_ip_range: "172.18.168.1/32"
-                metallb_ip_range: "172.18.168.240-172.18.168.250"
-          when:
-            - rack_scale_enabled | default(false) | bool
-            - metallb_ip_range | default('', true) | length == 0
-
         - name: "metallb | Auto-detect IP for pool"
           when: metallb_ip_range | default('', true) | length == 0
           block:
