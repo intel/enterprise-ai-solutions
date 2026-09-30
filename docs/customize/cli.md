@@ -123,6 +123,33 @@ Checks are implemented per-component as `tasks/validate.yaml` (asserts, connecti
 
 ---
 
+### `add-node`
+
+Scale worker node(s) into an already-provisioned cluster. No node name is passed — edit `nodes.yaml` first, and the new node(s) are found by diffing the rendered inventory against the live cluster.
+
+```bash
+# 1. Add an entry to nodes_workers in env/<name>/nodes.yaml, then:
+./es_auto_installer.sh add-node --dry-run --env local   # preview
+./es_auto_installer.sh add-node --env local              # apply
+```
+
+Control-plane node additions are refused. Use `install kubernetes` instead (re-runs `cluster.yml`). See [Node Scaling](node_scaling.md).
+
+---
+
+### `remove-node`
+
+Remove node(s) from an already-provisioned cluster. As with `add-node`, no node name is passed on the command line — delete the entry from `nodes.yaml` first, and the removed node(s) are found the same way (diffing `nodes.yaml` against the live cluster), just in the opposite direction: nodes present in the cluster but missing from `nodes.yaml`.
+
+```bash
+./es_auto_installer.sh remove-node --dry-run --env local
+./es_auto_installer.sh remove-node --env local
+```
+
+The current first control-plane/etcd node cannot be removed this way (Kubespray limitation). See [Node Scaling](node_scaling.md).
+
+---
+
 ### `status`
 
 Print a component status table.
@@ -153,6 +180,7 @@ List all available layers and components, including which are opt-in.
 | `--only` | Skip dependency auto-inclusion — run the named target alone |
 | `--skip <names>` | Comma-separated layers or components to leave out of the plan (e.g., `--skip erag` to tear down the cluster without uninstalling erag first) |
 | `--force` | Skip the confirmation prompt (required in CI, where there is no terminal to answer it) |
+| `--dry-run` | (`add-node`/`remove-node` only) print the computed node diff and Kubespray command, then exit |
 | `-- <ansible-flags>` | Pass remaining args directly to `ansible-playbook` (e.g. `-- -vvv`, `-- --check`, `-- -e key=value`) |
 
 ---
@@ -222,4 +250,5 @@ For more Ansible detail, append `-- -vvv` to any command.
 | Look up what each `global_config.yaml` field controls | [Configuration Reference](configuration.md) |
 | Deploy, access, and manage LLM inference with `model-manager` | [Deploy an LLM](../deploy/deploy_models.md) |
 | Set up multi-node or bring-your-own-cluster installs | [Deployment Guide](../deploy/install_platform.md) |
+| Add or remove nodes from an already-provisioned cluster | [Node Scaling](node_scaling.md) |
 | See the full command dispatch flow this CLI triggers | [Architecture & Design Document](../reference/architecture.md) |

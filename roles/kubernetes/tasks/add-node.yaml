@@ -1,0 +1,198 @@
+---
+# =============================================================================
+# Kubernetes — add-node (Kubespray scale.yml, worker nodes only)
+# =============================================================================
+# Flow (driven by es_auto_installer.sh):
+#   Phase 1 (_scale_phase=prep, default): regenerate inventory from the edited
+#            nodes.yaml, then SSH/internet pre-flight against just the new
+#            node(s) → end_role. es_auto_installer.sh diffs the regenerated
+#            inventory against the live cluster to find the new worker node(s)
+#            (computed in bash before this phase even runs; see
+#            es_auto_installer.sh:do_add_node — _added_nodes is passed in
+#            already, not derived here).
+#   Phase 2: es_auto_installer.sh runs Kubespray scale.yml directly (live
+#            output), limited to the new node(s) + control-plane.
+#   Phase 3 (_scale_phase=post): per-node kubelet CPU reservation + topology
+#            labels + wait-for-Ready, scoped to just the newly added node(s).
+#
+# add-node never adds control-plane nodes — Kubespray's scale.yml cannot do
+# that (see docs/customize/node_scaling.md); es_auto_installer.sh refuses
+# before this role is ever invoked if a new node is under nodes_control_plane.
+# BYO clusters are refused — a bring-your-own cluster is not managed by
+# Kubespray at all.
+# =============================================================================
+
+- name: "kubernetes | add-node | Refuse on BYO cluster"
+  ansible.builtin.fail:
+    msg: "add-node is not supported for a BYO cluster (existing_kubernetes is set)."
+  when: existing_kubernetes | default('') | trim | length > 0
+
+# _added_nodes is passed by es_auto_installer.sh on both the prep and post
+# calls (it already knows the diff before either Ansible pass runs), so both
+# phases below can scope to just the new node(s) without recomputing anything.
+- name: "kubernetes | add-node | Resolve newly added node list"
+  ansible.builtin.set_fact:
+    _added_nodes_list: "{{ _added_nodes | default('') | split(',') | reject('equalto', '') | list }}"
+
+# =====================================================================
+# PHASE: post — finishing steps for the newly added node(s)
+# =====================================================================
+
+- name: "kubernetes | add-node | Post phase — new-node finishing steps"
+  when: _scale_phase | default('prep') == 'post'
+  block:
+    - name: "kubernetes | add-node | Detect SSH requirement from inventory"
+      ansible.builtin.set_fact:
+        _k8s_needs_ssh: >-
+          {{
+            (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
+            | unique
+            | reject('equalto', 'localhost')
+            | list
+            | length > 0
+          }}
+
+    - name: "kubernetes | add-node | Kubelet CPU reservation for new node(s)"
+      ansible.builtin.include_tasks: kubelet_reserved_cpus.yaml
+      vars:
+        _kubelet_calc_hosts_override: "{{ _added_nodes_list }}"
+
+    - name: "kubernetes | add-node | Re-apply node topology labels (idempotent)"
+      ansible.builtin.include_tasks: apply_node_topology.yaml
+      when: node_topology_enabled | default(false) | bool
+
+    - name: "kubernetes | add-node | Wait for new node(s) to be Ready"
+      ansible.builtin.shell:
+        # Passing the names as `kubectl get nodes` arguments (not as a grep
+        # filter over the full node list) avoids substring collisions between
+        # node names such as worker1/worker10.
+        cmd: |
+          kubectl get nodes {{ _added_nodes_list | join(' ') }} --no-headers | grep -v ' Ready' | wc -l
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+      register: _k8s_new_not_ready_count
+      until: (_k8s_new_not_ready_count.stdout | trim | int) == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: "kubernetes | add-node | New node(s) ready"
+      ansible.builtin.debug:
+        msg: "Added and Ready: {{ _added_nodes_list | join(', ') }}"
+
+- name: "kubernetes | add-node | End role (post phase complete)"
+  when: _scale_phase | default('prep') == 'post'
+  meta: end_role
+
+# =====================================================================
+# PHASE: prep — regenerate inventory from nodes.yaml
+# =====================================================================
+
+- name: "kubernetes | add-node | Ensure kubespray stack"
+  ansible.builtin.include_tasks: kubespray_ensure.yaml
+
+- name: "kubernetes | add-node | Regenerate inventory from nodes.yaml"
+  ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+
+# ─── Pre-flight for the new node(s) ──────────────────────────────────────────
+# SSH ping and internet reachability mirror what install.yaml already runs
+# against every node before a fresh cluster.yml. Already-joined and
+# control-plane-reachability are add-node-specific: a fast, clear failure
+# here beats a 10+ minute Kubespray run timing out or half-corrupting state
+# deep inside whichever task first needs the thing that isn't actually there.
+#
+# vars: ansible_connection: ssh is required on every one of these — this
+# play (via site.yaml) runs with connection: local (needed for its own
+# kubernetes.core.k8s-style tasks against the API), and delegate_to does NOT
+# override an inherited play-level `connection:` on its own. Without this
+# override, every task below silently runs ON THE CONTROLLER instead of the
+# delegated node — Ansible still labels the output with the target's
+# name/IP, so it looks like it ran remotely when it didn't. Confirmed via a
+# minimal repro: `hostname` delegated to a real remote node returned the
+# controller's own hostname until this override was added.
+
+- name: "kubernetes | add-node | SSH pre-flight | Ping new node(s)"
+  ansible.builtin.ping:
+  delegate_to: "{{ item }}"
+  vars:
+    ansible_connection: ssh
+  loop: "{{ _added_nodes_list }}"
+  loop_control:
+    label: "{{ item }}"
+
+# Adding a node that's already part of some other cluster (or a stale
+# leftover join on this one) can corrupt both — catch it before scale.yml
+# ever touches it, rather than mid-join.
+- name: "kubernetes | add-node | SSH pre-flight | Check new node(s) aren't already joined to a cluster"
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  delegate_to: "{{ item }}"
+  vars:
+    ansible_connection: ssh
+  loop: "{{ _added_nodes_list }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _add_node_kubelet_conf_stat
+
+- name: "kubernetes | add-node | SSH pre-flight | Fail on already-joined node(s)"
+  ansible.builtin.fail:
+    msg: >-
+      {{ item.item }} already has /etc/kubernetes/kubelet.conf — it looks like
+      it's already part of a Kubernetes cluster. Reset it (kubeadm reset, or
+      this installer's teardown against whichever env it belongs to) before
+      adding it here.
+  loop: "{{ _add_node_kubelet_conf_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists | default(false)
+
+# scale.yml's kubeadm join needs this; failing here is faster and clearer
+# than a join timeout deep inside the Kubespray run.
+- name: "kubernetes | add-node | SSH pre-flight | Check control-plane API server reachability from new node(s)"
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[groups['kube_control_plane'][0]].ansible_host }}"
+    port: 6443
+    timeout: 10
+  delegate_to: "{{ item }}"
+  vars:
+    ansible_connection: ssh
+  loop: "{{ _added_nodes_list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "kubernetes | add-node | SSH pre-flight | Check internet on new node(s)"
+  ansible.builtin.uri:
+    url: https://github.com
+    method: GET
+    timeout: 10
+    status_code: [200, 301, 302]
+  delegate_to: "{{ item }}"
+  vars:
+    ansible_connection: ssh
+  loop: "{{ _added_nodes_list }}"
+  loop_control:
+    label: "{{ item }}"
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('') }}"
+  failed_when: false
+  register: _add_node_inet_results
+
+- name: "kubernetes | add-node | SSH pre-flight | Report new node(s) without internet"
+  ansible.builtin.debug:
+    msg: "WARNING: {{ item.item }} cannot reach https://github.com — check proxy settings"
+  loop: "{{ _add_node_inet_results.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.status | default(0) not in [200, 301, 302]
+
+- name: "kubernetes | add-node | Prep complete"
+  ansible.builtin.debug:
+    msg: >-
+      Inventory regenerated at {{ kubespray_custom_inventory }}.
+      es_auto_installer.sh now runs Kubespray scale.yml for the new worker node(s).
+
+- name: "kubernetes | add-node | End role (prep complete — scale.yml runs from caller)"
+  meta: end_role
