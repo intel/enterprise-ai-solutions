@@ -11,16 +11,22 @@
 #   2. Grafana dashboard ConfigMap
 # =============================================================================
 
-- name: "gpu_observability | Skip — no GPU vendor detected"
-  ansible.builtin.meta: end_role
-  when: (rack_scale_gpu_vendor | default('')) | length == 0
+- name: "gpu_observability | Read GPU vendor from generated flags"
+  ansible.builtin.shell: |
+    grep '^rack_scale_gpu_vendor=' {{ env_dir }}/inventory/metadata/rack-scale-flags.env 2>/dev/null | cut -d= -f2
+  register: _gpu_vendor_from_file
+  changed_when: false
+  failed_when: false
 
-- name: "gpu_observability | Skip for non-NVIDIA"
-  ansible.builtin.meta: end_role
-  when: rack_scale_gpu_vendor | default('') != 'nvidia'
+- name: "gpu_observability | Set GPU vendor fact"
+  ansible.builtin.set_fact:
+    _gpu_vendor: "{{ _gpu_vendor_from_file.stdout | default('') | trim }}"
 
-- name: "gpu_observability | NVIDIA"
-  when: rack_scale_gpu_vendor == 'nvidia'
+- name: "gpu_observability | Skip — no NVIDIA GPU detected"
+  ansible.builtin.meta: end_role
+  when: _gpu_vendor != 'nvidia'
+
+- name: "gpu_observability | NVIDIA alerts and dashboards"
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
@@ -44,7 +50,7 @@
             name: grafana-dashboard-nvidia-dcgm
             namespace: "{{ gpu_observability_namespace }}"
             labels:
-              "{{ gpu_observability_dashboard_label_key }}": "{{ gpu_observability_dashboard_label_value }}"
+              grafana_dashboard: "1"
               app.kubernetes.io/name: gpu-observability
               app.kubernetes.io/part-of: observability
           data:
