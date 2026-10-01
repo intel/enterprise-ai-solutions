@@ -1325,6 +1325,68 @@ _cp_tainted_nodes() {
             | .metadata.name' 2>/dev/null || true
 }
 
+# _pdb_blocked_pods <node> — "pod<TAB>pdb<TAB>detail" for every pod on <node>
+# that a PodDisruptionBudget currently allows zero disruptions for. kubectl
+# drain evicts via the Eviction API, which the API server rejects outright
+# whenever a pod's PDB has disruptionsAllowed == 0 — retrying does not help,
+# since that number is budget math (currentHealthy vs minAvailable), not a
+# transient condition. Left unchecked, remove-node discovers this only as a
+# drain that hangs through drain_retries x drain_timeout before giving up.
+# PDBs that select pods via matchExpressions (no matchLabels) can't be
+# resolved to a `kubectl -l` selector here, so they're reported with
+# "unsupported selector" instead of being silently skipped — the caller
+# should treat that as blocking too, pending manual review.
+_pdb_blocked_pods() {
+    local node="$1" ns name selector pod
+    while IFS=$'\t' read -r ns name selector; do
+        [[ -n "$ns" ]] || continue
+        if [[ -z "$selector" ]]; then
+            printf '%s/%s\t%s/%s\tunsupported selector (not matchLabels-based) — verify manually\n' "$ns" "$name" "$ns" "$name"
+            continue
+        fi
+        while IFS= read -r pod; do
+            [[ -n "$pod" ]] && printf '%s/%s\t%s/%s\tselector=%s\n' "$ns" "${pod#pod/}" "$ns" "$name" "$selector"
+        done < <(kubectl get pods -n "$ns" -l "$selector" --field-selector "spec.nodeName=${node}" -o name 2>/dev/null)
+    done < <(kubectl get pdb -A -o json 2>/dev/null | yq -p json -r '
+        .items[]
+        | select(.status.disruptionsAllowed == 0)
+        | [.metadata.namespace, .metadata.name, ((.spec.selector.matchLabels // {}) | to_entries | map(.key + "=" + .value) | join(","))]
+        | @tsv
+    ' 2>/dev/null || true)
+}
+
+# _nodes_yaml_ssh_target <hostname> — "ip<TAB>user<TAB>key" for <hostname>,
+# resolved from nodes.yaml with the same precedence hosts.yaml.j2 uses:
+# per-node ssh_user/ssh_key override the top-level nodes_ssh_user/nodes_ssh_key,
+# which in turn fall back to ssh's own defaults (current user, default identity)
+# when left unset.
+_nodes_yaml_ssh_target() {
+    _H="$1" yq -r '
+        . as $root
+        | ((.nodes_control_plane // []) + (.nodes_workers // []))
+        | .[] | select(.hostname == env(_H))
+        | [.ip, (.ssh_user // $root.nodes_ssh_user // ""), (.ssh_key // $root.nodes_ssh_key // "")]
+        | @tsv
+    ' "$ENV_DIR/nodes.yaml" 2>/dev/null
+}
+
+# _ssh_preflight_check <hostname> — empty output and rc 0 if <hostname>'s
+# declared node accepts the credentials nodes.yaml resolves for it; otherwise
+# the raw ssh error. Kubespray's own SSH pre-flight (roles/kubernetes/tasks/
+# add-node.yaml) catches an unauthorized key too, but only after
+# kubespray_ensure + inventory regen + Ansible startup — this fails in under
+# a second, before the operator is even asked to confirm.
+_ssh_preflight_check() {
+    local hostname="$1" ip user key target
+    IFS=$'\t' read -r ip user key < <(_nodes_yaml_ssh_target "$hostname")
+    [[ -n "$ip" ]] || { echo "no ip found for ${hostname} in nodes.yaml"; return 1; }
+    target="$ip"
+    [[ -n "$user" ]] && target="${user}@${ip}"
+    local -a ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
+    [[ -n "$key" ]] && ssh_opts+=(-i "${key/#\~/$HOME}")
+    ssh "${ssh_opts[@]}" "$target" true 2>&1
+}
+
 # do_add_node — scale worker node(s) into an existing cluster (Kubespray scale.yml).
 do_add_node() {
     _require_nodes_yaml_defined
@@ -1350,6 +1412,20 @@ do_add_node() {
 
     local added_csv="${added//$'\n'/,}"
     info "add-node: new worker node(s): ${added_csv//,/, }"
+
+    # SSH guard: Kubespray's own pre-flight catches an unauthorized key too,
+    # but only after kubespray_ensure + inventory regen + Ansible startup
+    # overhead. Checked here against the real ip/user/key nodes.yaml
+    # declares, so it fails in under a second instead.
+    local ssh_hits="" n ssh_err
+    for n in ${added//$'\n'/ }; do
+        ssh_err=$(_ssh_preflight_check "$n") || ssh_hits+="  ${n}: ${ssh_err}"$'\n'
+    done
+    if [[ -n "$ssh_hits" ]]; then
+        err "add-node: cannot SSH to the new node(s) below:
+${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or fix ssh_user/ssh_key in nodes.yaml, then retry."
+    fi
+
     if [[ "$DRY_RUN" == "true" ]]; then
         info "  would run: scale.yml --limit=${added_csv},kube_control_plane"
         exit 0
@@ -1410,6 +1486,23 @@ do_remove_node() {
         fi
     done
     [[ "$any_workloads" == "true" ]] || info "  no non-DaemonSet workloads running on: ${removed_csv//,/, }"
+
+    # PodDisruptionBudget guard: a pod whose PDB currently allows zero
+    # disruptions will have every eviction attempt rejected by the API
+    # server, so kubectl drain cannot succeed against it no matter how many
+    # times remove-node.yml retries. Caught here, before confirm(), instead
+    # of discovered later as a drain hung through drain_retries x
+    # drain_timeout.
+    local pdb_hits=""
+    for n in ${removed//$'\n'/ }; do
+        while IFS=$'\t' read -r pod pdb detail; do
+            [[ -n "$pod" ]] && pdb_hits+="  ${pod} on ${n} — blocked by PodDisruptionBudget ${pdb} (${detail})"$'\n'
+        done < <(_pdb_blocked_pods "$n")
+    done
+    if [[ -n "$pdb_hits" ]]; then
+        err "remove-node: drain would hang — the pod(s) below cannot be evicted because their PodDisruptionBudget currently allows zero disruptions:
+${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the node first, then retry remove-node."
+    fi
 
     # Last-worker warning: "worker" here means live and NOT in kube_control_plane,
     # not kube_node membership — kube_node mirrors kube_control_plane in
