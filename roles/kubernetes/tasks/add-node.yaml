@@ -95,6 +95,15 @@
 - name: "kubernetes | add-node | Regenerate inventory from nodes.yaml"
   ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
 
+# The template task above just rewrote hosts.yaml on disk to include the new
+# node(s), but this play's inventory was already loaded into memory at
+# startup — Ansible won't notice the file changed on its own. Without this,
+# delegate_to below finds no inventory entry for the new node (it didn't
+# exist yet when the play started), so it falls back to resolving the raw
+# hostname via DNS instead of using the ansible_host IP just templated in.
+- name: "kubernetes | add-node | Reload inventory to pick up newly added node(s)"
+  ansible.builtin.meta: refresh_inventory
+
 # ─── Pre-flight for the new node(s) ──────────────────────────────────────────
 # SSH ping and internet reachability mirror what install.yaml already runs
 # against every node before a fresh cluster.yml. Already-joined and
