@@ -1,4 +1,9 @@
 ---
+# Gateway-wide auth. Only keycloak attaches a policy here: it validates the
+# Keycloak-issued JWT for every route on the gateway. In litellm mode the gateway
+# does TLS + routing only — LiteLLM (litellm.<domain>) validates its own virtual
+# keys and is the sole inference auth boundary — so no gateway policy is applied
+# (see roles/envoy_gateway/tasks/install.yaml).
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
@@ -9,7 +14,6 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: {{ gateway_name }}
-{% if auth_provider == 'keycloak' %}
   jwt:
     providers:
       - name: keycloak
@@ -18,14 +22,3 @@ spec:
           - "{{ keycloak_client_id | default('inference-client') }}"
         remoteJWKS:
           uri: "http://keycloak-service.{{ keycloak_namespace | default('keycloak') }}.svc.cluster.local:8080/realms/{{ keycloak_realm }}/protocol/openid-connect/certs"
-{% elif auth_provider == 'litellm' %}
-  extAuth:
-    http:
-      backendRef:
-        name: litellm
-        namespace: litellm
-        port: 4000
-      headersToBackend:
-        - Authorization
-      path: /key/verify
-{% endif %}
