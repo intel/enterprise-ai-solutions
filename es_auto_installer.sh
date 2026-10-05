@@ -1192,9 +1192,11 @@ run() {
 # progress, so the kubernetes role only does prep; this function bridges
 # prep → {cluster,reset,scale,remove-node}.yml → post.
 #   install:  cluster.yml
-#   teardown: reset.yml            -e reset_confirmation=yes
+#   teardown: reset.yml            -e '{"reset_confirmation": true}'
 #   scale:    scale.yml            --limit=<arg2>,kube_control_plane (arg2: new worker(s))
-#   remove:   remove-node.yml      -e node=<arg2> -e skip_confirmation=true
+#   remove:   remove-node.yml      -e node=<arg2> -e '{"skip_confirmation": true}'
+# Booleans are passed as JSON (not key=value) so they parse as native bools —
+# key=value is always a string, which ansible-core 2.19+ rejects in when: checks.
 run_kubespray() {
     local action="${1:-install}" arg2="${2:-}"
     local ks_dir="${SCRIPT_DIR}/.kubespray"
@@ -1211,9 +1213,9 @@ run_kubespray() {
 
     local pb="$ks_dir/cluster.yml" extra=() limit_args=()
     case "$action" in
-        teardown) pb="$ks_dir/reset.yml";       extra=(-e reset_confirmation=yes) ;;
+        teardown) pb="$ks_dir/reset.yml";       extra=(-e '{"reset_confirmation": true}') ;;
         scale)    pb="$ks_dir/scale.yml";       limit_args=(--limit="${arg2},kube_control_plane") ;;
-        remove)   pb="$ks_dir/remove-node.yml"; extra=(-e "node=${arg2}" -e skip_confirmation=true) ;;
+        remove)   pb="$ks_dir/remove-node.yml"; extra=(-e "node=${arg2}" -e '{"skip_confirmation": true}') ;;
     esac
     [[ -f "$ENV_DIR/kubespray_extra_auto.yml" ]] && extra+=(-e "@$ENV_DIR/kubespray_extra_auto.yml")
     [[ -f "$ENV_DIR/kubespray_extra.yml" ]] && extra+=(-e "@$ENV_DIR/kubespray_extra.yml")
@@ -1387,6 +1389,26 @@ _ssh_preflight_check() {
     ssh "${ssh_opts[@]}" "$target" true 2>&1
 }
 
+# _nri_balloons_enabled — mirrors the nri_cpu_balloons component's own
+# `enabled:` expression (configs/components.yaml) so the add-node/remove-node
+# reminder below only fires when that component is actually active.
+_nri_balloons_enabled() {
+    [[ -f "$GLOBAL_CONFIG" ]] && command -v yq &>/dev/null || return 1
+    local policy accel
+    policy=$(yq -r '.kubernetes_cpu_policy // "nri-balloons"' "$GLOBAL_CONFIG" 2>/dev/null)
+    accel=$(yq -r '.kubernetes_accelerator // "cpu"' "$GLOBAL_CONFIG" 2>/dev/null)
+    [[ "$policy" == "nri-balloons" && "$accel" == "cpu" ]]
+}
+
+# _nri_balloons_reminder — add-node/remove-node only ever touch the kubernetes
+# component; nri_cpu_balloons (CPU pinning) is a separate component and is
+# NOT re-applied automatically. Surface that instead of leaving the new/
+# removed node(s) silently running on a stale or missing balloon policy.
+_nri_balloons_reminder() {
+    _nri_balloons_enabled || return 0
+    warn "  nri_cpu_balloons was not re-applied — it's a separate component and is not touched by ${ACTION}. Run './$(basename "$0") install --env ${ENV_NAME} nri_cpu_balloons' to refresh CPU-pinning policy for the current node set."
+}
+
 # do_add_node — scale worker node(s) into an existing cluster (Kubespray scale.yml).
 do_add_node() {
     _require_nodes_yaml_defined
@@ -1439,6 +1461,7 @@ ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or f
     run site "${vars[@]}" -e "_scale_phase=prep" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
     run_kubespray scale "$added_csv"
     run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
+    _nri_balloons_reminder
 }
 
 # do_remove_node — remove node(s) from an existing cluster (Kubespray remove-node.yml).
@@ -1525,7 +1548,7 @@ ${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the nod
     fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
-        info "  would run: remove-node.yml -e node=${removed_csv} -e skip_confirmation=true"
+        info "  would run: remove-node.yml -e node=${removed_csv} -e '{\"skip_confirmation\": true}'"
         exit 0
     fi
 
@@ -1541,6 +1564,7 @@ ${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the nod
     for n in ${removed//$'\n'/ }; do
         rm -f "${ENV_INVENTORY_DIR}/host_vars/${n}.yml"
     done
+    _nri_balloons_reminder
 }
 
 # _opt_value <flag> <value> — a flag's value must exist and not be another flag,
@@ -1805,7 +1829,7 @@ main() {
         local _what="'${TARGET}' and everything above it, in env/${ENV_NAME}"
         [[ "$_includes_k8s" == "true" ]] \
             && _what="${_what}
-  This DESTROYS the Kubernetes cluster: kubespray reset runs with reset_confirmation=yes."
+  This DESTROYS the Kubernetes cluster: kubespray reset runs with reset_confirmation=true."
         confirm "About to tear down ${_what}"
     fi
 
