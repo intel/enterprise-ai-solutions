@@ -66,6 +66,28 @@
         executable: /bin/bash
       changed_when: true
 
+    - name: "gpu_operator | nvidia | Write Helm values file"
+      ansible.builtin.copy:
+        content: |
+          driver:
+            enabled: {{ gpu_operator_driver_enabled | lower }}
+          toolkit:
+            enabled: {{ gpu_operator_toolkit_enabled | lower }}
+          devicePlugin:
+            enabled: {{ gpu_operator_device_plugin_enabled | lower }}
+          migManager:
+            enabled: {{ gpu_operator_mig_enabled | lower }}
+          nodeStatusExporter:
+            enabled: true
+          dcgmExporter:
+            enabled: {{ gpu_operator_dcgm_exporter_enabled | lower }}
+            config:
+              name: dcgm-metrics-config
+            serviceMonitor:
+              enabled: false
+        dest: /tmp/gpu-operator-values.yaml
+        mode: "0644"
+
     - name: "gpu_operator | nvidia | Deploy GPU Operator via Helm"
       ansible.builtin.command:
         cmd: >-
@@ -73,13 +95,7 @@
           {{ gpu_operator_chart }}
           --namespace {{ gpu_operator_namespace }}
           --version {{ gpu_operator_version }}
-          --set driver.enabled={{ gpu_operator_driver_enabled | lower }}
-          --set toolkit.enabled={{ gpu_operator_toolkit_enabled | lower }}
-          --set devicePlugin.enabled={{ gpu_operator_device_plugin_enabled | lower }}
-          --set migManager.enabled={{ gpu_operator_mig_enabled | lower }}
-          --set nodeStatusExporter.enabled=true
-          --set dcgmExporter.enabled={{ gpu_operator_dcgm_exporter_enabled | lower }}
-          --set dcgmExporter.config.name=dcgm-metrics-config
+          -f /tmp/gpu-operator-values.yaml
           --wait
           --timeout {{ gpu_operator_wait_timeout }}
       register: _gpu_helm_install
