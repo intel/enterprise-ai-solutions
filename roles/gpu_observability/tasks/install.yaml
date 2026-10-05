@@ -5,10 +5,12 @@
 # Deploys DCGM Grafana dashboard and GPU alert rules into the observability
 # namespace. Only for NVIDIA GPUs (Intel XPU uses different metrics).
 #
-# The DCGM ServiceMonitor is created by the GPU Operator Helm chart itself
-# (dcgmExporter.enabled=true), so we do not create one here. We only add:
-#   1. PrometheusRule with GPU health alerts
-#   2. Grafana dashboard ConfigMap
+# The GPU Operator's built-in ServiceMonitor is disabled (it lacks the
+# release: observability label that kube-prometheus-stack requires). We
+# create our own ServiceMonitor here with the correct label, plus:
+#   1. DCGM ServiceMonitor (with release: observability label)
+#   2. PrometheusRule with GPU health alerts
+#   3. Grafana dashboard ConfigMap
 # =============================================================================
 
 - name: "gpu_observability | Read GPU vendor from generated flags"
@@ -30,6 +32,36 @@
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
+    # ── DCGM ServiceMonitor ────────────────────────────────────────────────
+    # The GPU Operator's built-in ServiceMonitor lacks release: observability,
+    # so kube-prometheus-stack's Prometheus silently ignores it. We disable
+    # the operator's monitor and create our own with the correct label.
+
+    - name: "gpu_observability | Create DCGM ServiceMonitor"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: dcgm-exporter
+            namespace: "{{ gpu_observability_namespace }}"
+            labels:
+              release: observability
+              app.kubernetes.io/name: dcgm-exporter
+              app.kubernetes.io/part-of: gpu-observability
+          spec:
+            selector:
+              matchLabels:
+                app: nvidia-dcgm-exporter
+            namespaceSelector:
+              matchNames:
+                - gpu-operator
+            endpoints:
+              - port: gpu-metrics
+                interval: 15s
+                honorLabels: true
+
     # ── GPU Alert Rules ──────────────────────────────────────────────────────
 
     - name: "gpu_observability | Apply GPU alert rules"
