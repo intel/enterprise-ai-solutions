@@ -22,7 +22,23 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 ./es_auto_installer.sh remove-node             # remove the dropped node(s)
 ```
 
-Both require a cluster that's already installed and managed by this installer (not BYO — `existing_kubernetes` unset in `global_config.yaml`).
+## What's supported
+
+| Scenario | Supported? |
+|---|---|
+| Installer-managed cluster, no ERAG deployed | Yes |
+| Adding worker node(s) via `add-node` | Yes |
+| Removing node(s) via `remove-node` (except the first control-plane/etcd host) | Yes |
+
+## What's not supported
+
+| Scenario | Why |
+|---|---|
+| BYO cluster (`existing_kubernetes` set in `global_config.yaml`) | A bring-your-own cluster is not managed by Kubespray at all |
+| Adding control-plane/etcd node(s) via `add-node` | Kubespray's `scale.yml` cannot add control-plane/etcd members — use `install kubernetes` instead (re-runs `cluster.yml`) |
+| Removing the first control-plane/etcd node via `remove-node` | Kubespray refuses to remove it directly — reorder `nodes_control_plane` and re-run `install kubernetes` first |
+| Cluster with ERAG deployed | Both actions only ever touch the `kubernetes` component — ERAG's own Helm/pipeline config is never re-applied, so any node-specific placement it relies on isn't accounted for |
+
 
 ## Adding worker nodes
 
@@ -124,6 +140,7 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 - Inventory regeneration is deliberately deferred until *after* `remove-node.yml` succeeds, so Kubespray always gets a node it can still reach.
 - **Workload visibility before you confirm** — lists real (non-DaemonSet, non-static-pod) workloads running on the node(s) about to be removed, so a model or service that's only running there doesn't get evicted as a surprise.
 - **Last-worker warning** — flags when the removal would leave zero worker nodes, and separately reports whether the control-plane node currently has the `NoSchedule` taint (so you know whether that actually means "nothing schedulable anywhere" or just "back to single-node"). A warning, not a block — dropping to zero workers is a valid, already-supported topology when it's intentional.
+- **`nri_cpu_balloons` reminder** — if CPU pinning (`kubernetes_cpu_policy: nri-balloons`) is enabled, both actions print a reminder to re-run `install nri_cpu_balloons` afterward: it's a separate component, not part of `kubernetes`, so it isn't re-applied automatically.
 
 ## Related Docs
 
