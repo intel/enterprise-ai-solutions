@@ -22,6 +22,10 @@
       env directory, or set rack_scale_enabled: false in global_config.yaml.
   when: not _rack_profile_stat.stat.exists
 
+- name: "fabric_inventory | Read topology for preflight checks"
+  ansible.builtin.set_fact:
+    _rack_topology: "{{ lookup('file', rack_profile_path) | from_yaml | json_query('network.topology') | default('star') }}"
+
 - name: "fabric_inventory | Fail if metallb_ip_range not set"
   ansible.builtin.fail:
     msg: |-
@@ -34,7 +38,9 @@
       Set metallb_ip_range in global_config.yaml to a management-subnet IP:
         metallb_ip_range: "172.18.168.1/32"
         metallb_ip_range: "172.18.168.240-172.18.168.250"
-  when: metallb_ip_range | default('', true) | length == 0
+  when:
+    - _rack_topology != 'none'
+    - metallb_ip_range | default('', true) | length == 0
 
 # ── Load rack-profile.yaml ───────────────────────────────────────────────────
 

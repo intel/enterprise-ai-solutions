@@ -546,9 +546,10 @@ def _parse_and_validate(profile):
     leaf_names = {lf["name"] for lf in leafs}
 
     # ── Topology / address / duplicate validation ────────────────────────────
-    if topology not in ("clos", "star"):
+    if topology not in ("clos", "star", "l2", "none"):
         errors.append(
-            f"network.topology '{topology}' is invalid — expected 'clos' or 'star'")
+            f"network.topology '{topology}' is invalid — "
+            f"expected 'clos', 'star', 'l2', or 'none'")
 
     if calico_mode == "bgp":
         for leaf in leafs:
@@ -627,6 +628,51 @@ def _parse_and_validate(profile):
         warnings.append(
             "'fabric_router: true' is set but network.topology is not 'star' "
             "— the flag will be ignored")
+
+    if topology == "l2":
+        if leafs:
+            errors.append(
+                "network.topology=l2 does not use leafs — remove the 'leafs:' "
+                "block (all nodes share one L2 broadcast domain)")
+        for node_name, node in all_nodes.items():
+            if node.get("fabric_router"):
+                errors.append(
+                    f"node '{node_name}' sets fabric_router but topology=l2 "
+                    f"has no hub — remove fabric_router")
+            for fn in node.get("fabric_nics", []):
+                if fn.get("peer"):
+                    errors.append(
+                        f"node '{node_name}' NIC '{fn.get('nic', '?')}' "
+                        f"declares 'peer:' but topology=l2 has no "
+                        f"point-to-point cables — remove peer")
+                if fn.get("leaf"):
+                    errors.append(
+                        f"node '{node_name}' NIC '{fn.get('nic', '?')}' "
+                        f"declares 'leaf:' but topology=l2 has no leaf "
+                        f"switches — remove leaf")
+
+    if topology == "none":
+        if calico_mode == "bgp":
+            errors.append(
+                "network.topology=none has no fabric — calico_mode must be "
+                "'vxlan', not 'bgp'")
+        if cp_on_fabric:
+            warnings.append(
+                "control_plane_on_fabric=true is ignored when topology=none "
+                "(no fabric exists)")
+        if leafs:
+            errors.append(
+                "network.topology=none does not use leafs — remove the "
+                "'leafs:' block")
+        for node_name, node in all_nodes.items():
+            if node.get("fabric_nics"):
+                errors.append(
+                    f"node '{node_name}' has fabric_nics but topology=none "
+                    f"— remove fabric_nics (use mgmt_ip for all traffic)")
+            if node.get("fabric_router"):
+                errors.append(
+                    f"node '{node_name}' sets fabric_router but "
+                    f"topology=none — remove it")
 
     # mgmt_nic deprecation notice.
     if network.get("mgmt_nic") or any(
@@ -907,7 +953,22 @@ def _gen_calico_yml(ctx):
         "kube_network_node_prefix: 24",
         "",
     ]
-    if c["calico_mode"] == "bgp":
+    if c["calico_mode"] == "bgp" and c["topology"] == "l2":
+        lines += [
+            "calico_network_backend: bird",
+            "",
+            "calico_ipip_mode: Never",
+            "calico_vxlan_mode: Never",
+            "",
+            "calico_nat_outgoing: true",
+            "",
+            f"calico_mtu: {c['fabric_mtu']}",
+            "",
+            f'global_as_num: "{c["cluster_asn"]}"',
+            "",
+            'calico_node_to_node_mesh: "true"',
+        ]
+    elif c["calico_mode"] == "bgp":
         lines += [
             "calico_network_backend: bird",
             "",
@@ -975,9 +1036,12 @@ def _gen_flags_env(ctx):
     controller_has_fabric = any(
         node.get("local") and node.get("fabric_nics")
         for node in all_nodes.values())
-    ping_access_ip = ("true"
-                      if (c["cp_on_fabric"] or controller_has_fabric)
-                      else "false")
+    if c["topology"] == "none":
+        ping_access_ip = "true"
+    else:
+        ping_access_ip = ("true"
+                          if (c["cp_on_fabric"] or controller_has_fabric)
+                          else "false")
 
     lines = [
         "# Copyright (C) 2025-2026 Intel Corporation",
@@ -1019,6 +1083,9 @@ def _gen_netplan_files(ctx):
     warnings = c["warnings"]
     files = {}
 
+    if c["topology"] == "none":
+        return files
+
     for node_name, node in all_nodes.items():
         nics = node.get("fabric_nics", [])
         if not nics:
@@ -1038,8 +1105,9 @@ def _gen_netplan_files(ctx):
                 routes = _star_routes_for(
                     node_name, node, fn, all_nodes, c["fabric_prefix"],
                     warnings)
-            else:
+            elif c["topology"] == "l2":
                 routes = []
+            else:
                 if gateway and gateway != "TBD":
                     for other_leaf in c["leafs"]:
                         if (other_leaf["name"] != leaf_name

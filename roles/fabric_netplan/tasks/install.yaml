@@ -11,6 +11,10 @@
 # kubernetes role for SSH preflight and CPU reservation.
 # =============================================================================
 
+- name: "fabric_netplan | Skip — topology=none (no fabric)"
+  ansible.builtin.meta: end_role
+  when: (rack_scale_topology | default('star')) == 'none'
+
 - name: "fabric_netplan | Compute cluster node list"
   ansible.builtin.set_fact:
     _fabric_all_nodes: >-

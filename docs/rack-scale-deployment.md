@@ -1,6 +1,6 @@
 # Rack-Scale Deployment
 
-**[Overview](#overview)** | **[Quick Start](#quick-start)** | **[rack-profile.yaml](#writing-rack-profileyaml)** | **[Star](#star-topology)** | **[Clos](#clos-topology)** | **[GPU](#gpu-nodes)** | **[Validation](#validation)** | **[Troubleshooting](#troubleshooting)**
+**[Overview](#overview)** | **[Quick Start](#quick-start)** | **[rack-profile.yaml](#writing-rack-profileyaml)** | **[Star](#star-topology)** | **[Clos](#clos-topology)** | **[L2](#l2-topology)** | **[None](#none-topology)** | **[GPU](#gpu-nodes)** | **[Validation](#validation)** | **[Troubleshooting](#troubleshooting)**
 
 ---
 
@@ -21,12 +21,14 @@ automatically configures:
 - **NVIDIA GPU operator** — auto-installs when an NVIDIA `accelerator:` is declared (no separate flag)
 - **Node labels** — silicon family, GPU vendor/model/form applied to K8s nodes
 
-Two topologies are supported from the same `rack-profile.yaml` schema:
+Four topologies are supported from the same `rack-profile.yaml` schema:
 
 | Topology | Use Case | Switching | Calico Mode |
 |----------|----------|-----------|-------------|
 | **Star** | Pilots, POC, switchless (e.g. HPE B300 HGX) | None — direct cables | VXLAN |
 | **Clos** | Production, full HA, max throughput | Leaf/spine ToR switches | BGP |
+| **L2** | L2-only fabric switch, flat broadcast domain | Single L2 switch | VXLAN or BGP (node mesh) |
+| **None** | GPU-only, no fabric — inventory + labels only | N/A | VXLAN (forced) |
 
 ## Prerequisites
 
@@ -95,8 +97,8 @@ site:
 
 ```yaml
 network:
-  topology: star             # star | clos
-  calico_mode: vxlan         # vxlan (star) | bgp (clos)
+  topology: star             # star | clos | l2 | none
+  calico_mode: vxlan         # vxlan (star/l2/none) | bgp (clos or l2 node-mesh)
   pod_cidr: 10.244.0.0/16
   service_cidr: 10.233.0.0/18
   mtu: 9000                  # jumbo frames — must match switch and NIC config
@@ -276,6 +278,98 @@ worker1:
 
 ---
 
+## L2 Topology
+
+Flat L2 fabric switch — all nodes on one broadcast domain, no BGP peering
+with the switch. Simpler than Clos (no leaf/spine, no per-node BGPPeer CRDs)
+but limited to a single switch domain.
+
+**When to use:** single L2 switch connecting all nodes, no multi-rack spine.
+
+**How it works:**
+- All nodes share one L2 broadcast domain (single VLAN/subnet)
+- Netplan assigns fabric addresses only — no routes needed (all on-link)
+- No leafs, no hub, no peer declarations
+
+**Calico mode options:**
+
+| Mode | Backend | Encapsulation | MTU | Use when |
+|------|---------|--------------|-----|----------|
+| `vxlan` | VXLAN | Always | fabric MTU - 50 | Simple, works everywhere |
+| `bgp` | bird | None (native) | full fabric MTU | Maximum throughput — nodes exchange pod routes directly over L2 |
+
+With `calico_mode: bgp` on L2, Calico uses **node-to-node mesh** (all nodes peer with each other) instead of the Clos model (per-node ToR peering). No `leafs:` block needed.
+
+**Key fields:**
+
+```yaml
+network:
+  topology: l2
+  calico_mode: vxlan       # or bgp for native routing
+  fabric_prefix: 16
+  mtu: 9000
+  control_plane_on_fabric: true
+  bgp:
+    cluster_asn: 65100     # only needed when calico_mode: bgp
+
+# All nodes — single NIC, no leaf/peer:
+master1:
+  fabric_nics:
+    - nic: ens786f0np0
+      fabric_ip: 10.201.1.1
+```
+
+> [!Note]
+> L2 rejects `leafs:`, `fabric_router:`, `peer:`, and `leaf:` on NICs.
+> The parser enforces these as hard errors.
+
+---
+
+## None Topology
+
+No fabric network at all. `rack-profile.yaml` is used purely for inventory
+generation, node labels (silicon family, GPU vendor/model), and GPU Operator
+auto-enablement. All traffic runs on the management network.
+
+**When to use:** existing network is sufficient, but you want rack-profile.yaml
+for GPU operator auto-install, node labeling, and structured inventory — without
+deploying fabric networking.
+
+**How it works:**
+- All nodes use `mgmt_ip` as their Kubernetes `ip`/`access_ip`
+- No netplan files generated — fabric roles skip entirely
+- Calico forced to VXLAN on the management network
+- GPU operator still auto-enables from `accelerator:` field
+- `metallb_ip_range` auto-detection works (mgmt IPs are reachable)
+
+**Key fields:**
+
+```yaml
+network:
+  topology: none
+  calico_mode: vxlan       # forced — bgp rejected by parser
+  pod_cidr: 10.244.0.0/16
+  service_cidr: 10.96.0.0/12
+
+# Nodes — mgmt_ip only, NO fabric_nics:
+master1:
+  hostname: minfra01
+  mgmt_ip: 172.18.168.1
+  roles: [kube_control_plane, etcd]
+
+gnr04:
+  hostname: m6980m05
+  mgmt_ip: 172.18.158.17
+  profile: gpu-b300-hgx       # GPU operator auto-enables
+  roles: [kube_node]
+```
+
+> [!Important]
+> `topology: none` rejects `fabric_nics`, `calico_mode: bgp`, `leafs:`, and
+> `fabric_router:`. The parser enforces these as hard errors.
+
+---
+
 ## Upgrading Star → Clos
 
 This is a config-only change — no application modifications required.
@@ -371,6 +465,9 @@ and continue.
 | `unknown field 'X' — typo?` | Schema validation | Fix the field name and re-run — the parser catches typos as hard errors |
 | `GPU operator not installing` | Missing `accelerator:`, or the vendor is not NVIDIA | Add `accelerator: nvidia-b300-hgx` (or similar) to the node or its profile |
 | BGP sessions not Established (Clos) | Leaf switch misconfigured | Verify `peer_ip`, `asn`, and `fabric_subnet` match the switch config |
+| `topology=l2 does not use leafs` | L2 profile has `leafs:` block | Remove the `leafs:` section — L2 is a flat broadcast domain |
+| `topology=none ... has fabric_nics` | None profile has fabric NICs | Remove `fabric_nics` from all nodes — topology=none uses mgmt_ip only |
+| `topology=none ... calico_mode must be vxlan` | None + BGP | Change `calico_mode: vxlan` — no fabric to run BGP over |
 
 ---
 
@@ -387,6 +484,18 @@ fabric_inventory → fabric_netplan → fabric_sysctl → kubernetes → fabric_
 ```
 fabric_inventory → fabric_netplan → fabric_sysctl → kubernetes → fabric_bgp → fabric_validate → storage
 ```
+
+**L2 (rack_scale_enabled=true, topology=l2):**
+```
+fabric_inventory → fabric_netplan → kubernetes → fabric_validate → storage
+```
+fabric_sysctl and fabric_bgp are no-ops (no hub, no ToR peers).
+
+**None (rack_scale_enabled=true, topology=none):**
+```
+fabric_inventory → kubernetes → fabric_validate (labels only) → storage
+```
+fabric_netplan, fabric_sysctl, fabric_bgp all skip. No fabric network — rack-profile used for inventory and GPU labels only.
 
 **Default (rack_scale_enabled=false):**
 ```

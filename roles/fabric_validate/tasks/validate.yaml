@@ -13,6 +13,13 @@
 #   Both:  jumbo MTU (8950-byte ping), NIC MTU & speed, spoke-to-spoke ping,
 #          fabric IP reachability from deploy node
 
+# ─── Skip fabric checks when topology=none ─────────────────────────────────
+# No fabric to validate — jump straight to node labels.
+
+- name: "fabric_validate | validate | Skip fabric checks (topology=none)"
+  ansible.builtin.set_fact:
+    _skip_fabric_checks: "{{ (rack_scale_topology | default('star')) == 'none' }}"
+
 # ─── Fabric IP reachability from deploy node ────────────────────────────────
 # Verifies every node's fabric access_ip is reachable BEFORE anything depends
 # on it.  Quorum members (etcd/CP) fail hard; workers warn and continue.
@@ -28,6 +35,7 @@
   loop: "{{ groups['k8s_cluster'] | default(['localhost']) }}"
   loop_control:
     label: "{{ item }} ({{ hostvars[item].access_ip | default('unknown') }})"
+  when: not _skip_fabric_checks
 
 - name: "fabric_validate | validate | Fail on unreachable quorum members"
   ansible.builtin.fail:
@@ -38,6 +46,7 @@
       On a star topology, check the hub (fabric_routers group) first:
       iptables -S FORWARD and sysctl net.ipv4.ip_forward.
   when:
+    - not _skip_fabric_checks
     - item is failed
     - item.item in (groups.get('etcd', []) + groups.get('kube_control_plane', []))
   loop: "{{ _fabric_reach.results }}"
@@ -51,6 +60,7 @@
       not reachable from deploy node.  Non-quorum node — continuing, but investigate
       if kubelet registration or Calico peering fails later.
   when:
+    - not _skip_fabric_checks
     - item is failed
     - item.item not in (groups.get('etcd', []) + groups.get('kube_control_plane', []))
   loop: "{{ _fabric_reach.results }}"
@@ -60,6 +70,7 @@
 # ─── Per-node fabric checks (delegated to each cluster member) ──────────────
 
 - name: "fabric_validate | validate | Run fabric checks on each node"
+  when: not _skip_fabric_checks
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail
@@ -211,6 +222,7 @@
   loop: "{{ _fabric_check_results.results }}"
   loop_control:
     label: "{{ item.item | default('unknown') }}"
+  when: not _skip_fabric_checks
 
 - name: "fabric_validate | validate | Check for failures"
   ansible.builtin.assert:
@@ -223,58 +235,16 @@
   loop: "{{ _fabric_check_results.results }}"
   loop_control:
     label: "{{ item.item | default('unknown') }}"
+  when: not _skip_fabric_checks
 
-# ─── Apply node labels from parser-generated hostvars ──────────────────────
-# The parser sets node_family, node_gpu_vendor, node_gpu_model, node_gpu_form
-# as hostvars in hosts.yaml.  These are Ansible variables, not Kubernetes
-# labels.  Apply them here (after K8s is up) so GPU operator nodeSelector
-# and inference scheduling can find the right nodes.
+# ─── Re-apply node labels (idempotent — same task as install.yaml) ─────────
 
-- name: "fabric_validate | validate | Apply silicon/GPU node labels"
-  ansible.builtin.command:
-    cmd: >-
-      kubectl label node {{ item }}
-      {% if hostvars[item].node_family is defined and hostvars[item].node_family | length > 0 %}
-      cpu-gen={{ hostvars[item].node_family }}
-      {% endif %}
-      {% if hostvars[item].node_sku is defined and hostvars[item].node_sku | length > 0 %}
-      cpu-sku={{ hostvars[item].node_sku }}
-      {% endif %}
-      {% if hostvars[item].node_accelerator is defined and hostvars[item].node_accelerator | length > 0 %}
-      gpu-vendor={{ hostvars[item].node_gpu_vendor }}
-      gpu-model={{ hostvars[item].node_gpu_model }}
-      {% if hostvars[item].node_gpu_form is defined and hostvars[item].node_gpu_form | length > 0 %}
-      gpu-form={{ hostvars[item].node_gpu_form }}
-      {% endif %}
-      gpu-count={{ hostvars[item].node_gpu_count | default('0') }}
-      {% endif %}
-      --overwrite
-  environment:
-    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
-  delegate_to: localhost
-  changed_when: true
-  loop: "{{ groups['k8s_cluster'] | default([]) | reject('equalto', 'localhost') | list }}"
-  loop_control:
-    label: "{{ item }}"
-  when: >-
-    hostvars[item].node_family is defined or
-    hostvars[item].node_accelerator is defined
-
-- name: "fabric_validate | validate | Report applied labels"
-  ansible.builtin.command:
-    cmd: kubectl get nodes --show-labels
-  environment:
-    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
-  delegate_to: localhost
-  changed_when: false
-  register: _node_labels
-
-- name: "fabric_validate | validate | Node labels"
-  ansible.builtin.debug:
-    msg: "{{ _node_labels.stdout_lines }}"
+- name: "fabric_validate | validate | Re-apply silicon/GPU node labels"
+  ansible.builtin.include_tasks: install.yaml
 
 - name: "fabric_validate | validate | ━━━ PASS ━━━"
   ansible.builtin.debug:
-    msg:
-      - "Fabric validation passed on all {{ _fabric_check_results.results | length }} node(s)."
-      - "Topology: {{ rack_scale_topology | default('star') }}"
+    msg: >-
+      {{ 'topology=none — fabric checks skipped, node labels applied.'
+         if _skip_fabric_checks else
+         'Fabric validation passed on all ' ~ _fabric_check_results.results | length ~ ' node(s). Topology: ' ~ (rack_scale_topology | default('star')) }}
