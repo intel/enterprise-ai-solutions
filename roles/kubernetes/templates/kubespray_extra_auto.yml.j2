@@ -9,6 +9,19 @@ kube_pods_subnet: "{{ kubernetes_cluster_cidr }}"
 kube_service_addresses: "{{ kubernetes_service_cidr }}"
 dns_mode: "{{ kubernetes_dns_mode }}"
 kube_proxy_mode: "{{ kubernetes_kube_proxy_mode }}"
+# CoreDNS DNS autoscaler: scale by cluster size, not CPU cores.
+# The cores term (ceil(cores/256)) tracks CPU count, not DNS load, so high-core
+# GPU nodes over-provision CoreDNS -- a 5-node cluster asks for 5 replicas, a
+# 53-node rack for 47. NodeLocal DNSCache already caches per node, so the
+# central pool only serves cache misses: one replica per 64 nodes, but never
+# fewer than 2 (1 on single-node). Do not set nodes_per_replica to 0 as well --
+# the autoscaler rejects cores and nodes both being 0, then silently stops
+# updating replicas while still reporting Ready.
+dns_cores_per_replica: 0
+dns_nodes_per_replica: 64
+{# raw: keep this expression intact in the extra-vars file so kubespray resolves
+   groups['k8s_cluster'] against the cluster inventory, not ours. -#}
+dns_min_replicas: "{% raw %}{{ [2, groups['k8s_cluster'] | length] | min }}{% endraw %}"
 {% if not (_k8s_needs_ssh | bool) %}
 # localhost mode: keep kubespray binaries off the shared /usr/local/bin so
 # reset.yml never deletes the operator's configure-installed kubectl/helm.

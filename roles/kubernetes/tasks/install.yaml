@@ -53,6 +53,16 @@
   when:
     - _k8s_needs_ssh | bool
     - _k8s_phase | trim != 'post-kubespray'
+  # ansible_connection: ssh is required here — this play (via site.yaml) runs
+  # with connection: local (needed for its own kubernetes.core.k8s-style
+  # tasks), and delegate_to does not override an inherited play-level
+  # `connection:` on its own. Without this, every task below silently runs ON
+  # THE CONTROLLER instead of the delegated node — Ansible still labels the
+  # output with the target's name/IP, so it looks like it ran remotely when
+  # it didn't. Confirmed via a minimal repro: `hostname` delegated to a real
+  # remote node returned the controller's own hostname until this was added.
+  vars:
+    ansible_connection: ssh
   block:
     - name: "kubernetes | SSH pre-flight | Ping all cluster nodes"
       ansible.builtin.ping:

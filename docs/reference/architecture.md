@@ -803,3 +803,4 @@ Intel® AI for Enterprise Solutions builds these safeguards into every install a
 | See how a request actually flows through the gateway and inference layers | [Network Architecture](../deploy/networking.md) |
 | Look up every setting that drives this architecture | [Configuration Reference](../customize/configuration.md) |
 | Connect your own app or framework to the inference layer | [Integration Guide](../customize/integration.md) |
+| Grow or shrink a cluster after it's already provisioned | [Node Scaling](../customize/node_scaling.md) |

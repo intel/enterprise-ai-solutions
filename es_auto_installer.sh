@@ -53,12 +53,12 @@ readonly KUBECTL_VERSION="v1.34.3"
 readonly HELM_VERSION="v3.20.2"
 
 # Valid CLI actions.
-readonly -a ACTIONS=(configure show init install teardown validate status)
+readonly -a ACTIONS=(configure show init install teardown validate status add-node remove-node)
 
 # =============================================================================
 # Mutable globals — every one of these, and nothing else, is written after startup
 # =============================================================================
-#   parse_args        ACTION TARGET ENV_NAME ONLY EXTRA_VARS
+#   parse_args        ACTION TARGET ENV_NAME ONLY EXTRA_VARS DRY_RUN
 #                     INIT_LAYER INIT_FLAVOUR INIT_UPGRADE
 #   ensure_env_dir    ENV_DIR ENV_LOG_DIR ENV_INVENTORY_DIR GLOBAL_CONFIG
 #   resolve_inventory INVENTORY
@@ -156,6 +156,17 @@ usage() {
     validate  <target>     run validate.yaml against current state
     status                 show what is currently installed (namespaces, pods,
                            helm releases, endpoints)
+    add-node               scale worker node(s) into an already-provisioned cluster
+                           (Kubespray scale.yml). Edit env/<env>/nodes.yaml first
+                           (add worker entries) — new nodes are auto-detected by
+                           diffing the rendered inventory against the live cluster;
+                           no node name is passed. Control-plane node additions are
+                           refused — use 'install --target kubernetes' for those.
+    remove-node            remove node(s) from an already-provisioned cluster
+                           (Kubespray remove-node.yml). Edit env/<env>/nodes.yaml
+                           first (delete entries) — removed nodes are auto-detected
+                           the same way. The current first control-plane/etcd node
+                           cannot be removed this way (Kubespray limitation).
 
   Targets:
     <layer>                single layer (Ansible routes it to its components)
@@ -173,6 +184,8 @@ usage() {
     --skip <names>         comma-separated layers or components to leave out of the
                            plan, e.g. --skip erag to tear down the cluster without
                            uninstalling it first
+    --dry-run              (add-node/remove-node) print the computed node diff and
+                           the Kubespray command that would run, then exit
     -h, --help             this help
     -v, --version          print version
     -- <args...>           pass remaining args verbatim to ansible-playbook
@@ -199,6 +212,9 @@ usage() {
     $me install --env prod platform            # multi-env on one bastion
     $me install metallb --only -- -vvv
     $me install velero --only                  # backup mechanism (opt-in)
+    $me add-node --dry-run                     # preview after editing nodes.yaml
+    $me add-node                                # scale in new worker(s) from nodes.yaml
+    $me remove-node                             # remove node(s) dropped from nodes.yaml
 
 EOF
 }
@@ -1171,12 +1187,18 @@ run() {
         || err "${pb_name} failed. Log: $LOG"
 }
 
-# run_kubespray: execute kubespray cluster.yml directly from bash so
-# the operator gets live streaming output. Ansible-in-ansible swallows
-# all progress, so the kubernetes role only does prep; this function
-# bridges prep → cluster.yml → post-kubespray.
+# run_kubespray: execute a kubespray playbook directly from bash so the
+# operator gets live streaming output. Ansible-in-ansible swallows all
+# progress, so the kubernetes role only does prep; this function bridges
+# prep → {cluster,reset,scale,remove-node}.yml → post.
+#   install:  cluster.yml
+#   teardown: reset.yml            -e '{"reset_confirmation": true}'
+#   scale:    scale.yml            --limit=<arg2>,kube_control_plane (arg2: new worker(s))
+#   remove:   remove-node.yml      -e node=<arg2> -e '{"skip_confirmation": true}'
+# Booleans are passed as JSON (not key=value) so they parse as native bools —
+# key=value is always a string, which ansible-core 2.19+ rejects in when: checks.
 run_kubespray() {
-    local action="${1:-install}"
+    local action="${1:-install}" arg2="${2:-}"
     local ks_dir="${SCRIPT_DIR}/.kubespray"
     if [[ ! -d "$ks_dir/venv" || ! -f "$ks_dir/cluster.yml" ]]; then
         err "Kubespray not found at $ks_dir (missing venv or cluster.yml). Run 'install kubernetes' first."
@@ -1189,8 +1211,12 @@ run_kubespray() {
     [[ -f "$inv" ]] || inv="${ks_dir}/inventory/mycluster/hosts.yaml"  # kubespray's own sample
     [[ -f "$inv" ]] || { warn "Inventory not found: $inv — skipping kubespray"; return 0; }
 
-    local pb="$ks_dir/cluster.yml" extra=()
-    [[ "$action" == "teardown" ]] && { pb="$ks_dir/reset.yml"; extra=(-e reset_confirmation=yes); }
+    local pb="$ks_dir/cluster.yml" extra=() limit_args=()
+    case "$action" in
+        teardown) pb="$ks_dir/reset.yml";       extra=(-e '{"reset_confirmation": true}') ;;
+        scale)    pb="$ks_dir/scale.yml";       limit_args=(--limit="${arg2},kube_control_plane") ;;
+        remove)   pb="$ks_dir/remove-node.yml"; extra=(-e "node=${arg2}" -e '{"skip_confirmation": true}') ;;
+    esac
     [[ -f "$ENV_DIR/kubespray_extra_auto.yml" ]] && extra+=(-e "@$ENV_DIR/kubespray_extra_auto.yml")
     [[ -f "$ENV_DIR/kubespray_extra.yml" ]] && extra+=(-e "@$ENV_DIR/kubespray_extra.yml")
 
@@ -1215,6 +1241,7 @@ run_kubespray() {
      PATH="$ks_dir/venv/bin:$PATH" \
         "$ks_dir/venv/bin/ansible-playbook" -i "$inv" \
         --become --become-user=root "${ks_become_flag[@]}" "${verbose[@]}" \
+        "${limit_args[@]+"${limit_args[@]}"}" \
         "$pb" "${extra[@]+"${extra[@]}"}" 2>&1) | tee -a "$LOG" \
         || err "Kubespray failed. Log: $LOG"
 
@@ -1226,6 +1253,318 @@ run_kubespray() {
         chmod 600 "$_kc"
         ok "Kubeconfig written to ${_kc}"
     fi
+}
+
+# =============================================================================
+# Node scaling — add-node / remove-node
+# =============================================================================
+# Neither action takes a node name on the CLI: the operator edits
+# env/<env>/nodes.yaml (add or remove entries), and the node(s) to act on are
+# found by diffing nodes.yaml's declared hostnames against the live cluster's
+# actual node list — read directly from nodes.yaml, not from the rendered
+# inventory, so the diff needs no Ansible run and --dry-run touches nothing.
+# Regenerating the on-disk inventory happens later, and at a different point
+# for each action (see do_add_node/do_remove_node). Both assume
+# vars[]/EXTRA_VARS/INVENTORY/ENV_DIR etc. are already set by main(), same as
+# the rest of the install/teardown path.
+
+# _nodes_yaml_hostnames [control_plane|workers] — hostnames from nodes.yaml,
+# one per line. No argument means both lists combined.
+_nodes_yaml_hostnames() {
+    local expr
+    case "${1:-}" in
+        control_plane) expr='(.nodes_control_plane // [])' ;;
+        workers)       expr='(.nodes_workers // [])' ;;
+        *)             expr='((.nodes_control_plane // []) + (.nodes_workers // []))' ;;
+    esac
+    yq -r "${expr} | .[].hostname" "$ENV_DIR/nodes.yaml" 2>/dev/null
+}
+
+# _require_nodes_yaml_defined — add-node/remove-node only make sense when
+# nodes.yaml is the source of truth for the inventory (the hand-edited-hosts.yaml
+# mode this installer also supports has no per-node structure to diff against).
+_require_nodes_yaml_defined() {
+    [[ -f "$ENV_DIR/nodes.yaml" ]] && [[ -n "$(_nodes_yaml_hostnames control_plane)" ]] \
+        || err "${ACTION} requires nodes_control_plane to be defined in env/${ENV_NAME}/nodes.yaml. A hand-edited inventory (env/${ENV_NAME}/inventory/hosts.yaml) has no per-node structure to diff against — ${ACTION} does not support that mode."
+}
+
+# _inventory_group <group> — hostnames declared under all.children.<group>.hosts
+# in $INVENTORY, one per line.
+_inventory_group() {
+    yq -r ".all.children.${1}.hosts // {} | keys | .[]" "$INVENTORY" 2>/dev/null
+}
+
+# _live_nodes — Node object names in the live cluster, one per line.
+# KUBECONFIG is already exported by main() before either action runs.
+_live_nodes() {
+    kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null
+}
+
+# _node_workloads <node> — "namespace/name" of every real workload pod
+# scheduled on <node>, one per line. Excludes DaemonSet pods (recreated
+# automatically wherever they're needed) and Node-owned static/mirror pods
+# (e.g. kubespray's nginx-proxy — infrastructure that lives and dies with the
+# node itself, not something `kubectl drain` even evicts) — neither is the
+# kind of workload an operator needs a warning about before removing a node.
+_node_workloads() {
+    kubectl get pods -A --field-selector "spec.nodeName=${1}" -o json 2>/dev/null \
+        | yq -p json -r '.items[]
+            | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet" or .kind == "Node") | any | not)
+            | .metadata.namespace + "/" + .metadata.name' 2>/dev/null || true
+}
+
+# _cp_tainted_nodes — names of control-plane nodes that currently carry the
+# standard kubeadm NoSchedule taint, one per line. A control-plane node
+# provisioned single-node (in kube_node at kubeadm-init time) never gets this
+# taint even after workers are added later via add-node — it's set once at
+# init, not reconciled — so this has to be checked live, not assumed from
+# group membership.
+_cp_tainted_nodes() {
+    kubectl get nodes -l node-role.kubernetes.io/control-plane -o json 2>/dev/null \
+        | yq -p json -r '.items[]
+            | select((.spec.taints // [])
+                     | map(.key == "node-role.kubernetes.io/control-plane" and .effect == "NoSchedule") | any)
+            | .metadata.name' 2>/dev/null || true
+}
+
+# _pdb_blocked_pods <node> — "pod<TAB>pdb<TAB>detail" for every pod on <node>
+# that a PodDisruptionBudget currently allows zero disruptions for. kubectl
+# drain evicts via the Eviction API, which the API server rejects outright
+# whenever a pod's PDB has disruptionsAllowed == 0 — retrying does not help,
+# since that number is budget math (currentHealthy vs minAvailable), not a
+# transient condition. Left unchecked, remove-node discovers this only as a
+# drain that hangs through drain_retries x drain_timeout before giving up.
+# PDBs that select pods via matchExpressions (no matchLabels) can't be
+# resolved to a `kubectl -l` selector here, so they're reported with
+# "unsupported selector" instead of being silently skipped — the caller
+# should treat that as blocking too, pending manual review.
+_pdb_blocked_pods() {
+    local node="$1" ns name selector pod
+    while IFS=$'\t' read -r ns name selector; do
+        [[ -n "$ns" ]] || continue
+        if [[ -z "$selector" ]]; then
+            printf '%s/%s\t%s/%s\tunsupported selector (not matchLabels-based) — verify manually\n' "$ns" "$name" "$ns" "$name"
+            continue
+        fi
+        while IFS= read -r pod; do
+            [[ -n "$pod" ]] && printf '%s/%s\t%s/%s\tselector=%s\n' "$ns" "${pod#pod/}" "$ns" "$name" "$selector"
+        done < <(kubectl get pods -n "$ns" -l "$selector" --field-selector "spec.nodeName=${node}" -o name 2>/dev/null)
+    done < <(kubectl get pdb -A -o json 2>/dev/null | yq -p json -r '
+        .items[]
+        | select(.status.disruptionsAllowed == 0)
+        | [.metadata.namespace, .metadata.name, ((.spec.selector.matchLabels // {}) | to_entries | map(.key + "=" + .value) | join(","))]
+        | @tsv
+    ' 2>/dev/null || true)
+}
+
+# _nodes_yaml_ssh_target <hostname> — "ip<TAB>user<TAB>key" for <hostname>,
+# resolved from nodes.yaml with the same precedence hosts.yaml.j2 uses:
+# per-node ssh_user/ssh_key override the top-level nodes_ssh_user/nodes_ssh_key,
+# which in turn fall back to ssh's own defaults (current user, default identity)
+# when left unset.
+_nodes_yaml_ssh_target() {
+    _H="$1" yq -r '
+        . as $root
+        | ((.nodes_control_plane // []) + (.nodes_workers // []))
+        | .[] | select(.hostname == env(_H))
+        | [.ip, (.ssh_user // $root.nodes_ssh_user // ""), (.ssh_key // $root.nodes_ssh_key // "")]
+        | @tsv
+    ' "$ENV_DIR/nodes.yaml" 2>/dev/null
+}
+
+# _ssh_preflight_check <hostname> — empty output and rc 0 if <hostname>'s
+# declared node accepts the credentials nodes.yaml resolves for it; otherwise
+# the raw ssh error. Kubespray's own SSH pre-flight (roles/kubernetes/tasks/
+# add-node.yaml) catches an unauthorized key too, but only after
+# kubespray_ensure + inventory regen + Ansible startup — this fails in under
+# a second, before the operator is even asked to confirm.
+_ssh_preflight_check() {
+    local hostname="$1" ip user key target
+    IFS=$'\t' read -r ip user key < <(_nodes_yaml_ssh_target "$hostname")
+    [[ -n "$ip" ]] || { echo "no ip found for ${hostname} in nodes.yaml"; return 1; }
+    target="$ip"
+    [[ -n "$user" ]] && target="${user}@${ip}"
+    local -a ssh_opts=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
+    [[ -n "$key" ]] && ssh_opts+=(-i "${key/#\~/$HOME}")
+    ssh "${ssh_opts[@]}" "$target" true 2>&1
+}
+
+# _nri_balloons_enabled — mirrors the nri_cpu_balloons component's own
+# `enabled:` expression (configs/components.yaml) so the add-node/remove-node
+# reminder below only fires when that component is actually active.
+_nri_balloons_enabled() {
+    [[ -f "$GLOBAL_CONFIG" ]] && command -v yq &>/dev/null || return 1
+    local policy accel
+    policy=$(yq -r '.kubernetes_cpu_policy // "nri-balloons"' "$GLOBAL_CONFIG" 2>/dev/null)
+    accel=$(yq -r '.kubernetes_accelerator // "cpu"' "$GLOBAL_CONFIG" 2>/dev/null)
+    [[ "$policy" == "nri-balloons" && "$accel" == "cpu" ]]
+}
+
+# _nri_balloons_reminder — add-node/remove-node only ever touch the kubernetes
+# component; nri_cpu_balloons (CPU pinning) is a separate component and is
+# NOT re-applied automatically. Surface that instead of leaving the new/
+# removed node(s) silently running on a stale or missing balloon policy.
+_nri_balloons_reminder() {
+    _nri_balloons_enabled || return 0
+    warn "  nri_cpu_balloons was not re-applied — it's a separate component and is not touched by ${ACTION}. Run './$(basename "$0") install --env ${ENV_NAME} nri_cpu_balloons' to refresh CPU-pinning policy for the current node set."
+}
+
+# do_add_node — scale worker node(s) into an existing cluster (Kubespray scale.yml).
+do_add_node() {
+    _require_nodes_yaml_defined
+
+    local declared live added
+    declared=$(_nodes_yaml_hostnames | sort -u)
+    live=$(_live_nodes | sort -u)
+    added=$(comm -23 <(printf '%s\n' "$declared") <(printf '%s\n' "$live") | grep -v '^$' || true)
+
+    if [[ -z "$added" ]]; then
+        ok "add-node: nothing to do — nodes.yaml matches the live cluster."
+        exit 0
+    fi
+
+    local declared_cp added_cp
+    declared_cp=$(_nodes_yaml_hostnames control_plane | sort -u)
+    added_cp=$(comm -12 <(printf '%s\n' "$declared_cp") <(printf '%s\n' "$added") | grep -v '^$' || true)
+    if [[ -n "$added_cp" ]]; then
+        err "add-node only scales worker nodes. New control-plane node(s) detected: ${added_cp//$'\n'/, }
+  Kubespray's scale.yml cannot add control-plane nodes. Use instead:
+    ./$(basename "$0") install --env ${ENV_NAME} kubernetes"
+    fi
+
+    local added_csv="${added//$'\n'/,}"
+    info "add-node: new worker node(s): ${added_csv//,/, }"
+
+    # SSH guard: Kubespray's own pre-flight catches an unauthorized key too,
+    # but only after kubespray_ensure + inventory regen + Ansible startup
+    # overhead. Checked here against the real ip/user/key nodes.yaml
+    # declares, so it fails in under a second instead.
+    local ssh_hits="" n ssh_err
+    for n in ${added//$'\n'/ }; do
+        ssh_err=$(_ssh_preflight_check "$n") || ssh_hits+="  ${n}: ${ssh_err}"$'\n'
+    done
+    if [[ -n "$ssh_hits" ]]; then
+        err "add-node: cannot SSH to the new node(s) below:
+${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or fix ssh_user/ssh_key in nodes.yaml, then retry."
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "  would run: scale.yml --limit=${added_csv},kube_control_plane"
+        exit 0
+    fi
+
+    confirm "About to run Kubespray scale.yml for: ${added_csv//,/, }"
+    # Regenerate the inventory to INCLUDE the new node(s) before scale.yml runs
+    # — it needs their connection details to reach and join them. _added_nodes
+    # is passed here too (not just on the post call) so the prep phase's own
+    # SSH/internet pre-flight can scope to just the new node(s).
+    run site "${vars[@]}" -e "_scale_phase=prep" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
+    run_kubespray scale "$added_csv"
+    run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
+    _nri_balloons_reminder
+}
+
+# do_remove_node — remove node(s) from an existing cluster (Kubespray remove-node.yml).
+do_remove_node() {
+    _require_nodes_yaml_defined
+
+    # Kubespray's own notion of "first" control-plane/etcd host, read from the
+    # CURRENT on-disk inventory — deliberately not regenerated at any point
+    # before remove-node.yml runs (see roles/kubernetes/tasks/remove-node.yaml).
+    local old_first_cp; old_first_cp=$(_inventory_group kube_control_plane | head -1)
+
+    local declared live removed
+    declared=$(_nodes_yaml_hostnames | sort -u)
+    live=$(_live_nodes | sort -u)
+    removed=$(comm -23 <(printf '%s\n' "$live") <(printf '%s\n' "$declared") | grep -v '^$' || true)
+
+    if [[ -z "$removed" ]]; then
+        ok "remove-node: nothing to do — nodes.yaml matches the live cluster."
+        exit 0
+    fi
+
+    if [[ -n "$old_first_cp" ]] && grep -qxF -- "$old_first_cp" <<< "$removed"; then
+        err "remove-node cannot remove '${old_first_cp}' — it is the first control-plane/etcd node, and Kubespray does not support removing it directly.
+  Reorder nodes_control_plane in env/${ENV_NAME}/nodes.yaml so a different host is first, run:
+    ./$(basename "$0") install --env ${ENV_NAME} kubernetes
+  to apply the reorder via cluster.yml, then retry remove-node."
+    fi
+
+    local removed_csv="${removed//$'\n'/,}"
+    info "remove-node: node(s) to remove: ${removed_csv//,/, }"
+
+    # Workload visibility: the drain step evicts every non-DaemonSet pod on
+    # the node(s) below, PDB permitting. Surfaced before --dry-run's exit and
+    # before confirm() so the operator sees what's actually at stake, rather
+    # than finding out via a drain hang or a workload quietly going down.
+    local n workloads any_workloads=false
+    for n in ${removed//$'\n'/ }; do
+        workloads=$(_node_workloads "$n")
+        if [[ -n "$workloads" ]]; then
+            any_workloads=true
+            warn "  ${n} is running workload(s) that will be evicted:"
+            while IFS= read -r w; do
+                [[ -n "$w" ]] && info "    - ${w}"
+            done <<< "$workloads"
+        fi
+    done
+    [[ "$any_workloads" == "true" ]] || info "  no non-DaemonSet workloads running on: ${removed_csv//,/, }"
+
+    # PodDisruptionBudget guard: a pod whose PDB currently allows zero
+    # disruptions will have every eviction attempt rejected by the API
+    # server, so kubectl drain cannot succeed against it no matter how many
+    # times remove-node.yml retries. Caught here, before confirm(), instead
+    # of discovered later as a drain hung through drain_retries x
+    # drain_timeout.
+    local pdb_hits=""
+    for n in ${removed//$'\n'/ }; do
+        while IFS=$'\t' read -r pod pdb detail; do
+            [[ -n "$pod" ]] && pdb_hits+="  ${pod} on ${n} — blocked by PodDisruptionBudget ${pdb} (${detail})"$'\n'
+        done < <(_pdb_blocked_pods "$n")
+    done
+    if [[ -n "$pdb_hits" ]]; then
+        err "remove-node: drain would hang — the pod(s) below cannot be evicted because their PodDisruptionBudget currently allows zero disruptions:
+${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the node first, then retry remove-node."
+    fi
+
+    # Last-worker warning: "worker" here means live and NOT in kube_control_plane,
+    # not kube_node membership — kube_node mirrors kube_control_plane in
+    # single-node mode (see hosts.yaml.j2), which would otherwise make every
+    # single-node cluster look like it's losing "a worker" on its own control
+    # -plane node. Only a warning: dropping to zero workers is exactly what
+    # single-node mode already is, and is fine when the control-plane node
+    # isn't tainted (see _cp_tainted_nodes).
+    local live_cp live_workers remaining_workers
+    live_cp=$(_inventory_group kube_control_plane | sort -u)
+    live_workers=$(comm -23 <(printf '%s\n' "$live") <(printf '%s\n' "$live_cp") | grep -v '^$' || true)
+    remaining_workers=$(comm -23 <(printf '%s\n' "$live_workers") <(printf '%s\n' "$removed") | grep -v '^$' || true)
+    if [[ -n "$live_workers" && -z "$remaining_workers" ]]; then
+        local tainted_cp; tainted_cp=$(_cp_tainted_nodes)
+        if [[ -n "$tainted_cp" ]]; then
+            warn "  this removes the last worker node. Control-plane node(s) ${tainted_cp//$'\n'/, } carry the NoSchedule taint — nothing will be schedulable for regular workloads until a worker is added back (or the taint is removed manually)."
+        else
+            warn "  this removes the last worker node. The control-plane node has no NoSchedule taint, so workloads can still schedule there, but this reduces the cluster to single-node capacity."
+        fi
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        info "  would run: remove-node.yml -e node=${removed_csv} -e '{\"skip_confirmation\": true}'"
+        exit 0
+    fi
+
+    confirm "About to run Kubespray remove-node.yml for: ${removed_csv//,/, } — this drains, resets, and removes those node(s) from the cluster"
+    # Ensure kubespray only — the inventory is NOT regenerated here on purpose;
+    # remove-node.yml needs the target node(s) still present in it to reach
+    # them (see roles/kubernetes/tasks/remove-node.yaml for why).
+    run site "${vars[@]}" -e "_scale_phase=prep" "${EXTRA_VARS[@]}"
+    run_kubespray remove "$removed_csv"
+    # Only now regenerate the inventory, dropping the removed node(s).
+    run site "${vars[@]}" -e "_scale_phase=post" "${EXTRA_VARS[@]}"
+
+    for n in ${removed//$'\n'/ }; do
+        rm -f "${ENV_INVENTORY_DIR}/host_vars/${n}.yml"
+    done
+    _nri_balloons_reminder
 }
 
 # _opt_value <flag> <value> — a flag's value must exist and not be another flag,
@@ -1240,7 +1579,7 @@ _opt_value() {
 
 # parse_args
 parse_args() {
-    ACTION="" TARGET="" ENV_NAME="local" ONLY=false FORCE=false SKIP=""
+    ACTION="" TARGET="" ENV_NAME="local" ONLY=false FORCE=false SKIP="" DRY_RUN=false
     INIT_LAYER="" INIT_FLAVOUR="" INIT_UPGRADE=false
     EXTRA_VARS=()
 
@@ -1294,8 +1633,11 @@ parse_args() {
                              ONLY=true; shift ;;
             --force)         FORCE=true; shift ;;
             --skip)          _opt_value --skip "${2:-}"; SKIP="$2"; shift 2 ;;
+            --dry-run)       [[ "$ACTION" =~ ^(add-node|remove-node)$ ]] \
+                                 || err "--dry-run applies to add-node/remove-node only."
+                             DRY_RUN=true; shift ;;
             --)              shift; EXTRA_VARS+=("$@"); break ;;
-            -*)              err "Unknown option: '$1'. Valid: --env <name> | --only | --force | --skip <names> (pass ansible args after --). Try --help." ;;
+            -*)              err "Unknown option: '$1'. Valid: --env <name> | --only | --force | --skip <names> | --dry-run (pass ansible args after --). Try --help." ;;
             *)
                 if [[ "$_takes_target" == "true" && -z "$TARGET" ]]; then
                     TARGET="$1"; shift
@@ -1461,6 +1803,25 @@ main() {
         exit 0
     fi
 
+    # add-node / remove-node: every pass is scoped to the kubernetes component
+    # only — these actions never touch anything else. No node name is taken on
+    # the CLI; do_add_node/do_remove_node diff nodes.yaml against the live
+    # cluster to find it (see their definitions above).
+    if [[ "$ACTION" == "add-node" || "$ACTION" == "remove-node" ]]; then
+        [[ -f "$KUBE_CFG" ]] \
+            || err "No kubeconfig at ${KUBE_CFG} — install the cluster first:  ./$(basename "$0") install --env ${ENV_NAME} kubernetes"
+        [[ "$IS_BYO" == "false" ]] \
+            || err "${ACTION} is not supported for a BYO cluster (existing_kubernetes is set in global_config.yaml)."
+        TARGET="kubernetes"
+        vars+=(-e "target=kubernetes")
+        case "$ACTION" in
+            add-node)    do_add_node ;;
+            remove-node) do_remove_node ;;
+        esac
+        _completion_banner
+        exit 0
+    fi
+
     local _includes_k8s=false
     _needs_kubespray && _includes_k8s=true
 
@@ -1468,7 +1829,7 @@ main() {
         local _what="'${TARGET}' and everything above it, in env/${ENV_NAME}"
         [[ "$_includes_k8s" == "true" ]] \
             && _what="${_what}
-  This DESTROYS the Kubernetes cluster: kubespray reset runs with reset_confirmation=yes."
+  This DESTROYS the Kubernetes cluster: kubespray reset runs with reset_confirmation=true."
         confirm "About to tear down ${_what}"
     fi
 

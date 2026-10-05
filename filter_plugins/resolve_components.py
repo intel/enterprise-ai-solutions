@@ -17,7 +17,7 @@ Jinja expressions resolve to "True"/"False" strings; _enabled() coerces those.
 import warnings
 from collections import deque
 
-VALID_ACTIONS = ("install", "teardown", "validate")
+VALID_ACTIONS = ("install", "teardown", "validate", "add-node", "remove-node")
 
 
 def _enabled(component):
