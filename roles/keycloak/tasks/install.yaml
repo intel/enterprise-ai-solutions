@@ -196,7 +196,42 @@
           ({{ keycloak_instances }} instance(s), db={{ keycloak_db_vendor }}).
           Realm/client configuration is owned by solution layers (e.g. keycloak_config role).
 
+# ── Reconcile CR config on re-install — runs even when already installed ──────
+# The "keycloak | Install" block above is skipped once Keycloak is healthy, so a
+# later config change (e.g. flipping routing_mode, which alters the hostname and
+# http-relative-path) would never reach the live CR. Re-apply the rendered CR
+# whenever it already exists; the operator only rolls the pod on a real spec
+# change, so this is a no-op when nothing changed.
+- name: "keycloak | Reconcile Keycloak CR (config drift on re-install)"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'keycloak.yaml.j2') | from_yaml }}"
+  when: _kc_cr_existing.resources | default([]) | length > 0
+
 # ── HTTPRoute (expose via gateway) — runs even on re-install ──────────────────
+
+# In path mode Keycloak mounts on the shared apex listener, which admits routes
+# only from labelled namespaces (see gateway_apex_route_label_* / gateway.yaml.j2).
+# Stamp the label before creating the route so it can attach. Not needed in
+# subdomain mode, where the route pins the *.<base> wildcard listener instead.
+- name: "keycloak | Label namespace — allow apex-listener routes (path mode)"
+  vars:
+    # Built as a dict value, not a templated mapping key — Ansible does not
+    # template dict keys, so the inline "{{ key }}:" form leaves it literal.
+    _keycloak_apex_label: >-
+      {{ {(gateway_apex_route_label_key | default('gateway-apex-routes')):
+          (gateway_apex_route_label_value | default('allowed'))} }}
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ keycloak_namespace }}"
+        labels: "{{ _keycloak_apex_label }}"
+  when:
+    - gateway_create | default(false)
+    - keycloak_section_name == 'https-apex'
 
 - name: "keycloak | Create HTTPRoute for gateway"
   kubernetes.core.k8s:
@@ -212,13 +247,19 @@
           # Pin to the HTTPS listener only. Without sectionName an HTTPRoute
           # attaches to every compatible listener, including the plaintext
           # HTTP:80 one, which would serve OIDC tokens in cleartext.
+          # In path mode the route claims the apex host, which the *.<base>
+          # wildcard listener does not match, so attach to the apex listener.
           - name: "{{ gateway_name | default('eg-gateway') }}"
             namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
-            sectionName: https
+            sectionName: "{{ keycloak_section_name }}"
         hostnames:
-          - "{{ keycloak_hostname }}"
+          - "{{ keycloak_route_host }}"
         rules:
-          - filters:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: "{{ keycloak_relative_path }}"
+            filters:
               # HSTS: tell compliant browsers to only ever reach this host over
               # HTTPS, so a later plaintext attempt is refused client-side before
               # any credential leaves the browser. Only honored when received over
@@ -229,8 +270,8 @@
                     - name: Strict-Transport-Security
                       value: "max-age=31536000; includeSubDomains"
             backendRefs:
-              - name: keycloak-service
-                port: 8080
+              - name: "{{ keycloak_route.backend }}"
+                port: "{{ keycloak_route.port | int }}"
   when: gateway_create | default(false)
 
 - name: "keycloak | Exclude Keycloak route from gateway JWT policy"

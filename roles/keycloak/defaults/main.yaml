@@ -15,7 +15,25 @@ keycloak_k8s_resources_base: "https://raw.githubusercontent.com/keycloak/keycloa
 
 # Keycloak instance
 keycloak_instances: 1
-keycloak_hostname: "keycloak.{{ base_domain_name | default('inference-example.com') }}"
+
+# Gateway routing is resolved once by the shared `service_route` filter from the
+# service_routes registry (configs/service_routes.yaml), the cluster routing_mode
+# and base_domain_name, plus any per-service override in service_route_overrides.
+# This is the ONLY routing derivation for Keycloak — the subdomain-vs-apex logic
+# and the "path must live in both the frontend URL and http-relative-path" rule
+# live in the filter, shared with every other service.
+keycloak_route: >-
+  {{ 'keycloak' | service_route(routing_mode | default('subdomain'),
+                                base_domain_name | default('inference-example.com'),
+                                service_routes | default({}),
+                                service_route_overrides | default({})) }}
+# Convenience aliases used by the template, the HTTPRoute and validation below.
+keycloak_route_host: "{{ keycloak_route.host }}"              # host the route matches on
+keycloak_relative_path: "{{ keycloak_route.relative_path }}"  # path Keycloak serves under ('/' = subdomain mode)
+keycloak_frontend_url: "{{ keycloak_route.frontend_url }}"    # advertised URL (issuer/redirects/assets)
+keycloak_section_name: "{{ keycloak_route.section_name }}"    # gateway listener (apex vs wildcard)
+# Route host only (no scheme/path): used for NO_PROXY, validation and log messages.
+keycloak_hostname: "{{ keycloak_route.host }}"
 keycloak_admin_user: "admin"
 keycloak_admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
 keycloak_db_vendor: "postgres"        # dev-file (embedded H2) | postgres

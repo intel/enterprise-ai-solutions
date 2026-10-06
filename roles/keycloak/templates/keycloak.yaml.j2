@@ -10,9 +10,10 @@ spec:
     enabled: false
   hostname:
     # Frontend URL — how external clients (browsers, APISIX via gateway) see Keycloak.
-    # HTTPS because the gateway terminates TLS; issuer claim in tokens will be
-    # https://{{ keycloak_hostname }}/realms/<realm>.
-    hostname: https://{{ keycloak_hostname }}
+    # HTTPS because the gateway terminates TLS. In path mode this carries the
+    # /keycloak prefix so issuer/redirect/asset URLs match where the server serves
+    # (see keycloak_frontend_url in defaults); in subdomain mode it is the bare host.
+    hostname: {{ keycloak_frontend_url }}
     # backchannelDynamic: requests arriving via cluster-internal DNS
     # (e.g. apisix → keycloak-service.keycloak.svc.cluster.local:8080) use the
     # Host header for backchannel URLs — so a token issued at
@@ -51,6 +52,14 @@ spec:
       value: "{{ keycloak_metrics_enabled | lower }}"
     - name: hostname-strict
       value: "false"
+{% if keycloak_relative_path != '/' %}
+    # Path-based routing: serve every endpoint under this prefix. The hostname
+    # above already carries {{ keycloak_relative_path }} so advertised URLs match where the
+    # server serves; the gateway forwards {{ keycloak_relative_path }}/* unchanged (no rewrite,
+    # no doubling).
+    - name: http-relative-path
+      value: "{{ keycloak_relative_path }}"
+{% endif %}
 {% set _keycloak_proxy = (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0) %}
 {% if _platform_affinity | default({}) | length > 0 or _keycloak_proxy %}
   unsupported:

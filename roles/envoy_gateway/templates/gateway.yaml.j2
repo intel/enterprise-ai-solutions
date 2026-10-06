@@ -27,6 +27,11 @@ spec:
           from: All
     # Apex listener — *.base_domain_name does not match the bare base_domain_name, so add an
     # explicit listener for it (e.g. the UI on inference-example.com).
+    # In routing_mode: path every platform service shares this one host, told
+    # apart only by path, so this listener is NOT `from: All`: an open apex would
+    # let any tenant namespace claim a more-specific apex path (e.g. /keycloak/...)
+    # and hijack platform traffic + tokens. Only namespaces a platform role has
+    # labelled may attach here; tenants keep self-service on the *.<base> wildcard.
     - name: https-apex
       protocol: HTTPS
       port: 443
@@ -38,7 +43,10 @@ spec:
             name: {{ gateway_tls_secret_name }}
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              "{{ gateway_apex_route_label_key }}": "{{ gateway_apex_route_label_value }}"
 {% if gateway_s3_listener_enabled | bool %}
     # S3 API listener - a more specific hostname than the *.base_domain_name
     # wildcard above, so Gateway API accepts both on port 443 and a route that
