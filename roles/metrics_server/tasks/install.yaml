@@ -1,0 +1,53 @@
+---
+# =============================================================================
+# metrics-server — Install (Helm chart)
+# =============================================================================
+
+- name: "metrics_server | Check existing Helm release"
+  kubernetes.core.helm_info:
+    name: metrics-server
+    release_namespace: "{{ metrics_server_namespace }}"
+  register: _ms_release
+  failed_when: false
+
+- name: "metrics_server | Add Helm repo"
+  kubernetes.core.helm_repository:
+    name: "{{ metrics_server_helm_repo_name }}"
+    repo_url: "{{ metrics_server_helm_repo_url }}"
+  register: _ms_repo
+  until: _ms_repo is succeeded
+  retries: "{{ helm_retries | default(3) }}"
+  delay: 15
+
+- name: "metrics_server | Deploy chart"
+  kubernetes.core.helm:
+    name: metrics-server
+    chart_ref: "{{ metrics_server_helm_repo_name }}/metrics-server"
+    release_namespace: "{{ metrics_server_namespace }}"
+    create_namespace: false
+    chart_version: "{{ metrics_server_chart_version }}"
+    values:
+      replicas: "{{ metrics_server_replicas | int }}"
+      # Appended to the chart's defaultArgs (which already set preferred address
+      # types and metric resolution). Only the self-signed-cert skip is added.
+      args: "{{ ['--kubelet-insecure-tls'] if metrics_server_kubelet_insecure_tls | bool else [] }}"
+    wait: "{{ helm_wait | default(true) }}"
+    timeout: "{{ helm_timeout | default('300s') }}"
+
+- name: "metrics_server | Wait for metrics.k8s.io API to be available"
+  kubernetes.core.k8s_info:
+    api_version: apiregistration.k8s.io/v1
+    kind: APIService
+    name: v1beta1.metrics.k8s.io
+  register: _ms_api
+  until:
+    - _ms_api.resources | length > 0
+    - _ms_api.resources[0].status.conditions | default([]) | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+  retries: 30
+  delay: 10
+
+- name: "metrics_server | Install complete"
+  ansible.builtin.debug:
+    msg: >-
+      metrics-server (chart {{ metrics_server_chart_version }}) deployed in
+      {{ metrics_server_namespace }}; metrics.k8s.io is Available.

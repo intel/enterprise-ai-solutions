@@ -1,0 +1,20 @@
+---
+# =============================================================================
+# metrics-server — Teardown (namespace kube-system is never deleted)
+# =============================================================================
+
+- name: "metrics_server | Check existing Helm release"
+  kubernetes.core.helm_info:
+    name: metrics-server
+    release_namespace: "{{ metrics_server_namespace }}"
+  register: _ms_release
+  failed_when: false
+
+- name: "metrics_server | Uninstall Helm release"
+  kubernetes.core.helm:
+    name: metrics-server
+    release_namespace: "{{ metrics_server_namespace }}"
+    state: absent
+    wait: "{{ helm_wait | default(true) }}"
+  when: _ms_release.status is defined and _ms_release.status is not none
+  failed_when: false

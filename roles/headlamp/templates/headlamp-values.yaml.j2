@@ -1,0 +1,69 @@
+---
+# Headlamp Helm values — rendered by roles/headlamp. Do not edit in-cluster.
+replicaCount: {{ headlamp_replicas | int }}
+
+image:
+  registry: "{{ headlamp_image_registry }}"
+  repository: "{{ headlamp_image_repository }}"
+
+config:
+  # Passed through to `-base-url`; the gateway does not strip the prefix, so this
+  # must equal the route's relative path ('' at apex root / subdomain mode).
+  baseURL: "{{ headlamp_base_url }}"
+{% if headlamp_oidc_enabled | bool %}
+  oidc:
+    # Client id/secret/issuer/scopes come from the Secret written by
+    # roles/keycloak/tasks/client.yaml (envFrom) — never from Helm values.
+    externalSecret:
+      enabled: true
+      name: "{{ headlamp_oidc_secret_name }}"
+      hasScopes: true
+  # The chart reads these two only from values, not from the Secret. The callback
+  # must be explicit: behind the TLS-terminating gateway Headlamp would otherwise
+  # derive an http:// URL that Keycloak rejects.
+  extraArgs:
+    - "-oidc-callback-url={{ headlamp_frontend_url }}/oidc-callback"
+    - "-oidc-use-pkce=true"
+{% set _issuer_ip = (_headlamp_gw_svc.resources | default([{}]))[0].spec.clusterIP | default('') %}
+{% if (headlamp_oidc_pin_issuer_host | bool) and _issuer_ip | length > 0 %}
+
+hostAliases:
+  - ip: "{{ _issuer_ip }}"
+    hostnames:
+      - "{{ _kcc_issuer_url | urlsplit('hostname') }}"
+{% endif %}
+{% if _headlamp_issuer_ca_pem | default('') | length > 0 %}
+
+# Added to, not replacing, the system bundle (Go reads SSL_CERT_DIR on top).
+env:
+  - name: SSL_CERT_DIR
+    value: "/etc/headlamp/issuer-ca"
+volumes:
+  - name: issuer-ca
+    configMap:
+      name: "{{ headlamp_oidc_ca_configmap }}"
+volumeMounts:
+  - name: issuer-ca
+    mountPath: /etc/headlamp/issuer-ca
+    readOnly: true
+{% endif %}
+{% endif %}
+
+# Token-login mode only: read-only SA access, not the chart's cluster-admin
+# default. With OIDC the SA needs no cluster access — users bring their own.
+clusterRoleBinding:
+  create: {{ (not (headlamp_oidc_enabled | bool)) | to_json }}
+  clusterRoleName: "{{ headlamp_cluster_role_name }}"
+
+serviceAccount:
+  create: true
+
+service:
+  type: ClusterIP
+  port: {{ headlamp_route.port | int }}
+{% if _platform_affinity | default({}) %}
+
+# Prefer platform (control-plane) nodes, consistent with other platform pods.
+affinity:
+{{ _platform_affinity | to_nice_yaml(indent=2) | indent(2, true) }}
+{% endif %}

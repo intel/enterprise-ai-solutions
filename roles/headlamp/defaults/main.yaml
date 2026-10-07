@@ -1,0 +1,110 @@
+---
+# =============================================================================
+# Headlamp Role Defaults — Kubernetes web UI (kubernetes-sigs/headlamp)
+# =============================================================================
+
+headlamp_namespace: "headlamp"
+headlamp_chart_version: "0.45.0"      # chart appVersion → Headlamp 0.45.0
+headlamp_replicas: 1
+
+# ── Helm chart ────────────────────────────────────────────────────────────────
+headlamp_helm_repo_name: "headlamp"
+headlamp_helm_repo_url: "https://kubernetes-sigs.github.io/headlamp/"
+headlamp_image_registry: "ghcr.io"
+headlamp_image_repository: "headlamp-k8s/headlamp"
+
+# Gateway integration — only create HTTPRoute when our envoy_gateway component manages the gateway
+gateway_create: "{{ envoy_gateway_enabled | default(false) }}"
+
+# Routing resolved once by the shared `service_route` filter (see keycloak role):
+# subdomain-vs-apex and the "path lives in both the base URL and the relative
+# path" rule are centralized in filter_plugins/service_route.py.
+headlamp_route: >-
+  {{ 'headlamp' | service_route(routing_mode | default('subdomain'),
+                                base_domain_name | default('inference-example.com'),
+                                service_routes | default({}),
+                                service_route_overrides | default({})) }}
+headlamp_route_host: "{{ headlamp_route.host }}"              # host the route matches on
+headlamp_relative_path: "{{ headlamp_route.relative_path }}"  # path Headlamp serves under ('/' = subdomain mode)
+headlamp_frontend_url: "{{ headlamp_route.frontend_url }}"    # advertised URL (base URL / OIDC callback)
+headlamp_section_name: "{{ headlamp_route.section_name }}"    # gateway listener (apex or its own host)
+headlamp_hostname: "{{ headlamp_route.host }}"
+
+# Headlamp serves its assets under this prefix; the gateway passes the prefix
+# through unchanged (no URLRewrite), so it must equal the route's relative path.
+headlamp_base_url: "{{ '' if headlamp_relative_path == '/' else headlamp_relative_path }}"
+
+# Headlamp sets no framing policy of its own; deny framing at the edge.
+headlamp_response_headers:
+  X-Frame-Options: DENY
+  Content-Security-Policy: "frame-ancestors 'none'"
+
+# ── RBAC ───────────────────────────────────────────────────────────────────────
+# Least privilege: bind Headlamp's ServiceAccount to the built-in read-only
+# ClusterRole, NOT cluster-admin (the chart default). Only used in token-login
+# mode; with OIDC every request carries the user's own identity instead.
+headlamp_cluster_role_name: "view"
+
+# The built-in 'view' role omits nodes, RBAC, PVs, StorageClasses and CRDs, so
+# those tabs are denied. headlamp-view-all = 'view' + read on the groups below,
+# never Secrets. Bound to the ServiceAccount in token-login mode, to the viewers
+# group in OIDC mode.
+headlamp_full_read_enabled: true
+
+# Built-in groups 'view' omits, read in full (none hold Secret material).
+headlamp_view_all_platform_api_groups:
+  - admissionregistration.k8s.io
+  - apiextensions.k8s.io
+  - apiregistration.k8s.io
+  - certificates.k8s.io
+  - coordination.k8s.io
+  - discovery.k8s.io
+  - events.k8s.io
+  - flowcontrol.apiserver.k8s.io
+  - metrics.k8s.io
+  - networking.k8s.io
+  - node.k8s.io
+  - policy
+  - rbac.authorization.k8s.io
+  - resource.k8s.io
+  - scheduling.k8s.io
+  - storage.k8s.io
+
+# Allowlist of CRD groups viewers may read. Opt-in only: some CRs embed
+# credentials (e.g. k8s.keycloak.org KeycloakRealmImport), so never add those.
+headlamp_view_all_crd_api_groups:
+  - gateway.networking.k8s.io
+  - gateway.networking.x-k8s.io
+  - gateway.envoyproxy.io
+  - aigateway.envoyproxy.io
+  - inference.networking.k8s.io
+  - inference.networking.x-k8s.io
+  - networking.istio.io
+  - security.istio.io
+  - telemetry.istio.io
+  - metallb.io
+  - monitoring.coreos.com
+  - serving.kserve.io
+  - leaderworkerset.x-k8s.io
+  - postgresql.cnpg.io
+  - nfd.k8s-sigs.io
+
+# ── OIDC — Keycloak SSO (on whenever Keycloak is the auth provider) ────────────
+# Login delegates to Keycloak; the id_token is forwarded to the kube-apiserver,
+# which trusts the same issuer (roles/kubernetes/tasks/apiserver_oidc.yaml), so
+# Kubernetes RBAC applies per user and group. The client and its secret are
+# provisioned by roles/keycloak/tasks/client.yaml — nothing to supply by hand.
+headlamp_oidc_enabled: "{{ (auth_provider | default('keycloak')) == 'keycloak' }}"
+headlamp_oidc_client_id: "headlamp"
+headlamp_oidc_realm: "{{ keycloak_sso_realm | default('platform') }}"
+headlamp_oidc_secret_name: "headlamp-oidc"
+# Keycloak groups → Kubernetes ClusterRoles. Groups are created (empty) in the
+# realm; add users to them in Keycloak. Names reach the apiserver as
+# oidc:<group>, matching the prefix set in the AuthenticationConfiguration.
+headlamp_oidc_group_roles:
+  platform-admins: cluster-admin
+  platform-viewers: headlamp-view-all
+# Without real DNS for base_domain_name, pin the issuer host to the gateway
+# Service inside the pod (mirrors the node pin in roles/kubernetes).
+headlamp_oidc_pin_issuer_host: "{{ kubernetes_oidc_pin_issuer_hosts | default(true) }}"
+headlamp_oidc_ca_configmap: "headlamp-issuer-ca"

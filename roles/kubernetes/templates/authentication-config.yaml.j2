@@ -1,0 +1,31 @@
+---
+# kube-apiserver structured authentication — managed by roles/kubernetes.
+# Reloaded live by the apiserver; edits here are overwritten on the next install.
+apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+{% for t in kube_oidc_trusts | default([]) %}
+  - issuer:
+      url: "{{ t.issuer_url }}"
+      audiences:
+        - "{{ t.client_id }}"
+{% if t.ca_pem | default('') | length > 0 %}
+      certificateAuthority: |
+        {{ t.ca_pem | indent(8) }}
+{% endif %}
+    # Identity is the immutable `sub`, not a renamable claim like
+    # preferred_username (OIDC Core §5.7); the readable name rides in extra.
+    claimMappings:
+      username:
+        claim: "{{ t.username_claim | default('sub') }}"
+        prefix: "{{ t.prefix | default('oidc:') }}"
+      groups:
+        claim: "{{ t.groups_claim | default('groups') }}"
+        prefix: "{{ t.prefix | default('oidc:') }}"
+{% set _display = t.display_claim | default('preferred_username') %}
+      extra:
+        - key: "ai-solutions.intel.com/username"
+          valueExpression: "has(claims.{{ _display }}) ? claims.{{ _display }} : ''"
+{% else %}
+  []
+{% endfor %}

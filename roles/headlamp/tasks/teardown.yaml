@@ -1,0 +1,82 @@
+---
+# =============================================================================
+# Headlamp — Teardown
+# =============================================================================
+
+- name: "headlamp | Check for existing Helm release"
+  kubernetes.core.helm_info:
+    name: headlamp
+    release_namespace: "{{ headlamp_namespace }}"
+  register: _headlamp_release
+  failed_when: false
+
+- name: "headlamp | Not installed — skipping teardown"
+  ansible.builtin.debug:
+    msg: "No Headlamp release in {{ headlamp_namespace }} — nothing to tear down."
+  when: _headlamp_release.status is not defined or _headlamp_release.status is none
+
+- name: "headlamp | Teardown"
+  when: _headlamp_release.status is defined and _headlamp_release.status is not none
+  block:
+    - name: "headlamp | Delete SecurityPolicy (no-auth)"
+      kubernetes.core.k8s:
+        api_version: gateway.envoyproxy.io/v1alpha1
+        kind: SecurityPolicy
+        name: headlamp-no-auth
+        namespace: "{{ headlamp_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "headlamp | Delete HTTPRoute"
+      kubernetes.core.k8s:
+        api_version: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        name: headlamp
+        namespace: "{{ headlamp_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "headlamp | Uninstall Helm release"
+      kubernetes.core.helm:
+        name: headlamp
+        release_namespace: "{{ headlamp_namespace }}"
+        state: absent
+        wait: "{{ helm_wait | default(true) }}"
+      failed_when: false
+
+    - name: "headlamp | Delete read-only RBAC (cluster-scoped)"
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        state: absent
+      loop:
+        - {kind: ClusterRoleBinding, name: headlamp-view-all}
+        - {kind: ClusterRole, name: headlamp-view-all}
+        - {kind: ClusterRole, name: headlamp-view-all-extras}
+      failed_when: false
+
+    # Drop the apiserver's trust in the Headlamp issuer along with the bindings.
+    - name: "headlamp | Remove Keycloak trust from the kube-apiserver"
+      ansible.builtin.include_role:
+        name: kubernetes
+        tasks_from: apiserver_oidc.yaml
+      vars:
+        kube_oidc_trusts: []
+      when: headlamp_oidc_enabled | bool
+
+    - name: "headlamp | Delete OIDC group bindings (cluster-scoped)"
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        name: "headlamp-oidc-{{ item }}"
+        state: absent
+      loop: "{{ headlamp_oidc_group_roles.keys() | list }}"
+      failed_when: false
+
+    - name: "headlamp | Delete namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ headlamp_namespace }}"
+        state: absent
+      failed_when: false

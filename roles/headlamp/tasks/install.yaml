@@ -1,0 +1,281 @@
+---
+# =============================================================================
+# Headlamp — Install (Helm chart, exposed via Envoy Gateway)
+# =============================================================================
+
+- name: "headlamp | Check existing Helm release"
+  kubernetes.core.helm_info:
+    name: headlamp
+    release_namespace: "{{ headlamp_namespace }}"
+  register: _headlamp_release
+  failed_when: false
+
+- name: "headlamp | Label namespace — Istio"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ headlamp_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when: istio_enabled | default(false) | bool
+
+- name: "headlamp | Label namespace — PSS"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ headlamp_namespace }}"
+        labels:
+          pod-security.kubernetes.io/enforce: "baseline"
+          pod-security.kubernetes.io/audit: "restricted"
+          pod-security.kubernetes.io/warn: "restricted"
+  when: enforce_pss | default(false) | bool
+
+- name: "headlamp | Create namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ headlamp_namespace }}"
+
+# ── OIDC: Keycloak client + apiserver trust ────────────────────────────────────
+- name: "headlamp | Keycloak SSO"
+  when: headlamp_oidc_enabled | bool
+  block:
+    - name: "headlamp | Provision Keycloak client"
+      ansible.builtin.include_role:
+        name: keycloak
+        tasks_from: client.yaml
+      vars:
+        kc_client:
+          client_id: "{{ headlamp_oidc_client_id }}"
+          name: "Headlamp"
+          realm: "{{ headlamp_oidc_realm }}"
+          frontend_url: "{{ headlamp_frontend_url }}"
+          redirect_uris: ["{{ headlamp_frontend_url }}/oidc-callback"]
+          groups: "{{ headlamp_oidc_group_roles.keys() | list }}"
+          secret_name: "{{ headlamp_oidc_secret_name }}"
+          secret_namespace: "{{ headlamp_namespace }}"
+
+    # The apiserver must trust the issuer or every OIDC user gets 401. Selfsigned
+    # gateway TLS ships its CA in the gateway-tls Secret; custom certs are
+    # assumed publicly trusted.
+    - name: "headlamp | Read gateway CA"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ gateway_tls_secret_name | default('gateway-tls') }}"
+        namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+      register: _headlamp_gw_tls
+
+    - name: "headlamp | Resolve issuer CA"
+      ansible.builtin.set_fact:
+        _headlamp_issuer_ca_pem: "{{ (_headlamp_gw_tls.resources[0].data['ca.crt'] | default('')) | b64decode }}"
+
+    # Headlamp's backend fetches OIDC discovery itself, so the pod needs the
+    # same CA and (without real DNS) the same host pin as the apiserver.
+    - name: "headlamp | Publish issuer CA to the Headlamp namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ headlamp_oidc_ca_configmap }}"
+            namespace: "{{ headlamp_namespace }}"
+          data:
+            ca.crt: "{{ _headlamp_issuer_ca_pem }}"
+      when: _headlamp_issuer_ca_pem | length > 0
+
+    - name: "headlamp | Read gateway Service for issuer host pin"
+      kubernetes.core.k8s_info:
+        kind: Service
+        namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+        label_selectors:
+          - "gateway.envoyproxy.io/owning-gateway-name={{ gateway_name | default('eg-gateway') }}"
+      register: _headlamp_gw_svc
+      when: headlamp_oidc_pin_issuer_host | bool
+
+    - name: "headlamp | Trust Keycloak at the kube-apiserver"
+      ansible.builtin.include_role:
+        name: kubernetes
+        tasks_from: apiserver_oidc.yaml
+      vars:
+        kube_oidc_trusts:
+          - issuer_url: "{{ _kcc_issuer_url }}"
+            client_id: "{{ headlamp_oidc_client_id }}"
+            ca_pem: "{{ _headlamp_issuer_ca_pem }}"
+
+    - name: "headlamp | Bind Keycloak groups to ClusterRoles"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: "headlamp-oidc-{{ item.key }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: "{{ item.value }}"
+          subjects:
+            - kind: Group
+              name: "oidc:{{ item.key }}"
+      loop: "{{ headlamp_oidc_group_roles | dict2items }}"
+      loop_control:
+        label: "oidc:{{ item.key }} → {{ item.value }}"
+
+# ── Helm install ──────────────────────────────────────────────────────────────
+
+- name: "headlamp | Add Helm repo"
+  kubernetes.core.helm_repository:
+    name: "{{ headlamp_helm_repo_name }}"
+    repo_url: "{{ headlamp_helm_repo_url }}"
+  register: _headlamp_repo
+  until: _headlamp_repo is succeeded
+  retries: "{{ helm_retries | default(3) }}"
+  delay: 15
+
+- name: "headlamp | Deploy chart"
+  kubernetes.core.helm:
+    name: headlamp
+    chart_ref: "{{ headlamp_helm_repo_name }}/headlamp"
+    release_namespace: "{{ headlamp_namespace }}"
+    create_namespace: false
+    chart_version: "{{ headlamp_chart_version }}"
+    values: "{{ lookup('template', 'headlamp-values.yaml.j2') | from_yaml }}"
+    wait: "{{ helm_wait | default(true) }}"
+    timeout: "{{ helm_timeout | default('300s') }}"
+
+# ── Comprehensive read-only RBAC — reconciled every run ───────────────────────
+# Never Secrets: read on Secrets exposes admin credentials (Keycloak, SA
+# tokens) and is effectively cluster-admin. RBAC has no deny, so the role is
+# aggregated from 'view' (Secret-free by design, plus operators that opt in)
+# and the extras below, which add what 'view' omits for the other tabs.
+- name: "headlamp | Grant read-only extras (no Secrets)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: headlamp-view-all-extras
+        labels:
+          headlamp.ai-solutions/aggregate-to-view-all: "true"
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes", "persistentvolumes", "namespaces"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: "{{ headlamp_view_all_platform_api_groups + headlamp_view_all_crd_api_groups }}"
+          resources: ["*"]
+          verbs: ["get", "list", "watch"]
+        - nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/version", "/healthz", "/livez", "/readyz"]
+          verbs: ["get"]
+  when: (headlamp_full_read_enabled | bool) or (headlamp_oidc_enabled | bool)
+
+- name: "headlamp | Grant comprehensive read-only ClusterRole"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: headlamp-view-all
+      aggregationRule:
+        clusterRoleSelectors:
+          - matchLabels:
+              rbac.authorization.k8s.io/aggregate-to-view: "true"
+          - matchLabels:
+              headlamp.ai-solutions/aggregate-to-view-all: "true"
+      # Filled in by the aggregation controller.
+      rules: []
+  when: (headlamp_full_read_enabled | bool) or (headlamp_oidc_enabled | bool)
+
+- name: "headlamp | Bind read-only ClusterRole to Headlamp ServiceAccount"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: headlamp-view-all
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: headlamp-view-all
+      subjects:
+        - kind: ServiceAccount
+          name: headlamp
+          namespace: "{{ headlamp_namespace }}"
+  when: (headlamp_full_read_enabled | bool) and not (headlamp_oidc_enabled | bool)
+
+# ── Gateway exposure — reconciled on every run so routing drift is picked up ───
+
+# In path mode Headlamp mounts on the shared apex listener, which admits routes
+# only from labelled namespaces. Stamp the label before the route so it can
+# attach. Not needed in subdomain mode (own exact-host listener).
+- name: "headlamp | Label namespace — allow apex-listener routes (path mode)"
+  vars:
+    # Built as a dict value, not a templated mapping key — Ansible does not
+    # template dict keys, so the inline "{{ key }}:" form leaves it literal.
+    _headlamp_apex_label: >-
+      {{ {(gateway_apex_route_label_key | default('gateway-apex-routes')):
+          (gateway_apex_route_label_value | default('allowed'))} }}
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ headlamp_namespace }}"
+        labels: "{{ _headlamp_apex_label }}"
+  when:
+    - gateway_create | default(false)
+    - headlamp_section_name == 'https-apex'
+
+# Shared builder: HTTPS listener only, security-header baseline.
+- name: "headlamp | Create HTTPRoute for gateway"
+  kubernetes.core.k8s:
+    state: present
+    definition: >-
+      {{ headlamp_route | gateway_httproute('headlamp',
+           gateway_name=gateway_name | default('eg-gateway'),
+           gateway_namespace=gateway_namespace | default('envoy-gateway-system'),
+           headers=headlamp_response_headers) }}
+  when: gateway_create | default(false)
+
+# Headlamp is a browser UI with its own login (OIDC or token), so it cannot
+# present the bearer token the gateway JWT filter expects. Exempt just this
+# route from the gateway-wide JWT policy; Headlamp enforces its own auth.
+- name: "headlamp | Exclude Headlamp route from gateway JWT policy"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: SecurityPolicy
+      metadata:
+        name: headlamp-no-auth
+        namespace: "{{ headlamp_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: headlamp
+  when: gateway_create | default(false)
+
+- name: "headlamp | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "Headlamp {{ headlamp_chart_version }} deployed in {{ headlamp_namespace }} at {{ headlamp_frontend_url }}"
+      - >-
+        Login: {{ 'Keycloak SSO (realm ' ~ headlamp_oidc_realm ~ '); grant access via groups '
+                  ~ (headlamp_oidc_group_roles.keys() | join(', '))
+                  if headlamp_oidc_enabled | bool
+                  else 'token (ServiceAccount RBAC: ' ~ headlamp_cluster_role_name ~ ')' }}

@@ -1,0 +1,92 @@
+---
+# =============================================================================
+# Kubernetes — Trust an OIDC issuer at the kube-apiserver (structured auth)
+# =============================================================================
+# Reusable: include_role kubernetes tasks_from=apiserver_oidc.yaml with
+#   kube_oidc_trusts: [{issuer_url, client_id, ca_pem?, username_claim?,
+#                       display_claim?, groups_claim?, prefix?}]
+# Writes kubernetes_auth_config_path on every control-plane node (live-reloaded)
+# and, on clusters built before the flag existed, adds --authentication-config
+# to the static kube-apiserver manifest once. Works with SSH and localhost
+# inventories; a BYO cluster only gets the rendered file plus instructions.
+# =============================================================================
+
+- name: "kubernetes | oidc | Render AuthenticationConfiguration to {{ log_dir }}"
+  ansible.builtin.template:
+    src: authentication-config.yaml.j2
+    dest: "{{ log_dir }}/authentication-config.yaml"
+    mode: "0600"
+
+- name: "kubernetes | oidc | BYO cluster — apply manually"
+  ansible.builtin.debug:
+    msg: >-
+      existing_kubernetes is set, so node access is not managed here. Copy
+      {{ log_dir }}/authentication-config.yaml to {{ kubernetes_auth_config_path }}
+      on every control-plane node and start kube-apiserver with
+      --authentication-config={{ kubernetes_auth_config_path }}.
+  when: existing_kubernetes | default('') | trim | length > 0
+
+- name: "kubernetes | oidc | Configure control-plane nodes"
+  when: existing_kubernetes | default('') | trim | length == 0
+  block:
+    - name: "kubernetes | oidc | Ensure config directory"
+      ansible.builtin.file:
+        path: "{{ kubernetes_auth_config_path | dirname }}"
+        state: directory
+        mode: "0755"
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
+
+    - name: "kubernetes | oidc | Write AuthenticationConfiguration"
+      ansible.builtin.copy:
+        src: "{{ log_dir }}/authentication-config.yaml"
+        dest: "{{ kubernetes_auth_config_path }}"
+        mode: "0600"
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
+
+    - name: "kubernetes | oidc | Pin issuer hosts to the gateway IP"
+      when:
+        - kubernetes_oidc_pin_issuer_hosts | bool
+        - kube_oidc_trusts | default([]) | length > 0
+      block:
+        - name: "kubernetes | oidc | Read gateway LoadBalancer IP"
+          kubernetes.core.k8s_info:
+            kind: Service
+            namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+            label_selectors:
+              - "gateway.envoyproxy.io/owning-gateway-name={{ gateway_name | default('eg-gateway') }}"
+          register: _oidc_gw_svc
+
+        - name: "kubernetes | oidc | Write /etc/hosts entries on control-plane nodes"
+          vars:
+            _ip: "{{ _oidc_gw_svc.resources[0].status.loadBalancer.ingress[0].ip | default('') }}"
+            _hosts: "{{ kube_oidc_trusts | map(attribute='issuer_url') | map('urlsplit', 'hostname') | unique | list }}"
+          ansible.builtin.lineinfile:
+            path: /etc/hosts
+            regexp: '\s{{ item.1 | regex_escape }}$'
+            line: "{{ item.0 }} {{ item.1 }}"
+          become: true
+          delegate_to: "{{ item.2 }}"
+          loop: "{{ [_ip] | product(_hosts, groups['kube_control_plane'] | default(['localhost'], true)) | list }}"
+          loop_control:
+            label: "{{ item.2 }}: {{ item.0 }} {{ item.1 }}"
+          when: _ip | length > 0
+
+    - name: "kubernetes | oidc | Ensure kube-apiserver passes --authentication-config"
+      ansible.builtin.include_tasks: apiserver_oidc_node.yaml
+      loop: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
+      loop_control:
+        loop_var: _cp_node
+
+    # kubelet restarts the apiserver only when the manifest changed above; a
+    # reload of the config file alone needs no wait. Cheap either way.
+    - name: "kubernetes | oidc | Wait for kube-apiserver"
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: _oidc_api
+      until: _oidc_api.resources is defined and _oidc_api.resources | length > 0
+      retries: 30
+      delay: 5

@@ -126,6 +126,30 @@
     dest: "{{ env_dir }}/kubespray_extra_auto.yml"
     mode: "0600"
 
+# The apiserver refuses to start if --authentication-config points at a missing
+# file, so seed an empty (valid) one before cluster.yml. force: false keeps a
+# live config intact on re-provision.
+- name: "kubernetes | kubespray | Seed apiserver AuthenticationConfiguration"
+  when: kubernetes_structured_auth_enabled | bool
+  become: true
+  block:
+    - name: "kubernetes | kubespray | Ensure /etc/kubernetes on control-plane nodes"
+      ansible.builtin.file:
+        path: "{{ kubernetes_auth_config_path | dirname }}"
+        state: directory
+        mode: "0755"
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
+
+    - name: "kubernetes | kubespray | Write empty AuthenticationConfiguration"
+      ansible.builtin.copy:
+        dest: "{{ kubernetes_auth_config_path }}"
+        content: "{{ lookup('template', 'authentication-config.yaml.j2') }}"
+        force: false
+        mode: "0600"
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
+
 # ─── Patch Kubespray template for reservedSystemCPUs ────────────────────────
 
 - name: "kubernetes | kubespray | Check if kubelet template already patched"

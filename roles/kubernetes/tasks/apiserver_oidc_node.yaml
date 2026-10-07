@@ -1,0 +1,39 @@
+---
+# One control-plane node: make the static apiserver manifest pass
+# --authentication-config with the config directory mounted. Clusters built with
+# kubernetes_structured_auth_enabled already match via kubespray_extra_auto.yml.
+
+- name: "kubernetes | oidc | Read kube-apiserver manifest on {{ _cp_node }}"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  become: true
+  delegate_to: "{{ _cp_node }}"
+  register: _oidc_manifest
+
+# Rewrites, rather than appends, so a manifest carrying an older path or a
+# single-file mount converges on the directory mount.
+- name: "kubernetes | oidc | Set --authentication-config on {{ _cp_node }}"
+  vars:
+    _m: "{{ _oidc_manifest.content | b64decode | from_yaml }}"
+    _c: "{{ _m.spec.containers[0] }}"
+    _dir: "{{ kubernetes_auth_config_path | dirname }}"
+    _want: "--authentication-config={{ kubernetes_auth_config_path }}"
+    _patched: >-
+      {{ _m | combine({'spec': _m.spec | combine({
+           'containers': [_c | combine({
+             'command': (_c.command | reject('match', '--authentication-config=') | list) + [_want],
+             'volumeMounts': (_c.volumeMounts | default([]) | rejectattr('name', 'eq', 'authentication-config') | list)
+               + [{'name': 'authentication-config', 'mountPath': _dir, 'readOnly': true}]})]
+             + _m.spec.containers[1:],
+           'volumes': (_m.spec.volumes | default([]) | rejectattr('name', 'eq', 'authentication-config') | list)
+             + [{'name': 'authentication-config', 'hostPath': {'path': _dir, 'type': 'Directory'}}]})}) }}
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    content: "{{ _patched | to_nice_yaml(indent=2) }}"
+    mode: "0600"
+  become: true
+  delegate_to: "{{ _cp_node }}"
+  when: >-
+    _want not in _c.command
+    or (_c.volumeMounts | default([]) | selectattr('name', 'eq', 'authentication-config')
+        | map(attribute='mountPath') | list) != [_dir]

@@ -1,0 +1,3 @@
+---
+- name: "metrics_server | Dispatch action: {{ component_action }}"
+  ansible.builtin.include_tasks: "{{ component_action }}.yaml"

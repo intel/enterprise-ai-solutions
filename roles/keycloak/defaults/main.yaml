@@ -50,3 +50,9 @@ keycloak_metrics_enabled: true
 keycloak_realm: "inference"
 keycloak_client_id: "inference-client"
 
+# Human SSO realm for browser UIs (Headlamp, Grafana, ...). Clients are added
+# with tasks/client.yaml, which creates the realm if missing. Separate from
+# keycloak_realm because the inference layer creates that realm via a
+# KeycloakRealmImport, which the operator skips if the realm already exists.
+# Point this at keycloak_realm once every layer provisions clients the same way.
+keycloak_sso_realm: "platform"

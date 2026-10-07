@@ -1,0 +1,19 @@
+---
+# =============================================================================
+# metrics-server Role Defaults — serves the resource-metrics API (metrics.k8s.io)
+# =============================================================================
+# Provides `kubectl top`, HPA resource metrics, and dashboard CPU/memory panels.
+# Distinct from prometheus-adapter (custom.metrics.k8s.io); both can coexist.
+
+metrics_server_namespace: "kube-system"
+metrics_server_chart_version: "3.14.0"   # appVersion 0.9.0
+metrics_server_replicas: 1
+
+metrics_server_helm_repo_name: "metrics-server"
+metrics_server_helm_repo_url: "https://kubernetes-sigs.github.io/metrics-server/"
+
+# kubeadm kubelets serve self-signed certs here (no serverTLSBootstrap / approved
+# CSRs), which metrics-server cannot verify. Skip that verification. To harden:
+# enable kubelet serving-cert rotation (serverTLSBootstrap: true + approve the
+# CSRs) so the certs are cluster-CA-signed, then set this false.
+metrics_server_kubelet_insecure_tls: true
