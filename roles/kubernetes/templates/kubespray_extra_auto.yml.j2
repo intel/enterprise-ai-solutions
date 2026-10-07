@@ -53,4 +53,15 @@ local_path_provisioner_storage_class: "local-path"
 local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
+{% if kubernetes_structured_auth_enabled | default(true) | bool %}
+# Structured authentication (see kubernetes_structured_auth_enabled). Kept in
+# kubespray vars so an upgrade-cluster run re-renders the flag and mount.
+kube_kubeadm_apiserver_extra_args:
+  authentication-config: "{{ kubernetes_auth_config_path }}"
+apiserver_extra_volumes:
+  - name: authentication-config
+    hostPath: "{{ kubernetes_auth_config_path | dirname }}"
+    mountPath: "{{ kubernetes_auth_config_path | dirname }}"
+    readOnly: true
+{% endif %}
 override_system_hostname: false

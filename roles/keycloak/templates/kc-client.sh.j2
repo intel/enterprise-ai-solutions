@@ -1,0 +1,63 @@
+#!/bin/sh
+# Rendered by roles/keycloak/tasks/client.yaml and run inside the Keycloak pod.
+set -eu
+KC=/opt/keycloak/bin/kcadm.sh
+CFG="--config /tmp/kcadm.config"   # kcadm accepts --config only after the subcommand
+$KC config credentials $CFG --server {{ _kcc_server | quote }} --realm master \
+    --user {{ _kcc_admin.resources[0].data.username | b64decode | quote }} \
+    --password {{ _kcc_admin.resources[0].data.password | b64decode | quote }} >/dev/null
+
+if ! $KC get {{ ('realms/' ~ _kcc_realm) | quote }} $CFG >/dev/null 2>&1; then
+    $KC create realms $CFG -s {{ ('realm=' ~ _kcc_realm) | quote }} -s enabled=true \
+        -s sslRequired=external -s bruteForceProtected=true >/dev/null
+    echo CHANGED
+fi
+
+# Client: OVERWRITE so redirect URIs follow routing changes; the secret is
+# supplied, so it stays stable across re-imports.
+out=$($KC create partialImport $CFG -r {{ _kcc_realm | quote }} -f - -o <<'JSON'
+{{ {
+  'ifResourceExists': 'OVERWRITE',
+  'clients': [{
+    'clientId': kc_client.client_id,
+    'name': kc_client.name | default(kc_client.client_id),
+    'protocol': 'openid-connect',
+    'enabled': true,
+    'publicClient': false,
+    'secret': _kcc_secret,
+    'standardFlowEnabled': true,
+    'implicitFlowEnabled': false,
+    'directAccessGrantsEnabled': false,
+    'serviceAccountsEnabled': false,
+    'rootUrl': kc_client.frontend_url,
+    'redirectUris': kc_client.redirect_uris | default([kc_client.frontend_url ~ '/*']),
+    'webOrigins': [kc_client.frontend_url],
+    'attributes': {
+      'pkce.code.challenge.method': 'S256',
+      'post.logout.redirect.uris': kc_client.frontend_url ~ '/*'
+    },
+    'protocolMappers': [{
+      'name': 'groups',
+      'protocol': 'openid-connect',
+      'protocolMapper': 'oidc-group-membership-mapper',
+      'consentRequired': false,
+      'config': {
+        'claim.name': 'groups', 'full.path': 'false',
+        'id.token.claim': 'true', 'access.token.claim': 'true', 'userinfo.token.claim': 'true'
+      }
+    }]
+  }]
+} | to_json }}
+JSON
+)
+case "$out" in *ADDED*|*OVERWRITTEN*) echo CHANGED ;; esac
+
+{% if kc_client.groups | default([]) | length > 0 %}
+# Groups: SKIP so existing groups (and their members) are never touched.
+# `path` is mandatory here — Keycloak NPEs on a group import without it.
+out=$($KC create partialImport $CFG -r {{ _kcc_realm | quote }} -f - -o <<'JSON'
+{"ifResourceExists":"SKIP","groups":[{% for g in kc_client.groups %}{"name":"{{ g }}","path":"/{{ g }}"}{{ "," if not loop.last }}{% endfor %}]}
+JSON
+)
+case "$out" in *ADDED*) echo CHANGED ;; esac
+{% endif %}

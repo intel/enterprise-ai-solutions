@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# Headlamp — Validate
+# =============================================================================
+
+- name: "headlamp | Check Headlamp deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ headlamp_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=headlamp"
+  register: _headlamp_deploy
+
+- name: "headlamp | Assert Headlamp replicas ready"
+  ansible.builtin.assert:
+    that:
+      - _headlamp_deploy.resources | length > 0
+      - (_headlamp_deploy.resources[0].status.readyReplicas | default(0) | int) >= (headlamp_replicas | int)
+    fail_msg: "Headlamp has fewer than {{ headlamp_replicas }} ready replica(s)"
+    success_msg: "Headlamp has {{ _headlamp_deploy.resources[0].status.readyReplicas | default(0) }} ready replica(s)"
+
+- name: "headlamp | Validation passed"
+  ansible.builtin.debug:
+    msg: "Headlamp {{ headlamp_chart_version }} validation passed at {{ headlamp_frontend_url }}."

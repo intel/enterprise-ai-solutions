@@ -1,0 +1,96 @@
+---
+# =============================================================================
+# Keycloak — Provision an OIDC client (reusable publish primitive)
+# =============================================================================
+# include_role: name=keycloak tasks_from=client.yaml with:
+#   kc_client:
+#     client_id:        OIDC client id (required)
+#     frontend_url:     https base URL of the service (required)
+#     secret_namespace: where to write the credentials Secret (required)
+#     redirect_uris:    list (default: <frontend_url>/*)
+#     realm:            default keycloak_sso_realm — created if missing
+#     groups:           realm groups to ensure exist; emitted in a `groups` claim
+#     secret_name:      default <client_id>-oidc
+#     scopes:           default "openid profile email"
+# Idempotent: the client secret is generated once and reused from the Secret;
+# the client is re-imported every run so URL changes are picked up. Runs kcadm
+# inside the Keycloak pod, so it needs neither external DNS nor TLS trust.
+# =============================================================================
+
+- name: "keycloak | client | Read admin credentials"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: keycloak-admin-secret
+    namespace: "{{ keycloak_namespace }}"
+  register: _kcc_admin
+  failed_when: _kcc_admin.resources | default([]) | length == 0
+  no_log: "{{ kc_client_no_log | default(true) }}"
+
+- name: "keycloak | client | Read existing client Secret"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ kc_client.secret_name | default(kc_client.client_id ~ '-oidc') }}"
+    namespace: "{{ kc_client.secret_namespace }}"
+  register: _kcc_existing
+  no_log: "{{ kc_client_no_log | default(true) }}"
+
+# set_fact, not vars: lookup('password', '/dev/null') yields a new value on
+# every reference, so it must be pinned once. _kcc_issuer_url is also the
+# caller's handle on the issuer (include_role does not export role defaults).
+- name: "keycloak | client | Resolve realm, issuer and client secret"
+  ansible.builtin.set_fact:
+    _kcc_realm: "{{ kc_client.realm | default(keycloak_sso_realm) }}"
+    _kcc_issuer_url: "{{ keycloak_frontend_url }}/realms/{{ kc_client.realm | default(keycloak_sso_realm) }}"
+    _kcc_secret: >-
+      {{ (_kcc_existing.resources[0].data.OIDC_CLIENT_SECRET | b64decode)
+         if _kcc_existing.resources | default([]) | length > 0
+         else lookup('password', '/dev/null length=40 chars=ascii_letters,digits') }}
+  no_log: "{{ kc_client_no_log | default(true) }}"
+
+- name: "keycloak | client | Find a running Keycloak pod"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ keycloak_namespace }}"
+    label_selectors: ["app=keycloak"]
+    field_selectors: ["status.phase=Running"]
+  register: _kcc_pod
+  until: _kcc_pod.resources | default([]) | length > 0
+  retries: 30
+  delay: 10
+
+- name: "keycloak | client | Apply realm, client and groups ({{ kc_client.client_id }})"
+  vars:
+    _kcc_server: "http://localhost:8080{{ '' if keycloak_relative_path == '/' else keycloak_relative_path }}"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ keycloak_namespace }}"
+    pod: "{{ _kcc_pod.resources[0].metadata.name }}"
+    command: "/bin/sh -c 'echo {{ lookup('template', 'kc-client.sh.j2') | b64encode }} | base64 -d | /bin/sh'"
+  register: _kcc_apply
+  changed_when: "'CHANGED' in _kcc_apply.stdout"
+  failed_when: false
+  no_log: "{{ kc_client_no_log | default(true) }}"   # command carries the admin password; -e kc_client_no_log=false to debug
+
+# Surfaced separately: stdout/stderr hold only kcadm messages, never credentials.
+- name: "keycloak | client | Fail on kcadm error"
+  ansible.builtin.fail:
+    msg: "kcadm exited {{ _kcc_apply.rc | default('?') }}: {{ _kcc_apply.stderr | default('') | trim }} {{ _kcc_apply.stdout | default('') | trim }}"
+  when: (_kcc_apply.rc | default(1)) != 0
+
+- name: "keycloak | client | Write {{ kc_client.secret_name | default(kc_client.client_id ~ '-oidc') }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ kc_client.secret_name | default(kc_client.client_id ~ '-oidc') }}"
+        namespace: "{{ kc_client.secret_namespace }}"
+      type: Opaque
+      stringData:
+        OIDC_CLIENT_ID: "{{ kc_client.client_id }}"
+        OIDC_CLIENT_SECRET: "{{ _kcc_secret }}"
+        OIDC_ISSUER_URL: "{{ _kcc_issuer_url }}"
+        OIDC_SCOPES: "{{ kc_client.scopes | default('openid profile email') }}"
+  no_log: "{{ kc_client_no_log | default(true) }}"

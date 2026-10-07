@@ -10,6 +10,20 @@
 # Leave empty for managed install (Kubespray provisions the cluster).
 existing_kubernetes: ""
 
+# --- API server structured authentication ---
+# Pass --authentication-config so OIDC trust (Headlamp SSO, kubectl oidc-login)
+# can be added or changed after the cluster exists: the apiserver reloads the
+# file live, no restart. Seeded empty at build; apiserver_oidc.yaml fills it.
+# The file sits in its own directory and the DIRECTORY is mounted: a single-file
+# hostPath bind-mounts one inode, so an atomic replace (copy/template) would
+# never reach the apiserver.
+kubernetes_structured_auth_enabled: true
+kubernetes_auth_config_path: "/etc/kubernetes/authentication/config.yaml"
+# The apiserver fetches the issuer's signing keys by hostname. Without DNS for
+# the issuer host, pin it to the gateway IP in /etc/hosts on control-plane
+# nodes. Set false when DNS resolves it.
+kubernetes_oidc_pin_issuer_hosts: true
+
 # --- Cluster Detection ---
 # If true, skips install when an existing cluster is detected
 kubernetes_skip_if_exists: true

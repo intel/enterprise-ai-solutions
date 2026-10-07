@@ -50,6 +50,13 @@ service_routes:
     port: 80
     namespace: monitoring
 
+  # Landing page: in path mode the bare base domain redirects here.
+  headlamp:
+    path: /headlamp
+    subdomain: headlamp
+    service: headlamp
+    port: 80
+    namespace: headlamp
 
   # Inference layer, auth_provider: keycloak (gateway JWT).
   inference:

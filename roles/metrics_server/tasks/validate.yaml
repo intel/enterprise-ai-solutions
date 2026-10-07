@@ -1,0 +1,35 @@
+---
+# =============================================================================
+# metrics-server — Validate
+# =============================================================================
+
+- name: "metrics_server | Check deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: metrics-server
+    namespace: "{{ metrics_server_namespace }}"
+  register: _ms_deploy
+
+- name: "metrics_server | Assert replicas ready"
+  ansible.builtin.assert:
+    that:
+      - _ms_deploy.resources | length > 0
+      - (_ms_deploy.resources[0].status.readyReplicas | default(0) | int) >= (metrics_server_replicas | int)
+    fail_msg: "metrics-server has fewer than {{ metrics_server_replicas }} ready replica(s)"
+    success_msg: "metrics-server has {{ _ms_deploy.resources[0].status.readyReplicas | default(0) }} ready replica(s)"
+
+- name: "metrics_server | Check metrics.k8s.io APIService"
+  kubernetes.core.k8s_info:
+    api_version: apiregistration.k8s.io/v1
+    kind: APIService
+    name: v1beta1.metrics.k8s.io
+  register: _ms_api
+
+- name: "metrics_server | Assert metrics API available"
+  ansible.builtin.assert:
+    that:
+      - _ms_api.resources | length > 0
+      - _ms_api.resources[0].status.conditions | default([]) | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+    fail_msg: "metrics.k8s.io APIService is not Available"
+    success_msg: "metrics.k8s.io APIService is Available"

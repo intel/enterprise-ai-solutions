@@ -109,6 +109,11 @@ components:
     enabled: "{{ (object_store_backend | default('seaweedfs')) == 'seaweedfs' }}"
     depends_on: [object_store]
 
+  - name: metrics_server
+    layer: platform
+    enabled: "{{ metrics_server_enabled | default(true) | bool }}"
+    depends_on: []
+
   - name: observability
     layer: platform
     enabled: "{{ observability_enabled | default(true) | bool }}"
@@ -118,6 +123,11 @@ components:
     layer: platform
     enabled: "{{ velero_enabled | default(false) | bool }}"
     depends_on: []
+
+  - name: headlamp
+    layer: platform
+    enabled: "{{ headlamp_enabled | default(false) | bool }}"
+    depends_on: [envoy_gateway, keycloak, metrics_server]
 
   # --- Inference ---
   # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy

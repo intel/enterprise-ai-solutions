@@ -72,6 +72,10 @@ gateway_request_timeout: "600s"           # Envoy default is 15s — too short f
 istio_enabled: true
 observability_enabled: true
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
+# Headlamp (Kubernetes web UI, opt-in). With auth_provider=keycloak it logs in via
+# Keycloak SSO (realm "platform"); grant access by adding users to the
+# platform-admins / platform-viewers groups in Keycloak.
+headlamp_enabled: false
 
 # --- Authentication ---
 auth_provider: "keycloak"                 # keycloak | litellm
