@@ -97,6 +97,11 @@ headlamp_view_all_crd_api_groups:
 headlamp_oidc_enabled: "{{ keycloak_enabled | default(true) | bool }}"
 headlamp_oidc_client_id: "headlamp"
 headlamp_oidc_realm: "{{ keycloak_sso_realm | default('platform') }}"
+# ID token lifetime for the headlamp client only (realm default: 5 min). Headlamp
+# v0.45 logs users out at expiry: its /me check uses the old token in the same
+# request that refreshes it. The API server accepts the token until it expires,
+# so this is also the longest a removed user keeps Kubernetes access.
+headlamp_oidc_token_lifespan: 3600
 headlamp_oidc_secret_name: "headlamp-oidc"
 # Keycloak groups → Kubernetes ClusterRoles. Groups are created (empty) in the
 # realm; add users to them in Keycloak. Names reach the apiserver as

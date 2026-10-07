@@ -35,7 +35,8 @@ out=$($KC create partialImport $CFG -r {{ _kcc_realm | quote }} -f - -o <<'JSON'
     'attributes': {
       'pkce.code.challenge.method': 'S256',
       'post.logout.redirect.uris': kc_client.frontend_url ~ '/*'
-    },
+    } | combine({'access.token.lifespan': kc_client.token_lifespan | string}
+                if kc_client.token_lifespan is defined else {}),
     'protocolMappers': [{
       'name': 'groups',
       'protocol': 'openid-connect',

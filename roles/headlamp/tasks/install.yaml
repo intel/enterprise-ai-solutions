@@ -60,6 +60,7 @@
           realm: "{{ headlamp_oidc_realm }}"
           frontend_url: "{{ headlamp_frontend_url }}"
           redirect_uris: ["{{ headlamp_frontend_url }}/oidc-callback"]
+          token_lifespan: "{{ headlamp_oidc_token_lifespan }}"
           groups: "{{ headlamp_oidc_group_roles.keys() | list }}"
           secret_name: "{{ headlamp_oidc_secret_name }}"
           secret_namespace: "{{ headlamp_namespace }}"

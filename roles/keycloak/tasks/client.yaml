@@ -12,6 +12,7 @@
 #     groups:           realm groups to ensure exist; emitted in a `groups` claim
 #     secret_name:      default <client_id>-oidc
 #     scopes:           default "openid profile email"
+#     token_lifespan:   access/ID token lifetime in seconds (default: realm setting)
 # Idempotent: the client secret is generated once and reused from the Secret;
 # the client is re-imported every run so URL changes are picked up. Runs kcadm
 # inside the Keycloak pod, so it needs neither external DNS nor TLS trust.
