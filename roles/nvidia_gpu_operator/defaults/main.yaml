@@ -1,0 +1,30 @@
+---
+# =============================================================================
+# NVIDIA GPU Operator Role Defaults
+# =============================================================================
+# NVIDIA only. One role per vendor: the Intel stack is intel_gpu_operator
+# (planner epic B2), so the two never install on the same node.
+# Runs when rack_scale_gpu_vendor == nvidia, which the rack-profile parser sets
+# from the accelerator: field of a node.
+# =============================================================================
+
+# --- NVIDIA GPU Operator ---
+nvidia_gpu_operator_namespace: "gpu-operator"
+nvidia_gpu_operator_version: "v25.3.0"
+nvidia_gpu_operator_helm_repo: "https://helm.ngc.nvidia.com/nvidia"
+nvidia_gpu_operator_helm_repo_name: "nvidia"
+nvidia_gpu_operator_chart: "nvidia/gpu-operator"
+nvidia_gpu_operator_release_name: "gpu-operator"
+nvidia_gpu_operator_driver_enabled: true
+nvidia_gpu_operator_toolkit_enabled: true
+nvidia_gpu_operator_device_plugin_enabled: true
+nvidia_gpu_operator_mig_enabled: false
+nvidia_gpu_operator_dcgm_exporter_enabled: true
+nvidia_gpu_operator_wait_timeout: "10m"
+
+# --- Node Feature Discovery (NFD) ---
+# The operator chart ships its own NFD. Keep true until the cluster has a
+# platform-level NFD that publishes the PCI vendor labels (pci-10de.present);
+# then set false so only one NFD labels the nodes. Planner epic B2 moves NFD to
+# the platform layer and flips this.
+nvidia_gpu_operator_nfd_enabled: true
