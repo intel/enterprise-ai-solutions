@@ -307,6 +307,17 @@
             initChownData:
               enabled: false
             grafana.ini:
+              # Serve under the route's prefix in path mode; the gateway passes it through.
+              server:
+                root_url: "{{ observability_grafana_url }}/"
+                serve_from_sub_path: "{{ observability_grafana_route.relative_path != '/' }}"
+              security:
+                cookie_secure: true
+                cookie_samesite: lax
+                content_security_policy: true
+                csrf_always_check: true
+                allow_embedding: false
+                disable_gravatar: true
               plugins:
                 plugin_admin_enabled: true
               auth:
@@ -409,7 +420,10 @@
 
 - name: "observability | kube-prometheus-stack already installed — skipping"
   ansible.builtin.debug:
-    msg: "kube-prometheus-stack already deployed in {{ observability_namespace }} — skipping."
+    msg: >-
+      kube-prometheus-stack already deployed in {{ observability_namespace }} — skipping.
+      grafana.ini (root_url {{ observability_grafana_url }}/, security settings) applies
+      on fresh installs only; after changing routing_mode, reinstall the release.
   when: _obs_prom_release.status is defined and _obs_prom_release.status is not none
 
 # =============================================================================
@@ -680,39 +694,31 @@
 # 6. Grafana HTTPRoute (expose via Envoy Gateway)
 # =============================================================================
 
-- name: "observability | Expose Grafana via gateway HTTPRoute"
+# In path mode Grafana mounts on the apex listener, which admits only labelled namespaces.
+- name: "observability | Label namespace — allow apex-listener routes (path mode)"
+  vars:
+    _obs_apex_label: >-
+      {{ {(gateway_apex_route_label_key | default('gateway-apex-routes')):
+          (gateway_apex_route_label_value | default('allowed'))} }}
   kubernetes.core.k8s:
     state: present
     definition:
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: HTTPRoute
+      apiVersion: v1
+      kind: Namespace
       metadata:
-        name: grafana
-        namespace: "{{ observability_namespace }}"
-      spec:
-        parentRefs:
-          # Pin to the HTTPS listener only. Without sectionName an HTTPRoute
-          # attaches to every compatible listener, including the plaintext
-          # HTTP:80 one, which would serve Grafana admin credentials in cleartext.
-          - name: "{{ gateway_name }}"
-            namespace: "{{ gateway_namespace }}"
-            sectionName: https
-        hostnames:
-          - "{{ observability_grafana_hostname }}"
-        rules:
-          - filters:
-              # HSTS: only ever reach Grafana over HTTPS on a compliant browser,
-              # so a later plaintext attempt is refused before the admin
-              # credential leaves the browser. Only honored over HTTPS, so it is
-              # set here on the :443 route, not the :80 redirect.
-              - type: ResponseHeaderModifier
-                responseHeaderModifier:
-                  set:
-                    - name: Strict-Transport-Security
-                      value: "max-age=31536000; includeSubDomains"
-            backendRefs:
-              - name: kube-prometheus-stack-grafana
-                port: 80
+        name: "{{ observability_namespace }}"
+        labels: "{{ _obs_apex_label }}"
+  when:
+    - gateway_create | default(false) | bool
+    - observability_grafana_route.section_name == 'https-apex'
+
+# Shared builder: HTTPS listener only, security-header baseline.
+- name: "observability | Expose Grafana via gateway HTTPRoute"
+  kubernetes.core.k8s:
+    state: present
+    definition: >-
+      {{ observability_grafana_route | gateway_httproute('grafana',
+           gateway_name=gateway_name, gateway_namespace=gateway_namespace) }}
   when: gateway_create | default(false) | bool
 
 - name: "observability | Bypass gateway auth for Grafana (Grafana has its own login)"
@@ -804,6 +810,6 @@
       Components: kube-prometheus-stack {{ observability_kube_prometheus_stack_version }},
       Loki {{ observability_loki_version }}, Tempo {{ observability_tempo_version }},
       OTel Collector {{ observability_otel_collector_version }}.
-      Grafana: https://{{ observability_grafana_hostname }}
+      Grafana: {{ observability_grafana_url }}
       OTLP gRPC: {{ observability_otel_grpc_endpoint }}
       OTLP HTTP: {{ observability_otel_http_endpoint }}

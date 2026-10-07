@@ -37,7 +37,14 @@ observability_prometheus_adapter_version: "4.11.0"
 observability_grafana_admin_user: "admin"
 # Password managed by tasks/credentials.yaml — stored in 'observability-credentials' Secret.
 observability_grafana_admin_password: ""
-observability_grafana_hostname: "grafana.{{ base_domain_name | default('solutions.ai') }}"
+# Routing from the shared service_routes registry: grafana.<base> or <base>/grafana.
+observability_grafana_route: >-
+  {{ 'grafana' | service_route(routing_mode | default('subdomain'),
+                               base_domain_name | default('solutions.ai'),
+                               service_routes | default({}),
+                               service_route_overrides | default({})) }}
+observability_grafana_hostname: "{{ observability_grafana_route.host }}"
+observability_grafana_url: "{{ observability_grafana_route.frontend_url }}"
 
 # ── Prometheus retention & storage ───────────────────────────────────────────
 observability_prometheus_retention: "30d"
