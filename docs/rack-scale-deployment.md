@@ -18,7 +18,7 @@ automatically configures:
 - **Fabric NICs** — persistent IP addressing via netplan on every node
 - **Hub forwarding** (star) or **ECMP + BGP** (Clos) — topology-appropriate routing
 - **Ceph on fabric** — OSD traffic binds to the high-speed network
-- **GPU operator** — auto-installs when `accelerator:` is declared (no separate flag)
+- **NVIDIA GPU operator** — auto-installs when an NVIDIA `accelerator:` is declared (no separate flag)
 - **Node labels** — silicon family, GPU vendor/model/form applied to K8s nodes
 
 Two topologies are supported from the same `rack-profile.yaml` schema:
@@ -36,7 +36,7 @@ Two topologies are supported from the same `rack-profile.yaml` schema:
   - Clos: cables to ToR leaf switches
 - **Network plan:** fabric IP addresses, subnet layout, cable map
 - **Storage (optional):** raw NVMe devices for Ceph OSDs (not the OS disk)
-- **GPU (optional):** nodes with NVIDIA or Intel GPUs
+- **GPU (optional):** nodes with NVIDIA GPUs (Intel GPU support follows with the generic GPU enablement, planner epic B2)
 
 ---
 
@@ -321,7 +321,7 @@ racks:
 
 **What happens automatically:**
 - Parser detects `accelerator:` → sets `rack_scale_gpu_vendor=nvidia`
-- GPU operator role auto-enables (NVIDIA GPU operator or Intel GPU plugin)
+- `nvidia_gpu_operator` role installs the NVIDIA GPU operator (NVIDIA only; other vendors log a warning and get no stack from this role)
 - Node labels applied: `gpu-vendor=nvidia`, `gpu-model=b300`, `gpu-form=hgx`, `gpu-count=8`
 - Inference scheduling and the GPU operator use these labels
 
@@ -369,7 +369,7 @@ and continue.
 | Ceph OSDs not starting | Wrong NIC name | Verify `ceph_fabric_nic` exists on storage nodes: `ip link show` on each |
 | Kubespray hangs behind proxy | Fabric CIDRs not in no_proxy | The installer injects them automatically; verify with `echo $no_proxy` |
 | `unknown field 'X' — typo?` | Schema validation | Fix the field name and re-run — the parser catches typos as hard errors |
-| `GPU operator not installing` | Missing `accelerator:` | Add `accelerator: nvidia-b300-hgx` (or similar) to the node or its profile |
+| `GPU operator not installing` | Missing `accelerator:`, or the vendor is not NVIDIA | Add `accelerator: nvidia-b300-hgx` (or similar) to the node or its profile |
 | BGP sessions not Established (Clos) | Leaf switch misconfigured | Verify `peer_ip`, `asn`, and `fabric_subnet` match the switch config |
 
 ---

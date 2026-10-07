@@ -63,10 +63,14 @@ components:
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [kubernetes, fabric_bgp]
 
-  # --- GPU (enabled when rack_scale is on; role checks gpu_vendor and no-ops if empty) ---
+  # --- GPU (NVIDIA; enabled when rack_scale is on; role checks gpu_vendor and no-ops if not nvidia) ---
+  # One role per vendor: this is the NVIDIA stack. The Intel stack is a separate
+  # role (intel_gpu_operator, planner epic B2), so the two never share a node.
   # Cannot gate on rack_scale_gpu_vendor here because it's a runtime fact set by
   # fabric_inventory, but the resolver evaluates enabled at preflight (before any role runs).
-  - name: gpu_operator
+  # Planned (B2): detect vendors from NFD labels, drop the rack_scale gate, move to the
+  # platform layer after nfd, and set nvidia_gpu_operator_nfd_enabled: false.
+  - name: nvidia_gpu_operator
     layer: infrastructure
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [fabric_validate]
