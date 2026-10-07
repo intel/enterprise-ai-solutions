@@ -32,7 +32,8 @@ service_route returns a dict:
     path           logical path from the registry (kept for reference)
     backend/port/namespace  backend Service wiring, passed through from the registry
 
-gateway_httproute builds the HTTPRoute for a resolved route (see its docstring).
+gateway_httproute builds the HTTPRoute for a resolved route (see its docstring);
+cookie_confinement lists, for path mode, which cookies may reach which paths.
 
 """
 
@@ -229,9 +230,24 @@ def gateway_httproute(route, name, rules=None, gateway_name="eg-gateway",
     }
 
 
+def cookie_confinement(registry, routing_mode, base_domain, overrides=None):
+    """Path mode: [{cookie, paths}] — each owned cookie may reach only its
+    owners' paths on the shared apex. Empty when no published service on the
+    apex owns cookies (subdomain mode: host-only cookies already isolate)."""
+    owners = {}
+    for svc in sorted(registry or {}):
+        r = service_route(svc, routing_mode, base_domain, registry, overrides)
+        if r["section_name"] != "https-apex" or not r["published"]:
+            continue
+        for c in r["cookies"]:
+            owners.setdefault(c, set()).add(r["relative_path"])
+    return [{"cookie": c, "paths": sorted(p)} for c, p in sorted(owners.items())]
+
+
 class FilterModule(object):
     def filters(self):
         return {
             "service_route": service_route,
             "gateway_httproute": gateway_httproute,
+            "cookie_confinement": cookie_confinement,
         }

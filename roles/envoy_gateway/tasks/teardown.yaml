@@ -27,6 +27,18 @@
         state: absent
       failed_when: false
 
+    - name: "envoy_gateway | Delete apex objects"
+      kubernetes.core.k8s:
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ gateway_namespace }}"
+        state: absent
+      loop: "{{ _eg_apex_all }}"
+      loop_control:
+        label: "{{ item.kind }}/{{ item.name }}"
+      failed_when: false
+
     - name: "envoy_gateway | Delete S3 listener ClientTrafficPolicy"
       kubernetes.core.k8s:
         api_version: gateway.envoyproxy.io/v1alpha1

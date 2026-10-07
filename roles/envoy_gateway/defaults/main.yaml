@@ -88,6 +88,15 @@ gateway_protected_hostnames:
 gateway_apex_route_label_key: "gateway-apex-routes"
 gateway_apex_route_label_value: "allowed"
 
+# Path mode: the bare base domain redirects here ('' = no landing page, 404).
+gateway_landing_service: "{{ 'headlamp' if headlamp_enabled | default(false) | bool else '' }}"
+# Rendered apex objects, and every object the template can emit (for pruning).
+_eg_apex_objects: "{{ lookup('ansible.builtin.template', 'apex.yaml.j2') | from_yaml_all | select | list }}"
+_eg_apex_all:
+  - { api_version: gateway.networking.k8s.io/v1, kind: HTTPRoute, name: apex-landing }
+  - { api_version: gateway.envoyproxy.io/v1alpha1, kind: SecurityPolicy, name: apex-landing-no-auth }
+  - { api_version: gateway.envoyproxy.io/v1alpha1, kind: EnvoyExtensionPolicy, name: apex-cookie-confinement }
+
 # Keycloak routing for the SecurityPolicy JWT provider. Resolved from the shared
 # service_routes registry (same filter the keycloak role uses) so the external
 # issuer and the in-cluster JWKS URL always match where Keycloak actually serves

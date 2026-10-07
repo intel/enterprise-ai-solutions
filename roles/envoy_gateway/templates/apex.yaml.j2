@@ -1,0 +1,114 @@
+{#
+Copyright (C) 2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+
+Gateway-owned objects on the apex host: the landing redirect (both modes)
+and, in path mode, cookie confinement.
+#}
+{% set _confined = service_routes | default({}) | cookie_confinement(routing_mode | default('subdomain'), base_domain_name, service_route_overrides | default({})) %}
+{% if gateway_landing_service %}
+{% set _landing = gateway_landing_service | service_route(routing_mode | default('subdomain'), base_domain_name, service_routes | default({}), service_route_overrides | default({})) %}
+---
+# Bare base domain -> landing page. Exact '/', so unknown paths still 404.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: apex-landing
+  namespace: {{ gateway_namespace | to_json }}
+spec:
+  parentRefs:
+    - name: {{ gateway_name | to_json }}
+      namespace: {{ gateway_namespace | to_json }}
+      sectionName: https-apex
+  hostnames:
+    - {{ base_domain_name | to_json }}
+  rules:
+    - matches:
+        - path: { type: Exact, value: / }
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+{% if _landing.host == base_domain_name %}
+            path: { type: ReplaceFullPath, replaceFullPath: {{ (_landing.relative_path ~ '/') | to_json }} }
+{% else %}
+            hostname: {{ _landing.host | to_json }}
+{% endif %}
+            statusCode: 302
+{% if auth_provider | default('none') in ['keycloak', 'litellm'] %}
+---
+# A redirect carries no credentials; without this the gateway JWT answers 401.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: apex-landing-no-auth
+  namespace: {{ gateway_namespace | to_json }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: apex-landing
+{% endif %}
+{% endif %}
+{% if _confined %}
+---
+# Every service shares one origin here, so a Path=/ cookie is sent to all of
+# them. Forward each listed cookie only to its owners' paths; the rest of the
+# Cookie header is untouched. Cookie Path is not a browser security boundary:
+# this keeps tokens out of other backends and their logs, nothing more.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: apex-cookie-confinement
+  namespace: {{ gateway_namespace | to_json }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ gateway_name | to_json }}
+      sectionName: https-apex
+  lua:
+    - type: Inline
+      inline: |
+        local owners = {
+{% for c in _confined %}
+          {name = {{ c.cookie.rstrip('*') | to_json }}, prefix = {{ c.cookie.endswith('*') | lower }}, paths = { {{ c.paths | map('to_json') | join(', ') }} }},
+{% endfor %}
+        }
+
+        local function under(path, p)
+          return path == p or path:sub(1, #p + 1) == p .. "/"
+        end
+
+        local function allowed(name, path)
+          for _, o in ipairs(owners) do
+            local hit
+            if o.prefix then hit = name:sub(1, #o.name) == o.name else hit = name == o.name end
+            if hit then
+              for _, p in ipairs(o.paths) do
+                if under(path, p) then return true end
+              end
+              return false
+            end
+          end
+          return true
+        end
+
+        function envoy_on_request(handle)
+          local h = handle:headers()
+          local n = h:getNumValues("cookie")
+          if n == 0 then return end
+          local path = (h:get(":path") or "/"):match("^[^?#]*")
+          local kept, dropped = {}, false
+          for i = 0, n - 1 do
+            for pair in (h:getAtIndex("cookie", i) or ""):gmatch("[^;]+") do
+              local c = pair:match("^%s*(.-)%s*$")
+              if c ~= "" then
+                if allowed(c:match("^[^=]*"), path) then kept[#kept + 1] = c else dropped = true end
+              end
+            end
+          end
+          if not dropped then return end
+          h:remove("cookie")
+          if #kept > 0 then h:add("cookie", table.concat(kept, "; ")) end
+        end
+{% endif %}
