@@ -21,6 +21,18 @@
     K8S_AUTH_NO_PROXY: "{{ no_proxy | default('') }}"
 
   tasks:
+    - name: "status | Load service routing registry"
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../configs/service_routes.yaml"
+
+    # Endpoints are listed only for registry services whose route exists.
+    - name: "status | Get HTTPRoutes"
+      kubernetes.core.k8s_info:
+        api_version: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+      register: _st_routes
+      failed_when: false
+
     - name: "status | Get all namespaces on cluster"
       kubernetes.core.k8s_info:
         kind: Namespace
@@ -93,14 +105,19 @@
           ──────────────────────────────────────────────────────────────────────────
            Endpoints
           ──────────────────────────────────────────────────────────────────────────
-            Gateway:     https://{{ base_domain_name }}
-          {% if 'keycloak' in _st_existing_namespaces %}
-            Keycloak:    https://auth.{{ base_domain_name }}
+            {{ "%-15s" | format("Gateway:") }}https://{{ base_domain_name }}
+          {% for svc in service_routes | default({}) | sort %}
+          {% set r = svc | service_route(routing_mode | default('subdomain'), base_domain_name, service_routes, service_route_overrides | default({})) %}
+          {% set _paths = _st_routes.resources | default([])
+                          | selectattr('metadata.namespace', 'eq', r.namespace)
+                          | selectattr('spec.hostnames', 'defined')
+                          | selectattr('spec.hostnames', 'contains', r.host)
+                          | map(attribute='spec.rules') | flatten
+                          | selectattr('matches', 'defined') | map(attribute='matches') | flatten
+                          | map(attribute='path.value', default='/')
+                          | select('match', '^' ~ (r.relative_path | regex_escape) ~ '(/|$)' if r.relative_path != '/' else '^/') | list %}
+          {% if r.published and _paths %}
+            {{ "%-15s" | format(svc ~ ":") }}{{ r.frontend_url }}
           {% endif %}
-          {% if 'litellm' in _st_existing_namespaces %}
-            LiteLLM:     https://litellm.{{ base_domain_name }}
-          {% endif %}
-          {% if 'monitoring' in _st_existing_namespaces %}
-            Grafana:     https://grafana.{{ base_domain_name }}
-          {% endif %}
+          {% endfor %}
           ══════════════════════════════════════════════════════════════════════════
