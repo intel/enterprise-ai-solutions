@@ -20,7 +20,7 @@
 # filter_plugins/service_route.py (the `service_route` Jinja filter).
 #
 # Fields per service:
-#   path       logical path in path mode, e.g. /keycloak ('/' = served at apex root)
+#   path       logical path in path mode, e.g. /keycloak
 #   subdomain  subdomain label in subdomain mode → <subdomain>.<base_domain_name>
 #   service    backend Kubernetes Service name
 #   port       backend Service port

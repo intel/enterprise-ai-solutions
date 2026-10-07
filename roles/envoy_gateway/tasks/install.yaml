@@ -254,6 +254,43 @@
   delay: 5
   when: gateway_create
 
+# ── Apex host: landing redirect + path-mode cookie confinement ───────────────
+# The landing route lives in the gateway namespace, so that namespace must
+# carry the apex admission label like any other apex route owner.
+- name: "envoy_gateway | Label gateway namespace — allow apex-listener routes"
+  vars:
+    _eg_apex_label: >-
+      {{ {gateway_apex_route_label_key: gateway_apex_route_label_value} }}
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gateway_namespace }}"
+        labels: "{{ _eg_apex_label }}"
+  when: gateway_create
+
+- name: "envoy_gateway | Apply apex objects"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ _eg_apex_objects }}"
+  when: gateway_create and _eg_apex_objects | length > 0
+
+# Drop what the current settings no longer render (landing off, subdomain mode).
+- name: "envoy_gateway | Remove apex objects no longer rendered"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ gateway_namespace }}"
+  loop: "{{ _eg_apex_all | rejectattr('name', 'in', _eg_apex_objects | map(attribute='metadata.name') | list) | list }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  failed_when: false
+  when: gateway_create
+
 # ── Plaintext HTTP:80 → HTTPS redirect ───────────────────────────────────────
 # The HTTP:80 listener exists so browsers hitting http:// still land on the
 # stack, but it must never SERVE anything in cleartext. This catch-all route
