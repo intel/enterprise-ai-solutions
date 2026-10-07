@@ -16,7 +16,8 @@ gateway_namespace: "envoy-gateway-system"
 # can override via their own timeouts.request / timeouts.backendRequest.
 gateway_request_timeout: "600s"
 
-# Authentication
+# Authentication: how API clients authenticate. Either way the gateway policy is
+# a Keycloak JWT (deny-by-default) and people sign in through Keycloak.
 auth_provider: "none"                    # none | keycloak (JWT) | litellm (virtual key)
 
 # ── ONTAP S3 API listener (optional) ─────────────────────────────────────────

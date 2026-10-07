@@ -72,12 +72,14 @@ gateway_request_timeout: "600s"           # Envoy default is 15s — too short f
 istio_enabled: true
 observability_enabled: true
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
-# Headlamp (Kubernetes web UI, opt-in). With auth_provider=keycloak it logs in via
-# Keycloak SSO (realm "platform"); grant access by adding users to the
-# platform-admins / platform-viewers groups in Keycloak.
+# Headlamp (Kubernetes web UI, opt-in). Logs in via Keycloak SSO (realm
+# "platform"); grant access by adding users to the platform-admins /
+# platform-viewers groups in Keycloak.
 headlamp_enabled: false
 
 # --- Authentication ---
+# How API clients authenticate: keycloak (JWT on inference.<domain>) or litellm
+# (virtual keys on litellm.<domain>). People always sign in through Keycloak.
 auth_provider: "keycloak"                 # keycloak | litellm
 
 # --- PostgreSQL ---
@@ -126,7 +128,7 @@ kubernetes_accelerator: "cpu"
 object_store_backend: "seaweedfs"
 seaweedfs_volume_storage_size: "10Gi"
 
-# --- Keycloak (only used when auth_provider=keycloak) ---
+# --- Keycloak ---
 # keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted
 
 # --- Observability ---

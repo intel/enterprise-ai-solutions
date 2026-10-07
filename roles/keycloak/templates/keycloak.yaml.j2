@@ -50,8 +50,9 @@ spec:
       value: "{{ keycloak_health_enabled | lower }}"
     - name: metrics-enabled
       value: "{{ keycloak_metrics_enabled | lower }}"
+    # hostname is a full URL, so never derive it from request headers.
     - name: hostname-strict
-      value: "false"
+      value: "true"
 {% if keycloak_relative_path != '/' %}
     # Path-based routing: serve every endpoint under this prefix. The hostname
     # above already carries {{ keycloak_relative_path }} so advertised URLs match where the

@@ -28,13 +28,19 @@
         state: absent
       failed_when: false
 
-    - name: "keycloak | Delete HTTPRoute"
+    - name: "keycloak | Delete HTTPRoutes and admin allowlist"
       kubernetes.core.k8s:
-        api_version: gateway.networking.k8s.io/v1
-        kind: HTTPRoute
-        name: keycloak
+        api_version: "{{ item.api }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
         namespace: "{{ keycloak_namespace }}"
         state: absent
+      loop:
+        - { api: gateway.envoyproxy.io/v1alpha1, kind: SecurityPolicy, name: keycloak-admin-allowlist }
+        - { api: gateway.networking.k8s.io/v1, kind: HTTPRoute, name: keycloak-admin }
+        - { api: gateway.networking.k8s.io/v1, kind: HTTPRoute, name: keycloak }
+      loop_control:
+        label: "{{ item.kind }}/{{ item.name }}"
       failed_when: false
 
     - name: "keycloak | Delete Keycloak CR"

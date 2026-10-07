@@ -38,11 +38,16 @@
 
 # set_fact, not vars: lookup('password', '/dev/null') yields a new value on
 # every reference, so it must be pinned once. _kcc_issuer_url is also the
-# caller's handle on the issuer (include_role does not export role defaults).
+# caller's handle on the issuer (include_role does not export role defaults),
+# as is _kcc_internal_realm_url.
 - name: "keycloak | client | Resolve realm, issuer and client secret"
   ansible.builtin.set_fact:
     _kcc_realm: "{{ kc_client.realm | default(keycloak_sso_realm) }}"
     _kcc_issuer_url: "{{ keycloak_frontend_url }}/realms/{{ kc_client.realm | default(keycloak_sso_realm) }}"
+    # Same realm over the in-cluster service, for server-side token and JWKS calls.
+    _kcc_internal_realm_url: >-
+      http://{{ keycloak_route.backend }}.{{ keycloak_route.namespace }}.svc.cluster.local:{{ keycloak_route.port
+      }}{{ '' if keycloak_relative_path == '/' else keycloak_relative_path }}/realms/{{ kc_client.realm | default(keycloak_sso_realm) }}
     _kcc_secret: >-
       {{ (_kcc_existing.resources[0].data.OIDC_CLIENT_SECRET | b64decode)
          if _kcc_existing.resources | default([]) | length > 0
@@ -93,4 +98,5 @@
         OIDC_CLIENT_SECRET: "{{ _kcc_secret }}"
         OIDC_ISSUER_URL: "{{ _kcc_issuer_url }}"
         OIDC_SCOPES: "{{ kc_client.scopes | default('openid profile email') }}"
+        client-secret: "{{ _kcc_secret }}"   # key Envoy Gateway's oidc.clientSecret reads
   no_log: "{{ kc_client_no_log | default(true) }}"

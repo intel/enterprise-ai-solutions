@@ -34,6 +34,8 @@ keycloak_frontend_url: "{{ keycloak_route.frontend_url }}"    # advertised URL (
 keycloak_section_name: "{{ keycloak_route.section_name }}"    # gateway listener (apex or its own host)
 # Route host only (no scheme/path): used for NO_PROXY, validation and log messages.
 keycloak_hostname: "{{ keycloak_route.host }}"
+# Source CIDRs allowed to reach <keycloak>/admin (console + admin API); [] = open.
+keycloak_admin_allowed_cidrs: []
 keycloak_admin_user: "admin"
 keycloak_admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
 keycloak_db_vendor: "postgres"        # dev-file (embedded H2) | postgres
