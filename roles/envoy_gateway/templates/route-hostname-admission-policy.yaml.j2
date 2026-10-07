@@ -29,7 +29,6 @@ spec:
         {{ '{' }}{% for e in gateway_protected_hostnames %}"{{ e.hostname }}": "{{ e.owner_namespace }}"{% if not loop.last %}, {% endif %}{% endfor %}{{ '}' }}
   validations:
     # A route with no explicit hostnames does not claim a reserved name by string,
-    # and the Gateway API ranks an explicit hostname above the listener wildcard,
     # so only explicit claims can take over. Allow any hostname that is not
     # reserved; for a reserved one, require the route to live in the owner namespace.
     - expression: >-

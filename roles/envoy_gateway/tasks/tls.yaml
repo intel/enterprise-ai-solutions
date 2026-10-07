@@ -4,7 +4,7 @@
 # =============================================================================
 # Produces the secret gateway_tls_secret_name in gateway_namespace, consumed by
 # the Gateway HTTPS listeners. Modes:
-#   selfsigned — internal root CA signs a wildcard leaf; the root cert is
+#   selfsigned — internal root CA signs a leaf for the served hosts; the root cert is
 #                exported to log_dir so operators import ONE file to trust
 #                every hostname across leaf rotations
 #   custom     — secret built from operator-supplied cert/key files
@@ -49,6 +49,17 @@
   register: _tls_key_data
   when: gateway_tls_mode == 'custom' and gateway_create
 
+# Only registry hosts are served, so the supplied certificate must name each one.
+- name: "envoy_gateway | Check custom certificate covers every served host"
+  vars:
+    _missing: "{{ _tls_cert_data.content | b64decode | cert_missing_hosts(gateway_tls_dns_names) }}"
+  ansible.builtin.assert:
+    that: _missing | length == 0
+    fail_msg: >-
+      {{ gateway_tls_cert_file }} does not cover {{ _missing | join(', ') }}.
+      Required DNS names: {{ gateway_tls_dns_names | join(', ') }}.
+  when: gateway_tls_mode == 'custom' and gateway_create
+
 - name: "envoy_gateway | Create TLS secret from user-provided certs"
   kubernetes.core.k8s:
     state: present
@@ -66,7 +77,7 @@
 
 # ── TLS: internal root CA (selfsigned mode) ───────────────────────────────────
 # selfSigned bootstrap ClusterIssuer → root CA Certificate (isCA) →
-# CA ClusterIssuer 'gateway-issuer'. The wildcard serving leaf below chains to
+# CA ClusterIssuer 'gateway-issuer'. The serving leaf below (registry hosts only) chains to
 # the root, so importing the root cert once trusts every hostname.
 
 - name: "envoy_gateway | Create self-signed bootstrap ClusterIssuer"
@@ -150,9 +161,7 @@
         issuerRef:
           name: gateway-issuer
           kind: ClusterIssuer
-        dnsNames:
-          - "{{ base_domain_name }}"
-          - "*.{{ base_domain_name }}"
+        dnsNames: "{{ gateway_tls_dns_names }}"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
 - name: "envoy_gateway | Wait for TLS certificate to be ready"
@@ -183,7 +192,7 @@
   ansible.builtin.debug:
     msg:
       - "Root CA exported: {{ gateway_ca_export_path }}"
-      - "Import it to stop browser warnings on https://*.{{ base_domain_name }}"
+      - "Import it to stop browser warnings on {{ gateway_tls_dns_names | map('regex_replace', '^', 'https://') | join(', ') }}"
       - "Firefox:  Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import"
       - "Chrome:   Settings → Privacy and security → Security → Manage certificates → Authorities → Import"
       - "Linux:    sudo cp {{ gateway_ca_export_path }} /usr/local/share/ca-certificates/{{ gateway_ca_cert_name }}.crt && sudo update-ca-certificates"

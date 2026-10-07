@@ -213,7 +213,7 @@
 # In path mode Keycloak mounts on the shared apex listener, which admits routes
 # only from labelled namespaces (see gateway_apex_route_label_* / gateway.yaml.j2).
 # Stamp the label before creating the route so it can attach. Not needed in
-# subdomain mode, where the route pins the *.<base> wildcard listener instead.
+# subdomain mode, where the route has its own exact-host listener.
 - name: "keycloak | Label namespace — allow apex-listener routes (path mode)"
   vars:
     # Built as a dict value, not a templated mapping key — Ansible does not

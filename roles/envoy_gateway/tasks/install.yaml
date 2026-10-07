@@ -384,11 +384,9 @@
   failed_when: false
   when: not (gateway_s3_listener_enabled | bool)
 
-# Gateway API resolves overlapping listener hostnames by specificity, so the
-# moment 'https-s3' claims s3.<base_domain> exactly, the '*.<base_domain>'
-# wildcard listener stops covering that name. Any pre-existing route that claims
-# the S3 hostname while pinning sectionName: https therefore flips to
-# Accepted=False / NoMatchingListenerHostname - in practice the SeaweedFS S3
+# Only 'https-s3' serves s3.<base_domain> (there is no wildcard listener), so
+# a pre-existing route that claims the S3 hostname while pinning
+# sectionName: https is Accepted=False - in practice the SeaweedFS S3
 # route from a deployment that used the in-cluster object store. That route is
 # exactly what the ONTAP S3 proxy replaces, and the RAG layer removes it when it
 # activates, but the platform layer runs first so the operator is told here.
@@ -516,3 +514,5 @@
     msg: >-
       Envoy Gateway v{{ envoy_gateway_version }} installed in {{ envoy_gateway_namespace }}.
       Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}){{ ' + auth (' + auth_provider + ')' if auth_provider != 'none' else '' }}.
+      Served hosts (create a DNS A record for each, pointing at the gateway address):
+      {{ gateway_tls_dns_names | join(', ') }}.

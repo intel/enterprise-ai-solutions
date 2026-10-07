@@ -14,7 +14,7 @@ Terms used across this documentation, in alphabetical order.
 
 **BYO cluster (bring your own).** Deploying onto a Kubernetes cluster you already operate by setting `existing_kubernetes` to its kubeconfig. Cluster provisioning is skipped; everything above it still installs.
 
-**cert-manager.** The controller that issues and renews the TLS certificates used by the gateway. With `gateway_tls_mode: selfsigned` it creates an internal CA and a wildcard certificate for `*.<base_domain_name>`.
+**cert-manager.** The controller that issues and renews the TLS certificates used by the gateway. With `gateway_tls_mode: selfsigned` it creates an internal CA and a certificate naming exactly the hosts in the service registry (no wildcard).
 
 **CNPG (CloudNativePG).** The operator that runs the PostgreSQL clusters used by platform services.
 
