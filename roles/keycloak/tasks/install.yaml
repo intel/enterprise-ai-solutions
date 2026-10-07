@@ -233,45 +233,15 @@
     - gateway_create | default(false)
     - keycloak_section_name == 'https-apex'
 
+# Shared builder: HTTPS listener only, security-header baseline. Framing is
+# left to Keycloak (frame-ancestors per realm; its login iframes need 'self').
 - name: "keycloak | Create HTTPRoute for gateway"
   kubernetes.core.k8s:
     state: present
-    definition:
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: HTTPRoute
-      metadata:
-        name: keycloak
-        namespace: "{{ keycloak_namespace }}"
-      spec:
-        parentRefs:
-          # Pin to the HTTPS listener only. Without sectionName an HTTPRoute
-          # attaches to every compatible listener, including the plaintext
-          # HTTP:80 one, which would serve OIDC tokens in cleartext.
-          # In path mode the route claims the apex host, which the *.<base>
-          # wildcard listener does not match, so attach to the apex listener.
-          - name: "{{ gateway_name | default('eg-gateway') }}"
-            namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
-            sectionName: "{{ keycloak_section_name }}"
-        hostnames:
-          - "{{ keycloak_route_host }}"
-        rules:
-          - matches:
-              - path:
-                  type: PathPrefix
-                  value: "{{ keycloak_relative_path }}"
-            filters:
-              # HSTS: tell compliant browsers to only ever reach this host over
-              # HTTPS, so a later plaintext attempt is refused client-side before
-              # any credential leaves the browser. Only honored when received over
-              # HTTPS, hence set here on the :443 route, not the :80 redirect.
-              - type: ResponseHeaderModifier
-                responseHeaderModifier:
-                  set:
-                    - name: Strict-Transport-Security
-                      value: "max-age=31536000; includeSubDomains"
-            backendRefs:
-              - name: "{{ keycloak_route.backend }}"
-                port: "{{ keycloak_route.port | int }}"
+    definition: >-
+      {{ keycloak_route | gateway_httproute('keycloak',
+           gateway_name=gateway_name | default('eg-gateway'),
+           gateway_namespace=gateway_namespace | default('envoy-gateway-system')) }}
   when: gateway_create | default(false)
 
 - name: "keycloak | Exclude Keycloak route from gateway JWT policy"

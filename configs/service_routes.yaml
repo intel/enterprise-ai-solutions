@@ -25,6 +25,15 @@
 #   service    backend Kubernetes Service name
 #   port       backend Service port
 #   namespace  namespace the Service (and its HTTPRoute) live in
+#   mode       optional: pin 'subdomain' | 'path' regardless of routing_mode
+#   prefix     how the path-mode prefix reaches the backend:
+#                passthrough  app serves under its prefix itself (UIs; default)
+#                strip        gateway removes the prefix (APIs serving at '/')
+#                none         app cannot serve under a prefix: internal-only in
+#                             path mode unless pinned to a subdomain
+#   cookies    cookies the app sets on Path=/ ('name*' = prefix). Path mode
+#              shares one origin, so the gateway strips them from requests to
+#              every other service. Apps that path-scope their cookies need none.
 # =============================================================================
 service_routes:
   keycloak:
@@ -40,3 +49,51 @@ service_routes:
     service: kube-prometheus-stack-grafana
     port: 80
     namespace: monitoring
+
+
+  # Inference layer, auth_provider: keycloak (gateway JWT).
+  inference:
+    path: /inference
+    subdomain: inference
+    service: ai-gateway
+    port: 80
+    namespace: envoy-gateway-system
+    prefix: strip
+
+  # Inference layer, auth_provider: litellm (virtual keys).
+  litellm:
+    path: /litellm
+    subdomain: litellm
+    service: litellm
+    port: 4000
+    namespace: litellm
+    prefix: strip
+
+  # LiteLLM UI + admin API. The UI session ('token') and the gateway OIDC
+  # cookies are Path=/; the token carries an admin key.
+  litellm-admin:
+    path: /litellm-admin
+    subdomain: litellm-admin
+    service: litellm
+    port: 4000
+    namespace: litellm
+    cookies:
+      - token
+      - litellm_*           # SSO state / return-to
+      - litellm-admin-*     # gateway OIDC id/access token (cookieNames)
+      - OauthHMAC-*
+      - OauthExpires-*
+      - OauthNonce-*
+      - RefreshToken-*
+      - IdToken-*
+      - AccessToken-*
+      - CodeVerifier*
+
+  # Base path is compiled into the stock image (NEXT_PUBLIC_BASE_PATH).
+  langfuse:
+    path: /langfuse
+    subdomain: langfuse
+    service: langfuse-web
+    port: 3000
+    namespace: langfuse
+    prefix: none
