@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# GPU Observability Role Defaults
+# =============================================================================
+# DCGM metrics, Grafana dashboard, and alert rules for NVIDIA GPUs.
+# Auto-enabled alongside nvidia_gpu_operator when accelerator: is detected.
+# =============================================================================
+
+gpu_observability_namespace: "monitoring"
+gpu_observability_grafana_dashboard_enabled: true
+gpu_observability_alerts_enabled: true
+
+gpu_observability_dashboard_label_key: "grafana_dashboard"
+gpu_observability_dashboard_label_value: "1"

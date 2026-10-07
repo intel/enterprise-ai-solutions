@@ -1,0 +1,35 @@
+---
+# =============================================================================
+# NVIDIA GPU Operator — Teardown
+# =============================================================================
+
+- name: "nvidia_gpu_operator | teardown | NVIDIA"
+  when: rack_scale_gpu_vendor | default('') == 'nvidia'
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "nvidia_gpu_operator | teardown | nvidia | Helm uninstall"
+      ansible.builtin.command:
+        cmd: >-
+          helm uninstall {{ nvidia_gpu_operator_release_name }}
+          --namespace {{ nvidia_gpu_operator_namespace }}
+      register: _gpu_helm_uninstall
+      failed_when: false
+      changed_when: _gpu_helm_uninstall.rc == 0
+
+    - name: "nvidia_gpu_operator | teardown | nvidia | Delete DCGM metrics ConfigMap"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: dcgm-metrics-config
+        namespace: "{{ nvidia_gpu_operator_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "nvidia_gpu_operator | teardown | nvidia | Delete namespace"
+      kubernetes.core.k8s:
+        name: "{{ nvidia_gpu_operator_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: absent
+      failed_when: false

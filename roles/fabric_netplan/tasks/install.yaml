@@ -17,6 +17,7 @@
       {{ (groups['kube_control_plane'] | default([]))
          | union(groups['kube_node'] | default([]))
          | union(groups.get('ceph_storage_nodes', []))
+         | reject('equalto', 'localhost')
          | unique }}
 
 - name: "fabric_netplan | Check netplan source exists for each node"

@@ -1,0 +1,26 @@
+---
+# =============================================================================
+# GPU Observability — Teardown
+# =============================================================================
+
+- name: "gpu_observability | teardown"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "gpu_observability | teardown | Delete GPU alert rules"
+      kubernetes.core.k8s:
+        api_version: monitoring.coreos.com/v1
+        kind: PrometheusRule
+        name: gpu-alerts
+        namespace: "{{ gpu_observability_namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "gpu_observability | teardown | Delete Grafana dashboard ConfigMap"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: grafana-dashboard-nvidia-dcgm
+        namespace: "{{ gpu_observability_namespace }}"
+        state: absent
+      failed_when: false
