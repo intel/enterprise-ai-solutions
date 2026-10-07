@@ -23,8 +23,8 @@ service_route returns a dict:
     host           host the HTTPRoute matches on (apex in path mode, else subdomain)
     relative_path  path the service must serve under ('/keycloak' | '/')
     frontend_url   absolute URL the service advertises (issuer/redirects/assets)
-    section_name   gateway listener to attach to ('https-apex' for the apex host,
-                   else 'https' — the wildcard '*.base' listener does NOT match apex)
+    section_name   gateway listener to attach to: 'https-apex' for the apex host,
+                   else the service's own listener 'https-<service>' (exact host)
     mode           effective mode after per-service override ('path' | 'subdomain')
     prefix         how the path prefix reaches the backend (passthrough|strip|none)
     published      False when the service cannot be served in this mode
@@ -33,11 +33,14 @@ service_route returns a dict:
     backend/port/namespace  backend Service wiring, passed through from the registry
 
 gateway_httproute builds the HTTPRoute for a resolved route (see its docstring);
-cookie_confinement lists, for path mode, which cookies may reach which paths.
-
+cookie_confinement lists, for path mode, which cookies may reach which paths;
+protected_hostnames lists the subdomains reserved to their owning namespace;
+gateway_listeners lists the exact-host listeners the gateway serves (no wildcard);
+cert_missing_hosts reports hosts a certificate does not cover.
 """
 
 import copy
+import fnmatch
 import re
 
 DEFAULT_MODE = "subdomain"
@@ -120,9 +123,9 @@ def service_route(service, routing_mode, base_domain, registry, overrides=None):
         relative_path = "/"
         frontend_url = "https://%s" % host
 
-    # The apex listener serves the bare base domain; the wildcard '*.base'
-    # listener serves subdomains and does not match the apex. Choose by host.
-    section_name = "https-apex" if host == base_domain else "https"
+    # Only registry hosts are served: the apex listener for the bare base domain,
+    # otherwise a listener per service for its exact subdomain (no wildcard).
+    section_name = "https-apex" if host == base_domain else "https-" + service
 
     return {
         "service": service,
@@ -244,10 +247,62 @@ def cookie_confinement(registry, routing_mode, base_domain, overrides=None):
     return [{"cookie": c, "paths": sorted(p)} for c, p in sorted(owners.items())]
 
 
+def _subdomain_routes(registry, routing_mode, base_domain, overrides):
+    for svc in sorted(registry or {}):
+        r = service_route(svc, routing_mode, base_domain, registry, overrides)
+        if r["section_name"] != "https-apex" and r["published"]:
+            yield r
+
+
+def protected_hostnames(registry, routing_mode, base_domain, overrides=None):
+    """[{hostname, owner_namespace}] for every service on its own subdomain, so
+    no other namespace can claim it (the apex is guarded by namespace label)."""
+    return [{"hostname": r["host"], "owner_namespace": r["namespace"]}
+            for r in _subdomain_routes(registry, routing_mode, base_domain, overrides)]
+
+
+def gateway_listeners(registry, routing_mode, base_domain, overrides=None):
+    """[{name, hostname, namespace}]: one HTTPS listener per published subdomain
+    service, admitting routes only from its owning namespace."""
+    out, seen = [], {}
+    for r in _subdomain_routes(registry, routing_mode, base_domain, overrides):
+        if r["host"] in seen:
+            raise ValueError("Services '%s' and '%s' both resolve to host '%s'."
+                             % (seen[r["host"]], r["service"], r["host"]))
+        seen[r["host"]] = r["service"]
+        out.append({"name": r["section_name"], "hostname": r["host"],
+                    "namespace": r["namespace"]})
+    return out
+
+
+def cert_missing_hosts(pem, hosts):
+    """Hosts not covered by the certificate's DNS SANs (a '*.' SAN covers one label)."""
+    from cryptography import x509  # lazy: only custom-TLS clusters need it
+
+    cert = x509.load_pem_x509_certificate(pem.encode() if isinstance(pem, str) else pem)
+    try:
+        sans = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        sans = []
+    sans = [n.lower() for n in sans]
+
+    def covered(host):
+        host = host.lower()
+        return any(host == n or (n.startswith("*.") and fnmatch.fnmatchcase(host, n)
+                                 and host.count(".") == n.count("."))
+                   for n in sans)
+
+    return [h for h in hosts if not covered(h)]
+
+
 class FilterModule(object):
     def filters(self):
         return {
             "service_route": service_route,
             "gateway_httproute": gateway_httproute,
             "cookie_confinement": cookie_confinement,
+            "protected_hostnames": protected_hostnames,
+            "gateway_listeners": gateway_listeners,
+            "cert_missing_hosts": cert_missing_hosts,
         }

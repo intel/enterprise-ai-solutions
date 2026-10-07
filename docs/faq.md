@@ -86,7 +86,7 @@ You define the nodes in the environment inventory, and you need shared storage: 
 
 ### Can I use my own TLS certificates?
 
-Yes. `gateway_tls_mode: custom` with a certificate and key covering `*.<base_domain_name>`. With the default `selfsigned`, cert-manager creates an internal CA and exports it to `env/<name>/logs/ai-solutions-ca.crt` so you can trust it once instead of clicking through warnings.
+Yes. `gateway_tls_mode: custom` with a certificate and key covering every served host (the installer lists them and refuses a certificate that misses one). With the default `selfsigned`, cert-manager creates an internal CA and exports it to `env/<name>/logs/ai-solutions-ca.crt` so you can trust it once instead of clicking through warnings.
 
 ### Does it work behind a corporate proxy?
 

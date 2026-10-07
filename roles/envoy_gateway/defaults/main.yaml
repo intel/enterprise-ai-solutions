@@ -27,7 +27,7 @@ auth_provider: "none"                    # none | keycloak (JWT) | litellm (virt
 # client signed and the store answers SignatureDoesNotMatch - which reads as a
 # credentials problem. A ClientTrafficPolicy can relax those two rules, but only
 # per listener, so the S3 API gets a listener of its own rather than weakening
-# normalization for the UI, API and keycloak routes that share 'https'.
+# normalization for the UI, API and keycloak listeners.
 #
 # Dot-segment resolution (Envoy's normalize_path) has no Gateway API knob at all
 # and is NOT addressed here; keys containing '..' are rejected by the data-prep
@@ -53,25 +53,31 @@ gateway_s3_listener_enabled: >-
 # for that specific HTTPRoute (e.g. a UI route that must be publicly reachable).
 gateway_no_auth_routes: []
 
+# ── Served hostnames: the registry is the allowlist ──────────────────────────
+# No wildcard listener, certificate or DNS: the gateway serves the apex plus one
+# exact-host HTTPS listener per registry service on its own subdomain, and each
+# listener admits routes only from that service's namespace. Any other host has
+# no listener. A new hostname means a registry entry (or service_route_overrides).
+gateway_service_listeners: >-
+  {{ service_routes | default({}) | gateway_listeners(routing_mode | default('subdomain'),
+                                                     base_domain_name | default('inference-example.com'),
+                                                     service_route_overrides | default({})) }}
+# Names the TLS certificate must cover and DNS must resolve to the gateway.
+gateway_tls_dns_names: >-
+  {{ [base_domain_name] + (gateway_service_listeners | map(attribute='hostname') | list)
+     + ([gateway_s3_hostname] if gateway_s3_listener_enabled | bool else []) }}
+
 # ── Protected hostname ownership ─────────────────────────────────────────────
-# The shared listeners admit routes from every namespace (from: All) so tenants
-# can publish their own hostnames without operator intervention. The Gateway API
-# resolves two routes claiming the SAME hostname by match specificity, ignoring
-# which namespace they live in — so a route in any namespace that pins an exact
-# path (e.g. /v1/chat/completions) on a platform hostname out-ranks the platform's
-# own catch-all route and silently takes over the victim's traffic (and bearer
-# token). We reserve each platform hostname to its owning namespace with a
-# ValidatingAdmissionPolicy: an HTTPRoute claiming one of these hostnames from any
-# other namespace is rejected at admission. Tenants keep full freedom on hostnames
-# they do not own. Extend this list to reserve additional hostnames.
+# Defence in depth for listeners that admit any namespace (plaintext :80, S3):
+# Gateway API resolves routes on the SAME hostname by match specificity, not
+# namespace, so a foreign route pinning an exact path could out-rank a platform
+# route. A ValidatingAdmissionPolicy rejects an HTTPRoute that claims a platform
+# hostname from any namespace but its owner.
 gateway_route_admission_enabled: true
-gateway_protected_hostnames:
-  - hostname: "inference.{{ base_domain_name }}"
-    owner_namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
-  - hostname: "keycloak.{{ base_domain_name }}"
-    owner_namespace: "keycloak"
-  - hostname: "grafana.{{ base_domain_name }}"
-    owner_namespace: "monitoring"
+gateway_protected_hostnames: >-
+  {{ service_routes | default({}) | protected_hostnames(routing_mode | default('subdomain'),
+                                                       base_domain_name | default('inference-example.com'),
+                                                       service_route_overrides | default({})) }}
 
 # ── Apex listener admission ──────────────────────────────────────────────────
 # The apex listener (https-apex) carries the bare base_domain_name. In
@@ -83,8 +89,7 @@ gateway_protected_hostnames:
 # but the hostname-based admission policy above cannot see paths, so it cannot
 # guard a host every service shares. Instead the apex admits routes only from
 # namespaces carrying this label; a platform role that mounts an apex route
-# stamps it on its own namespace. Tenant self-service stays fully open on the
-# *.<base> wildcard listener, which does not match the bare apex.
+# stamps it on its own namespace.
 gateway_apex_route_label_key: "gateway-apex-routes"
 gateway_apex_route_label_value: "allowed"
 
@@ -116,7 +121,7 @@ gateway_tls_cert_file: ""
 gateway_tls_key_file: ""
 gateway_tls_secret_name: "gateway-tls"
 
-# Internal root CA (selfsigned mode). The wildcard serving leaf chains to this
+# Internal root CA (selfsigned mode). The serving leaf chains to this
 # root, so operators import ONE cert (exported to gateway_ca_export_path) to
 # trust every hostname across leaf rotations.
 gateway_ca_bootstrap_issuer_name: "gateway-ca-bootstrap"
