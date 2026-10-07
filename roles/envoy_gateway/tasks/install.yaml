@@ -326,9 +326,8 @@
 
 # The gateway-level JWT SecurityPolicy targets the whole Gateway, so without an
 # override the redirect route answers 401 before it can 301. Exempt it so a
-# plaintext client is bounced to HTTPS instead of being rejected. Only needed
-# when an auth provider is attached; with auth_provider: none there is no
-# gateway policy to override.
+# plaintext client is bounced to HTTPS instead of being rejected. With
+# auth_provider: none there is no gateway policy to override.
 - name: "envoy_gateway | Exempt the HTTP→HTTPS redirect route from gateway auth"
   kubernetes.core.k8s:
     state: present

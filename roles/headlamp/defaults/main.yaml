@@ -89,12 +89,12 @@ headlamp_view_all_crd_api_groups:
   - postgresql.cnpg.io
   - nfd.k8s-sigs.io
 
-# ── OIDC — Keycloak SSO (on whenever Keycloak is the auth provider) ────────────
+# ── OIDC — Keycloak SSO (on whenever Keycloak is deployed) ─────────────────────
 # Login delegates to Keycloak; the id_token is forwarded to the kube-apiserver,
 # which trusts the same issuer (roles/kubernetes/tasks/apiserver_oidc.yaml), so
 # Kubernetes RBAC applies per user and group. The client and its secret are
 # provisioned by roles/keycloak/tasks/client.yaml — nothing to supply by hand.
-headlamp_oidc_enabled: "{{ (auth_provider | default('keycloak')) == 'keycloak' }}"
+headlamp_oidc_enabled: "{{ keycloak_enabled | default(true) | bool }}"
 headlamp_oidc_client_id: "headlamp"
 headlamp_oidc_realm: "{{ keycloak_sso_realm | default('platform') }}"
 headlamp_oidc_secret_name: "headlamp-oidc"

@@ -259,3 +259,48 @@
             kind: HTTPRoute
             name: keycloak
   when: gateway_create | default(false)
+
+# Optional source allowlist for the admin console and admin REST API. A more
+# specific /admin route takes precedence over the main route; its own policy
+# replaces the gateway JWT default. Matches the client IP Envoy sees (behind an
+# SNAT'ing load balancer configure ClientTrafficPolicy clientIPDetection first).
+- name: "keycloak | Restrict admin console to allowed CIDRs"
+  when: gateway_create | default(false) and keycloak_admin_allowed_cidrs | length > 0
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      - "{{ keycloak_route | gateway_httproute('keycloak-admin', rules=[{'prefix': ['/admin']}],
+             gateway_name=gateway_name | default('eg-gateway'),
+             gateway_namespace=gateway_namespace | default('envoy-gateway-system')) }}"
+      - apiVersion: gateway.envoyproxy.io/v1alpha1
+        kind: SecurityPolicy
+        metadata:
+          name: keycloak-admin-allowlist
+          namespace: "{{ keycloak_namespace }}"
+        spec:
+          targetRefs:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              name: keycloak-admin
+          authorization:
+            defaultAction: Deny
+            rules:
+              - name: admin-cidrs
+                action: Allow
+                principal:
+                  clientCIDRs: "{{ keycloak_admin_allowed_cidrs }}"
+
+- name: "keycloak | Remove admin allowlist when unset"
+  when: gateway_create | default(false) and keycloak_admin_allowed_cidrs | length == 0
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ keycloak_namespace }}"
+  loop:
+    - { api: gateway.envoyproxy.io/v1alpha1, kind: SecurityPolicy, name: keycloak-admin-allowlist }
+    - { api: gateway.networking.k8s.io/v1, kind: HTTPRoute, name: keycloak-admin }
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  failed_when: false

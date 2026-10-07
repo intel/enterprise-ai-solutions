@@ -1,4 +1,7 @@
 ---
+# Deny-by-default for every route in both auth modes: a route without its own
+# SecurityPolicy needs a Keycloak JWT. Routes that authenticate elsewhere (UI
+# logins, LiteLLM virtual keys) attach their own policy, which overrides this.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
@@ -9,7 +12,6 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: {{ gateway_name }}
-{% if auth_provider == 'keycloak' %}
   jwt:
     providers:
       - name: keycloak
@@ -24,14 +26,3 @@ spec:
           # the in-cluster serving path, so the prefix ('/keycloak' in path mode,
           # nothing in subdomain mode) must be included here too or this 404s.
           uri: "http://{{ keycloak_route.backend }}.{{ keycloak_route.namespace }}.svc.cluster.local:{{ keycloak_route.port }}{{ '' if keycloak_route.relative_path == '/' else keycloak_route.relative_path }}/realms/{{ keycloak_realm }}/protocol/openid-connect/certs"
-{% elif auth_provider == 'litellm' %}
-  extAuth:
-    http:
-      backendRef:
-        name: litellm
-        namespace: litellm
-        port: 4000
-      headersToBackend:
-        - Authorization
-      path: /key/verify
-{% endif %}
