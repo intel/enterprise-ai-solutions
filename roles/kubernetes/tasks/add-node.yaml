@@ -61,6 +61,25 @@
       ansible.builtin.include_tasks: apply_node_topology.yaml
       when: node_topology_enabled | default(false) | bool
 
+    # Unlike nri_cpu_balloons (deliberately NOT re-applied automatically —
+    # see _nri_balloons_reminder in es_auto_installer.sh), refreshing the NFS
+    # export allowlist is a plain additive config change (append this node's
+    # IP, `exportfs -ra` to reload — no restart, no fleet-wide rollout), so
+    # there's no reason to leave it to a manual step: without this, the new
+    # node's NFS-backed PVC mounts are rejected by the server with "access
+    # denied" until someone notices and re-runs `install storage` by hand.
+    # `storage_backend` is read directly (not `_resolved_storage_backend`):
+    # preflight.yaml skips storage/resolve.yaml for add-node/remove-node on
+    # purpose (its "reject local-path on multi-node" check has nothing to do
+    # with scaling), so that fact was never set for this run.
+    - name: "kubernetes | add-node | NFS exports for new node(s)"
+      ansible.builtin.include_role:
+        name: nfs_storage
+        tasks_from: refresh_exports.yaml
+      vars:
+        _nfs_refresh_hosts_override: "{{ _added_nodes_list }}"
+      when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
+
     - name: "kubernetes | add-node | Wait for new node(s) to be Ready"
       ansible.builtin.shell:
         # Passing the names as `kubectl get nodes` arguments (not as a grep

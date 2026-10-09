@@ -167,6 +167,17 @@ usage() {
                            first (delete entries) — removed nodes are auto-detected
                            the same way. The current first control-plane/etcd node
                            cannot be removed this way (Kubespray limitation).
+                           Preflight refuses the removal (no flag skips this) when:
+                           capacity (CPU/memory/GPU/hugepages) is short on every
+                           remaining node able to take the evicted workload(s);
+                           a required anti-affinity or topology spread constraint
+                           cannot be met on the remaining nodes; a PodDisruptionBudget
+                           allows no eviction; the node is the only one that can run
+                           a running workload (nodeSelector/affinity/taint/extended
+                           resource); or the node holds a node-local volume. After
+                           removal, reports a status --health verdict and fails the
+                           command if it's red. Refused on OpenShift and on BYO
+                           clusters (existing_kubernetes set).
 
   Targets:
     <layer>                single layer (Ansible routes it to its components)
@@ -185,7 +196,20 @@ usage() {
                            plan, e.g. --skip erag to tear down the cluster without
                            uninstalling it first
     --dry-run              (add-node/remove-node) print the computed node diff and
-                           the Kubespray command that would run, then exit
+                           the Kubespray command that would run, then exit. For
+                           remove-node, also prints the placement plan — pod count
+                           by namespace and a target node for every pod the
+                           capacity check could place.
+    --health               (status) print a green/red cluster health verdict and
+                           exit with that verdict (nodes Ready, no crash-looping/
+                           image-pull-failing/unschedulable pods) instead of the
+                           full component-status table
+    --node-lost            (remove-node) for a node that is already NotReady: skip
+                           the drain and PodDisruptionBudget check (nothing is being
+                           gracefully evicted), skip the OS reset (the node is
+                           assumed unreachable), but still run the capacity check
+                           for the pods that were on it. Refused if the node is
+                           still Ready — use plain remove-node for that.
     -h, --help             this help
     -v, --version          print version
     -- <args...>           pass remaining args verbatim to ansible-playbook
@@ -215,6 +239,8 @@ usage() {
     $me add-node --dry-run                     # preview after editing nodes.yaml
     $me add-node                                # scale in new worker(s) from nodes.yaml
     $me remove-node                             # remove node(s) dropped from nodes.yaml
+    $me remove-node --node-lost                 # same, for a node that's already NotReady
+    $me status --health                         # green/red cluster health verdict
 
 EOF
 }
@@ -1193,7 +1219,8 @@ run() {
 # prep → {cluster,reset,scale,remove-node}.yml → post.
 #   install:  cluster.yml
 #   teardown: reset.yml            -e '{"reset_confirmation": true}'
-#   scale:    scale.yml            --limit=<arg2>,kube_control_plane (arg2: new worker(s))
+#   scale:    facts.yml (full inventory, warms the fact cache --limit needs)
+#             then scale.yml  --limit=<arg2>,kube_control_plane (arg2: new worker(s))
 #   remove:   remove-node.yml      -e node=<arg2> -e '{"skip_confirmation": true}'
 # Booleans are passed as JSON (not key=value) so they parse as native bools —
 # key=value is always a string, which ansible-core 2.19+ rejects in when: checks.
@@ -1215,7 +1242,17 @@ run_kubespray() {
     case "$action" in
         teardown) pb="$ks_dir/reset.yml";       extra=(-e '{"reset_confirmation": true}') ;;
         scale)    pb="$ks_dir/scale.yml";       limit_args=(--limit="${arg2},kube_control_plane") ;;
-        remove)   pb="$ks_dir/remove-node.yml"; extra=(-e "node=${arg2}" -e '{"skip_confirmation": true}') ;;
+        remove)   pb="$ks_dir/remove-node.yml"; extra=(-e "node=${arg2}" -e '{"skip_confirmation": true}')
+                  # --node-lost: the node is already gone (NotReady, possibly
+                  # unreachable) — there is nothing to drain, and no SSH path
+                  # left to run `kubeadm reset` on it either, so both of
+                  # Kubespray's own opt-outs are needed together: skip the
+                  # drain's eviction attempt (allow_ungraceful_removal) and
+                  # skip the OS-level cleanup that needs the node reachable
+                  # (reset_nodes). Only etcd/inventory bookkeeping happens.
+                  [[ "${NODE_LOST:-false}" == "true" ]] \
+                      && extra+=(-e '{"allow_ungraceful_removal": true}' -e '{"reset_nodes": false}')
+                  ;;
     esac
     [[ -f "$ENV_DIR/kubespray_extra_auto.yml" ]] && extra+=(-e "@$ENV_DIR/kubespray_extra_auto.yml")
     [[ -f "$ENV_DIR/kubespray_extra.yml" ]] && extra+=(-e "@$ENV_DIR/kubespray_extra.yml")
@@ -1225,6 +1262,31 @@ run_kubespray() {
 
     local -a verbose=()
     (( _LOG_LEVEL >= 1 )) && verbose=(-vvv)
+
+    # scale.yml's own preinstall refuses --limit unless every host EXCLUDED
+    # by it (i.e. every already-existing node, since --limit only names the
+    # new one(s) + control-plane) already has a cached fact. Kubespray's own
+    # jsonfile cache (ansible.cfg: fact_caching_timeout=86400) expires after
+    # a day, so a cluster untouched longer than that fails here with
+    # "Kubespray does not support '--limit' without a populated facts
+    # cache" — Kubespray's own docs (docs/operations/nodes.md) prescribe
+    # exactly this fix: run facts.yml once, without a limit, to (re)warm the
+    # cache for the whole inventory first. Run unconditionally rather than
+    # trying to predict whether the existing cache happens to still be
+    # fresh — it's a read-only fact gather, cheap next to scale.yml itself.
+    if [[ "$action" == "scale" ]]; then
+        info "Refreshing Kubespray's fact cache for the full inventory (required before scale.yml --limit)"
+        (cd "$ks_dir" && \
+         unset ANSIBLE_ROLES_PATH KUBECONFIG K8S_AUTH_KUBECONFIG && \
+         ANSIBLE_CONFIG="$ks_dir/ansible.cfg" \
+         ANSIBLE_FORCE_COLOR=true \
+         ANSIBLE_HOST_KEY_CHECKING=False \
+         PATH="$ks_dir/venv/bin:$PATH" \
+            "$ks_dir/venv/bin/ansible-playbook" -i "$inv" \
+            --become --become-user=root "${ks_become_flag[@]}" "${verbose[@]}" \
+            "$ks_dir/playbooks/facts.yml" 2>&1) | tee -a "$LOG" \
+            || err "Kubespray fact-cache refresh (facts.yml) failed. Log: $LOG"
+    fi
 
     info "Kubespray $(basename "$pb") — live output"
     # Run in a subshell from kubespray's directory. ANSIBLE_ROLES_PATH must be
@@ -1300,6 +1362,28 @@ _live_nodes() {
     kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null
 }
 
+# _not_ready_nodes — names of nodes whose Ready condition is not True, one
+# per line. Same query status --health's _cluster_health_findings uses for
+# node readiness; kept separate because this one answers "which nodes"
+# rather than "is anything wrong."
+_not_ready_nodes() {
+    kubectl get nodes -o json 2>/dev/null \
+        | yq -p json -r '.items[]
+            | select((.status.conditions // []) | map(select(.type == "Ready")) | .[0].status != "True")
+            | .metadata.name' 2>/dev/null || true
+}
+
+# _is_openshift — true if the target cluster is OpenShift, detected via its
+# cluster-scoped ClusterVersion CRD (config.openshift.io/v1), present only
+# on OpenShift and readable without any RBAC beyond what KUBECONFIG already
+# grants. This installer never provisions OpenShift itself (Kubespray
+# doesn't), so the only way a target is OpenShift is as a BYO cluster — this
+# is checked ahead of the generic BYO refusal purely so the error names the
+# actual platform instead of just "BYO cluster".
+_is_openshift() {
+    kubectl get crd clusterversions.config.openshift.io &>/dev/null
+}
+
 # _node_workloads <node> — "namespace/name" of every real workload pod
 # scheduled on <node>, one per line. Excludes DaemonSet pods (recreated
 # automatically wherever they're needed) and Node-owned static/mirror pods
@@ -1355,6 +1439,70 @@ _pdb_blocked_pods() {
         | [.metadata.namespace, .metadata.name, ((.spec.selector.matchLabels // {}) | to_entries | map(.key + "=" + .value) | join(","))]
         | @tsv
     ' 2>/dev/null || true)
+}
+
+# _simulate_removal <node>... — capacity / spread / local-data / last-capable-
+# -node findings for remove-node, one per line ("<check>: ..."), empty output
+# meaning none found. Delegates to simulate_node_removal.py: the resource-
+# arithmetic and selector/affinity/taint matching this needs is unreasonable
+# to hand-roll in bash+yq (unlike the simpler PDB/workload checks above).
+# Runs locally against the API server, same as every other kubectl call in
+# this file — it is not copied to a managed node. `|| true`: the script
+# exits 1 when it finds something to report, same meaning as non-empty
+# output here, not a shell-level failure — swallowed so `set -e` doesn't
+# treat "found a problem" as a crash (same reasoning as _node_workloads
+# below swallowing kubectl's own errors).
+_simulate_removal() {
+    "${VENV}/bin/python3" "${SCRIPT_DIR}/roles/kubernetes/files/simulate_node_removal.py" "$@" 2>/dev/null || true
+}
+
+# _cluster_health_findings — one problem per line, empty output = healthy.
+# Red when any node is NotReady, or any non-DaemonSet pod is
+# CrashLoopBackOff/ImagePullBackOff/stuck Unschedulable — the same signals
+# `kubectl get events` would surface, pre-aggregated so a caller (status
+# --health, or remove-node's post-check) can gate on "any output at all",
+# the same pattern _node_workloads/_pdb_blocked_pods already use. There's no
+# equivalent of the spec's "C3" external health system in this codebase, so
+# this is self-contained.
+_cluster_health_findings() {
+    kubectl get nodes -o json 2>/dev/null | yq -p json -r '
+        .items[]
+        | select((.status.conditions // []) | map(select(.type == "Ready")) | .[0].status != "True")
+        | "node " + .metadata.name + " is NotReady"
+    ' 2>/dev/null || true
+    kubectl get pods -A -o json 2>/dev/null | yq -p json -r '
+        .items[]
+        | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet") | any | not)
+        | . as $pod
+        | ((.status.containerStatuses // []) + (.status.initContainerStatuses // []))
+        | map(select(.state.waiting.reason == "CrashLoopBackOff" or .state.waiting.reason == "ImagePullBackOff"))
+        | select(length > 0)
+        | "pod " + $pod.metadata.namespace + "/" + $pod.metadata.name + " is " + .[0].state.waiting.reason
+    ' 2>/dev/null || true
+    kubectl get pods -A -o json 2>/dev/null | yq -p json -r '
+        .items[]
+        | select(.status.phase == "Pending")
+        | select((.status.conditions // []) | map(select(.type == "PodScheduled" and .status == "False" and .reason == "Unschedulable")) | any)
+        | "pod " + .metadata.namespace + "/" + .metadata.name + " is Unschedulable"
+    ' 2>/dev/null || true
+}
+
+# do_health_check — `status --health`: aggregate cluster health into one
+# green/red verdict (see _cluster_health_findings). Prints "status --health:
+# green|red" plus one warn line per finding, and returns 1 on red so a
+# caller (main(), or remove-node's post-check) can fail the command on it.
+do_health_check() {
+    [[ -f "$KUBE_CFG" ]] || err "No kubeconfig at ${KUBE_CFG} — nothing to check. Install the cluster first."
+    local findings; findings=$(_cluster_health_findings | grep -v '^$' || true)
+    if [[ -n "$findings" ]]; then
+        echo "status --health: red"
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && warn "  ${line}"
+        done <<< "$findings"
+        return 1
+    fi
+    echo "status --health: green"
+    return 0
 }
 
 # _nodes_yaml_ssh_target <hostname> — "ip<TAB>user<TAB>key" for <hostname>,
@@ -1493,6 +1641,19 @@ do_remove_node() {
     local removed_csv="${removed//$'\n'/,}"
     info "remove-node: node(s) to remove: ${removed_csv//,/, }"
 
+    # --node-lost is for a node that is already gone — require every target
+    # to actually be NotReady, so the flag can't be used to quietly skip the
+    # drain (and the PDB/eviction protection that comes with it) on a node
+    # that's perfectly reachable.
+    if [[ "$NODE_LOST" == "true" ]]; then
+        local not_ready; not_ready=$(_not_ready_nodes | sort -u)
+        local still_ready; still_ready=$(comm -23 <(printf '%s\n' "$removed") <(printf '%s\n' "$not_ready") | grep -v '^$' || true)
+        if [[ -n "$still_ready" ]]; then
+            err "remove-node --node-lost refused — still Ready, not lost: ${still_ready//$'\n'/, }
+  --node-lost is for a node that is already gone (NotReady) — use plain remove-node for a healthy node so it goes through the normal cordon/drain."
+        fi
+    fi
+
     # Workload visibility: the drain step evicts every non-DaemonSet pod on
     # the node(s) below, PDB permitting. Surfaced before --dry-run's exit and
     # before confirm() so the operator sees what's actually at stake, rather
@@ -1515,17 +1676,45 @@ do_remove_node() {
     # server, so kubectl drain cannot succeed against it no matter how many
     # times remove-node.yml retries. Caught here, before confirm(), instead
     # of discovered later as a drain hung through drain_retries x
-    # drain_timeout.
-    local pdb_hits=""
-    for n in ${removed//$'\n'/ }; do
-        while IFS=$'\t' read -r pod pdb detail; do
-            [[ -n "$pod" ]] && pdb_hits+="  ${pod} on ${n} — blocked by PodDisruptionBudget ${pdb} (${detail})"$'\n'
-        done < <(_pdb_blocked_pods "$n")
-    done
-    if [[ -n "$pdb_hits" ]]; then
-        err "remove-node: drain would hang — the pod(s) below cannot be evicted because their PodDisruptionBudget currently allows zero disruptions:
+    # drain_timeout. Skipped for --node-lost: there is no drain, so no
+    # eviction is ever submitted to the API server for a PDB to reject —
+    # the pods are just gone along with the node, which capacity/last-
+    # capable-node below still checks they can come back from.
+    if [[ "$NODE_LOST" != "true" ]]; then
+        local pdb_hits=""
+        for n in ${removed//$'\n'/ }; do
+            while IFS=$'\t' read -r pod pdb detail; do
+                [[ -n "$pod" ]] && pdb_hits+="  ${pod} on ${n} — blocked by PodDisruptionBudget ${pdb} (${detail})"$'\n'
+            done < <(_pdb_blocked_pods "$n")
+        done
+        if [[ -n "$pdb_hits" ]]; then
+            err "remove-node: drain would hang — the pod(s) below cannot be evicted because their PodDisruptionBudget currently allows zero disruptions:
 ${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the node first, then retry remove-node."
+        fi
     fi
+
+    # Capacity / spread / local-data / last-capable-node: simulates where the
+    # evicted workloads would have to land before anything is touched. No
+    # flag skips this — see docs/customize/node_scaling.md. Hard err(), same
+    # as the PDB guard above, so --dry-run reports exactly what a real run
+    # would refuse. --plan is requested only for --dry-run, so a real run's
+    # output (and the "non-empty = problem" check further down, were it
+    # still used) stays exactly as before; here the check is a prefix grep
+    # instead, since --plan's own "plan:"/"  owner -> node" lines would
+    # otherwise make the output always non-empty.
+    local sim_opts=()
+    [[ "$DRY_RUN" == "true" ]] && sim_opts+=(--plan)
+    local sim_output; sim_output=$(_simulate_removal "${sim_opts[@]}" ${removed//$'\n'/ })
+    if [[ "$DRY_RUN" == "true" && -n "$sim_output" ]]; then
+        while IFS= read -r line; do [[ -n "$line" ]] && info "  ${line}"; done <<< "$sim_output"
+    fi
+    local sim_findings; sim_findings=$(grep -E '^(capacity|spread|local-data|last-capable-node): ' <<< "$sim_output" || true)
+    if [[ -n "$sim_findings" ]]; then
+        err "remove-node: preflight simulation refuses this removal:
+$(sed 's/^/  /' <<< "$sim_findings")
+  Add a node, scale the affected workload(s) down, or free up the resource named above, then retry remove-node."
+    fi
+    ok "  preflight simulation: ok (capacity / spread / local-data / last-capable-node)"
 
     # Last-worker warning: "worker" here means live and NOT in kube_control_plane,
     # not kube_node membership — kube_node mirrors kube_control_plane in
@@ -1547,12 +1736,19 @@ ${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the nod
         fi
     fi
 
+    local _ks_extra_desc="-e node=${removed_csv} -e skip_confirmation=true"
+    local _confirm_msg="About to run Kubespray remove-node.yml for: ${removed_csv//,/, } — this drains, resets, and removes those node(s) from the cluster"
+    if [[ "$NODE_LOST" == "true" ]]; then
+        _ks_extra_desc+=" -e allow_ungraceful_removal=true -e reset_nodes=false"
+        _confirm_msg="About to run Kubespray remove-node.yml for: ${removed_csv//,/, } — --node-lost: no drain attempted, no OS reset (node assumed unreachable); etcd membership and inventory bookkeeping only"
+    fi
+
     if [[ "$DRY_RUN" == "true" ]]; then
-        info "  would run: remove-node.yml -e node=${removed_csv} -e '{\"skip_confirmation\": true}'"
+        info "  would run: remove-node.yml ${_ks_extra_desc}"
         exit 0
     fi
 
-    confirm "About to run Kubespray remove-node.yml for: ${removed_csv//,/, } — this drains, resets, and removes those node(s) from the cluster"
+    confirm "$_confirm_msg"
     # Ensure kubespray only — the inventory is NOT regenerated here on purpose;
     # remove-node.yml needs the target node(s) still present in it to reach
     # them (see roles/kubernetes/tasks/remove-node.yaml for why).
@@ -1565,6 +1761,13 @@ ${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the nod
         rm -f "${ENV_INVENTORY_DIR}/host_vars/${n}.yml"
     done
     _nri_balloons_reminder
+
+    # Health verdict: the node is already gone at this point — reset ran,
+    # its etcd membership (if any) is already removed — so there is nothing
+    # left to roll back. A red verdict here is advisory: it fails the
+    # command (non-zero exit) so CI/automation notices, but recovering means
+    # running add-node again, not an automatic revert.
+    do_health_check || err "remove-node: cluster health is red after removing ${removed_csv//,/, } — see above."
 }
 
 # _opt_value <flag> <value> — a flag's value must exist and not be another flag,
@@ -1579,7 +1782,7 @@ _opt_value() {
 
 # parse_args
 parse_args() {
-    ACTION="" TARGET="" ENV_NAME="local" ONLY=false FORCE=false SKIP="" DRY_RUN=false
+    ACTION="" TARGET="" ENV_NAME="local" ONLY=false FORCE=false SKIP="" DRY_RUN=false HEALTH=false NODE_LOST=false
     INIT_LAYER="" INIT_FLAVOUR="" INIT_UPGRADE=false
     EXTRA_VARS=()
 
@@ -1636,8 +1839,14 @@ parse_args() {
             --dry-run)       [[ "$ACTION" =~ ^(add-node|remove-node)$ ]] \
                                  || err "--dry-run applies to add-node/remove-node only."
                              DRY_RUN=true; shift ;;
+            --health)        [[ "$ACTION" == "status" ]] \
+                                 || err "--health applies to status only."
+                             HEALTH=true; shift ;;
+            --node-lost)     [[ "$ACTION" == "remove-node" ]] \
+                                 || err "--node-lost applies to remove-node only."
+                             NODE_LOST=true; shift ;;
             --)              shift; EXTRA_VARS+=("$@"); break ;;
-            -*)              err "Unknown option: '$1'. Valid: --env <name> | --only | --force | --skip <names> | --dry-run (pass ansible args after --). Try --help." ;;
+            -*)              err "Unknown option: '$1'. Valid: --env <name> | --only | --force | --skip <names> | --dry-run | --health | --node-lost (pass ansible args after --). Try --help." ;;
             *)
                 if [[ "$_takes_target" == "true" && -z "$TARGET" ]]; then
                     TARGET="$1"; shift
@@ -1794,10 +2003,19 @@ main() {
     export KUBECONFIG="$KUBE_CFG" K8S_AUTH_KUBECONFIG="$KUBE_CFG"
 
     # Status: reuses all the setup above, runs the status playbook, then exits.
+    # --health skips the full component-status playbook — it's a lightweight,
+    # bash-only green/red verdict (see do_health_check), not a replacement
+    # for it.
     if [[ "$ACTION" == "status" ]]; then
         if [[ ! -f "$KUBE_CFG" ]]; then
             echo -e "\n${YEL}No kubeconfig found at ${KUBE_CFG} — nothing is installed yet.${RST}"
             exit 0
+        fi
+        if [[ "$HEALTH" == "true" ]]; then
+            # `set -e` would abort the script on do_health_check's own
+            # return-1 before reaching exit — the && / || form keeps this a
+            # single compound statement, which -e does not trigger on.
+            do_health_check && exit 0 || exit 1
         fi
         run status "${vars[@]}" "${EXTRA_VARS[@]}"
         exit 0
@@ -1810,6 +2028,8 @@ main() {
     if [[ "$ACTION" == "add-node" || "$ACTION" == "remove-node" ]]; then
         [[ -f "$KUBE_CFG" ]] \
             || err "No kubeconfig at ${KUBE_CFG} — install the cluster first:  ./$(basename "$0") install --env ${ENV_NAME} kubernetes"
+        _is_openshift \
+            && err "${ACTION} is not supported on an OpenShift cluster — node lifecycle there is managed by the Machine API/Machine Config Operator, not Kubespray."
         [[ "$IS_BYO" == "false" ]] \
             || err "${ACTION} is not supported for a BYO cluster (existing_kubernetes is set in global_config.yaml)."
         TARGET="kubernetes"

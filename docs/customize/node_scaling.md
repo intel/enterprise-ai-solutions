@@ -85,7 +85,7 @@ Kubespray's `scale.yml` cannot add control-plane or etcd members — that requir
    About to run Kubespray remove-node.yml for: worker1 — this drains, resets, and removes those node(s) from the cluster. Proceed? [y/N]
    ```
 
-   If the workload has no `PodDisruptionBudget`, the drain evicts it immediately — there is no built-in protection against removing a node that's the only place a model happens to be running. Check what's listed before confirming.
+   If the workload has no `PodDisruptionBudget`, the drain evicts it immediately — check what's listed before confirming. Before that, a simulation refuses the removal outright (see [Preflight simulation](#preflight-simulation-capacity--spread--local-data--last-capable-node) below) if evicting these pods would leave a workload with nowhere to go — this is where "the only place a model happens to be running" is actually caught, not just displayed.
 
    If the node being removed is the **last worker**, a second warning fires — it checks whether the control-plane node currently carries the standard `NoSchedule` taint (it does if the cluster was ever provisioned multi-node from the start; it doesn't if it started single-node and workers were added later via `add-node`, since kubeadm only sets that taint at cluster bring-up, not on a later `add-node`/`scale.yml` run). Tainted means nothing will be schedulable anywhere until a worker comes back; untainted means the cluster just drops to single-node capacity, which is a supported topology on its own.
 
@@ -139,8 +139,24 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 - Our own first-control-plane/etcd guard, checked from the current inventory *before* anything runs (mirrors #6 above, at the wrapper level, so the error message can point back at `nodes.yaml`).
 - Inventory regeneration is deliberately deferred until *after* `remove-node.yml` succeeds, so Kubespray always gets a node it can still reach.
 - **Workload visibility before you confirm** — lists real (non-DaemonSet, non-static-pod) workloads running on the node(s) about to be removed, so a model or service that's only running there doesn't get evicted as a surprise.
-- **Last-worker warning** — flags when the removal would leave zero worker nodes, and separately reports whether the control-plane node currently has the `NoSchedule` taint (so you know whether that actually means "nothing schedulable anywhere" or just "back to single-node"). A warning, not a block — dropping to zero workers is a valid, already-supported topology when it's intentional.
+- **PodDisruptionBudget guard** — refuses the removal if any pod on the node is currently covered by a PDB with `disruptionsAllowed: 0`; eviction would be rejected by the API server no matter how many times `remove-node.yml` retries.
+- **Preflight simulation (capacity / spread / local-data / last-capable-node)** — see below.
+- **Last-worker warning** — flags when the removal would leave zero worker nodes, and separately reports whether the control-plane node currently has the `NoSchedule` taint (so you know whether that actually means "nothing schedulable anywhere" or just "back to single-node"). A warning, not a block — dropping to zero workers is a valid, already-supported topology when it's intentional. (A control-plane node without the taint is also a valid remaining placement target for the preflight simulation above — it isn't excluded just for being control-plane, only for taints the evicted pods don't tolerate.)
 - **`nri_cpu_balloons` reminder** — if CPU pinning (`kubernetes_cpu_policy: nri-balloons`) is enabled, both actions print a reminder to re-run `install nri_cpu_balloons` afterward: it's a separate component, not part of `kubernetes`, so it isn't re-applied automatically.
+- **Post-remove health verdict** — once the node is gone, runs the same green/red check as `status --health` (node Readiness, no crash-looping/image-pull-failing/unschedulable pods cluster-wide) and fails the `remove-node` command on red. Advisory at that point, not a rollback: the node has already been reset and (for control-plane/etcd) dropped from etcd membership, so recovering means `add-node`, not an automatic revert.
+
+### Preflight simulation (capacity / spread / local-data / last-capable-node)
+
+Before `confirm()`, `roles/kubernetes/files/simulate_node_removal.py` simulates where every evicted pod on the node(s) being removed would have to land, and refuses outright — no flag skips this — when:
+
+| Check | Refused when | Example |
+|---|---|---|
+| **Capacity** | the remaining nodes able to take these pods have too little free allocatable CPU/memory/GPU/hugepages for what they request | A model fills the only two workers; removing one leaves the other short on CPU for everything that would land there |
+| **Spread** | a required pod anti-affinity or `topologySpreadConstraint` (`whenUnsatisfiable: DoNotSchedule`) can't be satisfied on the remaining nodes | Two replicas required on different hosts, only one host left |
+| **Local data** | the pod uses a volume bound to that specific node (PV `local`/node-affinity, or a known local-path provisioner) | A `local-path` or similar node-pinned PVC — the data does not move with the pod |
+| **Last capable node** | the pod's `nodeSelector`/required `nodeAffinity`/taints, or an extended resource it requests (e.g. a GPU), isn't satisfiable by any remaining node | The only GPU-labeled node while a GPU workload is running there |
+
+This is a heuristic, not a scheduler simulation — it models the common cases above closely enough to catch them, not every possible scheduling predicate. Capacity is checked as a conservative aggregate (total needed vs. total free across every node capable of taking at least one of the affected pods), not true bin-packing, so it can occasionally refuse a removal a real multi-node bin-pack could have fit. A false refusal costs a retry; a false pass costs an outage.
 
 ## Related Docs
 
