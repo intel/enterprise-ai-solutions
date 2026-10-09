@@ -94,45 +94,15 @@
   ansible.builtin.debug:
     msg: "NFS CSI driver already present (Helm release + StorageClass). Skipping."
 
-# ─── Install nfs-common on ALL cluster nodes ─────────────────────────────
-# Always run — a new worker may be missing /sbin/mount.nfs even if the
-# StorageClass already exists.
-
-# The package name depends on the *node's* OS family, so the facts have to be
-# gathered on the delegate. A bare `ansible_os_family` here reads localhost's
-# facts, which silently picks the wrong package on a mixed-OS cluster and the
-# wrong one for every node when the installer host differs from the nodes.
-#
-# Gather over the same group the install below loops over. A node that is missing
-# from this loop has no ansible_os_family in hostvars, and the install then reads
-# an empty string, decides the node is not Debian and asks for the package under
-# its other name — which fails on Debian and reports as a package-not-found
-# error rather than as the missing fact it is.
-- name: "nfs_storage | Gather OS facts on cluster nodes"
-  ansible.builtin.setup:
-    gather_subset:
-      - "!all"
-      - "!min"
-      - distribution
-  delegate_to: "{{ item }}"
-  delegate_facts: true
-  loop: "{{ groups['k8s_cluster'] | default(groups['kube_node'] | default([])) }}"
-  loop_control:
-    label: "{{ item }}"
-  changed_when: false
-
-- name: "nfs_storage | Install NFS client packages on cluster nodes"
-  ansible.builtin.package:
-    name: "{{ 'nfs-common' if _os_family == 'Debian' else 'nfs-utils' }}"
-    state: present
-    update_cache: "{{ true if _os_family == 'Debian' else omit }}"
-  vars:
-    _os_family: "{{ hostvars[item]['ansible_os_family'] | default('') }}"
-  delegate_to: "{{ item }}"
-  become: true
-  loop: "{{ groups['k8s_cluster'] | default(groups['kube_node'] | default([])) }}"
-  loop_control:
-    label: "{{ item }} ({{ hostvars[item]['ansible_os_family'] | default('unknown') }})"
+# Node membership changes independently of the Helm release/StorageClass
+# lifecycle the skip above gates on — a node added since this cluster's NFS
+# storage was first installed still needs its own client packages and a
+# place in /etc/exports. The "Install" block below also calls this (after
+# standing up the server from scratch), on the only other path through this
+# file; between the two, exactly one call always runs.
+- name: "nfs_storage | Refresh NFS client packages + /etc/exports (already installed)"
+  when: _nfs_release_present | bool and _nfs_sc_present | bool
+  ansible.builtin.include_tasks: refresh_exports.yaml
 
 # ─── Set up NFS server (delegate_to the nfs_server host) ────────────────
 
@@ -159,47 +129,6 @@
         mode: "{{ nfs_dir_mode }}"
         owner: "{{ nfs_dir_owner }}"
         group: "{{ nfs_dir_group }}"
-      delegate_to: "{{ _nfs_target | trim }}"
-      become: true
-
-    - name: "nfs_storage | Resolve NFS export client list"
-      ansible.builtin.set_fact:
-        _nfs_export_clients: >-
-          {%- if nfs_export_clients | default('', true) | trim | length > 0 -%}
-            {{ nfs_export_clients | trim }}
-          {%- else -%}
-            {%- set ns = namespace(clients=[]) -%}
-            {%- for host in ((groups['kube_node'] | default([])) + (groups['kube_control_plane'] | default([]))) | unique -%}
-              {%- set _ = ns.clients.append(hostvars[host]['ansible_host'] | default(host)) -%}
-            {%- endfor -%}
-            {{ ns.clients | unique | join(' ') }}
-          {%- endif -%}
-
-    - name: "nfs_storage | Validate NFS export clients"
-      ansible.builtin.assert:
-        that:
-          - _nfs_export_clients | trim | length > 0
-          - "'*' not in _nfs_export_clients"
-        fail_msg: >-
-          nfs_export_clients resolved to '{{ _nfs_export_clients | trim }}'.
-          A wildcard ('*') exports the share to every reachable host without
-          authentication (CWE-306). Set nfs_export_clients to a CIDR or host
-          list, or ensure the kube_node / kube_control_plane inventory groups
-          are populated.
-
-    - name: "nfs_storage | Build NFS export line"
-      ansible.builtin.set_fact:
-        _nfs_exports_line: >-
-          {{ nfs_path }}
-          {% for c in (_nfs_export_clients | trim).split() %}{{ c }}({{ nfs_export_options }}){% if not loop.last %} {% endif %}{% endfor %}
-
-    - name: "nfs_storage | Configure /etc/exports"
-      ansible.builtin.lineinfile:
-        path: /etc/exports
-        regexp: "^{{ nfs_path | regex_escape }}\\s"
-        line: "{{ _nfs_exports_line | trim }}"
-        create: true
-        mode: "0644"
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
@@ -249,22 +178,15 @@
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
-    - name: "nfs_storage | Re-export all shares"
-      ansible.builtin.command: exportfs -ra
-      delegate_to: "{{ _nfs_target | trim }}"
-      become: true
-      changed_when: true
-
-    - name: "nfs_storage | Verify NFS exports"
-      ansible.builtin.command: exportfs -v
-      delegate_to: "{{ _nfs_target | trim }}"
-      become: true
-      changed_when: false
-      register: _nfs_verify_exports
-
-    - name: "nfs_storage | NFS exports"
-      ansible.builtin.debug:
-        msg: "{{ _nfs_verify_exports.stdout_lines }}"
+    # nfsd is up by this point (service just (re)started) and exportfs exists
+    # (server packages just installed above), so this is the earliest point
+    # refresh_exports.yaml's own `exportfs -ra` can run on a brand new
+    # server. The smoke test below needs the export already configured for
+    # the first worker, so this has to stay inside the "Install" block,
+    # before it — the "already installed" path below covers the case where
+    # this whole block (and therefore this call) is skipped entirely.
+    - name: "nfs_storage | Refresh NFS client packages + /etc/exports"
+      ansible.builtin.include_tasks: refresh_exports.yaml
 
     # ── Wait until nfsd is actually listening before smoke-testing ───────
     # Guards against the race where the mount succeeds but rpc.nfsd has not

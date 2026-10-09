@@ -1,0 +1,155 @@
+---
+# =============================================================================
+# NFS exports — client package + /etc/exports refresh
+# =============================================================================
+# Extracted out of install.yaml so it can be re-run on its own: once, always,
+# on every `install storage` (install.yaml's own "Already installed — skip"
+# gate covers the Helm release/StorageClass, not this), and again, scoped to
+# just the new node(s), from add-node's post phase via
+# _nfs_refresh_hosts_override. Node membership changes independently of the
+# Helm release lifecycle — a cluster that already has the CSI driver
+# installed still needs every newly joined node added to /etc/exports, or
+# its NFS-backed PVC mounts are rejected by the server with "access denied"
+# (not a missing-binary error — nfs-common's absence looks different).
+#
+# Self-contained: resolves _nfs_target/nfs_server itself rather than reusing
+# install.yaml's facts, so this also works when included directly from
+# add-node.yaml, which never runs install.yaml's preamble.
+#
+# Idempotent and safe to re-run on every add-node/remove-node, not just when
+# the node list actually changed: lineinfile only reports changed when the
+# line differs, and exportfs -ra below is gated on that, so a no-op run (e.g.
+# remove-node, which doesn't add anything here) does not touch the server at
+# all.
+# =============================================================================
+
+- name: "nfs_storage | exports | Resolve refresh host list"
+  ansible.builtin.set_fact:
+    _nfs_refresh_hosts: >-
+      {{ _nfs_refresh_hosts_override
+         if (_nfs_refresh_hosts_override | default([]) | length > 0)
+         else (groups['k8s_cluster'] | default(groups['kube_node'] | default([]))) }}
+
+- name: "nfs_storage | exports | Resolve NFS server target"
+  ansible.builtin.set_fact:
+    _nfs_target: >-
+      {%- if groups['nfs_server'] | default([]) | length > 0 -%}
+        {{ groups['nfs_server'] | first }}
+      {%- elif groups['kube_control_plane'] | default([]) | length > 0 -%}
+        {{ groups['kube_control_plane'] | first }}
+      {%- else -%}
+        localhost
+      {%- endif -%}
+
+- name: "nfs_storage | exports | Resolve NFS server IP"
+  ansible.builtin.set_fact:
+    nfs_server: >-
+      {%- if nfs_server | default('', true) | length > 0 -%}
+        {{ nfs_server | trim }}
+      {%- elif hostvars[_nfs_target | trim]['ansible_host'] is defined -%}
+        {{ hostvars[_nfs_target | trim]['ansible_host'] }}
+      {%- else -%}
+        {{ _nfs_target | trim }}
+      {%- endif -%}
+
+# ─── NFS client packages on the refresh host list ───────────────────────
+# The package name depends on the *node's* OS family — see install.yaml's
+# original comment on this; a bare ansible_os_family here reads localhost's
+# facts and silently picks the wrong package on a mixed-OS cluster.
+
+- name: "nfs_storage | exports | Gather OS facts on refresh hosts"
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!min"
+      - distribution
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ _nfs_refresh_hosts }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: false
+
+- name: "nfs_storage | exports | Install NFS client packages"
+  ansible.builtin.package:
+    name: "{{ 'nfs-common' if _os_family == 'Debian' else 'nfs-utils' }}"
+    state: present
+    update_cache: "{{ true if _os_family == 'Debian' else omit }}"
+  vars:
+    _os_family: "{{ hostvars[item]['ansible_os_family'] | default('') }}"
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _nfs_refresh_hosts }}"
+  loop_control:
+    label: "{{ item }} ({{ hostvars[item]['ansible_os_family'] | default('unknown') }})"
+
+# ─── /etc/exports ─────────────────────────────────────────────────────────
+# Always resolved from the full kube_node + kube_control_plane groups (not
+# _nfs_refresh_hosts, which may be scoped to only the newly added node) — the
+# export line is the complete client allowlist, not an increment.
+
+- name: "nfs_storage | exports | Resolve NFS export client list"
+  ansible.builtin.set_fact:
+    _nfs_export_clients: >-
+      {%- if nfs_export_clients | default('', true) | trim | length > 0 -%}
+        {{ nfs_export_clients | trim }}
+      {%- else -%}
+        {%- set ns = namespace(clients=[]) -%}
+        {%- for host in ((groups['kube_node'] | default([])) + (groups['kube_control_plane'] | default([]))) | unique -%}
+          {%- set _ = ns.clients.append(hostvars[host]['ansible_host'] | default(host)) -%}
+        {%- endfor -%}
+        {{ ns.clients | unique | join(' ') }}
+      {%- endif -%}
+
+- name: "nfs_storage | exports | Validate NFS export clients"
+  ansible.builtin.assert:
+    that:
+      - _nfs_export_clients | trim | length > 0
+      - "'*' not in _nfs_export_clients"
+    fail_msg: >-
+      nfs_export_clients resolved to '{{ _nfs_export_clients | trim }}'.
+      A wildcard ('*') exports the share to every reachable host without
+      authentication (CWE-306). Set nfs_export_clients to a CIDR or host
+      list, or ensure the kube_node / kube_control_plane inventory groups
+      are populated.
+
+- name: "nfs_storage | exports | Build NFS export line"
+  ansible.builtin.set_fact:
+    _nfs_exports_line: >-
+      {{ nfs_path }}
+      {% for c in (_nfs_export_clients | trim).split() %}{{ c }}({{ nfs_export_options }}){% if not loop.last %} {% endif %}{% endfor %}
+
+- name: "nfs_storage | exports | Configure /etc/exports"
+  ansible.builtin.lineinfile:
+    path: /etc/exports
+    regexp: "^{{ nfs_path | regex_escape }}\\s"
+    line: "{{ _nfs_exports_line | trim }}"
+    create: true
+    mode: "0644"
+  delegate_to: "{{ _nfs_target | trim }}"
+  become: true
+  register: _nfs_exports_changed
+
+# exportfs -ra only reloads the export table — it does not restart nfsd or
+# disrupt sessions already in progress, so this is safe to run against a
+# live cluster. Gated on the line actually changing so add-node/remove-node
+# runs that touch nothing here don't poke the NFS server for no reason.
+- name: "nfs_storage | exports | Re-export all shares"
+  ansible.builtin.command: exportfs -ra
+  delegate_to: "{{ _nfs_target | trim }}"
+  become: true
+  changed_when: true
+  when: _nfs_exports_changed.changed | bool
+
+- name: "nfs_storage | exports | Current exports"
+  ansible.builtin.command: exportfs -v
+  delegate_to: "{{ _nfs_target | trim }}"
+  become: true
+  changed_when: false
+  register: _nfs_verify_exports
+  when: _nfs_exports_changed.changed | bool
+
+- name: "nfs_storage | exports | NFS exports"
+  ansible.builtin.debug:
+    msg: "{{ _nfs_verify_exports.stdout_lines }}"
+  when: _nfs_exports_changed.changed | bool
