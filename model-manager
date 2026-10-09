@@ -1,81 +1,25 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-MM_REAL="${SCRIPT_DIR}/ext/enterprise.ai-inference/model_manager/model-manager"
-if [[ ! -f "$MM_REAL" ]]; then
-    echo "[ERROR] model-manager not found at: $MM_REAL" >&2
-    echo "        Run: ./es_auto_installer.sh init local for initial Inference repository clone" >&2
-    exit 1
-fi
-
-# Point the model-manager at this environment's config + model catalog.
-# ES_ENV selects the env dir (env/<name>/), defaulting to "local" — matches the
-# installer's --env default. The real script reads MM_GLOBAL_CONFIG (inference
-# hostname / auth mode) and MM_CONFIG (model catalog); without these it would
-# fall back to its bundled defaults and fail to auto-discover this repo.
 export MM_REPO_ROOT="$SCRIPT_DIR"
 
-# Resolve the target environment.
-# If the user explicitly set ES_ENV, honour it. Otherwise auto-select when only
-# one environment exists, or prompt when multiple are available.
+# Resolve target environment under env/
 if [[ -z "${ES_ENV:-}" ]]; then
-    mapfile -t available_envs < <(find "${SCRIPT_DIR}/env" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-
-    if [[ ${#available_envs[@]} -eq 0 ]]; then
-        echo "[ERROR] No environments found under env/." >&2
-        echo "        Run the installer first to create an environment." >&2
-        exit 1
-    elif [[ ${#available_envs[@]} -eq 1 ]]; then
+    mapfile -t available_envs < <(find "${SCRIPT_DIR}/env" -mindepth 1 -maxdepth 1 -type d -printf '%f
+' 2>/dev/null | sort)
+    if [[ ${#available_envs[@]} -eq 1 ]]; then
         ES_ENV="${available_envs[0]}"
         echo "[INFO] Using environment: ${ES_ENV}" >&2
     else
-        if [[ ! -t 0 ]]; then
-            echo "[ERROR] Multiple environments available but stdin is not a terminal." >&2
-            echo "        Set ES_ENV explicitly, e.g.: ES_ENV=${available_envs[0]} ./model-manager ..." >&2
-            exit 1
-        fi
-        echo "Multiple environments available:" >&2
-        for i in "${!available_envs[@]}"; do
-            echo "  $((i+1))) ${available_envs[$i]}" >&2
-        done
-        printf "Select environment [1-%d]: " "${#available_envs[@]}" >&2
-        read -r choice || choice=""
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#available_envs[@]} )); then
-            ES_ENV="${available_envs[$((choice-1))]}"
-        else
-            echo "[ERROR] Invalid selection." >&2
-            exit 1
-        fi
+        ES_ENV="local"
     fi
 fi
-
-# Reject path traversal attempts in ES_ENV.
-if [[ "$ES_ENV" == */* || "$ES_ENV" == .* ]]; then
-    echo "[ERROR] ES_ENV must be a simple directory name (no slashes or leading dots)." >&2
-    exit 1
-fi
-
 export ES_ENV
 ENV_DIR="${SCRIPT_DIR}/env/${ES_ENV}"
 
-if [[ ! -d "$ENV_DIR" ]]; then
-    mapfile -t available_envs < <(find "${SCRIPT_DIR}/env" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-    echo "[ERROR] Environment 'env/${ES_ENV}/' does not exist." >&2
-    if [[ ${#available_envs[@]} -gt 0 ]]; then
-        echo "        Available: ${available_envs[*]}" >&2
-    fi
-    printf '        Set ES_ENV to a valid environment, e.g.: ES_ENV=%s ./model-manager' "${available_envs[0]:-prod}" >&2
-    printf ' %q' "$@" >&2
-    printf '\n' >&2
-    exit 1
+if [[ -f "${ENV_DIR}/kubeconfig.yaml" && -z "${KUBECONFIG:-}" ]]; then
+    export KUBECONFIG="${ENV_DIR}/kubeconfig.yaml"
 fi
-
-if [[ ! -f "${ENV_DIR}/global_config.yaml" ]]; then
-    echo "[WARNING] No global_config.yaml in env/${ES_ENV}/ — auth_provider will default to keycloak." >&2
-    echo "          If you intend to use litellm, ensure env/${ES_ENV}/global_config.yaml exists." >&2
-fi
-
 if [[ -f "${ENV_DIR}/global_config.yaml" ]]; then
     export MM_GLOBAL_CONFIG="${ENV_DIR}/global_config.yaml"
 fi
@@ -83,4 +27,10 @@ if [[ -f "${ENV_DIR}/models.yaml" ]]; then
     export MM_CONFIG="${MM_CONFIG:-${ENV_DIR}/models.yaml}"
 fi
 
-exec "$MM_REAL" "$@"
+PY_BIN="python3"
+if [[ -x "${SCRIPT_DIR}/.venv/bin/python3" ]]; then
+    PY_BIN="${SCRIPT_DIR}/.venv/bin/python3"
+fi
+
+export PYTHONPATH="${SCRIPT_DIR}/ext/enterprise.ai-inference/model_manager:${SCRIPT_DIR}/ext/enterprise.ai-inference/model_manager/lib:${PYTHONPATH:-}"
+exec "$PY_BIN" -m mm "$@"
