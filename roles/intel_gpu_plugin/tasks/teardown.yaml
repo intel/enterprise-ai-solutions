@@ -1,0 +1,10 @@
+---
+# =============================================================================
+# Intel GPU Plugin — Teardown
+# =============================================================================
+
+- name: "intel_gpu_plugin | teardown | Remove Intel GPU Plugin DaemonSet"
+  ansible.builtin.command:
+    cmd: "kubectl delete -f {{ intel_gpu_plugin_manifest }} --ignore-not-found"
+  changed_when: true
+  failed_when: false

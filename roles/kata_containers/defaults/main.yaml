@@ -1,0 +1,29 @@
+---
+# =============================================================================
+# Kata Containers Role Defaults
+# =============================================================================
+# Installs the Kata Containers runtime so Agent Sandbox can run each sandbox
+# as a microVM (own guest kernel) instead of a runc pod sharing the host
+# kernel.
+#
+# The kata-backed SandboxTemplate + warm pool are applied by the agent-toolkit
+# layer's agent_sandbox role (it needs the Agent Sandbox CRDs).
+# =============================================================================
+
+# Kata runtime to use for sandboxes (options: kata-fc, kata-qemu, both)
+kata_runtime: "kata-fc"
+kata_version: "3.32.0"  # https://github.com/kata-containers/kata-containers kata-deploy chart version
+
+# Kata Containers configuration (microVM runtime for Agent Sandbox)
+kata_namespace: "kube-system"
+kata_release_name: "kata-deploy"
+kata_chart_ref: "oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
+
+# Node eligibility label applied to nodes that pass the KVM preflight.
+# Keep it free of dots — the key is passed through `helm --set nodeSelector.<key>`.
+kata_node_label_key: "ei-kata-eligible"
+kata_node_label_value: "true"
+
+# RuntimeClasses created by the kata-deploy chart for the selected shims
+kata_fc_runtime_class: "kata-fc"
+kata_qemu_runtime_class: "kata-qemu"

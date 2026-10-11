@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# Layer manifest — agent-toolkit
+# =============================================================================
+# The inference layer the Enterprise Agent Toolkit builds on, then the toolkit.
+#
+# =============================================================================
+
+repos:
+  - layer: "inference"
+    url: "https://github.com/intel/enterprise-inference"
+    dest: "enterprise.ai-inference"
+    rev: "main"
+    deployment_subdir: ""
+    config_dir: ""
+    default_flavour: ""
+    model_catalog: "model_manager/models.yaml"
+
+  - layer: "agent-toolkit"
+    url: "https://github.com/intel/enterprise-agent-toolkit"
+    dest: "enterprise.agent-toolkit"
+    rev: "agentic-toolkit-migrationx"
+    deployment_subdir: ""
+    config_dir: ""
+    default_flavour: ""

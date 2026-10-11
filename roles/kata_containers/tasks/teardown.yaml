@@ -1,0 +1,41 @@
+---
+# =============================================================================
+# Kata Containers — Teardown
+# =============================================================================
+# Removes the kata-deploy release (and with it the RuntimeClasses it created)
+# and the node eligibility label. Host-level devmapper/containerd changes made
+# by the node preflight are left in place.
+# =============================================================================
+
+- name: "kata_containers | teardown | Remove kata-deploy Helm release"
+  kubernetes.core.helm:
+    name: "{{ kata_release_name }}"
+    release_namespace: "{{ kata_namespace }}"
+    state: absent
+    wait: true
+  failed_when: false
+
+- name: "kata_containers | teardown | Get labelled nodes"
+  kubernetes.core.k8s_info:
+    kind: Node
+    label_selectors:
+      - "{{ kata_node_label_key }}={{ kata_node_label_value }}"
+  register: _kata_labelled_nodes
+  failed_when: false
+
+- name: "kata_containers | teardown | Remove kata eligibility label"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels: "{{ { kata_node_label_key: none } }}"
+  loop: "{{ _kata_labelled_nodes.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  failed_when: false
+
+- name: "kata_containers | teardown | Complete"
+  ansible.builtin.debug:
+    msg: "Kata Containers (kata-deploy) removed from namespace '{{ kata_namespace }}'"

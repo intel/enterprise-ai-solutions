@@ -119,6 +119,16 @@ components:
     enabled: "{{ velero_enabled | default(false) | bool }}"
     depends_on: []
 
+  - name: kata_containers
+    layer: platform
+    enabled: "{{ kata_containers_enabled | default(false) | bool }}"
+    depends_on: []
+
+  - name: intel_gpu_plugin
+    layer: platform
+    enabled: "{{ (kubernetes_accelerator | default('cpu')) == 'xpu' }}"
+    depends_on: []
+
   # --- Inference ---
   # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy
   # and is tightly coupled to the kubernetes role. All other inference components

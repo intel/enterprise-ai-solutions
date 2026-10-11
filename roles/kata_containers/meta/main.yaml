@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  role_name: kata_containers
+  description: Kata Containers microVM runtime (kata-fc / kata-qemu) for Agent Sandbox
+  min_ansible_version: "2.15"
+dependencies: []

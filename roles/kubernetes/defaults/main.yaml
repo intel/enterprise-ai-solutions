@@ -88,6 +88,7 @@ kubelet_system_reserved:
 # --- Accelerator Type ---
 # cpu = CPU-only inference (enables NUMA pinning policies above)
 # gpu = GPU-accelerated (skips CPU pinning — GPU scheduling handles placement)
+# xpu = Intel XPU (Arc / Flex / Max): skips CPU pinning, deploys the Intel GPU plugin
 kubernetes_accelerator: "cpu"
 
 # --- Container Runtime ---
@@ -128,3 +129,4 @@ node_topology_enabled: false
 kubernetes_disable_swap: true
 kubernetes_disable_firewall: false
 kubernetes_load_kernel_modules: true
+kubernetes_registry_enabled: false

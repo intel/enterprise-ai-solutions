@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  role_name: intel_gpu_plugin
+  description: Intel GPU device plugin for Intel XPU (Arc / Flex / Max) inference
+  min_ansible_version: "2.15"
+dependencies: []

@@ -1,0 +1,181 @@
+---
+# =============================================================================
+# Kata Containers — Install
+# =============================================================================
+# Two steps:
+#   1. Node preflight (per inventory node): KVM, devmapper for kata-fc
+#   2. Cluster install: node eligibility label, kata-deploy chart, RuntimeClasses
+# =============================================================================
+
+# ========================================================================
+# Node preflight
+# ========================================================================
+- name: "kata_containers | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _kata_all_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | unique }}
+    _kata_node_results: {}
+
+- name: "kata_containers | Node preflight"
+  ansible.builtin.include_tasks: node_preflight.yaml
+  loop: "{{ _kata_all_nodes }}"
+  loop_control:
+    loop_var: kata_node
+
+# ========================================================================
+# Task Group 1: Prerequisites and runtime selection
+# ========================================================================
+- name: "kata_containers | Check Kubernetes cluster connectivity"
+  ansible.builtin.command: kubectl get nodes
+  register: k8s_nodes_check
+  changed_when: false
+
+- name: "kata_containers | Warn on invalid kata_runtime value"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: kata_runtime='{{ kata_runtime | default('') }}' is not valid
+      (expected kata-fc, kata-qemu or both) — skipping Kata Containers.
+  when: kata_runtime | default('kata-fc') not in ['kata-fc', 'kata-qemu', 'both']
+
+- name: "kata_containers | End on invalid kata_runtime value"
+  ansible.builtin.meta: end_role
+  when: kata_runtime | default('kata-fc') not in ['kata-fc', 'kata-qemu', 'both']
+
+- name: "kata_containers | Build eligible host lists from preflight facts"
+  ansible.builtin.set_fact:
+    kata_kvm_hosts: "{{ _kata_node_results | dict2items | selectattr('value.kvm_ok') | map(attribute='key') | list }}"
+    kata_devmapper_hosts: "{{ _kata_node_results | dict2items | selectattr('value.devmapper_ok') | map(attribute='key') | list }}"
+
+- name: "kata_containers | Warn when no node has hardware virtualisation"
+  ansible.builtin.debug:
+    msg:
+      - "WARNING: no cluster node exposes /dev/kvm — skipping Kata Containers."
+      - "Kata requires Intel VT-x on bare metal, or nested virtualisation on a VM."
+      - "Verify on a node with: ls /dev/kvm && grep -c vmx /proc/cpuinfo"
+  when: kata_kvm_hosts | length == 0
+
+- name: "kata_containers | End when no node has hardware virtualisation"
+  ansible.builtin.meta: end_role
+  when: kata_kvm_hosts | length == 0
+
+- name: "kata_containers | Resolve which shims to enable"
+  ansible.builtin.set_fact:
+    kata_enable_fc: "{{ (kata_runtime | default('kata-fc') in ['kata-fc', 'both'] and kata_devmapper_hosts | length > 0) | bool }}"
+    kata_enable_qemu: "{{ (kata_runtime | default('kata-fc') in ['kata-qemu', 'both']) | bool }}"
+
+- name: "kata_containers | Warn when Firecracker was requested but devmapper is unavailable"
+  ansible.builtin.debug:
+    msg:
+      - "WARNING: kata-fc requested but no node has containerd's devmapper snapshotter in 'ok' state."
+      - "Firecracker does not support overlayfs for the rootfs, so kata-fc pods would fail"
+      - "with FailedCreatePodSandBox. Configure a devmapper thin-pool under"
+      - "[plugins.'io.containerd.snapshotter.v1.devmapper'] and re-run."
+      - "Verify with: ctr plugins ls | grep devmapper"
+  when:
+    - kata_runtime | default('kata-fc') in ['kata-fc', 'both']
+    - not kata_enable_fc
+
+- name: "kata_containers | End when no shim is left to install"
+  ansible.builtin.meta: end_role
+  when:
+    - not kata_enable_fc
+    - not kata_enable_qemu
+
+- name: "kata_containers | Record the RuntimeClasses kata-deploy is expected to create"
+  ansible.builtin.set_fact:
+    kata_expected_runtime_classes: >-
+      {{ ([kata_fc_runtime_class] if kata_enable_fc else [])
+         + ([kata_qemu_runtime_class] if kata_enable_qemu else []) }}
+
+# ========================================================================
+# Task Group 2: Label the nodes kata-deploy is allowed to install on
+# ========================================================================
+- name: "kata_containers | Get node list from Kubernetes cluster"
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: k8s_nodes
+
+- name: "kata_containers | Label preflight-passing nodes with kata eligibility"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        # Build the dict so the runtime label key is templated (a Jinja
+        # expression cannot be used directly as a YAML mapping key).
+        labels: "{{ { kata_node_label_key: kata_node_label_value } }}"
+  loop: "{{ k8s_nodes.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: >
+    item.metadata.name in kata_kvm_hosts or
+    (item.metadata.labels['kubernetes.io/hostname'] | default('')) in kata_kvm_hosts or
+    (k8s_nodes.resources | length == 1 and kata_kvm_hosts | length > 0)
+
+# ========================================================================
+# Task Group 3: Install Kata via the upstream kata-deploy Helm chart
+# ========================================================================
+# A failed revision-1 install cannot be recovered by `upgrade --install`
+# (helm refuses: "has no deployed releases"), so clear it first.
+- name: "kata_containers | Get current kata-deploy release status"
+  ansible.builtin.command: helm status {{ kata_release_name }} -n {{ kata_namespace }} -o json
+  register: kata_helm_status
+  failed_when: false
+  changed_when: false
+
+- name: "kata_containers | Remove a prior failed kata-deploy release"
+  ansible.builtin.command: helm uninstall {{ kata_release_name }} -n {{ kata_namespace }}
+  when:
+    - kata_helm_status.rc == 0
+    - (kata_helm_status.stdout | from_json).info.status == 'failed'
+
+- name: "kata_containers | Install kata-deploy chart"
+  ansible.builtin.command: >-
+    helm upgrade --install {{ kata_release_name }} {{ kata_chart_ref }}
+    --version {{ kata_version }}
+    --namespace {{ kata_namespace }}
+    -f {{ role_path }}/files/values.yaml
+    --set-string nodeSelector.{{ kata_node_label_key }}={{ kata_node_label_value }}
+    --set shims.fc.enabled={{ 'true' if kata_enable_fc else 'false' }}
+    --set shims.qemu.enabled={{ 'true' if kata_enable_qemu else 'false' }}
+    --set defaultShim.amd64={{ 'fc' if kata_enable_fc else 'qemu' }}
+
+# kata-deploy restarts containerd on each node as it installs, so give the
+# rollout a wide window.
+- name: "kata_containers | Wait for kata-deploy DaemonSet rollout"
+  ansible.builtin.command: >-
+    kubectl -n {{ kata_namespace }} rollout status daemonset/{{ kata_release_name }}
+    --timeout=15m
+  changed_when: false
+
+- name: "kata_containers | Get RuntimeClasses created by kata-deploy"
+  kubernetes.core.k8s_info:
+    api_version: node.k8s.io/v1
+    kind: RuntimeClass
+  register: kata_runtime_classes
+
+- name: "kata_containers | Verify expected RuntimeClasses exist"
+  ansible.builtin.assert:
+    that: item in (kata_runtime_classes.resources | map(attribute='metadata.name') | list)
+    fail_msg: "RuntimeClass '{{ item }}' was not created by kata-deploy"
+  loop: "{{ kata_expected_runtime_classes }}"
+
+# ========================================================================
+# Summary
+# ========================================================================
+- name: "kata_containers | Deployment summary"
+  ansible.builtin.debug:
+    msg:
+      - "============================================================"
+      - "  Kata Containers deployed successfully!"
+      - "  Version       : {{ kata_version }}"
+      - "  Namespace     : {{ kata_namespace }}"
+      - "  Shims         : {{ ((['fc'] if kata_enable_fc else []) + (['qemu'] if kata_enable_qemu else [])) | join(', ') }}"
+      - "  RuntimeClasses: {{ kata_expected_runtime_classes | join(', ') }}"
+      - "  Kata nodes    : {{ kata_kvm_hosts | join(', ') }} (label {{ kata_node_label_key }}={{ kata_node_label_value }})"
+      - "  Sandbox template + warm pool: applied by agent_sandbox (agent-toolkit layer)"
+      - "  Verify        : kubectl get runtimeclass; kubectl get nodes -l {{ kata_node_label_key }}={{ kata_node_label_value }}"
+      - "============================================================"
