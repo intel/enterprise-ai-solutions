@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Service Routing Registry — single source of truth for gateway publishing
+# Service Routing Registry — ai-solutions' own services
 # =============================================================================
-# How each service is exposed through the Envoy Gateway. Shipped WITH the code
-# (loaded by playbooks/includes/preflight.yaml), NOT seeded per-env — so new
-# services and wiring changes reach every cluster on upgrade with no per-env
-# edits.
+# How each service ai-solutions installs is exposed through the Envoy Gateway.
+# Every repo keeps its own configs/service_routes.yaml for the services it
+# installs; preflight merges them and fails if two repos claim the same service
+# name, subdomain or path (or one path nests under another repo's). A role
+# publishes its service by including envoy_gateway's attach.yaml (see there).
 #
 # Per-CLUSTER values live in env/<env>/global_config.yaml, not here:
 #   base_domain_name  the cluster's domain
