@@ -694,23 +694,14 @@
 # 6. Grafana HTTPRoute (expose via Envoy Gateway)
 # =============================================================================
 
-# In path mode Grafana mounts on the apex listener, which admits only labelled namespaces.
-- name: "observability | Label namespace — allow apex-listener routes (path mode)"
+# Resolves the route and prepares the gateway for it (see envoy_gateway attach.yaml).
+- name: "observability | Attach Grafana to the gateway"
+  ansible.builtin.include_role:
+    name: envoy_gateway
+    tasks_from: attach.yaml
   vars:
-    _obs_apex_label: >-
-      {{ {(gateway_apex_route_label_key | default('gateway-apex-routes')):
-          (gateway_apex_route_label_value | default('allowed'))} }}
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ observability_namespace }}"
-        labels: "{{ _obs_apex_label }}"
-  when:
-    - gateway_create | default(false) | bool
-    - observability_grafana_route.section_name == 'https-apex'
+    gateway_attach_service: grafana
+  when: gateway_create | default(false) | bool
 
 # Shared builder: HTTPS listener only, security-header baseline.
 - name: "observability | Expose Grafana via gateway HTTPRoute"
