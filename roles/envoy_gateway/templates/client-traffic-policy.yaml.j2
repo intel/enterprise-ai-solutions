@@ -35,3 +35,8 @@ spec:
   path:
     disableMergeSlashes: true
     escapedSlashesAction: KeepUnchanged
+{% if gateway_http2_enabled | bool %}
+  # This policy claims the listener, so the Gateway-wide ALPN does not reach it.
+  tls:
+    alpnProtocols: {{ _eg_alpn_h2 | to_json }}
+{% endif %}

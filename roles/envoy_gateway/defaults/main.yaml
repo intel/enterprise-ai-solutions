@@ -76,6 +76,13 @@ gateway_listener_admission_enabled: true
 gateway_wildcard_listener_enabled: true
 gateway_wildcard_tls_secret_name: "gateway-wildcard-tls"
 
+# HTTP/2 on every listener whose certificate names only its own host. Envoy
+# Gateway otherwise falls back to HTTP/1.1 on all listeners whose certificates
+# overlap (GEP-3567), which the legacy wildcard causes. Selfsigned mode only:
+# an operator certificate in custom mode may overlap, so the safe default stays.
+gateway_http2_enabled: "{{ gateway_tls_mode == 'selfsigned' }}"
+_eg_alpn_h2: ["h2", "http/1.1"]
+
 # Keycloak defaults (for SecurityPolicy JWT config — overridden by keycloak role)
 keycloak_hostname: "keycloak.{{ base_domain_name }}"
 keycloak_realm: "inference"

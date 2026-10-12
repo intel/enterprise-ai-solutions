@@ -36,13 +36,14 @@
         state: absent
       failed_when: false
 
-    - name: "envoy_gateway | Delete wildcard listener ClientTrafficPolicy"
+    - name: "envoy_gateway | Delete ALPN ClientTrafficPolicies"
       kubernetes.core.k8s:
         api_version: gateway.envoyproxy.io/v1alpha1
         kind: ClientTrafficPolicy
-        name: "{{ gateway_name }}-wildcard-http1"
+        name: "{{ gateway_name }}-{{ item }}"
         namespace: "{{ gateway_namespace }}"
         state: absent
+      loop: [alpn, wildcard-http1]
       failed_when: false
 
     # Cluster-scoped, so the namespace deletion below does not remove them.

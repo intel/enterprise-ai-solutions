@@ -331,10 +331,31 @@
   loop: [ValidatingAdmissionPolicyBinding, ValidatingAdmissionPolicy]
   when: gateway_create
 
-# ── Legacy wildcard listener: HTTP/1.1 only ──────────────────────────────────
-# Its certificate covers every subdomain, so over HTTP/2 a browser may reuse
-# the connection for a ListenerSet host and land on this listener, where any
-# namespace may hold a route for that host. HTTP/1.1 never coalesces.
+# ── ALPN: HTTP/2 on exact-host listeners, HTTP/1.1 on the wildcard ──────────
+# Gateway-wide policy reaches every listener, ListenerSets included, except
+# those claimed by a listener-scoped policy (wildcard, S3). Exact-host
+# certificates cannot be coalesced, so HTTP/2 is safe there.
+- name: "envoy_gateway | HTTP/2 on exact-host listeners"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if gateway_http2_enabled | bool else 'absent' }}"
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: ClientTrafficPolicy
+      metadata:
+        name: "{{ gateway_name }}-alpn"
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            name: "{{ gateway_name }}"
+        tls:
+          alpnProtocols: "{{ _eg_alpn_h2 }}"
+  when: gateway_create
+
+# The wildcard certificate covers every subdomain, so over HTTP/2 a browser
+# may reuse its connection for a ListenerSet host and land on this listener,
+# where any namespace may hold a route for that host. HTTP/1.1 never coalesces.
 - name: "envoy_gateway | Restrict the wildcard listener to HTTP/1.1"
   kubernetes.core.k8s:
     state: "{{ 'present' if gateway_wildcard_listener_enabled | bool else 'absent' }}"
