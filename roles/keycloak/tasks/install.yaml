@@ -210,28 +210,14 @@
 
 # ── HTTPRoute (expose via gateway) — runs even on re-install ──────────────────
 
-# In path mode Keycloak mounts on the shared apex listener, which admits routes
-# only from labelled namespaces (see gateway_apex_route_label_* / gateway.yaml.j2).
-# Stamp the label before creating the route so it can attach. Not needed in
-# subdomain mode, where the route has its own exact-host listener.
-- name: "keycloak | Label namespace — allow apex-listener routes (path mode)"
+# Resolves the route and prepares the gateway for it (see envoy_gateway attach.yaml).
+- name: "keycloak | Attach to the gateway"
+  ansible.builtin.include_role:
+    name: envoy_gateway
+    tasks_from: attach.yaml
   vars:
-    # Built as a dict value, not a templated mapping key — Ansible does not
-    # template dict keys, so the inline "{{ key }}:" form leaves it literal.
-    _keycloak_apex_label: >-
-      {{ {(gateway_apex_route_label_key | default('gateway-apex-routes')):
-          (gateway_apex_route_label_value | default('allowed'))} }}
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ keycloak_namespace }}"
-        labels: "{{ _keycloak_apex_label }}"
-  when:
-    - gateway_create | default(false)
-    - keycloak_section_name == 'https-apex'
+    gateway_attach_service: keycloak
+  when: gateway_create | default(false)
 
 # Shared builder: HTTPS listener only, security-header baseline. Framing is
 # left to Keycloak (frame-ancestors per realm; its login iframes need 'self').
