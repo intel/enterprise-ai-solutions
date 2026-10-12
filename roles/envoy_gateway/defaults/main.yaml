@@ -57,7 +57,9 @@ gateway_no_auth_routes: []
 # No wildcard listener, certificate or DNS: the gateway serves the apex plus one
 # exact-host HTTPS listener per registry service on its own subdomain, and each
 # listener admits routes only from that service's namespace. Any other host has
-# no listener. A new hostname means a registry entry (or service_route_overrides).
+# no listener. A new hostname is an entry in the configs/service_routes.yaml of
+# the repo that installs it (or service_route_overrides); its role attaches with
+# envoy_gateway attach.yaml, which adds the listener if the platform predates it.
 gateway_service_listeners: >-
   {{ service_routes | default({}) | gateway_listeners(routing_mode | default('subdomain'),
                                                      base_domain_name | default('inference-example.com'),

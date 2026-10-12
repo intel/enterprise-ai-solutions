@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# Envoy Gateway — served hosts: certificate, listeners, hostname ownership
+# =============================================================================
+# Derived from the merged route registry (every repo's configs/service_routes.yaml),
+# so platform install and a later solution attach render the same Gateway and a
+# re-install never drops a solution's listener. Needs gateway_namespace to exist.
+# =============================================================================
+
+- name: "envoy_gateway | Provision TLS serving certificate"
+  ansible.builtin.include_tasks: tls.yaml
+
+- name: "envoy_gateway | Apply Gateway resource"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'gateway.yaml.j2') | from_yaml_all | list }}"
+  when: gateway_create
+
+- name: "envoy_gateway | Wait for Gateway to be accepted"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: "{{ gateway_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_status
+  until:
+    - _gw_status.resources | length > 0
+    - _gw_status.resources[0].status.conditions | default([]) | selectattr('type','eq','Accepted') | selectattr('status','eq','True') | list | length > 0
+  retries: 60
+  delay: 5
+  when: gateway_create
+
+# Reserve each registered hostname to its owning namespace, so a route in
+# another namespace cannot claim it with a more specific match.
+- name: "envoy_gateway | Reserve registered hostnames to their owning namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'route-hostname-admission-policy.yaml.j2') | from_yaml_all | list }}"
+  when:
+    - gateway_create
+    - gateway_route_admission_enabled | bool
+    - gateway_protected_hostnames | length > 0

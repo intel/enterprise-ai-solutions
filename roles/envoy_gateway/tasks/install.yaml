@@ -175,11 +175,6 @@
     - gateway_namespace != envoy_gateway_namespace
     - enforce_pss | default(false) | bool
 
-# ── TLS serving certificate ───────────────────────────────────────────────────
-
-- name: "envoy_gateway | Provision TLS serving certificate"
-  ansible.builtin.include_tasks: tls.yaml
-
 # ── Gateway ───────────────────────────────────────────────────────────────────
 
 # envoy_gateway | Data-plane workload: DaemonSet across all control-plane nodes
@@ -234,25 +229,9 @@
           name: eg-proxy-config
           namespace: "{{ envoy_gateway_namespace }}"
 
-- name: "envoy_gateway | Apply Gateway resource"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('ansible.builtin.template', 'gateway.yaml.j2') | from_yaml_all | list }}"
-  when: gateway_create
-
-- name: "envoy_gateway | Wait for Gateway to be accepted"
-  kubernetes.core.k8s_info:
-    api_version: gateway.networking.k8s.io/v1
-    kind: Gateway
-    name: "{{ gateway_name }}"
-    namespace: "{{ gateway_namespace }}"
-  register: _gw_status
-  until:
-    - _gw_status.resources | length > 0
-    - _gw_status.resources[0].status.conditions | default([]) | selectattr('type','eq','Accepted') | selectattr('status','eq','True') | list | length > 0
-  retries: 60
-  delay: 5
-  when: gateway_create
+# ── Served hosts: TLS certificate, Gateway listeners, hostname ownership ──────
+- name: "envoy_gateway | Served hosts"
+  ansible.builtin.include_tasks: sync_hosts.yaml
 
 # ── Apex host: landing redirect + path-mode cookie confinement ───────────────
 # The landing route lives in the gateway namespace, so that namespace must
@@ -344,19 +323,6 @@
             kind: HTTPRoute
             name: http-to-https-redirect
   when: gateway_create and auth_provider in ['keycloak', 'litellm']
-
-# ── Protected hostname ownership (cross-namespace route takeover) ─────────────
-# Reserve each platform hostname to its owning namespace so a route in another
-# namespace cannot claim it with a more specific match and hijack the traffic.
-# See gateway_protected_hostnames in defaults/main.yaml.
-- name: "envoy_gateway | Reserve platform hostnames to their owning namespace"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('ansible.builtin.template', 'route-hostname-admission-policy.yaml.j2') | from_yaml_all | list }}"
-  when:
-    - gateway_create
-    - gateway_route_admission_enabled | bool
-    - gateway_protected_hostnames | length > 0
 
 # ── ClientTrafficPolicy - S3 API path handling ───────────────────────────────
 
