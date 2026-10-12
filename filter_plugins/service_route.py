@@ -73,12 +73,50 @@ def _merge(base, override):
     return out
 
 
+def service_routes_merge(sources):
+    """Merge per-repo registries: [{source, routes}] -> {service: entry}.
+
+    Each repo owns the entries for its own services. A service name, subdomain
+    or path claimed by two repos is an error, so one repo cannot take over
+    another's hostname or apex path.
+    """
+    merged, owner = {}, {}
+    for src in sources or []:
+        name = src.get("source") or "?"
+        routes = src.get("routes") or {}
+        if not isinstance(routes, dict):
+            raise ValueError("service_routes in %s must be a mapping." % name)
+        for svc, entry in routes.items():
+            entry = dict(entry or {})
+            claims = [("service", svc),
+                      ("subdomain", entry.get("subdomain") or svc),
+                      ("path", _norm_path(entry.get("path") or ("/" + svc)))]
+            for kind, value in claims:
+                if (kind, value) in owner:
+                    raise ValueError(
+                        "%s '%s' is claimed by both %s and %s (service '%s')."
+                        % (kind, value, owner[(kind, value)], name, svc))
+            # The longest matching prefix wins on the apex, so a path nested under
+            # another repo's (/keycloak/admin under /keycloak) would take part of it.
+            path = claims[2][1]
+            for (kind, other), repo in owner.items():
+                if kind == "path" and repo != name and "/" not in (path, other) and (
+                        path.startswith(other + "/") or other.startswith(path + "/")):
+                    raise ValueError("path '%s' (%s, service '%s') overlaps '%s' owned by %s."
+                                     % (path, name, svc, other, repo))
+            for claim in claims:
+                owner[claim] = name
+            entry["owner"] = name
+            merged[svc] = entry
+    return merged
+
+
 def service_route(service, routing_mode, base_domain, registry, overrides=None):
     """Resolve one service's routing into a dict (see module docstring)."""
     if not registry or service not in registry:
         raise ValueError(
             "Unknown service '%s' — not in the service_routes registry (%s). "
-            "Add it to configs/service_routes.yaml."
+            "Add it to configs/service_routes.yaml of the repo that installs it."
             % (service, sorted((registry or {}).keys()))
         )
 
@@ -250,4 +288,5 @@ class FilterModule(object):
             "service_route": service_route,
             "gateway_httproute": gateway_httproute,
             "cookie_confinement": cookie_confinement,
+            "service_routes_merge": service_routes_merge,
         }
