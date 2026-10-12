@@ -69,30 +69,8 @@
   loop_control:
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
 
-# Each repo publishes its own services: configs/service_routes.yaml here and
-# beside every ext components.yaml. One merged registry; a service, subdomain
-# or path claimed by two repos fails here (see service_routes_merge).
-- name: "Preflight - Find service routing registries"
-  ansible.builtin.stat:
-    path: "{{ item }}/configs/service_routes.yaml"
-  loop: >-
-    {{ [playbook_dir ~ '/..']
-       + ((_ext_manifests.files | default([])) | sort(attribute='path') | map(attribute='path') | map('dirname') | list) }}
-  register: _route_registries
-
 - name: "Preflight - Merge service routing registries"
-  ansible.builtin.set_fact:
-    service_routes: >-
-      {{ _sources | service_routes_merge }}
-  vars:
-    _sources: >-
-      {%- set out = [] -%}
-      {%- for r in _route_registries.results if r.stat.exists -%}
-      {%- set _ = out.append({'source': ('ai-solutions' if r.item == playbook_dir ~ '/..' else r.item | basename),
-                              'routes': (lookup('ansible.builtin.file', r.stat.path) | from_yaml
-                                         | default({}, true)).service_routes | default({})}) -%}
-      {%- endfor -%}
-      {{ out }}
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/includes/service_routes.yaml"
 
 # ── Connectivity check (install only) ────────────────────────────────────────
 
