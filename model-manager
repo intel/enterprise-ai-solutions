@@ -32,5 +32,5 @@ if [[ -x "${SCRIPT_DIR}/.venv/bin/python3" ]]; then
     PY_BIN="${SCRIPT_DIR}/.venv/bin/python3"
 fi
 
-export PYTHONPATH="${SCRIPT_DIR}/ext/enterprise.ai-inference/model_manager:${SCRIPT_DIR}/ext/enterprise.ai-inference/model_manager/lib:${PYTHONPATH:-}"
+export PYTHONPATH="${SCRIPT_DIR}/ext/enterprise.ai-inference/model_manager:${SCRIPT_DIR}/ext/enterprise.ai-inference/model_manager/scripts:${PYTHONPATH:-}"
 exec "$PY_BIN" -m mm "$@"
