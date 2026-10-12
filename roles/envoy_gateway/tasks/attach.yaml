@@ -60,8 +60,30 @@
     - gateway_attach.section_name != 'https-apex'
     - >-
       (_attach_gw.resources | default([{}]) | first).spec.listeners | default([])
-      | selectattr('name', 'equalto', gateway_attach.section_name)
+      | selectattr('hostname', 'defined')
       | selectattr('hostname', 'equalto', gateway_attach.host) | list | length == 0
+
+- name: "envoy_gateway | attach | Re-read the gateway"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: "{{ gateway_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _attach_gw
+  when: gateway_attach.section_name != 'https-apex'
+
+# The listener that serves the host exactly: the service's own, or one the
+# platform already runs for it (the dedicated S3 listener). None = misconfigured.
+- name: "envoy_gateway | attach | Select the listener serving {{ gateway_attach.host }}"
+  vars:
+    _serving: >-
+      {{ (_attach_gw.resources | default([{}]) | first).spec.listeners | default([])
+         | selectattr('protocol', 'equalto', 'HTTPS') | selectattr('hostname', 'defined')
+         | selectattr('hostname', 'equalto', gateway_attach.host) | map(attribute='name') | list }}
+  ansible.builtin.set_fact:
+    gateway_attach: "{{ gateway_attach | combine({'section_name': _serving | first}) }}"
+  failed_when: _serving | length == 0
+  when: gateway_attach.section_name != 'https-apex'
 
 - name: "envoy_gateway | attach | {{ gateway_attach_service }}"
   ansible.builtin.debug:

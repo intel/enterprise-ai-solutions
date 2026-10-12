@@ -60,10 +60,14 @@ gateway_no_auth_routes: []
 # no listener. A new hostname is an entry in the configs/service_routes.yaml of
 # the repo that installs it (or service_route_overrides); its role attaches with
 # envoy_gateway attach.yaml, which adds the listener if the platform predates it.
+# The dedicated S3 listener (below) already serves its host, with the SigV4
+# traffic policy, so a registry entry for that host gets no second listener.
 gateway_service_listeners: >-
   {{ service_routes | default({}) | gateway_listeners(routing_mode | default('subdomain'),
                                                      base_domain_name | default('inference-example.com'),
-                                                     service_route_overrides | default({})) }}
+                                                     service_route_overrides | default({}))
+     | rejectattr('hostname', 'in', [gateway_s3_hostname] if gateway_s3_listener_enabled | bool else [])
+     | list }}
 # Names the TLS certificate must cover and DNS must resolve to the gateway.
 gateway_tls_dns_names: >-
   {{ [base_domain_name] + (gateway_service_listeners | map(attribute='hostname') | list)
