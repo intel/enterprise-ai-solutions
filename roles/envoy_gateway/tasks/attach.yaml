@@ -1,0 +1,46 @@
+---
+# =============================================================================
+# Envoy Gateway — attach a service to the shared gateway
+# =============================================================================
+# Called by the role that installs a service, from any repo:
+#
+#   - ansible.builtin.include_role:
+#       name: envoy_gateway
+#       tasks_from: attach.yaml
+#     vars:
+#       gateway_attach_service: <name in that repo's configs/service_routes.yaml>
+#
+# Resolves the service's route for the cluster's routing_mode, prepares its
+# namespace for the listener it lands on, and returns gateway_attach:
+#   host, relative_path, frontend_url, section_name, mode, backend, port,
+#   namespace, gateway_name, gateway_namespace
+# The caller creates its own HTTPRoute with parentRefs.sectionName =
+# gateway_attach.section_name and hostnames = [gateway_attach.host].
+# =============================================================================
+
+- name: "envoy_gateway | attach | Resolve route for {{ gateway_attach_service }}"
+  ansible.builtin.set_fact:
+    gateway_attach: >-
+      {{ gateway_attach_service
+         | service_route(routing_mode | default('subdomain'), base_domain_name,
+                         service_routes | default({}), service_route_overrides | default({}))
+         | combine({'gateway_name': gateway_name, 'gateway_namespace': gateway_namespace}) }}
+
+# The shared apex admits routes only from labelled namespaces (hijack guard),
+# so a service that lands there opts its own namespace in.
+- name: "envoy_gateway | attach | Allow {{ gateway_attach.namespace }} on the apex listener"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gateway_attach.namespace }}"
+        labels: "{{ {gateway_apex_route_label_key: gateway_apex_route_label_value} }}"
+  when: gateway_attach.section_name == 'https-apex'
+
+- name: "envoy_gateway | attach | {{ gateway_attach_service }}"
+  ansible.builtin.debug:
+    msg: >-
+      {{ gateway_attach_service }}: {{ gateway_attach.frontend_url }}
+      (listener {{ gateway_attach.section_name }}, namespace {{ gateway_attach.namespace }})
