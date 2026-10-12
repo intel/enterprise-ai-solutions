@@ -3,10 +3,10 @@
 # Istio — Upgrade
 # =============================================================================
 
-- name: "istio | Install Gateway API CRDs"
-  kubernetes.core.k8s:
-    state: present
-    src: "{{ istio_gateway_api_crds_url }}"
+- name: "istio | Gateway API CRDs (owned by envoy_gateway; needed before istiod starts)"
+  ansible.builtin.include_role:
+    name: envoy_gateway
+    tasks_from: crds.yaml
 
 - name: "istio | Upgrade Helm chart"
   kubernetes.core.helm:

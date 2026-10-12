@@ -1,7 +1,11 @@
 ---
-envoy_gateway_version: "1.7.1"
+envoy_gateway_version: "1.9.2"
 envoy_gateway_namespace: "envoy-gateway-system"
 envoy_gateway_helm_repo: "oci://docker.io/envoyproxy/gateway-helm"
+# Sole installer of the Gateway API CRDs (standard channel, the version this
+# release bundles) and the Envoy Gateway CRDs, applied server-side.
+envoy_gateway_crds_helm_repo: "oci://docker.io/envoyproxy/gateway-crds-helm"
+envoy_gateway_crds_field_manager: "ai-solutions-envoy-gateway"
 envoy_gateway_wait_timeout: "300s"
 
 # Gateway resource
@@ -53,25 +57,24 @@ gateway_s3_listener_enabled: >-
 # for that specific HTTPRoute (e.g. a UI route that must be publicly reachable).
 gateway_no_auth_routes: []
 
-# ── Protected hostname ownership ─────────────────────────────────────────────
-# The shared listeners admit routes from every namespace (from: All) so tenants
-# can publish their own hostnames without operator intervention. The Gateway API
-# resolves two routes claiming the SAME hostname by match specificity, ignoring
-# which namespace they live in — so a route in any namespace that pins an exact
-# path (e.g. /v1/chat/completions) on a platform hostname out-ranks the platform's
-# own catch-all route and silently takes over the victim's traffic (and bearer
-# token). We reserve each platform hostname to its owning namespace with a
-# ValidatingAdmissionPolicy: an HTTPRoute claiming one of these hostnames from any
-# other namespace is rejected at admission. Tenants keep full freedom on hostnames
-# they do not own. Extend this list to reserve additional hostnames.
-gateway_route_admission_enabled: true
-gateway_protected_hostnames:
-  - hostname: "inference.{{ base_domain_name }}"
-    owner_namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
-  - hostname: "keycloak.{{ base_domain_name }}"
-    owner_namespace: "keycloak"
-  - hostname: "grafana.{{ base_domain_name }}"
-    owner_namespace: "monitoring"
+# ── Solution listeners (ListenerSet) ─────────────────────────────────────────
+# Each solution publishes its own hosts in a ListenerSet in its own namespace,
+# with its own certificate. The Gateway accepts ListenerSets only from
+# namespaces carrying this label, and an admission policy accepts a listener
+# only for hosts granted to its namespace in this annotation (comma-separated).
+# Namespaces are cluster-scoped, so only cluster operators can grant hosts.
+gateway_listeners_label_key: "gateway.ai-solutions.intel.com/listeners"
+gateway_listeners_label_value: "allowed"
+gateway_hostnames_annotation: "gateway.ai-solutions.intel.com/hostnames"
+gateway_listener_admission_enabled: true
+
+# Legacy '*.base_domain_name' listener for routes not yet on a ListenerSet.
+# It has its own wildcard certificate and serves HTTP/1.1 only: an HTTP/2
+# connection would let a browser coalesce requests for other hosts onto it,
+# where any namespace may hold a route for them. Turn off once every
+# solution publishes through a ListenerSet.
+gateway_wildcard_listener_enabled: true
+gateway_wildcard_tls_secret_name: "gateway-wildcard-tls"
 
 # Keycloak defaults (for SecurityPolicy JWT config — overridden by keycloak role)
 keycloak_hostname: "keycloak.{{ base_domain_name }}"
@@ -82,11 +85,12 @@ gateway_tls_mode: "selfsigned"        # selfsigned | custom
 base_domain_name: "inference-example.com"
 gateway_tls_cert_file: ""
 gateway_tls_key_file: ""
-gateway_tls_secret_name: "gateway-tls"
+gateway_tls_secret_name: "gateway-tls"          # apex (and S3 host in custom mode)
+gateway_s3_tls_secret_name: "gateway-s3-tls"
 
-# Internal root CA (selfsigned mode). The wildcard serving leaf chains to this
-# root, so operators import ONE cert (exported to gateway_ca_export_path) to
-# trust every hostname across leaf rotations.
+# Internal root CA (selfsigned mode). Every serving leaf (platform and
+# solution listeners) chains to this root, so operators import ONE cert
+# (exported to gateway_ca_export_path) to trust every hostname.
 gateway_ca_bootstrap_issuer_name: "gateway-ca-bootstrap"
 gateway_ca_cert_name: "ai-solutions-ca"
 gateway_ca_secret_name: "ai-solutions-ca"
@@ -98,3 +102,23 @@ gateway_ca_export_path: "{{ log_dir }}/{{ gateway_ca_cert_name }}.crt"
 # Foreign var (canonical owner: cert_manager) — namespace holding the root CA
 # secret, which is cert-manager's cluster-resource-namespace.
 certmanager_namespace: "cert-manager"
+
+# Platform listener leaves (selfsigned mode), one per enabled listener host;
+# _all names every leaf the role can create, for pruning.
+_eg_platform_certs: >-
+  {{ [{'host': base_domain_name, 'secret': gateway_tls_secret_name}]
+     + ([{'host': '*.' ~ base_domain_name, 'secret': gateway_wildcard_tls_secret_name}]
+        if gateway_wildcard_listener_enabled | bool else [])
+     + ([{'host': gateway_s3_hostname, 'secret': gateway_s3_tls_secret_name}]
+        if gateway_s3_listener_enabled | bool else []) }}
+_eg_platform_certs_all:
+  - "{{ gateway_tls_secret_name }}"
+  - "{{ gateway_wildcard_tls_secret_name }}"
+  - "{{ gateway_s3_tls_secret_name }}"
+
+# listenerset.yaml: the ListenerSet's serving secret (selfsigned mode), or the
+# operator certificate in the gateway namespace (custom mode).
+_ls_secret: "{{ gateway_listenerset_name | default('') }}-listener-tls"
+_ls_cert_ref: >-
+  {{ {'kind': 'Secret', 'name': _ls_secret} if gateway_tls_mode == 'selfsigned'
+     else {'kind': 'Secret', 'name': gateway_tls_secret_name, 'namespace': gateway_namespace} }}

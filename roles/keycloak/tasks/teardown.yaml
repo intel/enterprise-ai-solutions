@@ -37,6 +37,15 @@
         state: absent
       failed_when: false
 
+    - name: "keycloak | Unpublish the Keycloak host"
+      ansible.builtin.include_role:
+        name: envoy_gateway
+        tasks_from: listenerset_remove.yaml
+      vars:
+        gateway_listenerset_name: keycloak
+        gateway_listenerset_namespace: "{{ keycloak_namespace }}"
+        gateway_listenerset_listeners: [{name: keycloak, hostname: "{{ keycloak_hostname }}"}]
+
     - name: "keycloak | Delete Keycloak CR"
       kubernetes.core.k8s:
         api_version: k8s.keycloak.org/v2beta1

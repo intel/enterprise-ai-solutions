@@ -6,13 +6,26 @@ metadata:
   namespace: {{ gateway_namespace }}
 spec:
   gatewayClassName: eg
+  # Solutions publish their hosts in ListenerSets; only labelled namespaces
+  # may attach one (the admission policy checks each host is granted).
+  allowedListeners:
+    namespaces:
+      from: Selector
+      selector:
+        matchLabels:
+          {{ gateway_listeners_label_key }}: {{ gateway_listeners_label_value | to_json }}
   listeners:
+    # Plaintext :80 only redirects to HTTPS; the redirect route lives here, so
+    # no other namespace can claim a host before the redirect.
     - name: http
       protocol: HTTP
       port: 80
       allowedRoutes:
         namespaces:
-          from: All
+          from: Same
+{% if gateway_wildcard_listener_enabled | bool %}
+    # Legacy catch-all for routes not yet on a ListenerSet (HTTP/1.1 only, see
+    # gateway_wildcard_listener_enabled). More specific listeners win.
     - name: https
       protocol: HTTPS
       port: 443
@@ -21,12 +34,12 @@ spec:
         mode: Terminate
         certificateRefs:
           - kind: Secret
-            name: {{ gateway_tls_secret_name }}
+            name: {{ gateway_wildcard_tls_secret_name if gateway_tls_mode == 'selfsigned' else gateway_tls_secret_name }}
       allowedRoutes:
         namespaces:
           from: All
-    # Apex listener — *.base_domain_name does not match the bare base_domain_name, so add an
-    # explicit listener for it (e.g. the UI on inference-example.com).
+{% endif %}
+    # Apex listener — the bare base_domain_name (e.g. a landing UI).
     - name: https-apex
       protocol: HTTPS
       port: 443
@@ -40,11 +53,9 @@ spec:
         namespaces:
           from: All
 {% if gateway_s3_listener_enabled | bool %}
-    # S3 API listener - a more specific hostname than the *.base_domain_name
-    # wildcard above, so Gateway API accepts both on port 443 and a route that
-    # names this listener in sectionName gets it. Its only purpose is to carry the
-    # ClientTrafficPolicy that turns off merge_slashes and %2F rewriting, which
-    # SigV4 needs and which must NOT be turned off for the shared listeners.
+    # S3 API listener. Its only purpose is to carry the ClientTrafficPolicy
+    # that turns off merge_slashes and %2F rewriting, which SigV4 needs and
+    # which must NOT be turned off for the other listeners.
     - name: {{ gateway_s3_listener_name }}
       protocol: HTTPS
       port: 443
@@ -53,7 +64,7 @@ spec:
         mode: Terminate
         certificateRefs:
           - kind: Secret
-            name: {{ gateway_tls_secret_name }}
+            name: {{ gateway_s3_tls_secret_name if gateway_tls_mode == 'selfsigned' else gateway_tls_secret_name }}
       allowedRoutes:
         namespaces:
           from: All

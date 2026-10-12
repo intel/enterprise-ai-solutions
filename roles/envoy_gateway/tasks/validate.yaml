@@ -19,6 +19,21 @@
     fail_msg: "Envoy Gateway has 0 ready replicas"
     success_msg: "Envoy Gateway has {{ _eg_deploy.resources[0].status.readyReplicas | default(0) }} ready replica(s)"
 
+- name: "envoy_gateway | Check ListenerSet API"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: listenersets.gateway.networking.k8s.io
+  register: _eg_ls_crd
+
+- name: "envoy_gateway | Assert ListenerSet API installed"
+  ansible.builtin.assert:
+    that: _eg_ls_crd.resources | length > 0
+    fail_msg: "ListenerSet CRD missing; solutions cannot publish hosts"
+    success_msg: >-
+      ListenerSet API installed (Gateway API
+      {{ _eg_ls_crd.resources[0].metadata.annotations['gateway.networking.k8s.io/bundle-version'] | default('?') }})
+
 - name: "envoy_gateway | Check GatewayClass"
   kubernetes.core.k8s_info:
     api_version: gateway.networking.k8s.io/v1

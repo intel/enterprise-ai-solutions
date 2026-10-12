@@ -1,0 +1,56 @@
+---
+# A ListenerSet on the platform Gateway may only publish hosts its namespace
+# was granted (namespace annotation {{ gateway_hostnames_annotation }}),
+# HTTPS on :443 only, for routes from its own namespace only. Namespaces are
+# cluster-scoped, so a tenant cannot grant itself another tenant's host.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: eg-listener-hostname-grant
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["gateway.networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["listenersets"]
+  matchConditions:
+    - name: platform-gateway
+      expression: >-
+        object.spec.parentRef.name == {{ gateway_name | to_json }} &&
+        (has(object.spec.parentRef.namespace) ? object.spec.parentRef.namespace : object.metadata.namespace)
+          == {{ gateway_namespace | to_json }}
+  variables:
+    - name: granted
+      expression: >-
+        has(namespaceObject.metadata.annotations) &&
+        {{ gateway_hostnames_annotation | to_json }} in namespaceObject.metadata.annotations
+          ? namespaceObject.metadata.annotations[{{ gateway_hostnames_annotation | to_json }}].split(',').map(h, h.trim())
+          : []
+  validations:
+    - expression: >-
+        object.spec.listeners.all(l, has(l.hostname) && l.hostname in variables.granted)
+      messageExpression: >-
+        "ListenerSet '" + object.metadata.namespace + "/" + object.metadata.name +
+        "' publishes a host not granted to its namespace. Granted: [" +
+        variables.granted.join(", ") + "]. A cluster operator grants hosts with the " +
+        "namespace annotation {{ gateway_hostnames_annotation }}."
+      reason: Forbidden
+    - expression: >-
+        object.spec.listeners.all(l, l.protocol == 'HTTPS' && l.port == 443)
+      message: "ListenerSet listeners on the platform Gateway must be HTTPS on port 443."
+      reason: Forbidden
+    - expression: >-
+        object.spec.listeners.all(l, !has(l.allowedRoutes) || !has(l.allowedRoutes.namespaces) ||
+          !has(l.allowedRoutes.namespaces.from) || l.allowedRoutes.namespaces.from == 'Same')
+      message: "ListenerSet listeners on the platform Gateway may only admit routes from their own namespace."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: eg-listener-hostname-grant
+spec:
+  policyName: eg-listener-hostname-grant
+  validationActions: ["Deny"]

@@ -680,6 +680,16 @@
 # 6. Grafana HTTPRoute (expose via Envoy Gateway)
 # =============================================================================
 
+- name: "observability | Publish the Grafana host"
+  ansible.builtin.include_role:
+    name: envoy_gateway
+    tasks_from: listenerset.yaml
+  vars:
+    gateway_listenerset_name: grafana
+    gateway_listenerset_namespace: "{{ observability_namespace }}"
+    gateway_listenerset_listeners: [{name: grafana, hostname: "{{ observability_grafana_hostname }}"}]
+  when: gateway_create | default(false) | bool
+
 - name: "observability | Expose Grafana via gateway HTTPRoute"
   kubernetes.core.k8s:
     state: present
@@ -691,12 +701,8 @@
         namespace: "{{ observability_namespace }}"
       spec:
         parentRefs:
-          # Pin to the HTTPS listener only. Without sectionName an HTTPRoute
-          # attaches to every compatible listener, including the plaintext
-          # HTTP:80 one, which would serve Grafana admin credentials in cleartext.
-          - name: "{{ gateway_name }}"
-            namespace: "{{ gateway_namespace }}"
-            sectionName: https
+          # Grafana's own HTTPS listener (ListenerSet); never plaintext :80.
+          - "{{ gateway_listenerset_ref | combine({'sectionName': 'grafana'}) }}"
         hostnames:
           - "{{ observability_grafana_hostname }}"
         rules:

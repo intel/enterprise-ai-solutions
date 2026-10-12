@@ -4,7 +4,7 @@
 # =============================================================================
 # Produces the secret gateway_tls_secret_name in gateway_namespace, consumed by
 # the Gateway HTTPS listeners. Modes:
-#   selfsigned — internal root CA signs a wildcard leaf; the root cert is
+#   selfsigned — internal root CA signs one leaf per listener; the root cert is
 #                exported to log_dir so operators import ONE file to trust
 #                every hostname across leaf rotations
 #   custom     — secret built from operator-supplied cert/key files
@@ -66,8 +66,8 @@
 
 # ── TLS: internal root CA (selfsigned mode) ───────────────────────────────────
 # selfSigned bootstrap ClusterIssuer → root CA Certificate (isCA) →
-# CA ClusterIssuer 'gateway-issuer'. The wildcard serving leaf below chains to
-# the root, so importing the root cert once trusts every hostname.
+# CA ClusterIssuer 'gateway-issuer'. Every serving leaf chains to the root,
+# so importing the root cert once trusts every hostname.
 
 - name: "envoy_gateway | Create self-signed bootstrap ClusterIssuer"
   kubernetes.core.k8s:
@@ -136,30 +136,33 @@
           secretName: "{{ gateway_ca_secret_name }}"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Create Certificate for gateway TLS"
+# One leaf per platform listener, each naming only its own host, so a browser
+# never reuses one listener's HTTP/2 connection for another listener's host.
+- name: "envoy_gateway | Create platform listener Certificates"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: cert-manager.io/v1
       kind: Certificate
       metadata:
-        name: gateway-tls-cert
+        name: "{{ item.secret }}-cert"
         namespace: "{{ gateway_namespace }}"
       spec:
-        secretName: "{{ gateway_tls_secret_name }}"
+        secretName: "{{ item.secret }}"
         issuerRef:
           name: gateway-issuer
           kind: ClusterIssuer
-        dnsNames:
-          - "{{ base_domain_name }}"
-          - "*.{{ base_domain_name }}"
+        dnsNames: ["{{ item.host }}"]
+  loop: "{{ _eg_platform_certs }}"
+  loop_control:
+    label: "{{ item.host }}"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Wait for TLS certificate to be ready"
+- name: "envoy_gateway | Wait for platform listener Certificates to be ready"
   kubernetes.core.k8s_info:
     api_version: cert-manager.io/v1
     kind: Certificate
-    name: gateway-tls-cert
+    name: "{{ item.secret }}-cert"
     namespace: "{{ gateway_namespace }}"
   register: _gw_cert
   until:
@@ -167,6 +170,25 @@
     - _gw_cert.resources[0].status.conditions | default([]) | selectattr('type','eq','Ready') | selectattr('status','eq','True') | list | length > 0
   retries: 30
   delay: 5
+  loop: "{{ _eg_platform_certs }}"
+  loop_control:
+    label: "{{ item.host }}"
+  when: gateway_tls_mode == 'selfsigned' and gateway_create
+
+# Prune leaves whose listener is off (e.g. the legacy wildcard).
+- name: "envoy_gateway | Remove leaves of disabled platform listeners"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.1.api }}"
+    kind: "{{ item.1.kind }}"
+    name: "{{ item.0 }}{{ item.1.suffix }}"
+    namespace: "{{ gateway_namespace }}"
+  loop: >-
+    {{ _eg_platform_certs_all | difference(_eg_platform_certs | map(attribute='secret'))
+       | product([{'api': 'cert-manager.io/v1', 'kind': 'Certificate', 'suffix': '-cert'},
+                  {'api': 'v1', 'kind': 'Secret', 'suffix': ''}]) | list }}
+  loop_control:
+    label: "{{ item.1.kind }}/{{ item.0 }}{{ item.1.suffix }}"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
 # ── Export root CA for browser / OS trust store ───────────────────────────────
@@ -183,7 +205,7 @@
   ansible.builtin.debug:
     msg:
       - "Root CA exported: {{ gateway_ca_export_path }}"
-      - "Import it to stop browser warnings on https://*.{{ base_domain_name }}"
+      - "Import it to stop browser warnings on https://{{ base_domain_name }} and its subdomains"
       - "Firefox:  Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import"
       - "Chrome:   Settings → Privacy and security → Security → Manage certificates → Authorities → Import"
       - "Linux:    sudo cp {{ gateway_ca_export_path }} /usr/local/share/ca-certificates/{{ gateway_ca_cert_name }}.crt && sudo update-ca-certificates"
