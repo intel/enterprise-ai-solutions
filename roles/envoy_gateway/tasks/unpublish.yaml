@@ -14,4 +14,3 @@
     gateway_listenerset_listeners: [{name: "{{ gateway_publish_name }}", hostname: "{{ gateway_publish_host }}"}]
     gateway_apex_namespace: "{{ gateway_publish_namespace }}"
     gateway_apex_path: "{{ gateway_publish_path }}"
-    gateway_apex_route: "{{ gateway_publish_route | default(gateway_publish_name) }}"

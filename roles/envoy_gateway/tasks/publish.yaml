@@ -9,8 +9,6 @@
 #   gateway_publish_namespace  owning namespace
 #   gateway_publish_host       subdomain host
 #   gateway_publish_path       apex path (e.g. /keycloak)
-#   gateway_publish_route      HTTPRoute name (default: gateway_publish_name)
-#   gateway_publish_cookies    path mode: cookies the route may receive (see apex_path.yaml)
 #   gateway_publish_mode       override routing_mode (e.g. subdomain for apps
 #                              that cannot run under a path)
 # Sets gateway_publish: {mode, host, relative_path, frontend_url, parent_ref}.
@@ -27,8 +25,6 @@
     gateway_listenerset_listeners: [{name: "{{ gateway_publish_name }}", hostname: "{{ gateway_publish_host }}"}]
     gateway_apex_namespace: "{{ gateway_publish_namespace }}"
     gateway_apex_path: "{{ gateway_publish_path }}"
-    gateway_apex_route: "{{ gateway_publish_route | default(gateway_publish_name) }}"
-    gateway_apex_cookies: "{{ gateway_publish_cookies | default([]) }}"
 
 - name: "envoy_gateway | publish | Route parent for {{ gateway_publish_name }}"
   ansible.builtin.set_fact:

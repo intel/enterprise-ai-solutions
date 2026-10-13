@@ -2,16 +2,7 @@
 # =============================================================================
 # Envoy Gateway — release an apex path grant (reverse of apex_path.yaml)
 # =============================================================================
-# Same inputs. Tolerates a missing ConfigMap, namespace or policy.
-
-- name: "envoy_gateway | apex path | Delete cookie allowlist of {{ gateway_apex_route }}"
-  kubernetes.core.k8s:
-    state: absent
-    api_version: gateway.envoyproxy.io/v1alpha1
-    kind: EnvoyExtensionPolicy
-    name: "{{ gateway_apex_route }}-cookies"
-    namespace: "{{ gateway_apex_namespace }}"
-  failed_when: false
+# Same inputs. Tolerates a missing ConfigMap or namespace.
 
 - name: "envoy_gateway | apex path | Read path grants"
   kubernetes.core.k8s_info:

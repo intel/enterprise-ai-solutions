@@ -693,7 +693,6 @@
     gateway_publish_namespace: "{{ observability_namespace }}"
     gateway_publish_host: "{{ observability_grafana_hostname }}"
     gateway_publish_path: "{{ observability_grafana_path }}"
-    gateway_publish_cookies: ["grafana_*"]
   when: gateway_create | default(false) | bool
 
 - name: "observability | Expose Grafana via gateway HTTPRoute"

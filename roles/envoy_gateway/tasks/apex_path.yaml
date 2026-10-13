@@ -4,9 +4,6 @@
 # =============================================================================
 #   gateway_apex_namespace  owning namespace
 #   gateway_apex_path       '/<name>[/...]' (lowercase, digits, '-', '_') or '/'
-#   gateway_apex_route      HTTPRoute that serves it (gets the cookie allowlist)
-#   gateway_apex_cookies    cookie names it may receive ('name*' = prefix);
-#                           [] = none, ['*'] = all (no filter)
 
 - name: "envoy_gateway | apex path | Validate {{ gateway_apex_path }}"
   ansible.builtin.assert:
@@ -51,23 +48,3 @@
     definition:
       metadata:
         labels: "{{ {gateway_apex_label_key: gateway_apex_label_value} }}"
-
-# One origin serves every path here, so a Path=/ cookie reaches every backend.
-# The route forwards only its own cookies; the browser boundary is unchanged.
-- name: "envoy_gateway | apex path | Cookie allowlist for {{ gateway_apex_route }}"
-  kubernetes.core.k8s:
-    state: "{{ 'absent' if '*' in gateway_apex_cookies else 'present' }}"
-    definition:
-      apiVersion: gateway.envoyproxy.io/v1alpha1
-      kind: EnvoyExtensionPolicy
-      metadata:
-        name: "{{ gateway_apex_route }}-cookies"
-        namespace: "{{ gateway_apex_namespace }}"
-      spec:
-        targetRefs:
-          - group: gateway.networking.k8s.io
-            kind: HTTPRoute
-            name: "{{ gateway_apex_route }}"
-        lua:
-          - type: Inline
-            inline: "{{ lookup('ansible.builtin.template', 'cookie-allowlist.lua.j2') }}"

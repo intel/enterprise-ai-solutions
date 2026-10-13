@@ -35,8 +35,6 @@
   vars:
     gateway_apex_namespace: "{{ gateway_namespace }}"
     gateway_apex_path: "/"
-    gateway_apex_route: apex-landing
-    gateway_apex_cookies: []
   when: gateway_path_mode | bool and gateway_landing_path | length > 0
 
 - name: "envoy_gateway | apex | Landing redirect"
@@ -104,4 +102,4 @@
       vars:
         gateway_apex_namespace: "{{ gateway_namespace }}"
         gateway_apex_path: "/"
-        gateway_apex_route: apex-landing
+    

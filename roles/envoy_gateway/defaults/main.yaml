@@ -87,7 +87,9 @@ _eg_alpn_h2: ["h2", "http/1.1"]
 # Every service shares the apex host, told apart by path. The apex listener
 # then admits only namespaces carrying the apex label, and an admission policy
 # admits an apex route only if each of its paths falls under a grant owned by
-# its namespace, the longest grant winning. Grants live in one ConfigMap in the
+# its namespace, the longest grant winning. Services share one origin here:
+# cookies stay apart only if each service scopes them to its own path (APIs
+# drop the Cookie header). Grants live in one ConfigMap in the
 # gateway namespace (key = path without the leading '/', '/' -> '.', '_root'
 # for '/'; value = namespace), written by each solution's installer.
 gateway_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"

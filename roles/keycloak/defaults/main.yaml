@@ -23,8 +23,6 @@ _keycloak_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
 keycloak_relative_path: "{{ keycloak_path if _keycloak_path_mode | bool else '/' }}"
 keycloak_route_host: "{{ base_domain_name if _keycloak_path_mode | bool else keycloak_hostname }}"
 keycloak_frontend_url: "https://{{ keycloak_route_host }}{{ keycloak_path if _keycloak_path_mode | bool else '' }}"
-# Keycloak cookies forwarded on the shared apex host (path mode).
-keycloak_cookies: ["KEYCLOAK_*", "KC_*", "AUTH_SESSION_ID*"]
 keycloak_admin_user: "admin"
 keycloak_admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
 keycloak_db_vendor: "postgres"        # dev-file (embedded H2) | postgres
