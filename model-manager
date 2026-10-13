@@ -76,6 +76,10 @@ if [[ ! -f "${ENV_DIR}/global_config.yaml" ]]; then
     echo "          If you intend to use litellm, ensure env/${ES_ENV}/global_config.yaml exists." >&2
 fi
 
+if [[ -f "${ENV_DIR}/kubeconfig.yaml" && -z "${KUBECONFIG:-}" ]]; then
+    export KUBECONFIG="${ENV_DIR}/kubeconfig.yaml"
+fi
+
 if [[ -f "${ENV_DIR}/global_config.yaml" ]]; then
     export MM_GLOBAL_CONFIG="${ENV_DIR}/global_config.yaml"
 fi
