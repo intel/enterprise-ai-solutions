@@ -17,7 +17,9 @@ gateway_namespace: "envoy-gateway-system"
 gateway_request_timeout: "600s"
 
 # Authentication
-auth_provider: "none"                    # none | keycloak (JWT) | litellm (virtual key)
+# How API clients authenticate: keycloak (JWT) | litellm (virtual keys) | none.
+# Either way the gateway policy is a Keycloak JWT and people sign in through Keycloak.
+auth_provider: "none"
 
 # ── ONTAP S3 API listener (optional) ─────────────────────────────────────────
 # S3 SigV4 signs the request path verbatim. The shared HTTPS listeners run with
