@@ -63,9 +63,9 @@ gateway_no_auth_routes: []
 # namespaces carrying this label, and an admission policy accepts a listener
 # only for hosts granted to its namespace in this annotation (comma-separated).
 # Namespaces are cluster-scoped, so only cluster operators can grant hosts.
-gateway_listeners_label_key: "gateway.ai-solutions.intel.com/listeners"
-gateway_listeners_label_value: "allowed"
-gateway_hostnames_annotation: "gateway.ai-solutions.intel.com/hostnames"
+gateway_listeners_label_key: "gateway.enterprise-ai/allow-listenersets"
+gateway_listeners_label_value: "true"
+gateway_hostnames_annotation: "gateway.enterprise-ai/hostnames"
 gateway_listener_admission_enabled: true
 
 # Legacy '*.base_domain_name' listener for routes not yet on a ListenerSet.
