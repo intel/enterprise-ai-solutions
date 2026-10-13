@@ -687,6 +687,27 @@
 # 6. Grafana HTTPRoute (expose via Envoy Gateway)
 # =============================================================================
 
+# grafana.ini is applied on a fresh install only; after a routing_mode change
+# Grafana keeps advertising its old URL until the release is reinstalled.
+- name: "observability | Read Grafana's live root_url"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: kube-prometheus-stack-grafana
+    namespace: "{{ observability_namespace }}"
+  register: _obs_grafana_cm
+
+- name: "observability | Grafana URL does not match routing_mode"
+  vars:
+    _ini: "{{ (_obs_grafana_cm.resources | first | default({})).data | default({}) }}"
+  ansible.builtin.debug:
+    msg: >-
+      Grafana still serves for a different routing_mode (expected root_url
+      {{ observability_grafana_url }}/). Reinstall it:
+      teardown observability, then install observability.
+  when:
+    - _ini['grafana.ini'] is defined
+    - (observability_grafana_url ~ '/') not in _ini['grafana.ini']
+
 - name: "observability | Publish Grafana"
   ansible.builtin.include_role:
     name: envoy_gateway

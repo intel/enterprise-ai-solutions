@@ -196,6 +196,15 @@
           ({{ keycloak_instances }} instance(s), db={{ keycloak_db_vendor }}).
           Realm/client configuration is owned by solution layers (e.g. keycloak_config role).
 
+# The install block is skipped once Keycloak is healthy, so a later config
+# change (e.g. routing_mode, which moves the hostname and relative path) would
+# never reach the live CR. The operator rolls the pod only on a real change.
+- name: "keycloak | Reconcile Keycloak CR on re-install"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'keycloak.yaml.j2') | from_yaml }}"
+  when: _kc_cr_existing.resources | default([]) | length > 0
+
 # ── HTTPRoute (expose via gateway) — runs even on re-install ──────────────────
 
 - name: "keycloak | Publish Keycloak"
