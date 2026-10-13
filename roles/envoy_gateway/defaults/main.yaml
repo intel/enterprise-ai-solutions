@@ -93,8 +93,8 @@ _eg_alpn_h2: ["h2", "http/1.1"]
 # gateway namespace (key = path without the leading '/', '/' -> '.', '_root'
 # for '/'; value = namespace), written by each solution's installer.
 gateway_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
-gateway_apex_label_key: "gateway.ai-solutions.intel.com/apex-routes"
-gateway_apex_label_value: "allowed"
+gateway_apex_label_key: "gateway.enterprise-ai/allow-apex-routes"
+gateway_apex_label_value: "true"
 gateway_path_grants_configmap: "gateway-path-grants"
 # Path mode: the bare domain redirects here ('' = no landing page, 404).
 gateway_landing_path: ""
