@@ -53,6 +53,13 @@ gateway_tls_mode: "selfsigned"            # selfsigned | custom
 base_domain_name: "solutions.ai"
 gateway_request_timeout: "600s"           # Envoy default is 15s — too short for LLM
 
+# --- Routing ---
+# subdomain: each service on its own host (keycloak.<base>, grafana.<base>, ...)
+# path:      one host, each service under its path (<base>/keycloak, ...);
+#            Langfuse stays on its own subdomain
+routing_mode: "subdomain"                 # subdomain | path
+# gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects
+
 # --- Custom TLS (only used when gateway_tls_mode=custom) ---
 # gateway_tls_cert_file: "/path/to/cert.pem"
 # gateway_tls_key_file: "/path/to/key.pem"

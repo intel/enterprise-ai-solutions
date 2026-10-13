@@ -313,6 +313,11 @@
             name: http-to-https-redirect
   when: gateway_create and auth_provider in ['keycloak', 'litellm']
 
+# ── Apex host: path grants and landing (path mode) ───────────────────────────
+- name: "envoy_gateway | Apex host"
+  ansible.builtin.include_tasks: apex.yaml
+  when: gateway_create
+
 # ── Solution listener admission (hostname grants) ────────────────────────────
 # See gateway_listeners_label_key / gateway_hostnames_annotation in defaults.
 - name: "envoy_gateway | Admit ListenerSet hosts only when granted to their namespace"

@@ -83,8 +83,30 @@ gateway_wildcard_tls_secret_name: "gateway-wildcard-tls"
 gateway_http2_enabled: "{{ gateway_tls_mode == 'selfsigned' }}"
 _eg_alpn_h2: ["h2", "http/1.1"]
 
-# Keycloak defaults (for SecurityPolicy JWT config — overridden by keycloak role)
+# ── Path routing (routing_mode: path) ────────────────────────────────────────
+# Every service shares the apex host, told apart by path. The apex listener
+# then admits only namespaces carrying the apex label, and an admission policy
+# admits an apex route only if each of its paths falls under a grant owned by
+# its namespace, the longest grant winning. Grants live in one ConfigMap in the
+# gateway namespace (key = path without the leading '/', '/' -> '.', '_root'
+# for '/'; value = namespace), written by each solution's installer.
+gateway_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
+gateway_apex_label_key: "gateway.ai-solutions.intel.com/apex-routes"
+gateway_apex_label_value: "allowed"
+gateway_path_grants_configmap: "gateway-path-grants"
+# Path mode: the bare domain redirects here ('' = no landing page, 404).
+gateway_landing_path: ""
+
+# Keycloak routing for the SecurityPolicy JWT provider (canonical owner: keycloak
+# role). Issuer and in-cluster JWKS URL follow where Keycloak serves.
 keycloak_hostname: "keycloak.{{ base_domain_name }}"
+keycloak_path: "/keycloak"
+keycloak_frontend_url: >-
+  {{ 'https://' ~ base_domain_name ~ keycloak_path if gateway_path_mode | bool
+     else 'https://' ~ keycloak_hostname }}
+keycloak_jwks_url: >-
+  http://keycloak-service.{{ keycloak_namespace | default('keycloak') }}.svc.cluster.local:8080{{
+  keycloak_path if gateway_path_mode | bool else '' }}/realms/{{ keycloak_realm }}/protocol/openid-connect/certs
 keycloak_realm: "inference"
 
 # TLS / Domain — HTTPS is mandatory, there is no plaintext mode
@@ -129,3 +151,8 @@ _ls_secret: "{{ gateway_listenerset_name | default('') }}-listener-tls"
 _ls_cert_ref: >-
   {{ {'kind': 'Secret', 'name': _ls_secret} if gateway_tls_mode == 'selfsigned'
      else {'kind': 'Secret', 'name': gateway_tls_secret_name, 'namespace': gateway_namespace} }}
+
+# apex_path.yaml: grant key for a path ('/' -> '_root', '/a/b' -> 'a.b').
+_eg_ap_key: "{{ '_root' if gateway_apex_path | default('/') == '/' else (gateway_apex_path | default('/'))[1:] | replace('/', '.') }}"
+# publish.yaml: effective mode for this service.
+_gp_mode: "{{ gateway_publish_mode | default(routing_mode | default('subdomain'), true) }}"

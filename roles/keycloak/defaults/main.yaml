@@ -16,6 +16,15 @@ keycloak_k8s_resources_base: "https://raw.githubusercontent.com/keycloak/keycloa
 # Keycloak instance
 keycloak_instances: 1
 keycloak_hostname: "keycloak.{{ base_domain_name | default('inference-example.com') }}"
+# Path mode (routing_mode: path): served under <base>/keycloak. The path is in
+# both the advertised URL and http-relative-path; the gateway forwards it as is.
+keycloak_path: "/keycloak"
+_keycloak_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
+keycloak_relative_path: "{{ keycloak_path if _keycloak_path_mode | bool else '/' }}"
+keycloak_route_host: "{{ base_domain_name if _keycloak_path_mode | bool else keycloak_hostname }}"
+keycloak_frontend_url: "https://{{ keycloak_route_host }}{{ keycloak_path if _keycloak_path_mode | bool else '' }}"
+# Keycloak cookies forwarded on the shared apex host (path mode).
+keycloak_cookies: ["KEYCLOAK_*", "KC_*", "AUTH_SESSION_ID*"]
 keycloak_admin_user: "admin"
 keycloak_admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
 keycloak_db_vendor: "postgres"        # dev-file (embedded H2) | postgres
@@ -31,4 +40,3 @@ keycloak_metrics_enabled: true
 # These defaults are used by the Envoy SecurityPolicy template if not overridden.
 keycloak_realm: "inference"
 keycloak_client_id: "inference-client"
-

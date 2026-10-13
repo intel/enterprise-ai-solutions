@@ -39,7 +39,8 @@ spec:
         namespaces:
           from: All
 {% endif %}
-    # Apex listener — the bare base_domain_name (e.g. a landing UI).
+    # Apex listener — the bare base_domain_name. In path mode every service
+    # lives here, so only labelled namespaces attach (paths checked at admission).
     - name: https-apex
       protocol: HTTPS
       port: 443
@@ -51,7 +52,14 @@ spec:
             name: {{ gateway_tls_secret_name }}
       allowedRoutes:
         namespaces:
+{% if gateway_path_mode | bool %}
+          from: Selector
+          selector:
+            matchLabels:
+              {{ gateway_apex_label_key }}: {{ gateway_apex_label_value | to_json }}
+{% else %}
           from: All
+{% endif %}
 {% if gateway_s3_listener_enabled | bool %}
     # S3 API listener. Its only purpose is to carry the ClientTrafficPolicy
     # that turns off merge_slashes and %2F rewriting, which SigV4 needs and

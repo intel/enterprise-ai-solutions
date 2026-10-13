@@ -95,12 +95,12 @@
           ──────────────────────────────────────────────────────────────────────────
             Gateway:     https://{{ base_domain_name }}
           {% if 'keycloak' in _st_existing_namespaces %}
-            Keycloak:    https://auth.{{ base_domain_name }}
+            Keycloak:    https://{{ base_domain_name ~ '/keycloak' if (routing_mode | default('subdomain')) == 'path' else 'keycloak.' ~ base_domain_name }}
           {% endif %}
           {% if 'litellm' in _st_existing_namespaces %}
-            LiteLLM:     https://litellm.{{ base_domain_name }}
+            LiteLLM:     https://{{ base_domain_name ~ '/litellm' if (routing_mode | default('subdomain')) == 'path' else 'litellm.' ~ base_domain_name }}
           {% endif %}
           {% if 'monitoring' in _st_existing_namespaces %}
-            Grafana:     https://grafana.{{ base_domain_name }}
+            Grafana:     https://{{ base_domain_name ~ '/grafana' if (routing_mode | default('subdomain')) == 'path' else 'grafana.' ~ base_domain_name }}
           {% endif %}
           ══════════════════════════════════════════════════════════════════════════

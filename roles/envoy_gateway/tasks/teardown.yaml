@@ -54,7 +54,7 @@
         name: "{{ item.0 }}"
         state: absent
       loop: >-
-        {{ ['eg-listener-hostname-grant', 'eg-protected-hostname-ownership',
+        {{ ['eg-listener-hostname-grant', 'eg-apex-path-grant', 'eg-protected-hostname-ownership',
             'safe-upgrades.gateway.networking.k8s.io']
            | product(['ValidatingAdmissionPolicyBinding', 'ValidatingAdmissionPolicy']) | list }}
       loop_control:

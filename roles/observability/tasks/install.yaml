@@ -307,6 +307,10 @@
             initChownData:
               enabled: false
             grafana.ini:
+              # Serves under its path in path mode; the gateway passes it through.
+              server:
+                root_url: "{{ observability_grafana_url }}/"
+                serve_from_sub_path: "{{ _obs_grafana_path_mode | bool }}"
               plugins:
                 plugin_admin_enabled: true
               auth:
@@ -680,14 +684,16 @@
 # 6. Grafana HTTPRoute (expose via Envoy Gateway)
 # =============================================================================
 
-- name: "observability | Publish the Grafana host"
+- name: "observability | Publish Grafana"
   ansible.builtin.include_role:
     name: envoy_gateway
-    tasks_from: listenerset.yaml
+    tasks_from: publish.yaml
   vars:
-    gateway_listenerset_name: grafana
-    gateway_listenerset_namespace: "{{ observability_namespace }}"
-    gateway_listenerset_listeners: [{name: grafana, hostname: "{{ observability_grafana_hostname }}"}]
+    gateway_publish_name: grafana
+    gateway_publish_namespace: "{{ observability_namespace }}"
+    gateway_publish_host: "{{ observability_grafana_hostname }}"
+    gateway_publish_path: "{{ observability_grafana_path }}"
+    gateway_publish_cookies: ["grafana_*"]
   when: gateway_create | default(false) | bool
 
 - name: "observability | Expose Grafana via gateway HTTPRoute"
@@ -701,12 +707,13 @@
         namespace: "{{ observability_namespace }}"
       spec:
         parentRefs:
-          # Grafana's own HTTPS listener (ListenerSet); never plaintext :80.
-          - "{{ gateway_listenerset_ref | combine({'sectionName': 'grafana'}) }}"
+          # Its own HTTPS listener or the apex (path mode); never plaintext :80.
+          - "{{ gateway_publish.parent_ref }}"
         hostnames:
-          - "{{ observability_grafana_hostname }}"
+          - "{{ gateway_publish.host }}"
         rules:
-          - filters:
+          - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
+            filters:
               # HSTS: only ever reach Grafana over HTTPS on a compliant browser,
               # so a later plaintext attempt is refused before the admin
               # credential leaves the browser. Only honored over HTTPS, so it is
@@ -810,6 +817,6 @@
       Components: kube-prometheus-stack {{ observability_kube_prometheus_stack_version }},
       Loki {{ observability_loki_version }}, Tempo {{ observability_tempo_version }},
       OTel Collector {{ observability_otel_collector_version }}.
-      Grafana: https://{{ observability_grafana_hostname }}
+      Grafana: {{ observability_grafana_url }}
       OTLP gRPC: {{ observability_otel_grpc_endpoint }}
       OTLP HTTP: {{ observability_otel_http_endpoint }}
