@@ -50,7 +50,7 @@
 - name: "fabric_bgp | validate | Check BGP session status via calicoctl"
   ansible.builtin.shell:
     cmd: |
-      calicoctl node status 2>/dev/null | grep -c 'Established' || echo "0"
+      grep -c 'Established' <(calicoctl node status 2>/dev/null) || true
     executable: /bin/bash
   changed_when: false
   failed_when: false

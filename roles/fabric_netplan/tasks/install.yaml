@@ -65,20 +65,18 @@
   ansible.builtin.command: netplan generate
   delegate_to: "{{ item.item }}"
   become: true
-  loop: "{{ _netplan_deployed.results }}"
+  loop: "{{ _netplan_deployed.results | selectattr('changed') | list }}"
   loop_control:
     label: "{{ item.item }}"
-  when: item.changed
   changed_when: false
 
 - name: "fabric_netplan | Apply netplan on nodes where config changed"
   ansible.builtin.command: netplan apply
   delegate_to: "{{ item.item }}"
   become: true
-  loop: "{{ _netplan_deployed.results }}"
+  loop: "{{ _netplan_deployed.results | selectattr('changed') | list }}"
   loop_control:
     label: "{{ item.item }}"
-  when: item.changed
   changed_when: true
 
 - name: "fabric_netplan | Wait for interfaces to settle"
