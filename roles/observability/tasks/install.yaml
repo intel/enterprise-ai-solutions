@@ -311,6 +311,9 @@
               server:
                 root_url: "{{ observability_grafana_url }}/"
                 serve_from_sub_path: "{{ _obs_grafana_path_mode | bool }}"
+              # Served only over HTTPS through the gateway.
+              security:
+                cookie_secure: true
               plugins:
                 plugin_admin_enabled: true
               auth:
