@@ -9,6 +9,10 @@ import base64
 import subprocess
 import sys
 
+# Absolute path, not a PATH lookup. This runs inside the CNPG postgres image,
+# where /usr/bin/psql is the postgresql-common wrapper.
+PSQL = "/usr/bin/psql"
+
 db = sys.argv[1]
 user = sys.argv[2]
 admin = sys.argv[3]
@@ -20,7 +24,7 @@ if not pw:
 
 
 def q(sql, d="postgres", variables=None):
-    cmd = ["psql", "-U", admin, "-d", d, "-tA"]
+    cmd = [PSQL, "-U", admin, "-d", d, "-tA"]
     if variables:
         for k, v in variables.items():
             cmd.extend(["-v", f"{k}={v}"])
@@ -32,7 +36,7 @@ def q(sql, d="postgres", variables=None):
 
 def run(sql, d="postgres"):
     result = subprocess.run(
-        ["psql", "-U", admin, "-d", d, "-c", sql],
+        [PSQL, "-U", admin, "-d", d, "-c", sql],
         capture_output=True, text=True
     )
     if result.returncode != 0:
