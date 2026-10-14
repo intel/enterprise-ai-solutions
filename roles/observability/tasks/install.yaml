@@ -729,7 +729,7 @@
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             name: grafana
-  when: gateway_create | default(false) | bool and auth_provider | default('none') in ['keycloak', 'litellm']
+  when: gateway_create | default(false) | bool
 
 - name: "observability | Store Grafana admin credentials as a cluster Secret"
   kubernetes.core.k8s:

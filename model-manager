@@ -72,8 +72,8 @@ if [[ ! -d "$ENV_DIR" ]]; then
 fi
 
 if [[ ! -f "${ENV_DIR}/global_config.yaml" ]]; then
-    echo "[WARNING] No global_config.yaml in env/${ES_ENV}/ — auth_provider will default to keycloak." >&2
-    echo "          If you intend to use litellm, ensure env/${ES_ENV}/global_config.yaml exists." >&2
+    echo "[WARNING] No global_config.yaml in env/${ES_ENV}/ — auth_type will default to jwt." >&2
+    echo "          If you intend to use litellm_vkey, ensure env/${ES_ENV}/global_config.yaml exists." >&2
 fi
 
 if [[ -f "${ENV_DIR}/global_config.yaml" ]]; then

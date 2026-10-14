@@ -289,8 +289,7 @@
 
 # The gateway-level JWT SecurityPolicy targets the whole Gateway, so without an
 # override the redirect route answers 401 before it can 301. Exempt it so a
-# plaintext client is bounced to HTTPS instead of being rejected. With
-# auth_provider: none there is no gateway policy to override.
+# plaintext client is bounced to HTTPS instead of being rejected.
 - name: "envoy_gateway | Exempt the HTTP→HTTPS redirect route from gateway auth"
   kubernetes.core.k8s:
     state: present
@@ -305,7 +304,7 @@
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             name: http-to-https-redirect
-  when: gateway_create and auth_provider in ['keycloak', 'litellm']
+  when: gateway_create
 
 # ── Protected hostname ownership (cross-namespace route takeover) ─────────────
 # Reserve each platform hostname to its owning namespace so a route in another
@@ -422,18 +421,18 @@
 
 # ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
 
-- name: "envoy_gateway | Apply SecurityPolicy ({{ auth_provider }})"
+- name: "envoy_gateway | Apply SecurityPolicy ({{ auth_type }})"
   kubernetes.core.k8s:
     state: present
     force: true       # replace: an older policy's extAuth must not survive a merge
     definition: "{{ lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | list }}"
-  when: auth_provider in ['keycloak', 'litellm'] and gateway_create
+  when: gateway_create
 
 - name: "envoy_gateway | Apply no-auth SecurityPolicy overrides"
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('ansible.builtin.template', 'security-policy-no-auth.yaml.j2') | from_yaml_all | list }}"
-  when: auth_provider in ['keycloak', 'litellm'] and gateway_no_auth_routes | length > 0 and gateway_create
+  when: gateway_no_auth_routes | length > 0 and gateway_create
 
 # ServiceMonitors require Prometheus Operator CRDs which are installed by the
 # observability role (runs after envoy_gateway). Skip silently if not yet present.
@@ -478,4 +477,4 @@
   ansible.builtin.debug:
     msg: >-
       Envoy Gateway v{{ envoy_gateway_version }} installed in {{ envoy_gateway_namespace }}.
-      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}){{ ' + auth (' + auth_provider + ')' if auth_provider != 'none' else '' }}.
+      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}){{ ' + auth (' + auth_type + ')' }}.

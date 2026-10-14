@@ -20,6 +20,32 @@
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/../configs/components.yaml"
 
+# auth_type replaces auth_provider (keycloak→jwt, litellm→litellm_vkey). Resolved
+# before ext manifests render, since their `enabled:` gates read it.
+- name: "Preflight - Resolve auth_type"
+  ansible.builtin.set_fact:
+    auth_type: "{{ _auth_legacy[auth_provider] | default(auth_provider) if auth_provider is defined else 'jwt' }}"
+  vars:
+    _auth_legacy: {keycloak: jwt, litellm: litellm_vkey}
+  when: auth_type is not defined
+
+- name: "Preflight - Warn on deprecated auth_provider"
+  ansible.builtin.debug:
+    msg: "auth_provider is deprecated; set auth_type: {{ auth_type }} in global_config.yaml instead."
+  when: auth_provider is defined
+
+- name: "Preflight - Validate auth_type"
+  ansible.builtin.assert:
+    that:
+      - auth_type in ['jwt', 'litellm_vkey']
+      - auth_provider is not defined or _auth_legacy[auth_provider] | default('') == auth_type
+    fail_msg: >-
+      auth_type must be jwt or litellm_vkey (got '{{ auth_type }}'); the deprecated
+      auth_provider ('{{ auth_provider | default('') }}'), if set, must agree with it.
+    quiet: true
+  vars:
+    _auth_legacy: {keycloak: jwt, litellm: litellm_vkey}
+
 - name: "Preflight - Ensure log and tmp directories exist"
   ansible.builtin.file:
     path: "{{ item }}"
