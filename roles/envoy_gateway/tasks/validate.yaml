@@ -3,12 +3,15 @@
 # Envoy Gateway — Validate
 # =============================================================================
 
+- name: "envoy_gateway | Load the platform record"
+  ansible.builtin.include_tasks: platform.yaml
+
 - name: "envoy_gateway | Check deployment"
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    name: envoy-gateway
     namespace: "{{ envoy_gateway_namespace }}"
+    label_selectors: [control-plane=envoy-gateway]
   register: _eg_deploy
 
 - name: "envoy_gateway | Assert replicas ready"
@@ -25,6 +28,7 @@
     kind: CustomResourceDefinition
     name: listenersets.gateway.networking.k8s.io
   register: _eg_ls_crd
+  when: _eg_attach_mode == 'listenerset'
 
 - name: "envoy_gateway | Assert ListenerSet API installed"
   ansible.builtin.assert:
@@ -33,19 +37,20 @@
     success_msg: >-
       ListenerSet API installed (Gateway API
       {{ _eg_ls_crd.resources[0].metadata.annotations['gateway.networking.k8s.io/bundle-version'] | default('?') }})
+  when: _eg_attach_mode == 'listenerset'
 
 - name: "envoy_gateway | Check GatewayClass"
   kubernetes.core.k8s_info:
     api_version: gateway.networking.k8s.io/v1
     kind: GatewayClass
-    name: eg
+    name: "{{ gateway_platform.class_name }}"
   register: _eg_gc
 
 - name: "envoy_gateway | Assert GatewayClass exists"
   ansible.builtin.assert:
     that: _eg_gc.resources | length > 0
-    fail_msg: "GatewayClass 'eg' not found"
-    success_msg: "GatewayClass 'eg' exists"
+    fail_msg: "GatewayClass '{{ gateway_platform.class_name }}' not found"
+    success_msg: "GatewayClass '{{ gateway_platform.class_name }}' exists"
 
 - name: "envoy_gateway | Check Gateway is accepted"
   kubernetes.core.k8s_info:

@@ -55,7 +55,7 @@
     _eg_cert_pem: "{{ _tls_cert_data.content | b64decode }}"
     _eg_cert_hosts: >-
       {{ [base_domain_name]
-         + (['*.' ~ base_domain_name] if gateway_wildcard_listener_enabled | bool else [])
+         + (['*.' ~ base_domain_name] if _eg_wildcard_on | bool else [])
          + ([gateway_s3_hostname] if gateway_s3_listener_enabled | bool else []) }}
     _eg_cert_context: "platform listeners"
   when: gateway_tls_mode == 'custom' and gateway_create

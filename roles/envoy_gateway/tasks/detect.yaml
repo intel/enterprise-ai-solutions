@@ -1,0 +1,223 @@
+---
+# =============================================================================
+# Envoy Gateway — detect the controller and CRDs already in the cluster
+# =============================================================================
+# Read-only; _eg_detect_strict: false skips the support checks (teardown).
+# Sets gateway_platform:
+#   controller_managed    this role installed the controller (may upgrade it)
+#   controller_action     install | upgrade | keep
+#   controller_namespace  where the controller and its proxies run
+#   controller_name       GatewayClass controllerName it serves
+#   version               controller version after this run ('' if unknown)
+#   crds_apply            apply the Envoy Gateway CRDs from this release
+#   gateway_api_apply     also apply the bundled Gateway API CRDs
+#   gateway_api_owned     the Gateway API CRDs are this role's (teardown removes them)
+#   gateway_api_version   Gateway API CRD bundle in the cluster after this run
+#   attach_mode           listenerset | shared
+#   class_name            GatewayClass of the platform Gateway
+
+- name: "envoy_gateway | detect | Find Envoy Gateway controllers"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    label_selectors: [control-plane=envoy-gateway]
+  register: _det_deploys
+
+- name: "envoy_gateway | detect | Pick the controller"
+  vars:
+    _found: >-
+      {%- set out = [] -%}
+      {%- for d in _det_deploys.resources | default([]) -%}
+      {%- set l = d.metadata.labels | default({}) -%}
+      {%- set img = d.spec.template.spec.containers | map(attribute='image') | first | default('') -%}
+      {%- set v = (l.get('app.kubernetes.io/version', '') ~ ' ' ~ img) | regex_search('[0-9]+\.[0-9]+\.[0-9]+') -%}
+      {%- set _ = out.append({'namespace': d.metadata.namespace, 'release': l.get('app.kubernetes.io/instance', ''),
+                              'version': v | default('', true),
+                              'ours': d.metadata.namespace == envoy_gateway_namespace
+                                      and l.get('app.kubernetes.io/instance', '') == envoy_gateway_release_name}) -%}
+      {%- endfor -%}
+      {{ out }}
+  ansible.builtin.set_fact:
+    _det_found: "{{ _found }}"
+    _det_ctrl: >-
+      {{ (_found | selectattr('ours') | list + _found | selectattr('namespace', 'eq', envoy_gateway_namespace) | list
+          + _found) | first | default(none) }}
+
+- name: "envoy_gateway | detect | Choose between several controllers"
+  ansible.builtin.assert:
+    that: >-
+      _det_found | length <= 1 or
+      _det_found | selectattr('namespace', 'eq', envoy_gateway_namespace) | list | length > 0
+    fail_msg: >-
+      Several Envoy Gateway controllers found ({{ _det_found | map(attribute='namespace') | join(', ') }}).
+      Set envoy_gateway_namespace to the one the platform Gateway should use.
+    quiet: true
+
+- name: "envoy_gateway | detect | Other controllers in the cluster"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: other Envoy Gateway controllers run in
+      {{ _det_found | rejectattr('namespace', 'eq', _det_ctrl.namespace) | map(attribute='namespace') | join(', ') }}.
+      They must use a controllerName other than the platform one, or both will program its Gateway.
+  when: _det_found | length > 1
+
+- name: "envoy_gateway | detect | Read the controller configuration"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: envoy-gateway-config
+    namespace: "{{ _det_ctrl.namespace }}"
+  register: _det_cfg
+  when: _det_ctrl is not none
+
+- name: "envoy_gateway | detect | Read Gateway API CRDs"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+  loop:
+    - gateways.gateway.networking.k8s.io
+    - listenersets.gateway.networking.k8s.io
+  register: _det_crds
+
+- name: "envoy_gateway | detect | Read the platform Gateway and the default GatewayClass"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ item.namespace | default(omit) }}"
+  loop:
+    - {kind: Gateway, name: "{{ gateway_name }}", namespace: "{{ gateway_namespace }}"}
+    - {kind: GatewayClass, name: eg}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  register: _det_gw
+  failed_when: false        # Gateway API not installed yet
+
+- name: "envoy_gateway | detect | Check the admission policy API"
+  kubernetes.core.k8s_info:
+    api_version: admissionregistration.k8s.io/v1
+    kind: ValidatingAdmissionPolicy
+  register: _det_vap
+  failed_when: false
+
+- name: "envoy_gateway | detect | Decide"
+  vars:
+    _cfg: >-
+      {{ (((_det_cfg.resources | default([]) | first | default({})).data | default({}))
+          .get('envoy-gateway.yaml', '{}')) | from_yaml | default({}, true) }}
+    _managed: "{{ _det_ctrl is none or _det_ctrl.ours }}"
+    _cur: "{{ _det_ctrl.version if _det_ctrl is not none else '' }}"
+    _action: >-
+      {{ 'install' if _det_ctrl is none
+         else 'keep' if not _det_ctrl.ours or not envoy_gateway_upgrade | bool
+         else 'upgrade' if not _cur or _cur is version(envoy_gateway_version, '<')
+         else 'keep' }}
+    _version: "{{ envoy_gateway_version if _action != 'keep' else _cur }}"
+    _gw_crd: "{{ _det_crds.results[0].resources | default([]) | first | default(none) }}"
+    _ls_crd: "{{ _det_crds.results[1].resources | default([]) | first | default(none) }}"
+    _crd_bundle: >-
+      {{ ((_gw_crd.metadata.annotations | default({})).get('gateway.networking.k8s.io/bundle-version', '')
+          | regex_replace('^v', '')) if _gw_crd is not none else '' }}
+    # Ours: none yet, applied by this role, or there since our controller came.
+    _crds_ours: >-
+      {{ _gw_crd is none
+         or envoy_gateway_crds_field_manager in (_gw_crd.metadata.managedFields | default([]) | map(attribute='manager'))
+         or (_det_ctrl is not none and _det_ctrl.ours) }}
+    # The installed version keeps its CRDs; an older kept release is left alone.
+    _crds_apply: "{{ _managed | bool and (_action != 'keep' or _cur == envoy_gateway_version) }}"
+    _foreign_older: >-
+      {{ not _crds_ours | bool and (not _crd_bundle or _crd_bundle is version(envoy_gateway_gateway_api_version, '<')) }}
+    # Never over a newer bundle: Gateway API's safe-upgrades policy denies downgrades.
+    _gwapi_apply: >-
+      {{ _crds_apply | bool and (
+           (_crds_ours | bool and (not _crd_bundle or _crd_bundle is version(envoy_gateway_gateway_api_version, '<=')))
+           or (_foreign_older | bool and gateway_api_crds_takeover | bool)) }}
+    _ls_served: >-
+      {{ _gwapi_apply | bool or (_ls_crd is not none and
+         _ls_crd.spec.versions | selectattr('name', 'eq', 'v1') | selectattr('served') | list | length > 0) }}
+    _capable: >-
+      {{ _ls_served | bool and _version | length > 0 and _version is version(gateway_listenerset_min_version, '>=') }}
+    _gw: "{{ (_det_gw.results[0].resources | default([]) | first | default({})) }}"
+    _eg_class: "{{ (_det_gw.results[1].resources | default([]) | first | default({})) }}"
+  ansible.builtin.set_fact:
+    gateway_platform:
+      controller_managed: "{{ _managed | bool }}"
+      controller_action: "{{ _action }}"
+      controller_namespace: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
+      controller_name: >-
+        {{ (_cfg.gateway | default({})).controllerName | default('gateway.envoyproxy.io/gatewayclass-controller', true) }}
+      deploy_type: "{{ (((_cfg.provider | default({})).kubernetes | default({})).deploy | default({})).type | default('ControllerNamespace', true) }}"
+      version: "{{ _version }}"
+      previous_version: "{{ _cur }}"
+      crds_apply: "{{ _crds_apply | bool }}"
+      gateway_api_apply: "{{ _gwapi_apply | bool }}"
+      gateway_api_owned: "{{ _crds_ours | bool or _gwapi_apply | bool }}"
+      gateway_api_foreign_older: "{{ _crds_apply | bool and _foreign_older | bool }}"
+      gateway_api_version: "{{ envoy_gateway_gateway_api_version if _gwapi_apply | bool else _crd_bundle }}"
+      attach_mode: >-
+        {{ gateway_attach_mode if gateway_attach_mode != 'auto'
+           else ('listenerset' if _capable | bool else 'shared') }}
+      listenerset_capable: "{{ _capable | bool }}"
+      admission_api: "{{ _det_vap is not failed }}"
+      class_name: >-
+        {{ _gw.spec.gatewayClassName if _gw
+           else 'eg' if not _eg_class or (_eg_class.spec.parametersRef | default({})).name | default('') == 'eg-proxy-config'
+           else 'enterprise-ai' }}
+      class_controller: "{{ (_eg_class.spec | default({})).controllerName | default('') }}"
+      extension_manager_host: "{{ (((_cfg.extensionManager | default({})).service | default({})).fqdn | default({})).hostname | default('') }}"
+      backend_api: "{{ (_cfg.extensionApis | default({})).enableBackend | default(false) | bool }}"
+
+- name: "envoy_gateway | detect | Supported setup"
+  vars:
+    _p: "{{ gateway_platform }}"
+  ansible.builtin.assert:
+    that: item.ok | bool
+    fail_msg: "{{ item.msg }}"
+    quiet: true
+  loop:
+    - ok: "{{ gateway_attach_mode in ['auto', 'listenerset', 'shared'] }}"
+      msg: "gateway_attach_mode must be auto, listenerset or shared (got '{{ gateway_attach_mode }}')."
+    - ok: "{{ _p.admission_api | bool }}"
+      msg: "Kubernetes 1.30 or newer is required (ValidatingAdmissionPolicy v1)."
+    - ok: "{{ _p.deploy_type != 'GatewayNamespace' }}"
+      msg: >-
+        The Envoy Gateway in {{ _p.controller_namespace }} deploys proxies in Gateway namespaces;
+        only ControllerNamespace mode is supported.
+    - ok: "{{ not _p.version or _p.version is version(envoy_gateway_min_version, '>=') }}"
+      msg: >-
+        Envoy Gateway {{ _p.version }} in {{ _p.controller_namespace }} is older than the supported
+        {{ envoy_gateway_min_version }}; upgrade it first.
+    - ok: "{{ not _p.gateway_api_foreign_older | bool or gateway_api_crds_takeover | bool }}"
+      msg: >-
+        The Gateway API CRDs (v{{ _p.gateway_api_version | default('?', true) }}) were installed by another
+        tool and are older than v{{ envoy_gateway_gateway_api_version }} (or carry no version), which Envoy
+        Gateway {{ envoy_gateway_version }} needs. Upgrade them, set gateway_api_crds_takeover: true, or set
+        envoy_gateway_version to a release built for them.
+    - ok: "{{ _p.attach_mode == 'shared' or _p.listenerset_capable | bool }}"
+      msg: >-
+        gateway_attach_mode is listenerset, but ListenerSets need Envoy Gateway {{ gateway_listenerset_min_version }}+
+        with v1 ListenerSet CRDs (found {{ _p.version | default('unknown', true) }}).
+  loop_control:
+    label: "{{ item.msg | truncate(60) }}"
+  when: _eg_detect_strict | default(true) | bool
+
+- name: "envoy_gateway | detect | Platform Gateway class"
+  ansible.builtin.assert:
+    that: >-
+      gateway_platform.class_name != 'eg' or not gateway_platform.class_controller
+      or gateway_platform.class_controller == gateway_platform.controller_name
+    fail_msg: >-
+      GatewayClass 'eg' is served by {{ gateway_platform.class_controller }}, not by the Envoy Gateway in
+      {{ gateway_platform.controller_namespace }} ({{ gateway_platform.controller_name }}).
+    quiet: true
+  when: _eg_detect_strict | default(true) | bool
+
+- name: "envoy_gateway | detect | Result"
+  ansible.builtin.debug:
+    msg: >-
+      Envoy Gateway {{ gateway_platform.version | default('(unknown version)', true) }} in
+      {{ gateway_platform.controller_namespace }}
+      ({{ 'managed: ' ~ gateway_platform.controller_action if gateway_platform.controller_managed | bool else 'existing, left unchanged' }}),
+      Gateway API {{ gateway_platform.gateway_api_version | default('none', true) }},
+      services attach via {{ gateway_platform.attach_mode }}.
+      {{ '' if gateway_platform.version else 'WARNING: controller version unknown; ListenerSets are not used.' }}

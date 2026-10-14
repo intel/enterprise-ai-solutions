@@ -5,7 +5,8 @@ metadata:
   name: {{ gateway_name }}
   namespace: {{ gateway_namespace }}
 spec:
-  gatewayClassName: eg
+  gatewayClassName: {{ gateway_platform.class_name }}
+{% if _eg_attach_mode == 'listenerset' %}
   # Solutions publish their hosts in ListenerSets; only labelled namespaces
   # may attach one (the admission policy checks each host is granted).
   allowedListeners:
@@ -14,6 +15,7 @@ spec:
       selector:
         matchLabels:
           {{ gateway_listeners_label_key }}: {{ gateway_listeners_label_value | to_json }}
+{% endif %}
   listeners:
     # Plaintext :80 only redirects to HTTPS; the redirect route lives here, so
     # no other namespace can claim a host before the redirect.
@@ -23,9 +25,10 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
-{% if gateway_wildcard_listener_enabled | bool %}
-    # Legacy catch-all for routes not yet on a ListenerSet (HTTP/1.1 only, see
-    # gateway_wildcard_listener_enabled). More specific listeners win.
+{% if _eg_wildcard_on | bool %}
+    # Catch-all for routes not on a ListenerSet (HTTP/1.1 only, see
+    # gateway_wildcard_listener_enabled); in shared mode every service host.
+    # More specific listeners win; granted hosts are checked at admission.
     - name: https
       protocol: HTTPS
       port: 443

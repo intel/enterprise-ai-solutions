@@ -5,33 +5,35 @@
 # Envoy Gateway — Install via Helm + Gateway resource
 # =============================================================================
 
+# A controller or CRDs found in the cluster that this role did not install are
+# used as they are; see detect.yaml.
+- name: "envoy_gateway | Detect the existing controller and CRDs"
+  ansible.builtin.include_tasks: detect.yaml
+
+- name: "envoy_gateway | Use the controller namespace"
+  ansible.builtin.set_fact:
+    envoy_gateway_namespace: "{{ gateway_platform.controller_namespace }}"
+
 - name: "envoy_gateway | Gateway API and Envoy Gateway CRDs"
   ansible.builtin.include_tasks: crds.yaml
+  when: gateway_platform.crds_apply | bool
 
-- name: "envoy_gateway | Check for existing Helm release"
-  kubernetes.core.helm_info:
-    name: envoy-gateway
-    release_namespace: "{{ envoy_gateway_namespace }}"
-  register: _eg_release
-  failed_when: false
-
-- name: "envoy_gateway | Already installed — skipping"
-  ansible.builtin.debug:
-    msg: "Envoy Gateway release already deployed in {{ envoy_gateway_namespace }} — skipping install."
-  when: _eg_release.status is defined and _eg_release.status is not none
-
-- name: "envoy_gateway | Install"
-  when: _eg_release.status is not defined or _eg_release.status is none
+- name: "envoy_gateway | Install or upgrade"
+  when: gateway_platform.controller_action in ['install', 'upgrade']
   block:
-    - name: "envoy_gateway | Install Envoy Gateway via Helm (OCI) — standalone"
+    - name: "envoy_gateway | {{ gateway_platform.controller_action | capitalize }} Envoy Gateway via Helm (OCI)"
       kubernetes.core.helm:
-        name: envoy-gateway
+        name: "{{ envoy_gateway_release_name }}"
         chart_ref: "{{ envoy_gateway_helm_repo }}"
         release_namespace: "{{ envoy_gateway_namespace }}"
         create_namespace: true
         chart_version: "v{{ envoy_gateway_version }}"
         # CRDs come from crds.yaml; the chart's copy would be the experimental channel.
         skip_crds: true
+        # On upgrade: the new chart's defaults plus the values other roles set
+        # (inference's AI Gateway extension).
+        reset_values: "{{ gateway_platform.controller_action != 'upgrade' }}"
+        reset_then_reuse_values: "{{ gateway_platform.controller_action == 'upgrade' }}"
         wait: "{{ helm_wait }}"
         timeout: "{{ helm_timeout }}"
         values:
@@ -69,6 +71,7 @@
       delay: 5
 
 # ── Gateway namespaces ────────────────────────────────────────────────────────
+# A controller namespace this role did not create keeps its labels.
 
 - name: "envoy_gateway | Label envoy-gateway-system namespace — Istio"
   kubernetes.core.k8s:
@@ -80,7 +83,9 @@
         name: "{{ envoy_gateway_namespace }}"
         labels:
           istio.io/dataplane-mode: "ambient"
-  when: istio_enabled | default(false) | bool
+  when:
+    - gateway_platform.controller_managed | bool
+    - istio_enabled | default(false) | bool
 
 # The eg-gateway proxy is the north-south mesh edge: external clients terminate TLS
 # here with no mesh identity, so it must accept plaintext inbound. Selector-scoped so
@@ -100,7 +105,9 @@
             gateway.envoyproxy.io/owning-gateway-name: "{{ gateway_name }}"
         mtls:
           mode: PERMISSIVE
-  when: istio_enabled | default(false) | bool
+  when:
+    - gateway_platform.controller_managed | bool
+    - istio_enabled | default(false) | bool
 
 # Host-network apiserver (no mesh identity) can't reach the envoy-gateway controller's
 # admission webhook under STRICT; open only its port, rest of the pod stays STRICT.
@@ -120,7 +127,9 @@
         mtls:
           mode: STRICT
         portLevelMtls: "{{ {'9443': {'mode': 'PERMISSIVE'}} }}"
-  when: istio_enabled | default(false) | bool
+  when:
+    - gateway_platform.controller_managed | bool
+    - istio_enabled | default(false) | bool
 
 - name: "envoy_gateway | Label envoy-gateway-system namespace — PSS"
   kubernetes.core.k8s:
@@ -136,7 +145,9 @@
           pod-security.kubernetes.io/enforce: "restricted"
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
-  when: enforce_pss | default(false) | bool
+  when:
+    - gateway_platform.controller_managed | bool
+    - enforce_pss | default(false) | bool
 
 - name: "envoy_gateway | Create gateway namespace (if different)"
   kubernetes.core.k8s:
@@ -209,7 +220,7 @@
       kind: EnvoyProxy
       metadata:
         name: eg-proxy-config
-        namespace: "{{ envoy_gateway_namespace }}"
+        namespace: "{{ _eg_proxy_config_namespace }}"
       spec:
         provider:
           type: Kubernetes
@@ -230,14 +241,29 @@
       apiVersion: gateway.networking.k8s.io/v1
       kind: GatewayClass
       metadata:
-        name: eg
+        name: "{{ gateway_platform.class_name }}"
       spec:
-        controllerName: gateway.envoyproxy.io/gatewayclass-controller
+        controllerName: "{{ gateway_platform.controller_name }}"
         parametersRef:
           group: gateway.envoyproxy.io
           kind: EnvoyProxy
           name: eg-proxy-config
-          namespace: "{{ envoy_gateway_namespace }}"
+          namespace: "{{ _eg_proxy_config_namespace }}"
+
+# Applying merges into the live Gateway, so a field the template drops stays.
+- name: "envoy_gateway | Stop accepting ListenerSets (shared mode)"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: "{{ gateway_name }}"
+    namespace: "{{ gateway_namespace }}"
+    merge_type: merge
+    definition:
+      spec:
+        allowedListeners: null
+  failed_when: false        # Gateway not created yet
+  when: gateway_create and _eg_attach_mode == 'shared'
 
 - name: "envoy_gateway | Apply Gateway resource"
   kubernetes.core.k8s:
@@ -322,8 +348,16 @@
 # See gateway_listeners_label_key / gateway_hostnames_annotation in defaults.
 - name: "envoy_gateway | Admit ListenerSet hosts only when granted to their namespace"
   kubernetes.core.k8s:
-    state: present
+    state: "{{ 'present' if _eg_attach_mode == 'listenerset' else 'absent' }}"
     definition: "{{ lookup('ansible.builtin.template', 'listener-hostname-admission-policy.yaml.j2') | from_yaml_all | select | list }}"
+  when: gateway_create and gateway_listener_admission_enabled | bool
+
+# Shared mode serves granted hosts on the wildcard listener, open to all
+# namespaces; this keeps each one to its namespace in both modes.
+- name: "envoy_gateway | Admit routes on granted hosts only from their namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'route-hostname-admission-policy.yaml.j2') | from_yaml_all | select | list }}"
   when: gateway_create and gateway_listener_admission_enabled | bool
 
 # Superseded by the grant policy: platform hosts now live on ListenerSets.
@@ -363,7 +397,7 @@
 # where any namespace may hold a route for that host. HTTP/1.1 never coalesces.
 - name: "envoy_gateway | Restrict the wildcard listener to HTTP/1.1"
   kubernetes.core.k8s:
-    state: "{{ 'present' if gateway_wildcard_listener_enabled | bool else 'absent' }}"
+    state: "{{ 'present' if _eg_wildcard_on | bool else 'absent' }}"
     definition:
       apiVersion: gateway.envoyproxy.io/v1alpha1
       kind: ClientTrafficPolicy
@@ -505,7 +539,9 @@
   failed_when: false
 
 - name: "envoy_gateway | Create ServiceMonitor for Envoy Gateway metrics"
-  when: (_eg_sm_crd.resources | default([])) | length > 0
+  when:
+    - gateway_platform.controller_managed | bool
+    - (_eg_sm_crd.resources | default([])) | length > 0
   kubernetes.core.k8s:
     state: present
     definition:
@@ -533,10 +569,47 @@
   ansible.builtin.debug:
     msg: "Prometheus Operator CRDs not found — Envoy Gateway ServiceMonitor will be created by the observability role."
 
+# ── Record the platform for later runs and other repos (platform.yaml) ──────
+- name: "envoy_gateway | Find ListenerSets on the platform Gateway"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: ListenerSet
+  register: _eg_ls_live
+  failed_when: false
+  when: _eg_attach_mode == 'shared'
+
+# Without allowedListeners the Gateway detaches them; republishing moves each
+# service to the wildcard listener.
+- name: "envoy_gateway | Services to republish after the switch to shared mode"
+  vars:
+    _detached: >-
+      {{ _eg_ls_live.resources | default([])
+         | selectattr('spec.parentRef.name', 'eq', gateway_name)
+         | map(attribute='metadata.namespace') | unique | list }}
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: services attach via the wildcard listener now (shared mode), so ListenerSets in
+      {{ _detached | join(', ') }} no longer serve. Reinstall those services to republish them.
+  when: _eg_attach_mode == 'shared' and _detached | length > 0
+
+- name: "envoy_gateway | Record the platform"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ gateway_platform_configmap }}"
+        namespace: "{{ gateway_namespace }}"
+      data:
+        platform: "{{ gateway_platform | to_json }}"
+
 - name: "envoy_gateway | Install complete"
   ansible.builtin.debug:
     msg: >-
-      Envoy Gateway v{{ envoy_gateway_version }} installed in {{ envoy_gateway_namespace }}.
+      Envoy Gateway v{{ gateway_platform.version | default('?', true) }} in {{ envoy_gateway_namespace }}
+      ({{ gateway_platform.controller_action if gateway_platform.controller_managed | bool else 'existing, unchanged' }}).
       Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}){{ ' + auth (' + auth_provider + ')' if auth_provider != 'none' else '' }}.
-      Solutions publish hosts with ListenerSets from namespaces labelled
+      {{ 'Solutions publish hosts with ListenerSets' if _eg_attach_mode == 'listenerset'
+         else 'Solutions attach routes to the wildcard listener (shared mode)' }} from namespaces labelled
       {{ gateway_listeners_label_key }}={{ gateway_listeners_label_value }}.

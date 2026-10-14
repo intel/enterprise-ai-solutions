@@ -1,0 +1,30 @@
+---
+# =============================================================================
+# Envoy Gateway — load the platform recorded by the install (gateway_platform)
+# =============================================================================
+# For roles that publish on or extend the platform Gateway in a later run or
+# from another repo. Detects when the platform predates the record.
+
+- name: "envoy_gateway | platform | Read the recorded platform"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: "{{ gateway_platform_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _eg_platform_cm
+  when: gateway_platform is not defined
+
+- name: "envoy_gateway | platform | Use the recorded platform"
+  ansible.builtin.set_fact:
+    gateway_platform: "{{ (_eg_platform_cm.resources | first).data.platform | from_json }}"
+  when:
+    - gateway_platform is not defined
+    - _eg_platform_cm.resources | default([]) | length > 0
+
+- name: "envoy_gateway | platform | Detect (no record yet)"
+  ansible.builtin.include_tasks: detect.yaml
+  when: gateway_platform is not defined
+
+# Proxies run beside the controller, so their Services live in its namespace.
+- name: "envoy_gateway | platform | Use the controller namespace"
+  ansible.builtin.set_fact:
+    envoy_gateway_namespace: "{{ gateway_platform.controller_namespace }}"

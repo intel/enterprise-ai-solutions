@@ -1,0 +1,56 @@
+---
+# =============================================================================
+# Envoy Gateway — grant a solution's hosts to its namespace
+# =============================================================================
+# Records the hosts in the namespace annotation the admission policies check,
+# refusing hosts already granted elsewhere. Same inputs as listenerset.yaml.
+
+- name: "envoy_gateway | host grant | Validate input"
+  ansible.builtin.assert:
+    that:
+      - gateway_listenerset_name | default('') | length > 0
+      - gateway_listenerset_namespace | default('') | length > 0
+      - gateway_listenerset_listeners | default([]) | length > 0
+      - gateway_listenerset_listeners | map(attribute='hostname') | select | list | length
+        == gateway_listenerset_listeners | length
+    fail_msg: "Publishing needs gateway_listenerset_name, _namespace and _listeners [{name, hostname}]."
+    quiet: true
+
+- name: "envoy_gateway | host grant | Read host grants"
+  kubernetes.core.k8s_info:
+    kind: Namespace
+  register: _ls_namespaces
+
+- name: "envoy_gateway | host grant | Refuse hosts granted to another namespace"
+  vars:
+    _hosts: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
+    _taken: >-
+      {%- set out = [] -%}
+      {%- for ns in _ls_namespaces.resources if ns.metadata.name != gateway_listenerset_namespace -%}
+      {%- for h in (ns.metadata.annotations | default({})).get(gateway_hostnames_annotation, '').split(',') | map('trim') -%}
+      {%- if h in _hosts -%}{%- set _ = out.append(h ~ ' (' ~ ns.metadata.name ~ ')') -%}{%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+  ansible.builtin.assert:
+    that: _taken | length == 0
+    fail_msg: "Host(s) already granted to another namespace: {{ _taken | join(', ') }}"
+    quiet: true
+
+- name: "envoy_gateway | host grant | Grant hosts to {{ gateway_listenerset_namespace }}"
+  vars:
+    _ns: "{{ _ls_namespaces.resources | selectattr('metadata.name', 'eq', gateway_listenerset_namespace) | first | default({}) }}"
+    _current: >-
+      {{ (_ns.metadata.annotations | default({})).get(gateway_hostnames_annotation, '').split(',')
+         | map('trim') | select | list }}
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gateway_listenerset_namespace }}"
+        labels: "{{ {gateway_listeners_label_key: gateway_listeners_label_value} }}"
+        annotations: >-
+          {{ {gateway_hostnames_annotation:
+              (_current + gateway_listenerset_listeners | map(attribute='hostname') | list) | unique | sort | join(',')} }}

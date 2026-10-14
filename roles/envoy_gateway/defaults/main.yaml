@@ -8,6 +8,24 @@ envoy_gateway_crds_helm_repo: "oci://docker.io/envoyproxy/gateway-crds-helm"
 envoy_gateway_crds_field_manager: "ai-solutions-envoy-gateway"
 envoy_gateway_wait_timeout: "300s"
 
+# ── Existing installs (detect.yaml) ──────────────────────────────────────────
+# A controller or CRDs this role did not install are never changed or removed.
+# Our own older release is upgraded unless envoy_gateway_upgrade is false.
+envoy_gateway_upgrade: true
+envoy_gateway_release_name: "envoy-gateway"
+# Oldest controller supported, and the oldest that publishes with ListenerSets.
+envoy_gateway_min_version: "1.7.0"
+gateway_listenerset_min_version: "1.9.0"
+# Gateway API bundled with envoy_gateway_version. Foreign Gateway API CRDs older
+# than this are only upgraded when gateway_api_crds_takeover is true.
+envoy_gateway_gateway_api_version: "1.6.1"
+gateway_api_crds_takeover: false
+# auto: ListenerSets when the controller supports them, else 'shared' (routes
+# attach to the platform wildcard listener).
+gateway_attach_mode: "auto"             # auto | listenerset | shared
+# Records what was detected for later runs and other repos (gateway_namespace).
+gateway_platform_configmap: "gateway-platform"
+
 # Gateway resource
 gateway_create: true
 gateway_name: "eg-gateway"
@@ -75,6 +93,13 @@ gateway_listener_admission_enabled: true
 # solution publishes through a ListenerSet.
 gateway_wildcard_listener_enabled: true
 gateway_wildcard_tls_secret_name: "gateway-wildcard-tls"
+# Shared attach mode always needs the wildcard listener.
+_eg_attach_mode: "{{ (gateway_platform | default({})).attach_mode | default('listenerset') }}"
+_eg_wildcard_on: "{{ gateway_wildcard_listener_enabled | bool or _eg_attach_mode == 'shared' }}"
+# Proxy settings live beside our own controller, else in the gateway namespace.
+_eg_proxy_config_namespace: >-
+  {{ envoy_gateway_namespace if (gateway_platform | default({})).controller_managed | default(true) | bool
+     else gateway_namespace }}
 
 # HTTP/2 on every listener whose certificate names only its own host. Envoy
 # Gateway otherwise falls back to HTTP/1.1 on all listeners whose certificates
@@ -139,7 +164,7 @@ certmanager_namespace: "cert-manager"
 _eg_platform_certs: >-
   {{ [{'host': base_domain_name, 'secret': gateway_tls_secret_name}]
      + ([{'host': '*.' ~ base_domain_name, 'secret': gateway_wildcard_tls_secret_name}]
-        if gateway_wildcard_listener_enabled | bool else [])
+        if _eg_wildcard_on | bool else [])
      + ([{'host': gateway_s3_hostname, 'secret': gateway_s3_tls_secret_name}]
         if gateway_s3_listener_enabled | bool else []) }}
 _eg_platform_certs_all:

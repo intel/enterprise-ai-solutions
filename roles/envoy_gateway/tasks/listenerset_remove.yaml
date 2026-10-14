@@ -2,7 +2,8 @@
 # =============================================================================
 # Envoy Gateway — unpublish a solution's hosts (reverse of listenerset.yaml)
 # =============================================================================
-# Same inputs as listenerset.yaml. Tolerates a missing gateway or namespace.
+# Same inputs as listenerset.yaml. Tolerates a missing gateway, namespace or
+# ListenerSet API. gateway_listenerset_keep_grant keeps the host grant.
 
 - name: "envoy_gateway | listenerset | Delete ListenerSet and its certificate"
   kubernetes.core.k8s:
@@ -37,6 +38,7 @@
     kind: Namespace
     name: "{{ gateway_listenerset_namespace }}"
   register: _ls_ns
+  when: not gateway_listenerset_keep_grant | default(false) | bool
 
 - name: "envoy_gateway | listenerset | Revoke hosts from {{ gateway_listenerset_namespace }}"
   vars:
@@ -51,4 +53,6 @@
       metadata:
         annotations: "{{ {gateway_hostnames_annotation: (_left | join(',')) if _left else None} }}"
         labels: "{{ {gateway_listeners_label_key: gateway_listeners_label_value if _left else None} }}"
-  when: _ls_ns.resources | default([]) | length > 0
+  when:
+    - not gateway_listenerset_keep_grant | default(false) | bool
+    - _ls_ns.resources | default([]) | length > 0

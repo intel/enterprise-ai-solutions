@@ -2,7 +2,8 @@
 # =============================================================================
 # Envoy Gateway — Gateway API + Envoy Gateway CRDs
 # =============================================================================
-# This role is the only installer of these CRDs. Rendered from the release's
+# This role is the only installer of these CRDs, unless detect.yaml found
+# them installed by another tool. Rendered from the release's
 # gateway-crds-helm chart and applied server-side, as upstream recommends: the
 # bundle exceeds the Helm release size limit and Helm never upgrades CRDs.
 
@@ -14,7 +15,8 @@
     values:
       crds:
         gatewayAPI:
-          enabled: true
+          # Off when newer foreign Gateway API CRDs are already in place.
+          enabled: "{{ gateway_platform.gateway_api_apply | bool }}"
           channel: standard
         envoyGateway:
           enabled: true
@@ -44,8 +46,7 @@
       type: Established
       status: "True"
     wait_timeout: 120
-  loop:
-    - gateways.gateway.networking.k8s.io
-    - listenersets.gateway.networking.k8s.io
-    - httproutes.gateway.networking.k8s.io
-    - envoyproxies.gateway.envoyproxy.io
+  loop: >-
+    {{ ['gateways.gateway.networking.k8s.io', 'httproutes.gateway.networking.k8s.io',
+        'envoyproxies.gateway.envoyproxy.io']
+       + (['listenersets.gateway.networking.k8s.io'] if gateway_platform.gateway_api_apply | bool else []) }}
