@@ -3,11 +3,6 @@
 # Istio — Upgrade
 # =============================================================================
 
-- name: "istio | Gateway API CRDs (owned by envoy_gateway; needed before istiod starts)"
-  ansible.builtin.include_role:
-    name: envoy_gateway
-    tasks_from: crds.yaml
-
 - name: "istio | Upgrade Helm chart"
   kubernetes.core.helm:
     name: "{{ istio_helm_release_name }}"
