@@ -113,6 +113,22 @@
             name: "{{ gateway_tls_secret_name }}"
   when: gateway_tls_mode == 'custom'
 
+- name: "envoy_gateway | listenerset | Read the operator certificate"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: "{{ gateway_tls_secret_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _ls_operator_cert
+  when: gateway_tls_mode == 'custom'
+
+- name: "envoy_gateway | listenerset | Check the operator certificate covers the hosts"
+  ansible.builtin.include_tasks: custom_cert_sans.yaml
+  vars:
+    _eg_cert_pem: "{{ _ls_operator_cert.resources[0].data['tls.crt'] | b64decode }}"
+    _eg_cert_hosts: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
+    _eg_cert_context: "ListenerSet {{ gateway_listenerset_namespace }}/{{ gateway_listenerset_name }}"
+  when: gateway_tls_mode == 'custom' and _ls_operator_cert.resources | default([]) | length > 0
+
 - name: "envoy_gateway | listenerset | Apply ListenerSet"
   kubernetes.core.k8s:
     state: present
