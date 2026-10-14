@@ -5,7 +5,7 @@
 
 - name: "envoy_gateway | unpublish | {{ gateway_publish_name }}"
   ansible.builtin.include_tasks: "{{ _gp_file }}"
-  loop: [listenerset_remove.yaml, apex_path_remove.yaml]
+  loop: "{{ ['listenerset_remove.yaml'] + (['apex_path_remove.yaml'] if _gp_path else []) }}"
   loop_control:
     loop_var: _gp_file      # included files loop over item themselves
   vars:
@@ -13,4 +13,4 @@
     gateway_listenerset_namespace: "{{ gateway_publish_namespace }}"
     gateway_listenerset_listeners: [{name: "{{ gateway_publish_name }}", hostname: "{{ gateway_publish_host }}"}]
     gateway_apex_namespace: "{{ gateway_publish_namespace }}"
-    gateway_apex_path: "{{ gateway_publish_path }}"
+    gateway_apex_path: "{{ _gp_path }}"

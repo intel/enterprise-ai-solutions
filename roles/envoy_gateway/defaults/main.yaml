@@ -158,3 +158,4 @@ _ls_cert_ref: >-
 _eg_ap_key: "{{ '_root' if gateway_apex_path | default('/') == '/' else (gateway_apex_path | default('/'))[1:] | replace('/', '.') }}"
 # publish.yaml: effective mode for this service.
 _gp_mode: "{{ gateway_publish_mode | default(routing_mode | default('subdomain'), true) }}"
+_gp_path: "{{ gateway_publish_path | default('') }}"
