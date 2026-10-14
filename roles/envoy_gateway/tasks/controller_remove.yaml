@@ -24,6 +24,47 @@
       by this role, so they stay.
   when: not gateway_platform.controller_managed | bool
 
+# The CRDs are about to go. Gateways and classes of this controller carry its
+# finalizers, so remove them while it still runs, or the CRDs never delete.
+- name: "envoy_gateway | Find what this controller serves"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: "{{ item }}"
+  loop: [GatewayClass, Gateway]
+  register: _eg_served
+  failed_when: false
+  when:
+    - gateway_platform.controller_managed | bool
+    - gateway_platform.gateway_api_owned | default(true) | bool
+
+- name: "envoy_gateway | Delete its Gateways, then GatewayClasses (other layers' too)"
+  vars:
+    _classes: >-
+      {{ (_eg_served.results[0].resources | default([]))
+         | selectattr('spec.controllerName', 'eq', gateway_platform.controller_name)
+         | map(attribute='metadata.name') | list }}
+    _objects: >-
+      {%- set out = [] -%}
+      {%- for g in _eg_served.results[1].resources | default([]) if g.spec.gatewayClassName in _classes -%}
+      {%- set _ = out.append({'kind': 'Gateway', 'name': g.metadata.name, 'namespace': g.metadata.namespace}) -%}
+      {%- endfor -%}
+      {%- for c in _classes -%}{%- set _ = out.append({'kind': 'GatewayClass', 'name': c}) -%}{%- endfor -%}
+      {{ out }}
+  kubernetes.core.k8s:
+    state: absent
+    api_version: gateway.networking.k8s.io/v1
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ item.namespace | default(omit) }}"
+    wait: true
+    wait_timeout: 180
+  loop: "{{ _objects }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  when:
+    - gateway_platform.controller_managed | bool
+    - gateway_platform.gateway_api_owned | default(true) | bool
+
 - name: "envoy_gateway | Uninstall Helm release"
   kubernetes.core.helm:
     name: "{{ envoy_gateway_release_name }}"
@@ -47,12 +88,26 @@
     kind: CustomResourceDefinition
     name: "{{ item.metadata.name }}"
     state: absent
-  loop: "{{ _eg_crds.resources | default([]) | selectattr('metadata.name', 'match', '.*gateway\\.networking\\.(k8s|x-k8s)\\.io') | list }}"
+  loop: "{{ _eg_crds.resources | default([]) | selectattr('metadata.name', 'match', '^[a-z0-9-]+\\.gateway\\.networking\\.(k8s|x-k8s)\\.io$') | list }}"
   loop_control:
     label: "{{ item.metadata.name }}"
   failed_when: false
   when: gateway_platform.controller_managed | bool and gateway_platform.gateway_api_owned | default(true) | bool
 
+# A reinstall right after would race CRDs still being deleted.
+- name: "envoy_gateway | Wait for the Gateway API CRDs to go"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+  register: _eg_crds_left
+  until: >-
+    _eg_crds_left.resources | default([])
+    | selectattr('metadata.name', 'match', '^[a-z0-9-]+\\.gateway\\.networking\\.(k8s|x-k8s)\\.io$') | list | length == 0
+  retries: 24
+  delay: 5
+  when: gateway_platform.controller_managed | bool and gateway_platform.gateway_api_owned | default(true) | bool
+
+# Exactly this API group: aigateway.envoyproxy.io belongs to Envoy AI Gateway.
 - name: "envoy_gateway | Find Envoy Gateway CRDs"
   kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
@@ -66,7 +121,7 @@
     kind: CustomResourceDefinition
     name: "{{ item.metadata.name }}"
     state: absent
-  loop: "{{ _eg_crds.resources | default([]) | selectattr('metadata.name', 'match', '.*gateway\\.envoyproxy\\.io') | list }}"
+  loop: "{{ _eg_crds.resources | default([]) | selectattr('metadata.name', 'match', '^[a-z0-9-]+\\.gateway\\.envoyproxy\\.io$') | list }}"
   loop_control:
     label: "{{ item.metadata.name }}"
   failed_when: false
@@ -89,7 +144,8 @@
     kind: Namespace
     name: "{{ envoy_gateway_namespace }}"
     state: absent
-  failed_when: false
+    wait: true
+    wait_timeout: 300
   when: gateway_platform.controller_managed | bool
 
 # Shipped with the Gateway API CRDs; cluster-scoped.

@@ -140,5 +140,6 @@
     kind: Namespace
     name: "{{ gateway_namespace }}"
     state: absent
-  failed_when: false
+    wait: true
+    wait_timeout: 300
   when: gateway_namespace != gateway_platform.controller_namespace
