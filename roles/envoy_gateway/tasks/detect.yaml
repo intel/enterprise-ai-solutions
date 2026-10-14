@@ -2,8 +2,9 @@
 # =============================================================================
 # Envoy Gateway — detect the controller and CRDs already in the cluster
 # =============================================================================
-# Read-only; _eg_detect_strict: false skips the support checks (teardown).
-# Sets gateway_platform:
+# Read-only; _gw_detect_strict: false skips the support checks (teardown).
+# Sets gateway_platform (the contract roles/gateway relies on):
+#   provider, facts       this provider, and facts exported to the play
 #   controller_managed    this role installed the controller (may upgrade it)
 #   controller_action     install | upgrade | keep
 #   controller_namespace  where the controller and its proxies run
@@ -141,6 +142,10 @@
     _eg_class: "{{ (_det_gw.results[1].resources | default([]) | first | default({})) }}"
   ansible.builtin.set_fact:
     gateway_platform:
+      provider: envoy
+      # Exported to the play by roles/gateway (provider_facts.yaml).
+      facts:
+        envoy_gateway_namespace: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
       controller_managed: "{{ _managed | bool }}"
       controller_action: "{{ _action }}"
       controller_namespace: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
@@ -199,7 +204,7 @@
         with v1 ListenerSet CRDs (found {{ _p.version | default('unknown', true) }}).
   loop_control:
     label: "{{ item.msg | truncate(60) }}"
-  when: _eg_detect_strict | default(true) | bool
+  when: _gw_detect_strict | default(true) | bool
 
 - name: "envoy_gateway | detect | Platform Gateway class"
   ansible.builtin.assert:
@@ -210,7 +215,7 @@
       GatewayClass 'eg' is served by {{ gateway_platform.class_controller }}, not by the Envoy Gateway in
       {{ gateway_platform.controller_namespace }} ({{ gateway_platform.controller_name }}).
     quiet: true
-  when: _eg_detect_strict | default(true) | bool
+  when: _gw_detect_strict | default(true) | bool
 
 - name: "envoy_gateway | detect | Result"
   ansible.builtin.debug:

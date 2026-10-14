@@ -209,7 +209,7 @@
 
 - name: "keycloak | Publish Keycloak"
   ansible.builtin.include_role:
-    name: envoy_gateway
+    name: gateway
     tasks_from: publish.yaml
   vars:
     gateway_publish_name: keycloak
@@ -251,17 +251,11 @@
   when: gateway_create | default(false)
 
 - name: "keycloak | Exclude Keycloak route from gateway JWT policy"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: gateway.envoyproxy.io/v1alpha1
-      kind: SecurityPolicy
-      metadata:
-        name: keycloak-no-auth
-        namespace: "{{ keycloak_namespace }}"
-      spec:
-        targetRefs:
-          - group: gateway.networking.k8s.io
-            kind: HTTPRoute
-            name: keycloak
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: keycloak
+    gateway_route_namespace: "{{ keycloak_namespace }}"
+    gateway_route_policy_name: keycloak-no-auth
   when: gateway_create | default(false)

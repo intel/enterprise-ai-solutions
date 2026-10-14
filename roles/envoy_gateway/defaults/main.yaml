@@ -1,9 +1,12 @@
 ---
+# =============================================================================
+# Envoy Gateway — provider for roles/gateway (gateway_provider: envoy)
+# =============================================================================
 envoy_gateway_version: "1.9.2"
 envoy_gateway_namespace: "envoy-gateway-system"
 envoy_gateway_helm_repo: "oci://docker.io/envoyproxy/gateway-helm"
-# Sole installer of the Gateway API CRDs (standard channel, the version this
-# release bundles) and the Envoy Gateway CRDs, applied server-side.
+# Gateway API CRDs (standard channel, the version this release bundles) and
+# the Envoy Gateway CRDs, applied server-side unless detect.yaml finds others.
 envoy_gateway_crds_helm_repo: "oci://docker.io/envoyproxy/gateway-crds-helm"
 envoy_gateway_crds_field_manager: "ai-solutions-envoy-gateway"
 envoy_gateway_wait_timeout: "300s"
@@ -20,86 +23,6 @@ gateway_listenerset_min_version: "1.9.0"
 # than this are only upgraded when gateway_api_crds_takeover is true.
 envoy_gateway_gateway_api_version: "1.6.1"
 gateway_api_crds_takeover: false
-# auto: ListenerSets when the controller supports them, else 'shared' (routes
-# attach to the platform wildcard listener).
-gateway_attach_mode: "auto"             # auto | listenerset | shared
-# Records what was detected for later runs and other repos (gateway_namespace).
-gateway_platform_configmap: "gateway-platform"
-
-# Gateway resource
-gateway_create: true
-gateway_name: "eg-gateway"
-gateway_namespace: "envoy-gateway-system"
-
-# Default request timeout for routes attached to the gateway.
-# Envoy's built-in default is 15s which is too aggressive for LLM responses
-# (a Llama-3-8B completion with 512 output tokens on CPU easily takes 30-60s).
-# Applied as a Gateway-scoped BackendTrafficPolicy; individual HTTPRoutes
-# can override via their own timeouts.request / timeouts.backendRequest.
-gateway_request_timeout: "600s"
-
-# Authentication
-auth_provider: "none"                    # none | keycloak (JWT) | litellm (virtual key)
-
-# ── ONTAP S3 API listener (optional) ─────────────────────────────────────────
-# S3 SigV4 signs the request path verbatim. The shared HTTPS listeners run with
-# Envoy's default path normalization (merge_slashes and
-# path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT), so a key containing
-# '//' or '%2F' reaches the object store with a different canonical URI than the
-# client signed and the store answers SignatureDoesNotMatch - which reads as a
-# credentials problem. A ClientTrafficPolicy can relax those two rules, but only
-# per listener, so the S3 API gets a listener of its own rather than weakening
-# normalization for the UI, API and keycloak routes that share 'https'.
-#
-# Dot-segment resolution (Envoy's normalize_path) has no Gateway API knob at all
-# and is NOT addressed here; keys containing '..' are rejected by the data-prep
-# service before signing.
-gateway_s3_listener_name: "https-s3"
-# Subdomain the S3 API is published under. Owned here, in the platform layer,
-# because the listener is part of the gateway. A solution layer that publishes an
-# S3 API reads this value rather than the platform reading a solution variable.
-gateway_s3_subdomain: "s3"
-gateway_s3_hostname: "{{ gateway_s3_subdomain ~ '.' ~ base_domain_name }}"
-# ontap_s3_data_lif has to come from env/<env>/global_config.yaml: role defaults
-# are role-scoped, so netapp_trident_csi's copy is not in scope here and the
-# default below is what an unset value resolves to.
-# In routing_mode: path the S3 API shares the apex hostname with the UI, so a
-# dedicated listener is impossible - see the warning printed at install.
-gateway_s3_listener_enabled: >-
-  {{ (ontap_s3_data_lif | default('', true) | string | trim | length > 0)
-     and ((routing_mode | default('subdomain')) != 'path') }}
-
-# Routes that must bypass auth even when auth_provider != none.
-# Each entry: {name: <policy-name>, namespace: <route-ns>, route: <HTTPRoute-name>}
-# The role creates a SecurityPolicy per entry that overrides the gateway-level policy
-# for that specific HTTPRoute (e.g. a UI route that must be publicly reachable).
-gateway_no_auth_routes: []
-
-# ── Solution listeners (ListenerSet) ─────────────────────────────────────────
-# Each solution publishes its own hosts in a ListenerSet in its own namespace,
-# with its own certificate. The Gateway accepts ListenerSets only from
-# namespaces carrying this label, and an admission policy accepts a listener
-# only for hosts granted to its namespace in this annotation (comma-separated).
-# Namespaces are cluster-scoped, so only cluster operators can grant hosts.
-gateway_listeners_label_key: "gateway.enterprise-ai/allow-listenersets"
-gateway_listeners_label_value: "true"
-gateway_hostnames_annotation: "gateway.enterprise-ai/hostnames"
-gateway_listener_admission_enabled: true
-
-# Legacy '*.base_domain_name' listener for routes not yet on a ListenerSet.
-# It has its own wildcard certificate and serves HTTP/1.1 only: an HTTP/2
-# connection would let a browser coalesce requests for other hosts onto it,
-# where any namespace may hold a route for them. Turn off once every
-# solution publishes through a ListenerSet.
-gateway_wildcard_listener_enabled: true
-gateway_wildcard_tls_secret_name: "gateway-wildcard-tls"
-# Shared attach mode always needs the wildcard listener.
-_eg_attach_mode: "{{ (gateway_platform | default({})).attach_mode | default('listenerset') }}"
-_eg_wildcard_on: "{{ gateway_wildcard_listener_enabled | bool or _eg_attach_mode == 'shared' }}"
-# Proxy settings live beside our own controller, else in the gateway namespace.
-_eg_proxy_config_namespace: >-
-  {{ envoy_gateway_namespace if (gateway_platform | default({})).controller_managed | default(true) | bool
-     else gateway_namespace }}
 
 # HTTP/2 on every listener whose certificate names only its own host. Envoy
 # Gateway otherwise falls back to HTTP/1.1 on all listeners whose certificates
@@ -108,79 +31,7 @@ _eg_proxy_config_namespace: >-
 gateway_http2_enabled: "{{ gateway_tls_mode == 'selfsigned' }}"
 _eg_alpn_h2: ["h2", "http/1.1"]
 
-# ── Path routing (routing_mode: path) ────────────────────────────────────────
-# Every service shares the apex host, told apart by path. The apex listener
-# then admits only namespaces carrying the apex label, and an admission policy
-# admits an apex route only if each of its paths falls under a grant owned by
-# its namespace, the longest grant winning. Services share one origin here:
-# cookies stay apart only if each service scopes them to its own path (APIs
-# drop the Cookie header). Grants live in one ConfigMap in the
-# gateway namespace (key = path without the leading '/', '/' -> '.', '_root'
-# for '/'; value = namespace), written by each solution's installer.
-gateway_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
-gateway_apex_label_key: "gateway.enterprise-ai/allow-apex-routes"
-gateway_apex_label_value: "true"
-gateway_path_grants_configmap: "gateway-path-grants"
-# Path mode: the bare domain redirects here ('' = no landing page, 404).
-gateway_landing_path: ""
-
-# Keycloak routing for the SecurityPolicy JWT provider (canonical owner: keycloak
-# role). Issuer and in-cluster JWKS URL follow where Keycloak serves.
-keycloak_hostname: "keycloak.{{ base_domain_name }}"
-keycloak_path: "/keycloak"
-keycloak_frontend_url: >-
-  {{ 'https://' ~ base_domain_name ~ keycloak_path if gateway_path_mode | bool
-     else 'https://' ~ keycloak_hostname }}
-keycloak_jwks_url: >-
-  http://keycloak-service.{{ keycloak_namespace | default('keycloak') }}.svc.cluster.local:8080{{
-  keycloak_path if gateway_path_mode | bool else '' }}/realms/{{ keycloak_realm }}/protocol/openid-connect/certs
-keycloak_realm: "inference"
-
-# TLS / Domain — HTTPS is mandatory, there is no plaintext mode
-gateway_tls_mode: "selfsigned"        # selfsigned | custom
-base_domain_name: "inference-example.com"
-gateway_tls_cert_file: ""
-gateway_tls_key_file: ""
-gateway_tls_secret_name: "gateway-tls"          # apex (and S3 host in custom mode)
-gateway_s3_tls_secret_name: "gateway-s3-tls"
-
-# Internal root CA (selfsigned mode). Every serving leaf (platform and
-# solution listeners) chains to this root, so operators import ONE cert
-# (exported to gateway_ca_export_path) to trust every hostname.
-gateway_ca_bootstrap_issuer_name: "gateway-ca-bootstrap"
-gateway_ca_cert_name: "ai-solutions-ca"
-gateway_ca_secret_name: "ai-solutions-ca"
-gateway_ca_common_name: "AI Solutions Root CA"
-gateway_ca_duration: "87600h"         # 10y root
-gateway_ca_renew_before: "720h"       # 30d
-gateway_ca_export_path: "{{ log_dir }}/{{ gateway_ca_cert_name }}.crt"
-
-# Foreign var (canonical owner: cert_manager) — namespace holding the root CA
-# secret, which is cert-manager's cluster-resource-namespace.
-certmanager_namespace: "cert-manager"
-
-# Platform listener leaves (selfsigned mode), one per enabled listener host;
-# _all names every leaf the role can create, for pruning.
-_eg_platform_certs: >-
-  {{ [{'host': base_domain_name, 'secret': gateway_tls_secret_name}]
-     + ([{'host': '*.' ~ base_domain_name, 'secret': gateway_wildcard_tls_secret_name}]
-        if _eg_wildcard_on | bool else [])
-     + ([{'host': gateway_s3_hostname, 'secret': gateway_s3_tls_secret_name}]
-        if gateway_s3_listener_enabled | bool else []) }}
-_eg_platform_certs_all:
-  - "{{ gateway_tls_secret_name }}"
-  - "{{ gateway_wildcard_tls_secret_name }}"
-  - "{{ gateway_s3_tls_secret_name }}"
-
-# listenerset.yaml: the ListenerSet's serving secret (selfsigned mode), or the
-# operator certificate in the gateway namespace (custom mode).
-_ls_secret: "{{ gateway_listenerset_name | default('') }}-listener-tls"
-_ls_cert_ref: >-
-  {{ {'kind': 'Secret', 'name': _ls_secret} if gateway_tls_mode == 'selfsigned'
-     else {'kind': 'Secret', 'name': gateway_tls_secret_name, 'namespace': gateway_namespace} }}
-
-# apex_path.yaml: grant key for a path ('/' -> '_root', '/a/b' -> 'a.b').
-_eg_ap_key: "{{ '_root' if gateway_apex_path | default('/') == '/' else (gateway_apex_path | default('/'))[1:] | replace('/', '.') }}"
-# publish.yaml: effective mode for this service.
-_gp_mode: "{{ gateway_publish_mode | default(routing_mode | default('subdomain'), true) }}"
-_gp_path: "{{ gateway_publish_path | default('') }}"
+# Proxy settings live beside our own controller, else in the gateway namespace.
+_eg_proxy_config_namespace: >-
+  {{ envoy_gateway_namespace if (gateway_platform | default({})).controller_managed | default(true) | bool
+     else gateway_namespace }}

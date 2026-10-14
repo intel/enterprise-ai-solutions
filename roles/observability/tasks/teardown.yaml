@@ -59,7 +59,7 @@
 
     - name: "observability | Unpublish Grafana"
       ansible.builtin.include_role:
-        name: envoy_gateway
+        name: gateway
         tasks_from: unpublish.yaml
       vars:
         gateway_publish_name: grafana

@@ -1,0 +1,30 @@
+---
+# =============================================================================
+# Gateway — load the platform recorded by the install (gateway_platform)
+# =============================================================================
+# For roles that publish on or extend the platform Gateway in a later run or
+# from another repo. Asks the provider to detect when there is no record yet.
+
+- name: "gateway | platform | Read the recorded platform"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: "{{ gateway_platform_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_platform_cm
+  when: gateway_platform is not defined
+
+- name: "gateway | platform | Use the recorded platform"
+  ansible.builtin.set_fact:
+    gateway_platform: "{{ (_gw_platform_cm.resources | first).data.platform | from_json }}"
+  when:
+    - gateway_platform is not defined
+    - _gw_platform_cm.resources | default([]) | length > 0
+
+- name: "gateway | platform | Detect (no record yet)"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: detect.yaml
+  when: gateway_platform is not defined
+
+- name: "gateway | platform | Provider facts"
+  ansible.builtin.include_tasks: provider_facts.yaml

@@ -1,58 +1,47 @@
 ---
 # =============================================================================
-# Envoy Gateway — Validate
+# Gateway — Validate
 # =============================================================================
 
-- name: "envoy_gateway | Load the platform record"
+- name: "gateway | Load the platform record"
   ansible.builtin.include_tasks: platform.yaml
 
-- name: "envoy_gateway | Check deployment"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    namespace: "{{ envoy_gateway_namespace }}"
-    label_selectors: [control-plane=envoy-gateway]
-  register: _eg_deploy
+- name: "gateway | Controller is ready"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: controller_validate.yaml
 
-- name: "envoy_gateway | Assert replicas ready"
-  ansible.builtin.assert:
-    that:
-      - _eg_deploy.resources | length > 0
-      - (_eg_deploy.resources[0].status.readyReplicas | default(0) | int) >= 1
-    fail_msg: "Envoy Gateway has 0 ready replicas"
-    success_msg: "Envoy Gateway has {{ _eg_deploy.resources[0].status.readyReplicas | default(0) }} ready replica(s)"
-
-- name: "envoy_gateway | Check ListenerSet API"
+- name: "gateway | Check ListenerSet API"
   kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
     name: listenersets.gateway.networking.k8s.io
-  register: _eg_ls_crd
-  when: _eg_attach_mode == 'listenerset'
+  register: _gw_ls_crd
+  when: _gw_attach_mode == 'listenerset'
 
-- name: "envoy_gateway | Assert ListenerSet API installed"
+- name: "gateway | Assert ListenerSet API installed"
   ansible.builtin.assert:
-    that: _eg_ls_crd.resources | length > 0
+    that: _gw_ls_crd.resources | length > 0
     fail_msg: "ListenerSet CRD missing; solutions cannot publish hosts"
     success_msg: >-
       ListenerSet API installed (Gateway API
-      {{ _eg_ls_crd.resources[0].metadata.annotations['gateway.networking.k8s.io/bundle-version'] | default('?') }})
-  when: _eg_attach_mode == 'listenerset'
+      {{ _gw_ls_crd.resources[0].metadata.annotations['gateway.networking.k8s.io/bundle-version'] | default('?') }})
+  when: _gw_attach_mode == 'listenerset'
 
-- name: "envoy_gateway | Check GatewayClass"
+- name: "gateway | Check GatewayClass"
   kubernetes.core.k8s_info:
     api_version: gateway.networking.k8s.io/v1
     kind: GatewayClass
     name: "{{ gateway_platform.class_name }}"
-  register: _eg_gc
+  register: _gw_gc
 
-- name: "envoy_gateway | Assert GatewayClass exists"
+- name: "gateway | Assert GatewayClass exists"
   ansible.builtin.assert:
-    that: _eg_gc.resources | length > 0
+    that: _gw_gc.resources | length > 0
     fail_msg: "GatewayClass '{{ gateway_platform.class_name }}' not found"
     success_msg: "GatewayClass '{{ gateway_platform.class_name }}' exists"
 
-- name: "envoy_gateway | Check Gateway is accepted"
+- name: "gateway | Check Gateway is accepted"
   kubernetes.core.k8s_info:
     api_version: gateway.networking.k8s.io/v1
     kind: Gateway
@@ -61,7 +50,7 @@
   register: _gw_status
   when: gateway_create
 
-- name: "envoy_gateway | Assert Gateway accepted"
+- name: "gateway | Assert Gateway accepted"
   ansible.builtin.assert:
     that:
       - _gw_status.resources | length > 0
@@ -70,7 +59,7 @@
     success_msg: "Gateway '{{ gateway_name }}' is Accepted"
   when: gateway_create
 
-- name: "envoy_gateway | Check TLS secret exists"
+- name: "gateway | Check TLS secret exists"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
@@ -79,29 +68,29 @@
   register: _tls_secret
   when: gateway_create
 
-- name: "envoy_gateway | Assert TLS secret exists"
+- name: "gateway | Assert TLS secret exists"
   ansible.builtin.assert:
     that: _tls_secret.resources | length > 0
     fail_msg: "TLS secret '{{ gateway_tls_secret_name }}' not found"
     success_msg: "TLS secret '{{ gateway_tls_secret_name }}' exists"
   when: gateway_create
 
-- name: "envoy_gateway | Check exported root CA certificate"
+- name: "gateway | Check exported root CA certificate"
   ansible.builtin.stat:
     path: "{{ gateway_ca_export_path }}"
   register: _ca_export
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Assert root CA was exported"
+- name: "gateway | Assert root CA was exported"
   ansible.builtin.assert:
     that: _ca_export.stat.exists
     fail_msg: "Root CA certificate not exported to '{{ gateway_ca_export_path }}'"
     success_msg: "Root CA certificate exported to '{{ gateway_ca_export_path }}'"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Validation passed"
+- name: "gateway | Validation passed"
   ansible.builtin.debug:
     msg: >-
-      Envoy Gateway validation passed.
+      Gateway validation passed ({{ gateway_platform.provider | default(gateway_provider) }}).
       {{ 'Gateway ' + gateway_name + ' with TLS (' + gateway_tls_mode + ') on ' + base_domain_name if gateway_create
          else 'No Gateway resource managed.' }}

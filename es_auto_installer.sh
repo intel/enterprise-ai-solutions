@@ -1319,7 +1319,7 @@ parse_args() {
 # _target_exists <name> — a layer or a component in the merged registry.
 # Here-string for the same reason as _layer_exists.
 _target_exists() {
-    local names; names=$(_merged_components | yq -r '.layers[].name, .components[].name' 2>/dev/null)
+    local names; names=$(_merged_components | yq -r '.layers[].name, .components[].name, .components[].aliases[]?' 2>/dev/null)
     grep -qxF -- "$1" <<< "$names"
 }
 

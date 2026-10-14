@@ -88,7 +88,7 @@ nodeAffinity:
 - PostgreSQL (CNPG Cluster) ([`roles/postgresql/templates/cnpg-cluster.yaml.j2`](../../roles/postgresql/templates/cnpg-cluster.yaml.j2))
 - cert-manager (controller + webhook + cainjector) ([`roles/cert_manager/tasks/install.yaml`](../../roles/cert_manager/tasks/install.yaml))
 - MetalLB controller ([`roles/metallb/tasks/install.yaml`](../../roles/metallb/tasks/install.yaml))
-- Envoy Gateway **controller + data plane** ([`roles/envoy_gateway/tasks/install.yaml`](../../roles/envoy_gateway/tasks/install.yaml))
+- Envoy Gateway **controller + data plane** ([`roles/envoy_gateway/tasks/controller.yaml`](../../roles/envoy_gateway/tasks/controller.yaml))
 - Envoy AI Gateway **controller + data plane** ([`ext/enterprise.ai-inference/roles/envoy_ai_gateway/tasks/install.yaml`](../../ext/enterprise.ai-inference/roles/envoy_ai_gateway/tasks/install.yaml))
 - KServe controller ([`ext/enterprise.ai-inference/roles/kserve/tasks/install.yaml`](../../ext/enterprise.ai-inference/roles/kserve/tasks/install.yaml))
 

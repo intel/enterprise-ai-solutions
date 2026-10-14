@@ -1,46 +1,46 @@
 ---
 # =============================================================================
-# Envoy Gateway — grant an apex path to a namespace (path mode)
+# Gateway — grant an apex path to a namespace (path mode)
 # =============================================================================
 #   gateway_apex_namespace  owning namespace
 #   gateway_apex_path       '/<name>[/...]' (lowercase, digits, '-', '_') or '/'
 
-- name: "envoy_gateway | apex path | Validate {{ gateway_apex_path }}"
+- name: "gateway | apex path | Validate {{ gateway_apex_path }}"
   ansible.builtin.assert:
     that: gateway_apex_path is match('^/([a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*)?$')
     fail_msg: "Invalid apex path '{{ gateway_apex_path }}' (lowercase segments, no trailing '/')."
     quiet: true
 
-- name: "envoy_gateway | apex path | Read path grants"
+- name: "gateway | apex path | Read path grants"
   kubernetes.core.k8s_info:
     kind: ConfigMap
     name: "{{ gateway_path_grants_configmap }}"
     namespace: "{{ gateway_namespace }}"
-  register: _eg_ap_grants
+  register: _gw_ap_grants
 
-- name: "envoy_gateway | apex path | Refuse a path granted to another namespace"
+- name: "gateway | apex path | Refuse a path granted to another namespace"
   vars:
-    _owner: "{{ ((_eg_ap_grants.resources | first | default({})).data | default({})).get(_eg_ap_key, '') }}"
+    _owner: "{{ ((_gw_ap_grants.resources | first | default({})).data | default({})).get(_gw_ap_key, '') }}"
   ansible.builtin.assert:
     that:
-      - _eg_ap_grants.resources | length > 0
+      - _gw_ap_grants.resources | length > 0
       - _owner in ['', gateway_apex_namespace]
     fail_msg: >-
-      {{ 'Path grants ConfigMap missing; install envoy_gateway in path mode first.'
-         if _eg_ap_grants.resources | length == 0
+      {{ 'Path grants ConfigMap missing; install the gateway in path mode first.'
+         if _gw_ap_grants.resources | length == 0
          else 'Path ' ~ gateway_apex_path ~ ' is already granted to namespace ' ~ _owner ~ '.' }}
     quiet: true
 
-- name: "envoy_gateway | apex path | Grant {{ gateway_apex_path ~ ' to ' ~ gateway_apex_namespace }}"
+- name: "gateway | apex path | Grant {{ gateway_apex_path ~ ' to ' ~ gateway_apex_namespace }}"
   kubernetes.core.k8s:
     state: patched
     kind: ConfigMap
     name: "{{ gateway_path_grants_configmap }}"
     namespace: "{{ gateway_namespace }}"
     definition:
-      data: "{{ {_eg_ap_key: gateway_apex_namespace} }}"
+      data: "{{ {_gw_ap_key: gateway_apex_namespace} }}"
 
-- name: "envoy_gateway | apex path | Allow on the apex listener: {{ gateway_apex_namespace }}"
+- name: "gateway | apex path | Allow on the apex listener: {{ gateway_apex_namespace }}"
   kubernetes.core.k8s:
     state: patched
     kind: Namespace

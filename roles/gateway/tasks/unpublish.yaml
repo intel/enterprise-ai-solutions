@@ -1,13 +1,13 @@
 ---
 # =============================================================================
-# Envoy Gateway — unpublish a service (both modes; same inputs as publish.yaml)
+# Gateway — unpublish a service (both modes; same inputs as publish.yaml)
 # =============================================================================
 
-- name: "envoy_gateway | unpublish | Platform attach mode"
+- name: "gateway | unpublish | Platform attach mode"
   ansible.builtin.include_tasks: platform.yaml
   when: gateway_platform is not defined
 
-- name: "envoy_gateway | unpublish | {{ gateway_publish_name }}"
+- name: "gateway | unpublish | {{ gateway_publish_name }}"
   ansible.builtin.include_tasks: "{{ _gp_file }}"
   loop: "{{ ['listenerset_remove.yaml'] + (['apex_path_remove.yaml'] if _gp_path else []) }}"
   loop_control:

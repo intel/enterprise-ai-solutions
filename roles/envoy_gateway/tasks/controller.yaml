@@ -1,0 +1,195 @@
+---
+# =============================================================================
+# Envoy Gateway — controller hook: CRDs, controller, GatewayClass
+# =============================================================================
+# Acts on gateway_platform from detect.yaml: a controller or CRDs this role did
+# not install are used as they are.
+
+- name: "envoy_gateway | Gateway API and Envoy Gateway CRDs"
+  ansible.builtin.include_tasks: crds.yaml
+  when: gateway_platform.crds_apply | bool
+
+- name: "envoy_gateway | Install or upgrade"
+  when: gateway_platform.controller_action in ['install', 'upgrade']
+  block:
+    - name: "envoy_gateway | {{ gateway_platform.controller_action | capitalize }} Envoy Gateway via Helm (OCI)"
+      kubernetes.core.helm:
+        name: "{{ envoy_gateway_release_name }}"
+        chart_ref: "{{ envoy_gateway_helm_repo }}"
+        release_namespace: "{{ envoy_gateway_namespace }}"
+        create_namespace: true
+        chart_version: "v{{ envoy_gateway_version }}"
+        # CRDs come from crds.yaml; the chart's copy would be the experimental channel.
+        skip_crds: true
+        # On upgrade: the new chart's defaults plus the values other roles set
+        # (inference's AI Gateway extension).
+        reset_values: "{{ gateway_platform.controller_action != 'upgrade' }}"
+        reset_then_reuse_values: "{{ gateway_platform.controller_action == 'upgrade' }}"
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+        values:
+          deployment:
+            envoyGateway:
+              affinity: "{{ _platform_affinity | default({}) }}"
+          # The Backend extension API (gateway.envoyproxy.io/v1alpha1 Backend) is
+          # off by default. It is how a route reaches an endpoint outside the
+          # cluster with upstream TLS settings of its own - the ONTAP S3 reverse
+          # proxy uses one. The inference layer later helm-upgrades this release
+          # with the same flag (ext/enterprise.ai-inference/roles/kserve/
+          # templates/envoy-gateway-ai-values.yaml.j2), so enabling it here only
+          # means a platform-only install already has it, instead of leaving
+          # every Backend-backed HTTPRoute at ResolvedRefs=False.
+          config:
+            envoyGateway:
+              extensionApis:
+                enableBackend: true
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+
+    - name: "envoy_gateway | Wait for controller deployment"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: envoy-gateway
+        namespace: "{{ envoy_gateway_namespace }}"
+      register: _eg_deploy
+      until:
+        - _eg_deploy.resources | length > 0
+        - _eg_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+      retries: 60
+      delay: 5
+
+# ── Controller namespace (ours only; a foreign one keeps its labels) ──────────
+
+- name: "envoy_gateway | Label envoy-gateway-system namespace — Istio"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ envoy_gateway_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when:
+    - gateway_platform.controller_managed | bool
+    - istio_enabled | default(false) | bool
+
+# The eg-gateway proxy is the north-south mesh edge: external clients terminate TLS
+# here with no mesh identity, so it must accept plaintext inbound. Selector-scoped so
+# the internal ai-gateway proxy (same namespace, reached in-mesh) stays STRICT.
+- name: "envoy_gateway | Allow external ingress at eg-gateway edge (mTLS PERMISSIVE)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: eg-gateway-edge
+        namespace: "{{ envoy_gateway_namespace }}"
+      spec:
+        selector:
+          matchLabels:
+            gateway.envoyproxy.io/owning-gateway-name: "{{ gateway_name }}"
+        mtls:
+          mode: PERMISSIVE
+  when:
+    - gateway_platform.controller_managed | bool
+    - istio_enabled | default(false) | bool
+
+# Host-network apiserver (no mesh identity) can't reach the envoy-gateway controller's
+# admission webhook under STRICT; open only its port, rest of the pod stays STRICT.
+- name: "envoy_gateway | Allow apiserver to reach controller webhook (port-level mTLS)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: allow-webhook-ctrl
+        namespace: "{{ envoy_gateway_namespace }}"
+      spec:
+        selector:
+          matchLabels:
+            control-plane: envoy-gateway
+        mtls:
+          mode: STRICT
+        portLevelMtls: "{{ {'9443': {'mode': 'PERMISSIVE'}} }}"
+  when:
+    - gateway_platform.controller_managed | bool
+    - istio_enabled | default(false) | bool
+
+- name: "envoy_gateway | Label envoy-gateway-system namespace — PSS"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ envoy_gateway_namespace }}"
+        labels:
+          # The chart ships a full restricted securityContext and the generated
+          # dataplane maps :80/:443 to unprivileged ports, so no NET_BIND_SERVICE.
+          pod-security.kubernetes.io/enforce: "restricted"
+          pod-security.kubernetes.io/audit: "restricted"
+          pod-security.kubernetes.io/warn: "restricted"
+  when:
+    - gateway_platform.controller_managed | bool
+    - enforce_pss | default(false) | bool
+
+# ── Proxy settings and GatewayClass ───────────────────────────────────────────
+
+# envoy_gateway | Data-plane workload: DaemonSet across all control-plane nodes
+# ──────────────────────────────────────────────────────────────────────────
+# MetalLB's L2 speaker announces the VIP from a single elected leader node
+# (metallb auto-pool uses a control-plane IP). For LB packets to reach an
+# envoy pod we need an envoy on that leader. A DaemonSet scoped to CP nodes
+# is the simplest way to guarantee that without caring *which* CP node
+# MetalLB elects at any given moment: every CP node always has a local
+# envoy. Survives CP failover, no hostname pinning, no cp[0] dance.
+#
+# nodeSelector keys on the standard control-plane label (empty string is
+# how kubespray / kubeadm stamp it) rather than the taint, because
+# operators can remove the taint; the label is the stable Kubernetes
+# control-plane marker. Toleration is kept for the case where the taint
+# is still in place.
+- name: "envoy_gateway | Create EnvoyProxy config (DaemonSet on control-plane nodes)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: EnvoyProxy
+      metadata:
+        name: eg-proxy-config
+        namespace: "{{ _eg_proxy_config_namespace }}"
+      spec:
+        provider:
+          type: Kubernetes
+          kubernetes:
+            envoyDaemonSet:
+              pod:
+                nodeSelector:
+                  node-role.kubernetes.io/control-plane: ""
+                tolerations:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+                    effect: NoSchedule
+
+- name: "envoy_gateway | Create GatewayClass"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: GatewayClass
+      metadata:
+        name: "{{ gateway_platform.class_name }}"
+      spec:
+        controllerName: "{{ gateway_platform.controller_name }}"
+        parametersRef:
+          group: gateway.envoyproxy.io
+          kind: EnvoyProxy
+          name: eg-proxy-config
+          namespace: "{{ _eg_proxy_config_namespace }}"
+

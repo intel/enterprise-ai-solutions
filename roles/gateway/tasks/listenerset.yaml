@@ -1,6 +1,6 @@
 ---
 # =============================================================================
-# Envoy Gateway — publish a solution's hosts (ListenerSet)
+# Gateway — publish a solution's hosts (ListenerSet)
 # =============================================================================
 # Grants the hosts to the namespace, issues its certificate and attaches a
 # ListenerSet to the platform Gateway. Routes then use gateway_listenerset_ref
@@ -9,10 +9,10 @@
 #   gateway_listenerset_namespace  owning namespace
 #   gateway_listenerset_listeners  [{name, hostname}]
 
-- name: "envoy_gateway | listenerset | Grant the hosts"
+- name: "gateway | listenerset | Grant the hosts"
   ansible.builtin.include_tasks: host_grant.yaml
 
-- name: "envoy_gateway | listenerset | Issue certificate"
+- name: "gateway | listenerset | Issue certificate"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -29,7 +29,7 @@
         dnsNames: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
   when: gateway_tls_mode == 'selfsigned'
 
-- name: "envoy_gateway | listenerset | Wait for certificate"
+- name: "gateway | listenerset | Wait for certificate"
   kubernetes.core.k8s_info:
     api_version: cert-manager.io/v1
     kind: Certificate
@@ -46,7 +46,7 @@
 
 # Custom mode: the operator's certificate in the gateway namespace serves the
 # hosts, referenced across namespaces by this ListenerSet only.
-- name: "envoy_gateway | listenerset | Allow use of the operator certificate"
+- name: "gateway | listenerset | Allow use of the operator certificate"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -66,7 +66,7 @@
             name: "{{ gateway_tls_secret_name }}"
   when: gateway_tls_mode == 'custom'
 
-- name: "envoy_gateway | listenerset | Read the operator certificate"
+- name: "gateway | listenerset | Read the operator certificate"
   kubernetes.core.k8s_info:
     kind: Secret
     name: "{{ gateway_tls_secret_name }}"
@@ -74,15 +74,15 @@
   register: _ls_operator_cert
   when: gateway_tls_mode == 'custom'
 
-- name: "envoy_gateway | listenerset | Check the operator certificate covers the hosts"
+- name: "gateway | listenerset | Check the operator certificate covers the hosts"
   ansible.builtin.include_tasks: custom_cert_sans.yaml
   vars:
-    _eg_cert_pem: "{{ _ls_operator_cert.resources[0].data['tls.crt'] | b64decode }}"
-    _eg_cert_hosts: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
-    _eg_cert_context: "ListenerSet {{ gateway_listenerset_namespace }}/{{ gateway_listenerset_name }}"
+    _gw_cert_pem: "{{ _ls_operator_cert.resources[0].data['tls.crt'] | b64decode }}"
+    _gw_cert_hosts: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
+    _gw_cert_context: "ListenerSet {{ gateway_listenerset_namespace }}/{{ gateway_listenerset_name }}"
   when: gateway_tls_mode == 'custom' and _ls_operator_cert.resources | default([]) | length > 0
 
-- name: "envoy_gateway | listenerset | Apply ListenerSet"
+- name: "gateway | listenerset | Apply ListenerSet"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -104,7 +104,7 @@
           {%- endfor -%}
           {{ out }}
 
-- name: "envoy_gateway | listenerset | Wait for ListenerSet to be programmed"
+- name: "gateway | listenerset | Wait for ListenerSet to be programmed"
   kubernetes.core.k8s_info:
     api_version: gateway.networking.k8s.io/v1
     kind: ListenerSet
@@ -118,7 +118,7 @@
   retries: 24
   delay: 5
 
-- name: "envoy_gateway | listenerset | Route parent"
+- name: "gateway | listenerset | Route parent"
   ansible.builtin.set_fact:
     gateway_listenerset_ref:
       group: gateway.networking.k8s.io

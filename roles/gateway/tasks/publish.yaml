@@ -1,6 +1,6 @@
 ---
 # =============================================================================
-# Envoy Gateway — publish a service in the current routing mode
+# Gateway — publish a service in the current routing mode
 # =============================================================================
 # subdomain: its own host via a ListenerSet (listenerset.yaml), or in shared
 #            attach mode (older controllers) a host grant on the wildcard listener
@@ -15,20 +15,20 @@
 #                              that cannot run under a path)
 # Sets gateway_publish: {mode, attach, host, relative_path, frontend_url, parent_ref}.
 
-- name: "envoy_gateway | publish | Platform attach mode"
+- name: "gateway | publish | Platform attach mode"
   ansible.builtin.include_tasks: platform.yaml
   when: gateway_platform is not defined
 
-- name: "envoy_gateway | publish | Path mode needs a path for {{ gateway_publish_name }}"
+- name: "gateway | publish | Path mode needs a path for {{ gateway_publish_name }}"
   ansible.builtin.assert:
     that: _gp_mode == 'subdomain' or _gp_path | length > 0
     fail_msg: "{{ gateway_publish_name }}: set gateway_publish_path, or gateway_publish_mode: subdomain."
     quiet: true
 
-- name: "envoy_gateway | publish | {{ gateway_publish_name ~ ' (' ~ _gp_mode ~ ')' }}"
+- name: "gateway | publish | {{ gateway_publish_name ~ ' (' ~ _gp_mode ~ ')' }}"
   ansible.builtin.include_tasks: "{{ _gp_file }}"
   loop: >-
-    {{ ((['listenerset.yaml'] if _eg_attach_mode == 'listenerset' else ['host_grant.yaml', 'listenerset_remove.yaml'])
+    {{ ((['listenerset.yaml'] if _gw_attach_mode == 'listenerset' else ['host_grant.yaml', 'listenerset_remove.yaml'])
         + (['apex_path_remove.yaml'] if _gp_path else [])) if _gp_mode == 'subdomain'
        else ['apex_path.yaml', 'listenerset_remove.yaml'] }}
   loop_control:
@@ -41,11 +41,11 @@
     gateway_apex_path: "{{ _gp_path }}"
     gateway_listenerset_keep_grant: "{{ _gp_mode == 'subdomain' }}"
 
-- name: "envoy_gateway | publish | Route parent for {{ gateway_publish_name }}"
+- name: "gateway | publish | Route parent for {{ gateway_publish_name }}"
   ansible.builtin.set_fact:
     gateway_publish:
       mode: "{{ _gp_mode }}"
-      attach: "{{ _eg_attach_mode }}"
+      attach: "{{ _gw_attach_mode }}"
       host: "{{ gateway_publish_host if _gp_mode == 'subdomain' else base_domain_name }}"
       relative_path: "{{ '/' if _gp_mode == 'subdomain' else _gp_path }}"
       frontend_url: >-
@@ -53,5 +53,5 @@
            else 'https://' ~ base_domain_name ~ _gp_path }}
       parent_ref: >-
         {{ {'name': gateway_name, 'namespace': gateway_namespace, 'sectionName': 'https-apex'} if _gp_mode != 'subdomain'
-           else gateway_listenerset_ref | combine({'sectionName': gateway_publish_name}) if _eg_attach_mode == 'listenerset'
+           else gateway_listenerset_ref | combine({'sectionName': gateway_publish_name}) if _gw_attach_mode == 'listenerset'
            else {'name': gateway_name, 'namespace': gateway_namespace, 'sectionName': 'https'} }}

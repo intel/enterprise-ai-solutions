@@ -1,11 +1,11 @@
 ---
 # =============================================================================
-# Envoy Gateway — grant a solution's hosts to its namespace
+# Gateway — grant a solution's hosts to its namespace
 # =============================================================================
 # Records the hosts in the namespace annotation the admission policies check,
 # refusing hosts already granted elsewhere. Same inputs as listenerset.yaml.
 
-- name: "envoy_gateway | host grant | Validate input"
+- name: "gateway | host grant | Validate input"
   ansible.builtin.assert:
     that:
       - gateway_listenerset_name | default('') | length > 0
@@ -16,12 +16,12 @@
     fail_msg: "Publishing needs gateway_listenerset_name, _namespace and _listeners [{name, hostname}]."
     quiet: true
 
-- name: "envoy_gateway | host grant | Read host grants"
+- name: "gateway | host grant | Read host grants"
   kubernetes.core.k8s_info:
     kind: Namespace
   register: _ls_namespaces
 
-- name: "envoy_gateway | host grant | Refuse hosts granted to another namespace"
+- name: "gateway | host grant | Refuse hosts granted to another namespace"
   vars:
     _hosts: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
     _taken: >-
@@ -37,7 +37,7 @@
     fail_msg: "Host(s) already granted to another namespace: {{ _taken | join(', ') }}"
     quiet: true
 
-- name: "envoy_gateway | host grant | Grant hosts to {{ gateway_listenerset_namespace }}"
+- name: "gateway | host grant | Grant hosts to {{ gateway_listenerset_namespace }}"
   vars:
     _ns: "{{ _ls_namespaces.resources | selectattr('metadata.name', 'eq', gateway_listenerset_namespace) | first | default({}) }}"
     _current: >-

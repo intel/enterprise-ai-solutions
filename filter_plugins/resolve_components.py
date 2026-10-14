@@ -159,6 +159,11 @@ def _component_order(comps):
     return [comps[i] for i in ordered + unresolved]
 
 
+def _aliases(components):
+    """Old name -> component name, so a renamed component keeps its old name."""
+    return {a: c["name"] for c in components for a in (c.get("aliases") or [])}
+
+
 def resolve_components(components, layers, target, action="install",
                        include_deps=True, skip=""):
     """Resolve target → ordered list of component dicts to execute."""
@@ -167,11 +172,16 @@ def resolve_components(components, layers, target, action="install",
             "Invalid action '%s'. Valid: %s" % (action, sorted(VALID_ACTIONS))
         )
 
+    # Targets, skips and depends_on may use a component's alias.
+    alias = _aliases(components)
+    components = [dict(c, depends_on=[alias.get(d, d) for d in (c.get("depends_on") or [])])
+                  for c in components]
+
     layer_names = {layer["name"] for layer in layers}
     by_name = {c["name"]: c for c in components}
 
     # Classify target: each part is either a known layer or a component name.
-    parts = [t.strip() for t in target.split(",") if t.strip()]
+    parts = [alias.get(t.strip(), t.strip()) for t in target.split(",") if t.strip()]
     targeted_layers = [p for p in parts if p in layer_names]
     targeted_components = [p for p in parts if p not in layer_names]
 
@@ -226,7 +236,7 @@ def resolve_components(components, layers, target, action="install",
     # Skip filter
     # A skip entry may name a component or a whole layer: "skip erag" is the useful
     # request, and expanding it to erag's component list is the caller's job otherwise.
-    skip_names = {s.strip() for s in (skip or "").split(",") if s.strip()}
+    skip_names = {alias.get(s.strip(), s.strip()) for s in (skip or "").split(",") if s.strip()}
     if skip_names:
         pool = [c for c in pool
                 if c["name"] not in skip_names and c.get("layer") not in skip_names]

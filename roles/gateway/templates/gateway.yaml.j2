@@ -6,7 +6,7 @@ metadata:
   namespace: {{ gateway_namespace }}
 spec:
   gatewayClassName: {{ gateway_platform.class_name }}
-{% if _eg_attach_mode == 'listenerset' %}
+{% if _gw_attach_mode == 'listenerset' %}
   # Solutions publish their hosts in ListenerSets; only labelled namespaces
   # may attach one (the admission policy checks each host is granted).
   allowedListeners:
@@ -25,7 +25,7 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
-{% if _eg_wildcard_on | bool %}
+{% if _gw_wildcard_on | bool %}
     # Catch-all for routes not on a ListenerSet (HTTP/1.1 only, see
     # gateway_wildcard_listener_enabled); in shared mode every service host.
     # More specific listeners win; granted hosts are checked at admission.

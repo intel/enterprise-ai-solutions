@@ -1,0 +1,39 @@
+---
+# Envoy Gateway — remove what policies.yaml created.
+
+- name: "envoy_gateway | Delete SecurityPolicy"
+  kubernetes.core.k8s:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  failed_when: false
+
+- name: "envoy_gateway | Delete S3 listener ClientTrafficPolicy"
+  kubernetes.core.k8s:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    name: "{{ gateway_name }}-s3-path"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  failed_when: false
+
+- name: "envoy_gateway | Delete ALPN ClientTrafficPolicies"
+  kubernetes.core.k8s:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    name: "{{ gateway_name }}-{{ item }}"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  loop: [alpn, wildcard-http1]
+  failed_when: false
+
+- name: "envoy_gateway | Delete gateway-default BackendTrafficPolicy"
+  kubernetes.core.k8s:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: BackendTrafficPolicy
+    name: gateway-default-timeout
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  failed_when: false

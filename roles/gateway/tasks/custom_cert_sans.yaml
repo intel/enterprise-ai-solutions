@@ -1,27 +1,27 @@
 ---
 # =============================================================================
-# Envoy Gateway — warn when the operator certificate misses a served host
+# Gateway — warn when the operator certificate misses a served host
 # =============================================================================
-#   _eg_cert_pem        certificate (PEM; first certificate is the leaf)
-#   _eg_cert_hosts      hosts it must serve ('*.<base>' must be listed as is)
-#   _eg_cert_context    what is being checked, for the message
+#   _gw_cert_pem        certificate (PEM; first certificate is the leaf)
+#   _gw_cert_hosts      hosts it must serve ('*.<base>' must be listed as is)
+#   _gw_cert_context    what is being checked, for the message
 # A host is covered by an exact SAN or a one-level wildcard SAN ('*.<base>').
 
-- name: "envoy_gateway | custom cert | Read SANs ({{ _eg_cert_context }})"
+- name: "gateway | custom cert | Read SANs ({{ _gw_cert_context }})"
   ansible.builtin.command:
     cmd: openssl x509 -noout -ext subjectAltName
-    stdin: "{{ _eg_cert_pem }}"
-  register: _eg_cert_san_out
+    stdin: "{{ _gw_cert_pem }}"
+  register: _gw_cert_san_out
   changed_when: false
   failed_when: false
   check_mode: false
 
-- name: "envoy_gateway | custom cert | Hosts not covered ({{ _eg_cert_context }})"
+- name: "gateway | custom cert | Hosts not covered ({{ _gw_cert_context }})"
   vars:
-    _sans: "{{ _eg_cert_san_out.stdout | default('') | regex_findall('DNS:([^,\\s]+)') }}"
+    _sans: "{{ _gw_cert_san_out.stdout | default('') | regex_findall('DNS:([^,\\s]+)') }}"
     _missing: >-
       {%- set out = [] -%}
-      {%- for h in _eg_cert_hosts -%}
+      {%- for h in _gw_cert_hosts -%}
       {%- set wild = '*.' ~ h.split('.', 1)[1] if ('.' in h and not h.startswith('*')) else '' -%}
       {%- if h not in _sans and wild not in _sans -%}{%- set _ = out.append(h) -%}{%- endif -%}
       {%- endfor -%}
@@ -29,7 +29,7 @@
   ansible.builtin.debug:
     msg: >-
       WARNING: the custom TLS certificate does not cover {{ _missing | join(', ') }}
-      ({{ _eg_cert_context }}). Clients will reject those hosts. Its SANs:
-      {{ _sans | join(', ') if _sans else 'none (' ~ (_eg_cert_san_out.stderr | default('unreadable', true) | trim) ~ ')' }}.
+      ({{ _gw_cert_context }}). Clients will reject those hosts. Its SANs:
+      {{ _sans | join(', ') if _sans else 'none (' ~ (_gw_cert_san_out.stderr | default('unreadable', true) | trim) ~ ')' }}.
       Reissue it with these names, or add them as subjectAltName entries.
   when: _missing | length > 0
