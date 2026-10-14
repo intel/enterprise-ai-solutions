@@ -16,10 +16,6 @@ gateway_namespace: "envoy-gateway-system"
 # can override via their own timeouts.request / timeouts.backendRequest.
 gateway_request_timeout: "600s"
 
-# How API clients authenticate: jwt (Keycloak) | litellm_vkey (LiteLLM virtual
-# keys). The gateway requires a Keycloak JWT either way; resolved in preflight.
-auth_type: "jwt"
-
 # ── ONTAP S3 API listener (optional) ─────────────────────────────────────────
 # S3 SigV4 signs the request path verbatim. The shared HTTPS listeners run with
 # Envoy's default path normalization (merge_slashes and

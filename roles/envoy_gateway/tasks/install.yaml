@@ -421,7 +421,7 @@
 
 # ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
 
-- name: "envoy_gateway | Apply SecurityPolicy ({{ auth_type }})"
+- name: "envoy_gateway | Apply SecurityPolicy (Keycloak JWT)"
   kubernetes.core.k8s:
     state: present
     force: true       # replace: an older policy's extAuth must not survive a merge
@@ -477,4 +477,4 @@
   ansible.builtin.debug:
     msg: >-
       Envoy Gateway v{{ envoy_gateway_version }} installed in {{ envoy_gateway_namespace }}.
-      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}){{ ' + auth (' + auth_type + ')' }}.
+      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}) + Keycloak JWT auth.

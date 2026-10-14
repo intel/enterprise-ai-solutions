@@ -20,8 +20,8 @@
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/../configs/components.yaml"
 
-# auth_type replaces auth_provider (keycloak→jwt, litellm→litellm_vkey). Resolved
-# before ext manifests render, since their `enabled:` gates read it.
+# auth_type (config.inference.yaml) replaces auth_provider (keycloak→jwt,
+# litellm→litellm_vkey). Resolved before ext manifests render: their gates read it.
 - name: "Preflight - Resolve auth_type"
   ansible.builtin.set_fact:
     auth_type: "{{ _auth_legacy[auth_provider] | default(auth_provider) if auth_provider is defined else 'jwt' }}"
@@ -31,7 +31,7 @@
 
 - name: "Preflight - Warn on deprecated auth_provider"
   ansible.builtin.debug:
-    msg: "auth_provider is deprecated; set auth_type: {{ auth_type }} in global_config.yaml instead."
+    msg: "auth_provider is deprecated; set auth_type: {{ auth_type }} in config.inference.yaml instead."
   when: auth_provider is defined
 
 - name: "Preflight - Validate auth_type"
