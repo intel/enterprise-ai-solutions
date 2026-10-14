@@ -64,11 +64,11 @@ velero_enabled: false                     # opt-in: backup/restore. Requires CSI
 
 # --- Authentication ---
 # Keycloak is always deployed: people sign in through it and the gateway
-# requires its JWT unless a route authenticates itself.
-# API clients use Keycloak JWTs by default; to use LiteLLM virtual keys instead:
-# auth_type: "litellm_vkey"
+# requires its JWT unless a route authenticates itself. auth_type selects the
+# API client credential: Keycloak JWT or LiteLLM virtual key.
+# auth_type: "jwt"                        # jwt (default) | litellm_vkey
 # Inference-layer add-ons. LiteLLM is always on with auth_type=litellm_vkey;
-# with keycloak it is optional. Langfuse follows LiteLLM unless turned off.
+# with jwt it is optional. Langfuse follows LiteLLM unless turned off.
 # litellm_enabled: true                   # LiteLLM proxy (virtual keys, budgets)
 # langfuse_enabled: false                 # Langfuse tracing of LiteLLM (needs LiteLLM)
 
