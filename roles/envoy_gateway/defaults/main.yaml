@@ -13,8 +13,8 @@ envoy_gateway_wait_timeout: "300s"
 
 # ── Existing installs (detect.yaml) ──────────────────────────────────────────
 # A controller or CRDs this role did not install are never changed or removed.
-# Our own older release is upgraded unless envoy_gateway_upgrade is false.
-envoy_gateway_upgrade: true
+# Our own older release: ask (stop and explain), true (upgrade) or false (keep).
+envoy_gateway_upgrade: "ask"
 envoy_gateway_release_name: "envoy-gateway"
 # Oldest controller supported, and the oldest that publishes with ListenerSets.
 envoy_gateway_min_version: "1.7.0"

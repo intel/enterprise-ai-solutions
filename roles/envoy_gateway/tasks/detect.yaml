@@ -2,7 +2,7 @@
 # =============================================================================
 # Envoy Gateway — detect the controller and CRDs already in the cluster
 # =============================================================================
-# Read-only; _gw_detect_strict: false skips the support checks (teardown).
+# Read-only; _gw_detect_strict: false skips the install checks (teardown, loading).
 # Sets gateway_platform (the contract roles/gateway relies on):
 #   provider, facts       this provider, and facts exported to the play
 #   controller_managed    this role installed the controller (may upgrade it)
@@ -108,11 +108,9 @@
           .get('envoy-gateway.yaml', '{}')) | from_yaml | default({}, true) }}
     _managed: "{{ _det_ctrl is none or _det_ctrl.ours }}"
     _cur: "{{ _det_ctrl.version if _det_ctrl is not none else '' }}"
-    _action: >-
-      {{ 'install' if _det_ctrl is none
-         else 'keep' if not _det_ctrl.ours or not envoy_gateway_upgrade | bool
-         else 'upgrade' if not _cur or _cur is version(envoy_gateway_version, '<')
-         else 'keep' }}
+    _upgrade: "{{ 'ask' if envoy_gateway_upgrade | string | lower == 'ask' else envoy_gateway_upgrade | bool }}"
+    _older: "{{ _det_ctrl is not none and _det_ctrl.ours and (not _cur or _cur is version(envoy_gateway_version, '<')) }}"
+    _action: "{{ 'install' if _det_ctrl is none else 'upgrade' if _older | bool and _upgrade | string == 'True' else 'keep' }}"
     _version: "{{ envoy_gateway_version if _action != 'keep' else _cur }}"
     _gw_crd: "{{ _det_crds.results[0].resources | default([]) | first | default(none) }}"
     _ls_crd: "{{ _det_crds.results[1].resources | default([]) | first | default(none) }}"
@@ -148,6 +146,7 @@
         envoy_gateway_namespace: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
       controller_managed: "{{ _managed | bool }}"
       controller_action: "{{ _action }}"
+      upgrade_pending: "{{ _older | bool and _upgrade == 'ask' }}"
       controller_namespace: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
       controller_name: >-
         {{ (_cfg.gateway | default({})).controllerName | default('gateway.envoyproxy.io/gatewayclass-controller', true) }}
@@ -204,6 +203,18 @@
         with v1 ListenerSet CRDs (found {{ _p.version | default('unknown', true) }}).
   loop_control:
     label: "{{ item.msg | truncate(60) }}"
+  when: _gw_detect_strict | default(true) | bool
+
+# Upgrading changes behaviour (ListenerSets, newer CRDs), so it is never implicit.
+- name: "envoy_gateway | detect | Upgrade decision"
+  ansible.builtin.assert:
+    that: not gateway_platform.upgrade_pending | bool
+    fail_msg: |-
+      Envoy Gateway {{ gateway_platform.previous_version | default('(unknown version)', true) }} in {{ gateway_platform.controller_namespace }} was installed by this platform and is older than {{ envoy_gateway_version }}. Nothing has been changed. Choose in global_config.yaml, then re-run:
+        envoy_gateway_upgrade: true   upgrade to {{ envoy_gateway_version }} (Gateway API {{ envoy_gateway_gateway_api_version }}); services move to ListenerSets.
+                                      Solutions using BackendTLSPolicy v1alpha3 must move to v1.
+        envoy_gateway_upgrade: false  keep {{ gateway_platform.previous_version | default('it', true) }} and its CRDs; services {{ 'keep using ListenerSets' if gateway_platform.listenerset_capable | bool else 'share the wildcard listener' }}.
+    quiet: true
   when: _gw_detect_strict | default(true) | bool
 
 - name: "envoy_gateway | detect | Platform Gateway class"

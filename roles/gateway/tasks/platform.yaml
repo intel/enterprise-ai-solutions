@@ -20,10 +20,13 @@
     - gateway_platform is not defined
     - _gw_platform_cm.resources | default([]) | length > 0
 
+# The current state, without the install's checks; the platform install decides.
 - name: "gateway | platform | Detect (no record yet)"
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: detect.yaml
+  vars:
+    _gw_detect_strict: false
   when: gateway_platform is not defined
 
 - name: "gateway | platform | Provider facts"
