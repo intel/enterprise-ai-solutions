@@ -60,6 +60,45 @@
     _gw_cert_context: "platform listeners"
   when: gateway_tls_mode == 'custom' and gateway_create
 
+# After selfsigned mode, cert-manager would keep rewriting the secret.
+- name: "gateway | Remove selfsigned platform leaves (custom mode)"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ item }}-cert"
+    namespace: "{{ gateway_namespace }}"
+  loop: "{{ _gw_platform_certs_all }}"
+  when: gateway_tls_mode == 'custom' and gateway_create
+
+- name: "gateway | Remove selfsigned leaf secrets the operator certificate replaces"
+  kubernetes.core.k8s:
+    state: absent
+    kind: Secret
+    name: "{{ item }}"
+    namespace: "{{ gateway_namespace }}"
+  loop: "{{ _gw_platform_certs_all | difference([gateway_tls_secret_name]) }}"
+  when: gateway_tls_mode == 'custom' and gateway_create
+
+- name: "gateway | Read the TLS secret"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: "{{ gateway_tls_secret_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_tls_secret
+  when: gateway_tls_mode == 'custom' and gateway_create
+
+# Recreated clean, without cert-manager's annotations (first custom run only).
+- name: "gateway | Drop the TLS secret cert-manager issued"
+  kubernetes.core.k8s:
+    state: absent
+    kind: Secret
+    name: "{{ gateway_tls_secret_name }}"
+    namespace: "{{ gateway_namespace }}"
+  when:
+    - gateway_tls_mode == 'custom' and gateway_create
+    - "'cert-manager.io/certificate-name' in ((_gw_tls_secret.resources | first | default({})).metadata.annotations | default({}))"
+
 - name: "gateway | Create TLS secret from user-provided certs"
   kubernetes.core.k8s:
     state: present
