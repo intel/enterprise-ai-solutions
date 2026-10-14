@@ -20,8 +20,11 @@
     - gateway_platform is not defined
     - _eg_platform_cm.resources | default([]) | length > 0
 
+# The current state, without the install's checks; the platform install decides.
 - name: "envoy_gateway | platform | Detect (no record yet)"
   ansible.builtin.include_tasks: detect.yaml
+  vars:
+    _eg_detect_strict: false
   when: gateway_platform is not defined
 
 # Proxies run beside the controller, so their Services live in its namespace.
