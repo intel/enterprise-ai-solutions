@@ -421,10 +421,40 @@
 
 # ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
 
+# An apply merges, so auth sections the template no longer renders (an older
+# release's extAuth) would stay on the live policy. Null them out first.
+- name: "envoy_gateway | Read the current gateway SecurityPolicy"
+  kubernetes.core.k8s_info:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+  register: _eg_auth_live
+  when: gateway_create
+
+- name: "envoy_gateway | Drop auth sections the policy no longer has"
+  vars:
+    _rendered: "{{ (lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | select | first).spec }}"
+    _stale: >-
+      {{ ((_eg_auth_live.resources | default([]) | first | default({})).spec | default({})).keys()
+         | difference(_rendered.keys()) | list }}
+  kubernetes.core.k8s:
+    state: patched
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+    merge_type: merge
+    definition:
+      spec: >-
+        {%- set out = {} -%}
+        {%- for k in _stale -%}{%- set _ = out.update({k: None}) -%}{%- endfor -%}
+        {{ out }}
+  when: gateway_create and _stale | length > 0
+
 - name: "envoy_gateway | Apply SecurityPolicy (Keycloak JWT)"
   kubernetes.core.k8s:
     state: present
-    force: true       # replace: an older policy's extAuth must not survive a merge
     definition: "{{ lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | list }}"
   when: gateway_create
 
