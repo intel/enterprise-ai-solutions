@@ -125,10 +125,15 @@
     _crds_apply: "{{ _managed | bool and (_action != 'keep' or _cur == envoy_gateway_version) }}"
     _foreign_older: >-
       {{ not _crds_ours | bool and (not _crd_bundle or _crd_bundle is version(envoy_gateway_gateway_api_version, '<')) }}
-    # Never over a newer bundle: Gateway API's safe-upgrades policy denies downgrades.
+    _crd_channel: "{{ (_gw_crd.metadata.annotations | default({})).get('gateway.networking.k8s.io/channel', '') if _gw_crd is not none else '' }}"
+    # Only when missing or older (never downgrade: safe-upgrades denies it). At
+    # the same version only standard ones are re-applied, so experimental CRDs
+    # (from the chart on main) keep their extra versions, e.g. BackendTLSPolicy v1alpha3.
     _gwapi_apply: >-
       {{ _crds_apply | bool and (
-           (_crds_ours | bool and (not _crd_bundle or _crd_bundle is version(envoy_gateway_gateway_api_version, '<=')))
+           _gw_crd is none
+           or (_crds_ours | bool and _crd_bundle and (_crd_bundle is version(envoy_gateway_gateway_api_version, '<')
+               or (_crd_bundle == envoy_gateway_gateway_api_version and _crd_channel == 'standard')))
            or (_foreign_older | bool and gateway_api_crds_takeover | bool)) }}
     _ls_served: >-
       {{ _gwapi_apply | bool or (_ls_crd is not none and
