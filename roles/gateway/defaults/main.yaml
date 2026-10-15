@@ -6,6 +6,7 @@
 # these hooks (run with this role's defaults in scope):
 #   detect, controller, controller_validate, controller_remove,
 #   policies, policies_remove, route_auth_exempt, route_rate_limit
+# and, on OpenShift (cluster_distribution), openshift_routes.
 # See roles/envoy_gateway for the reference implementation.
 gateway_provider: "envoy"
 # Provider of the recorded platform, so later runs keep the one installed.
@@ -21,6 +22,21 @@ gateway_platform_configmap: "gateway-platform"
 gateway_create: true
 gateway_name: "eg-gateway"
 gateway_namespace: "envoy-gateway-system"
+
+# ── OpenShift ────────────────────────────────────────────────────────────────
+# The OpenShift router owns :80/:443, so every host the Gateway serves gets a
+# TLS passthrough Route to the gateway proxies: the platform hosts below at
+# install, each published service's host in publish.yaml. Point DNS for them at
+# the router (the *.apps wildcard already does, if base_domain_name sits under
+# the cluster's apps domain). The inference hostname is left out: on OpenShift
+# the OpenShift AI inference Gateway serves it with a Route of its own.
+gateway_openshift_route_hosts: >-
+  {{ [base_domain_name] + ([gateway_s3_hostname] if gateway_s3_listener_enabled | bool else [])
+     + gateway_openshift_extra_route_hosts }}
+gateway_openshift_extra_route_hosts: []
+gateway_openshift_route_exclude:
+  - "{{ inference_hostname | default('inference.' ~ base_domain_name) }}"
+_gw_openshift: "{{ cluster_distribution | default('kubernetes') == 'openshift' }}"
 
 # Default request timeout for routes attached to the gateway.
 # Envoy's built-in default is 15s which is too aggressive for LLM responses

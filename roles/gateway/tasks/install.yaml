@@ -104,6 +104,16 @@
   delay: 5
   when: gateway_create
 
+- name: "gateway | OpenShift: publish the platform hosts as passthrough Routes"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: openshift_routes.yaml
+  vars:
+    _openshift_route_hosts: "{{ gateway_openshift_route_hosts | reject('in', gateway_openshift_route_exclude) | list }}"
+  when:
+    - gateway_create
+    - _gw_openshift | bool
+
 # ── Plaintext HTTP:80 → HTTPS redirect ───────────────────────────────────────
 # The HTTP:80 listener exists so browsers hitting http:// still land on the
 # stack, but it must never SERVE anything in cleartext. This catch-all route

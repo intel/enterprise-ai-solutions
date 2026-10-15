@@ -1,0 +1,73 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Envoy Gateway — OpenShift passthrough Routes
+# =============================================================================
+# One Route per hostname, from the OpenShift router to the Envoy Service on
+# :443. TLS passthrough: the router routes on SNI only and Envoy terminates TLS
+# with the gateway certificate, as it does behind a LoadBalancer on Kubernetes.
+# Plain HTTP is redirected to HTTPS by the router.
+#
+# Provider hook for roles/gateway, which calls it on OpenShift for the
+# platform hosts (install.yaml) and for each host it publishes or unpublishes
+# (publish.yaml, unpublish.yaml):
+#   _openshift_route_hosts  list of hostnames
+#   _openshift_route_state  present (default) | absent
+# =============================================================================
+
+- name: "envoy_gateway | OpenShift: remove passthrough Routes"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: "{{ ('gw-' ~ (item | replace('.', '-')))[:63] | regex_replace('-+$', '') }}"
+    namespace: "{{ envoy_gateway_namespace }}"
+  loop: "{{ _openshift_route_hosts | select | unique | list }}"
+  failed_when: false
+  when: _openshift_route_state | default('present') == 'absent'
+
+- name: "envoy_gateway | OpenShift: find the Envoy Service for {{ gateway_name }}"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ envoy_gateway_namespace }}"
+    label_selectors:
+      - "gateway.envoyproxy.io/owning-gateway-name={{ gateway_name }}"
+      - "gateway.envoyproxy.io/owning-gateway-namespace={{ gateway_namespace }}"
+  register: _eg_route_svc
+  until: _eg_route_svc.resources | default([]) | length > 0
+  retries: 30
+  delay: 5
+  when: _openshift_route_state | default('present') == 'present'
+
+- name: "envoy_gateway | OpenShift: create passthrough Routes"
+  vars:
+    _svc: "{{ _eg_route_svc.resources[0] }}"
+    _https_port: "{{ _svc.spec.ports | selectattr('port', 'eq', 443) | first }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        # Route names are DNS labels: derive from the hostname, max 63 chars.
+        name: "{{ ('gw-' ~ (item | replace('.', '-')))[:63] | regex_replace('-+$', '') }}"
+        namespace: "{{ envoy_gateway_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: ai-solutions
+          gateway.envoyproxy.io/owning-gateway-name: "{{ gateway_name }}"
+      spec:
+        host: "{{ item }}"
+        to:
+          kind: Service
+          name: "{{ _svc.metadata.name }}"
+          weight: 100
+        port:
+          targetPort: "{{ _https_port.name }}"
+        tls:
+          termination: passthrough
+          insecureEdgeTerminationPolicy: Redirect
+        wildcardPolicy: None
+  loop: "{{ _openshift_route_hosts | select | unique | list }}"
+  when: _openshift_route_state | default('present') == 'present'

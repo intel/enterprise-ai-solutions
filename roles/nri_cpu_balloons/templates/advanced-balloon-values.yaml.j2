@@ -66,6 +66,13 @@ config:
     klog:
       skip_headers: true
 
+{% if cluster_distribution | default('kubernetes') == 'openshift' %}
+# OpenShift: let the chart grant the plugin ServiceAccount an SCC (a dedicated
+# hostPath-only SCC, or `privileged` when allowPCT is set). Needs chart >= v0.14.0.
+openshift:
+  grant-scc: true
+
+{% endif %}
 # Deployment Metadata (for reference)
 # Profile: {{ nri_deployment_profile | default('N/A') }}
 # Reserved CPUs: {{ nri_actual_reserved_count | default('N/A') }}

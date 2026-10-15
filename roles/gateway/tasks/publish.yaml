@@ -41,6 +41,17 @@
     gateway_apex_path: "{{ _gp_path }}"
     gateway_listenerset_keep_grant: "{{ _gp_mode == 'subdomain' }}"
 
+# Path mode serves on the apex host, whose Route install.yaml created.
+- name: "gateway | publish | OpenShift: Route for {{ gateway_publish_host }}"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: openshift_routes.yaml
+  vars:
+    _openshift_route_hosts: "{{ [gateway_publish_host] | reject('in', gateway_openshift_route_exclude) | list }}"
+  when:
+    - _gw_openshift | bool
+    - _gp_mode == 'subdomain'
+
 - name: "gateway | publish | Route parent for {{ gateway_publish_name }}"
   ansible.builtin.set_fact:
     gateway_publish:

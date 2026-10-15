@@ -63,6 +63,23 @@
 - name: "Preflight - Platform"
   ansible.builtin.include_tasks: preflight_platform.yaml
 
+# ── OpenShift: settings the platform decides ─────────────────────────────────
+# One global_config.yaml serves both platforms. global_config.yaml is passed as
+# extra vars, which set_fact cannot override, so the platform-dependent values
+# are expressions there (istio_enabled, observability_enabled default to "not
+# OpenShift"), the components that the cluster provides are gated off in
+# components.yaml, and storage is mapped in storage/tasks/resolve.yaml.
+
+- name: "Preflight - OpenShift: warn about mesh enrollment"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: istio_enabled is true on OpenShift. The installer does not deploy
+      Istio here, but roles still label their namespaces for ambient mode, which
+      enrolls them in the cluster's Service Mesh 3. Unset it to keep the default.
+  when:
+    - cluster_distribution == 'openshift'
+    - istio_enabled | default(false) | bool
+
 # Captured before the ext merge. ai-solutions' own layers are always in scope; a
 # solution's layer is in scope only when this env was inited for it, which
 # env/<env>/.solutions.yaml records and the installer passes as _env_layers.

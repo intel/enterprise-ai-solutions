@@ -66,8 +66,10 @@ routing_mode: "subdomain"                 # subdomain | path
 # gateway_tls_ca_file: "/path/to/ca.pem"     # optional: private CA, stored as ca.crt
 
 # --- Components ---
-istio_enabled: true
-observability_enabled: true
+# Both default to "not OpenShift": there the mesh is Service Mesh 3 and metrics
+# belong to the cluster's monitoring. true/false still overrides.
+istio_enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
+observability_enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 
 # --- Authentication ---
