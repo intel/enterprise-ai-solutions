@@ -55,6 +55,14 @@
     - "{{ log_dir | default((env_dir | default(playbook_dir + '/../env/local')) ~ '/logs') }}"
     - "{{ tmp_dir | default((log_dir | default((env_dir | default(playbook_dir + '/../env/local')) ~ '/logs')) ~ '/tmp') }}"
 
+# ── Platform detection ────────────────────────────────────────────────────────
+# Runs before the ext merge below, which renders every component's enabled:
+# expression on the spot, so components.yaml and ext manifests can gate on
+# cluster_distribution.
+
+- name: "Preflight - Platform"
+  ansible.builtin.include_tasks: preflight_platform.yaml
+
 # Captured before the ext merge. ai-solutions' own layers are always in scope; a
 # solution's layer is in scope only when this env was inited for it, which
 # env/<env>/.solutions.yaml records and the installer passes as _env_layers.
