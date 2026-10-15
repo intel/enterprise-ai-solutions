@@ -130,9 +130,9 @@ cert_manager_enabled: true
 metallb_enabled: true
 postgresql_enabled: true
 envoy_gateway_enabled: true
-# An Envoy Gateway this platform installed earlier and is now older: ask (stop
-# and explain, the default), true (upgrade) or false (keep it).
-# envoy_gateway_upgrade: ask
+# Envoy Gateway 1.7.1 by default; true installs 1.9.2 (ListenerSets) and
+# upgrades this platform's own older release. Never downgrades.
+# envoy_gateway_upgrade: false
 
 # =============================================================================
 # Optional Features (only read when the matching option above selects them)

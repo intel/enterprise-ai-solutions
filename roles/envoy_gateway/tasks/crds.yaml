@@ -49,4 +49,6 @@
   loop: >-
     {{ ['gateways.gateway.networking.k8s.io', 'httproutes.gateway.networking.k8s.io',
         'envoyproxies.gateway.envoyproxy.io']
-       + (['listenersets.gateway.networking.k8s.io'] if gateway_platform.gateway_api_apply | bool else []) }}
+       + (['listenersets.gateway.networking.k8s.io']
+          if gateway_platform.gateway_api_apply | bool and envoy_gateway_version is version(gateway_listenerset_min_version, '>=')
+          else []) }}

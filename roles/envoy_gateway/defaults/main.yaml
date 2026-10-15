@@ -2,7 +2,15 @@
 # =============================================================================
 # Envoy Gateway — provider for roles/gateway (gateway_provider: envoy)
 # =============================================================================
-envoy_gateway_version: "1.9.2"
+# Release lines: baseline by default; envoy_gateway_upgrade: true selects latest
+# for new installs and upgrades this platform's own older release (never
+# downgrades). Envoy AI Gateway follows the installed minor (envoy_ai_gateway).
+envoy_gateway_releases:
+  baseline: {version: "1.7.1", gateway_api: "1.4.1"}
+  latest: {version: "1.9.2", gateway_api: "1.6.1"}
+envoy_gateway_upgrade: false
+_eg_line: "{{ envoy_gateway_releases['latest' if envoy_gateway_upgrade | bool else 'baseline'] }}"
+envoy_gateway_version: "{{ _eg_line.version }}"
 envoy_gateway_namespace: "envoy-gateway-system"
 envoy_gateway_helm_repo: "oci://docker.io/envoyproxy/gateway-helm"
 # Gateway API CRDs (standard channel, the version this release bundles) and
@@ -12,16 +20,19 @@ envoy_gateway_crds_field_manager: "ai-solutions-envoy-gateway"
 envoy_gateway_wait_timeout: "300s"
 
 # ── Existing installs (detect.yaml) ──────────────────────────────────────────
-# A controller or CRDs this role did not install are never changed or removed.
-# Our own older release: ask (stop and explain), true (upgrade) or false (keep).
-envoy_gateway_upgrade: "ask"
+# A controller or CRDs this role did not install are never upgraded or removed.
+# true lets the platform wire an existing controller in (mesh edge, AI Gateway
+# extension) without changing its version.
+envoy_gateway_configure_existing: false
 envoy_gateway_release_name: "envoy-gateway"
 # Oldest controller supported, and the oldest that publishes with ListenerSets.
 envoy_gateway_min_version: "1.7.0"
 gateway_listenerset_min_version: "1.9.0"
 # Gateway API bundled with envoy_gateway_version. Foreign Gateway API CRDs older
 # than this are only upgraded when gateway_api_crds_takeover is true.
-envoy_gateway_gateway_api_version: "1.6.1"
+envoy_gateway_gateway_api_version: >-
+  {{ (envoy_gateway_releases.values() | selectattr('version', 'eq', envoy_gateway_version) | first
+      | default(_eg_line)).gateway_api }}
 gateway_api_crds_takeover: false
 
 # HTTP/2 on every listener whose certificate names only its own host. Envoy

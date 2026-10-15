@@ -17,6 +17,20 @@
   failed_when: false
   when: gateway_create
 
+# Our mesh-edge exceptions on an existing controller's namespace (configure_existing).
+- name: "envoy_gateway | Remove the mesh edge policies added to the existing controller"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: security.istio.io/v1
+    kind: PeerAuthentication
+    name: "{{ item }}"
+    namespace: "{{ envoy_gateway_namespace }}"
+  loop: [eg-gateway-edge, allow-webhook-ctrl]
+  failed_when: false
+  when:
+    - not gateway_platform.controller_managed | bool
+    - gateway_platform.configure_existing | default(false) | bool
+
 - name: "envoy_gateway | Existing controller and CRDs left in place"
   ansible.builtin.debug:
     msg: >-

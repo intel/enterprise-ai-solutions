@@ -283,6 +283,11 @@
       data:
         platform: "{{ gateway_platform | to_json }}"
 
+- name: "gateway | Notices"
+  ansible.builtin.debug:
+    msg: "{{ gateway_platform.notices }}"
+  when: gateway_platform.notices | default([]) | length > 0
+
 - name: "gateway | Install complete"
   ansible.builtin.debug:
     msg: >-

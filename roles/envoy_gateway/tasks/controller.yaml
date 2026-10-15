@@ -61,7 +61,8 @@
       retries: 60
       delay: 5
 
-# ── Controller namespace (ours only; a foreign one keeps its labels) ──────────
+# ── Controller namespace: mesh edge for ours, or an existing one with
+#    envoy_gateway_configure_existing; Pod Security labels for ours only ───────
 
 - name: "envoy_gateway | Label envoy-gateway-system namespace — Istio"
   kubernetes.core.k8s:
@@ -74,7 +75,7 @@
         labels:
           istio.io/dataplane-mode: "ambient"
   when:
-    - gateway_platform.controller_managed | bool
+    - gateway_platform.controller_managed | bool or gateway_platform.configure_existing | bool
     - istio_enabled | default(false) | bool
 
 # The eg-gateway proxy is the north-south mesh edge: external clients terminate TLS
@@ -96,7 +97,7 @@
         mtls:
           mode: PERMISSIVE
   when:
-    - gateway_platform.controller_managed | bool
+    - gateway_platform.controller_managed | bool or gateway_platform.configure_existing | bool
     - istio_enabled | default(false) | bool
 
 # Host-network apiserver (no mesh identity) can't reach the envoy-gateway controller's
@@ -118,7 +119,7 @@
           mode: STRICT
         portLevelMtls: "{{ {'9443': {'mode': 'PERMISSIVE'}} }}"
   when:
-    - gateway_platform.controller_managed | bool
+    - gateway_platform.controller_managed | bool or gateway_platform.configure_existing | bool
     - istio_enabled | default(false) | bool
 
 - name: "envoy_gateway | Label envoy-gateway-system namespace — PSS"
