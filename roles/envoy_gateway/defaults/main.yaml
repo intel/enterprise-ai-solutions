@@ -73,6 +73,24 @@ gateway_protected_hostnames:
   - hostname: "grafana.{{ base_domain_name }}"
     owner_namespace: "monitoring"
 
+# ── OpenShift ────────────────────────────────────────────────────────────────
+# On OpenShift (cluster_distribution, detected in preflight) Envoy runs as a Deployment
+# behind a ClusterIP Service, and the OpenShift router forwards each hostname to
+# it through a TLS passthrough Route, so Envoy keeps terminating TLS with the
+# gateway certificate. Point DNS for these hostnames at the router (the
+# *.apps wildcard already does, if base_domain_name sits under the cluster's
+# apps domain). Hostnames published by later layers are added by calling
+# tasks_from: openshift_routes.yaml with _openshift_route_hosts.
+gateway_envoy_replicas: 1
+# The inference hostname is left out: on OpenShift it is served by the OpenShift
+# AI inference Gateway, which publishes its own Route (inference layer, kserve role).
+gateway_openshift_route_hosts: >-
+  {{ ([base_domain_name] + (gateway_protected_hostnames | map(attribute='hostname') | list)
+      + ([gateway_s3_hostname] if gateway_s3_listener_enabled | bool else [])
+      + gateway_openshift_extra_route_hosts)
+     | reject('equalto', inference_hostname | default('inference.' ~ base_domain_name)) | unique }}
+gateway_openshift_extra_route_hosts: []
+
 # Keycloak defaults (for SecurityPolicy JWT config — overridden by keycloak role)
 keycloak_hostname: "keycloak.{{ base_domain_name }}"
 keycloak_realm: "inference"
