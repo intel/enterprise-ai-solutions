@@ -69,14 +69,10 @@
   register: _det_cfg
   when: _det_ctrl is not none
 
-- name: "envoy_gateway | detect | Read Gateway API CRDs"
+- name: "envoy_gateway | detect | Read CRDs"
   kubernetes.core.k8s_info:
     api_version: apiextensions.k8s.io/v1
     kind: CustomResourceDefinition
-    name: "{{ item }}"
-  loop:
-    - gateways.gateway.networking.k8s.io
-    - listenersets.gateway.networking.k8s.io
   register: _det_crds
 
 - name: "envoy_gateway | detect | Read the platform Gateway and the default GatewayClass"
@@ -111,15 +107,27 @@
     _older: "{{ _det_ctrl is not none and _det_ctrl.ours and (not _cur or _cur is version(envoy_gateway_version, '<')) }}"
     _action: "{{ 'install' if _det_ctrl is none else 'upgrade' if _older | bool and _upgrade | string == 'True' else 'keep' }}"
     _version: "{{ envoy_gateway_version if _action != 'keep' else _cur }}"
-    _gw_crd: "{{ _det_crds.results[0].resources | default([]) | first | default(none) }}"
-    _ls_crd: "{{ _det_crds.results[1].resources | default([]) | first | default(none) }}"
+    # Every Gateway API CRD counts: a partial teardown can leave some behind.
+    _gwapi_crds: >-
+      {{ _det_crds.resources | default([])
+         | selectattr('spec.group', 'in', ['gateway.networking.k8s.io', 'gateway.networking.x-k8s.io']) | list }}
+    _gw_crd: >-
+      {{ (_gwapi_crds | selectattr('metadata.name', 'eq', 'gateways.gateway.networking.k8s.io') | list
+          + _gwapi_crds) | first | default(none) }}
+    _ls_crd: "{{ _gwapi_crds | selectattr('metadata.name', 'eq', 'listenersets.gateway.networking.k8s.io') | first | default(none) }}"
+    # The newest bundle present, so nothing older is applied over it.
     _crd_bundle: >-
-      {{ ((_gw_crd.metadata.annotations | default({})).get('gateway.networking.k8s.io/bundle-version', '')
-          | regex_replace('^v', '')) if _gw_crd is not none else '' }}
+      {%- set best = namespace(v='') -%}
+      {%- for c in _gwapi_crds -%}
+      {%- set v = (c.metadata.annotations | default({})).get('gateway.networking.k8s.io/bundle-version', '') | regex_replace('^v', '') -%}
+      {%- if v and (not best.v or v is version(best.v, '>')) -%}{%- set best.v = v -%}{%- endif -%}
+      {%- endfor -%}
+      {{ best.v }}
     # Ours: none yet, applied by this role, or there since our controller came.
     _crds_ours: >-
       {{ _gw_crd is none
-         or envoy_gateway_crds_field_manager in (_gw_crd.metadata.managedFields | default([]) | map(attribute='manager'))
+         or envoy_gateway_crds_field_manager in (_gwapi_crds | map(attribute='metadata.managedFields', default=[])
+                                                 | flatten | map(attribute='manager') | list)
          or (_det_ctrl is not none and _det_ctrl.ours) }}
     # The installed version keeps its CRDs; an older kept release is left alone.
     _crds_apply: "{{ _managed | bool and (_action != 'keep' or _cur == envoy_gateway_version) }}"
