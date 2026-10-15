@@ -140,4 +140,3 @@
   when: (_eg_sm_crd.resources | default([])) | length == 0
   ansible.builtin.debug:
     msg: "Prometheus Operator CRDs not found — Envoy Gateway ServiceMonitor will be created by the observability role."
-

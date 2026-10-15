@@ -150,52 +150,62 @@
          else 'enterprise-ai' }}
     _attach: >-
       {{ 'listenerset' if gateway_attach_mode in ['auto', 'listenerset'] and _capable | bool else 'shared' }}
-    _notices: >-
-      {%- set n = [] -%}
-      {%- if _action == 'install' and envoy_gateway_version is version(_latest, '<') -%}
-      {%- set _ = n.append('Installed Envoy Gateway ' ~ envoy_gateway_version ~ '; envoy_gateway_upgrade: true installs ' ~ _latest ~ ' with ListenerSets.') -%}
-      {%- endif -%}
-      {%- if _action == 'keep' and _managed | bool and _cur and _cur is version(_latest, '<') and not envoy_gateway_upgrade | bool -%}
-      {%- set _ = n.append('Kept Envoy Gateway ' ~ _cur ~ '; envoy_gateway_upgrade: true upgrades to ' ~ _latest ~ ' (ListenerSets; BackendTLSPolicy v1alpha3 users must move to v1).') -%}
-      {%- endif -%}
-      {%- if not _managed | bool -%}
-      {%- set _ = n.append('Envoy Gateway ' ~ (_cur or '(unknown version)') ~ ' in ' ~ _det_ctrl.namespace ~ ' was not installed by this platform; it is used as it is and never upgraded or removed.') -%}
-      {%- endif -%}
-      {%- if _det_ctrl is not none and _cur and _cur is version(envoy_gateway_min_version, '<') -%}
-      {%- set _ = n.append('Envoy Gateway ' ~ _cur ~ ' is older than the tested ' ~ envoy_gateway_min_version ~ '; best effort.') -%}
-      {%- endif -%}
-      {%- if _det_ctrl is not none and not _cur -%}
-      {%- set _ = n.append('Envoy Gateway version unknown; services share the wildcard listener.') -%}
-      {%- endif -%}
-      {%- if _det_found | length > 1 -%}
-      {%- set _ = n.append('Other Envoy Gateway controllers run in ' ~ (_det_found | rejectattr('namespace', 'eq', _det_ctrl.namespace) | map(attribute='namespace') | join(', ')) ~ '; they need a controllerName other than ' ~ _ctrl_name ~ '.') -%}
-      {%- endif -%}
-      {%- if _crds_apply | bool and _foreign_older | bool and not gateway_api_crds_takeover | bool -%}
-      {%- set _ = n.append('Gateway API CRDs ' ~ (_crd_bundle or '(no version)') ~ ' from another tool are older than ' ~ envoy_gateway_gateway_api_version ~ ' and left as they are; gateway_api_crds_takeover: true replaces them.') -%}
-      {%- endif -%}
-      {%- if gateway_attach_mode == 'listenerset' and not _capable | bool -%}
-      {%- set _ = n.append('gateway_attach_mode is listenerset, but this controller cannot serve ListenerSets; services share the wildcard listener.') -%}
-      {%- endif -%}
-      {%- if _deploy_type == 'GatewayNamespace' -%}
-      {%- set _ = n.append('This Envoy Gateway runs proxies in Gateway namespaces; inference routes expect them beside the controller.') -%}
-      {%- endif -%}
-      {%- if istio_enabled | default(false) | bool and not _managed | bool and not envoy_gateway_configure_existing | bool
-            and ((_det_ns.resources | default([]) | first | default({})).metadata.labels | default({})).get('istio.io/dataplane-mode') != 'ambient' -%}
-      {%- set _ = n.append('The Envoy Gateway namespace ' ~ _det_ctrl.namespace ~ ' is not in the Istio mesh, so its proxies cannot reach meshed services (503). Set envoy_gateway_configure_existing: true, or label it istio.io/dataplane-mode=ambient.') -%}
-      {%- endif -%}
-      {%- if _class == 'enterprise-ai' and not _gw -%}
-      {%- set _ = n.append('GatewayClass eg belongs to another controller or platform; the platform Gateway uses enterprise-ai.') -%}
-      {%- endif -%}
-      {{ n }}
+    _ctrl_ns: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
+    _in_mesh: >-
+      {{ ((_det_ns.resources | default([]) | first | default({})).metadata.labels | default({}))
+         .get('istio.io/dataplane-mode') == 'ambient' }}
+    _notice_rules:
+      - show: "{{ _action == 'install' and envoy_gateway_version is version(_latest, '<') }}"
+        msg: >-
+          Installed Envoy Gateway {{ envoy_gateway_version }}; envoy_gateway_upgrade: true installs
+          {{ _latest }} with ListenerSets.
+      - show: >-
+          {{ _action == 'keep' and _managed | bool and _cur | length > 0 and _cur is version(_latest, '<')
+             and not envoy_gateway_upgrade | bool }}
+        msg: >-
+          Kept Envoy Gateway {{ _cur }}; envoy_gateway_upgrade: true upgrades to {{ _latest }}
+          (ListenerSets; BackendTLSPolicy v1alpha3 users must move to v1).
+      - show: "{{ not _managed | bool }}"
+        msg: >-
+          Envoy Gateway {{ _cur or '(unknown version)' }} in {{ _ctrl_ns }} was not installed by this
+          platform; it is used as it is and never upgraded or removed.
+      - show: "{{ _cur | length > 0 and _cur is version(envoy_gateway_min_version, '<') }}"
+        msg: "Envoy Gateway {{ _cur }} is older than the tested {{ envoy_gateway_min_version }}; best effort."
+      - show: "{{ _det_ctrl is not none and not _cur }}"
+        msg: "Envoy Gateway version unknown; services share the wildcard listener."
+      - show: "{{ _det_found | length > 1 }}"
+        msg: >-
+          Other Envoy Gateway controllers run in
+          {{ _det_found | rejectattr('namespace', 'eq', _ctrl_ns) | map(attribute='namespace') | join(', ') }};
+          they need a controllerName other than {{ _ctrl_name }}.
+      - show: "{{ _crds_apply | bool and _foreign_older | bool and not gateway_api_crds_takeover | bool }}"
+        msg: >-
+          Gateway API CRDs {{ _crd_bundle or '(no version)' }} from another tool are older than
+          {{ envoy_gateway_gateway_api_version }} and left as they are; gateway_api_crds_takeover: true replaces them.
+      - show: "{{ gateway_attach_mode == 'listenerset' and not _capable | bool }}"
+        msg: >-
+          gateway_attach_mode is listenerset, but this controller cannot serve ListenerSets; services
+          share the wildcard listener.
+      - show: "{{ _deploy_type == 'GatewayNamespace' }}"
+        msg: "This Envoy Gateway runs proxies in Gateway namespaces; inference routes expect them beside the controller."
+      - show: >-
+          {{ istio_enabled | default(false) | bool and not _managed | bool
+             and not envoy_gateway_configure_existing | bool and not _in_mesh | bool }}
+        msg: >-
+          The Envoy Gateway namespace {{ _ctrl_ns }} is not in the Istio mesh, so its proxies cannot reach
+          meshed services (503). Set envoy_gateway_configure_existing: true, or label it istio.io/dataplane-mode=ambient.
+      - show: "{{ _class == 'enterprise-ai' and not _gw }}"
+        msg: "GatewayClass eg belongs to another controller or platform; the platform Gateway uses enterprise-ai."
+    _notices: "{{ _notice_rules | selectattr('show') | map(attribute='msg') | map('trim') | list }}"
   ansible.builtin.set_fact:
     gateway_platform:
       provider: envoy
       # Exported to the play by roles/gateway (provider_facts.yaml).
       facts:
-        envoy_gateway_namespace: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
+        envoy_gateway_namespace: "{{ _ctrl_ns }}"
       controller_managed: "{{ _managed | bool }}"
       controller_action: "{{ _action }}"
-      controller_namespace: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
+      controller_namespace: "{{ _ctrl_ns }}"
       controller_name: "{{ _ctrl_name }}"
       release: "{{ _det_ctrl.release if _det_ctrl is not none else envoy_gateway_release_name }}"
       version: "{{ _version }}"

@@ -193,4 +193,3 @@
           kind: EnvoyProxy
           name: eg-proxy-config
           namespace: "{{ _eg_proxy_config_namespace }}"
-
