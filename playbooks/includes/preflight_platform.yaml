@@ -1,0 +1,99 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Preflight | Detect the platform
+# =============================================================================
+# Answers "what cluster is this?" once per run. Preflight includes it before the
+# component registry is rendered, so `enabled:` expressions and the layer gate can
+# read the result.
+#
+# Only a BYO cluster (existing_kubernetes set) is probed:
+#   - A cluster ai-solutions builds itself is upstream Kubernetes by definition.
+#   - On the first install, that cluster does not exist yet when preflight runs.
+#
+# Published facts (repo-wide, no prefix):
+#   cluster_distribution          kubernetes | openshift
+#   cluster_distribution_version  OpenShift version, or '' for upstream Kubernetes
+#   cluster_kubernetes_version    e.g. v1.34.3, or '' when not probed
+#   cluster_kubernetes_minor      int, 0 when not probed
+#   cluster_apis                  served group/versions, [] when not probed
+#   cluster_default_storageclass  name of the default StorageClass, '' if none
+#
+# One global_config.yaml serves both platforms: roles branch on
+# cluster_distribution instead of the operator setting OpenShift-specific values.
+# Set cluster_distribution in global_config.yaml to skip detection.
+# =============================================================================
+
+- name: "Preflight - Detect platform"
+  when: cluster_distribution is not defined
+  block:
+    - name: "Preflight - Discover BYO cluster APIs and version"
+      kubernetes.core.k8s_cluster_info: {}
+      register: _platform_info
+      failed_when: false
+      when: existing_kubernetes | default('') | trim | length > 0
+
+    - name: "Preflight - Fail when the BYO cluster is unreachable"
+      ansible.builtin.fail:
+        msg: |-
+          The cluster at existing_kubernetes={{ existing_kubernetes }} is not reachable:
+          {{ _platform_info.msg | default('') }}
+          Check the kubeconfig and the proxy settings (no_proxy must cover the API server).
+      when:
+        - _platform_info is not skipped
+        - _platform_info.apis is not defined
+
+    # ClusterVersion is the identity of an OpenShift cluster. Its group alone is not
+    # enough: OKD and MicroShift serve parts of it as well.
+    - name: "Preflight - Read OpenShift ClusterVersion"
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: ClusterVersion
+        name: version
+      register: _platform_ocp
+      when: "'config.openshift.io/v1' in (_platform_info.apis | default({}))"
+
+    - name: "Preflight - Read StorageClasses"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+      register: _platform_sc
+      when: _platform_info.apis is defined
+
+    - name: "Preflight - Publish platform facts"
+      vars:
+        _server: "{{ _platform_info.version.server.kubernetes | default({}) }}"
+        _ocp: "{{ _platform_ocp.resources | default([]) | first | default({}) }}"
+        # Annotation keys contain dots, which selectattr cannot address.
+        _default_sc: >-
+          {%- set ns = namespace(name='') -%}
+          {%- for sc in _platform_sc.resources | default([]) -%}
+          {%- if (sc.metadata.annotations | default({})).get('storageclass.kubernetes.io/is-default-class') == 'true' -%}
+          {%- set ns.name = sc.metadata.name -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.name }}
+      ansible.builtin.set_fact:
+        cluster_distribution: "{{ 'openshift' if _ocp else 'kubernetes' }}"
+        cluster_distribution_version: "{{ _ocp.status.desired.version | default('') }}"
+        cluster_kubernetes_version: "{{ _server.gitVersion | default('') }}"
+        # minor is "34" upstream but "34+" on some distributions
+        cluster_kubernetes_minor: "{{ _server.minor | default('0') | regex_replace('[^0-9]', '') | int }}"
+        cluster_apis: "{{ (_platform_info.apis | default({})).keys() | list }}"
+        cluster_default_storageclass: "{{ _default_sc | trim }}"
+
+- name: "Preflight - Default the platform facts detection did not set"
+  ansible.builtin.set_fact:
+    cluster_distribution_version: "{{ cluster_distribution_version | default('') }}"
+    cluster_kubernetes_version: "{{ cluster_kubernetes_version | default('') }}"
+    cluster_kubernetes_minor: "{{ cluster_kubernetes_minor | default(0) | int }}"
+    cluster_apis: "{{ cluster_apis | default([]) }}"
+    cluster_default_storageclass: "{{ cluster_default_storageclass | default('') }}"
+
+- name: "Preflight - Show platform"
+  ansible.builtin.debug:
+    msg: >-
+      Platform: {{ cluster_distribution }} {{ cluster_distribution_version }}
+      {{ ('(Kubernetes ' ~ cluster_kubernetes_version ~ ', ' ~ cluster_apis | length ~ ' API group/versions)')
+         if cluster_kubernetes_version else '(not probed)' }}
