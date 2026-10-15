@@ -96,6 +96,43 @@
   register: _eg_crds
   when: gateway_platform.controller_managed | bool
 
+# Envoy AI Gateway puts its finalizer on ReferenceGrants; with its controller
+# gone nothing releases it, and the CRD would never finish deleting.
+- name: "envoy_gateway | Look for the Envoy AI Gateway controller and ReferenceGrants"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+    label_selectors: "{{ item.labels | default(omit) }}"
+  loop:
+    - {api: apps/v1, kind: Deployment, labels: [app.kubernetes.io/name=ai-gateway-helm]}
+    - {api: gateway.networking.k8s.io/v1beta1, kind: ReferenceGrant}
+  loop_control:
+    label: "{{ item.kind }}"
+  register: _eg_aigw
+  failed_when: false
+  when: gateway_platform.controller_managed | bool and gateway_platform.gateway_api_owned | default(true) | bool
+
+- name: "envoy_gateway | Release orphaned Envoy AI Gateway finalizers"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: gateway.networking.k8s.io/v1beta1
+    kind: ReferenceGrant
+    name: "{{ item.metadata.name }}"
+    namespace: "{{ item.metadata.namespace }}"
+    merge_type: merge
+    definition:
+      metadata:
+        finalizers: "{{ item.metadata.finalizers | reject('eq', 'aigateway.envoyproxy.io/finalizer') | list }}"
+  loop: >-
+    {{ (_eg_aigw.results[1].resources | default([]))
+       | selectattr('metadata.finalizers', 'defined')
+       | selectattr('metadata.finalizers', 'contains', 'aigateway.envoyproxy.io/finalizer') | list }}
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+  when:
+    - gateway_platform.controller_managed | bool and gateway_platform.gateway_api_owned | default(true) | bool
+    - _eg_aigw.results[0].resources | default([]) | length == 0
+
 - name: "envoy_gateway | Delete Gateway API CRDs"
   kubernetes.core.k8s:
     api_version: apiextensions.k8s.io/v1
@@ -119,7 +156,23 @@
     | selectattr('metadata.name', 'match', '^[a-z0-9-]+\\.gateway\\.networking\\.(k8s|x-k8s)\\.io$') | list | length == 0
   retries: 24
   delay: 5
+  failed_when: false        # reported below; the rest of the teardown still runs
   when: gateway_platform.controller_managed | bool and gateway_platform.gateway_api_owned | default(true) | bool
+
+- name: "envoy_gateway | Gateway API CRDs still deleting"
+  vars:
+    _left: >-
+      {{ _eg_crds_left.resources | default([])
+         | selectattr('metadata.name', 'match', '^[a-z0-9-]+\\.gateway\\.networking\\.(k8s|x-k8s)\\.io$')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ _left | join(', ') }} still deleting: objects of these kinds carry finalizers of a
+      controller that is gone. List them with 'kubectl get <kind> -A -o yaml', remove the finalizer,
+      and the CRDs finish deleting.
+  when:
+    - gateway_platform.controller_managed | bool and gateway_platform.gateway_api_owned | default(true) | bool
+    - _left | length > 0
 
 # Exactly this API group: aigateway.envoyproxy.io belongs to Envoy AI Gateway.
 - name: "envoy_gateway | Find Envoy Gateway CRDs"
