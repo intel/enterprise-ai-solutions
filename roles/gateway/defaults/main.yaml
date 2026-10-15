@@ -120,6 +120,9 @@ gateway_tls_mode: "selfsigned"        # selfsigned | custom
 base_domain_name: "inference-example.com"
 gateway_tls_cert_file: ""
 gateway_tls_key_file: ""
+# Optional CA (chain) that signed the custom certificate, stored as ca.crt in
+# the TLS secret so in-cluster clients can trust a private CA (as in selfsigned).
+gateway_tls_ca_file: ""
 gateway_tls_secret_name: "gateway-tls"          # apex (and S3 host in custom mode)
 gateway_s3_tls_secret_name: "gateway-s3-tls"
 

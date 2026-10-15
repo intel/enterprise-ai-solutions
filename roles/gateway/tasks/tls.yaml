@@ -49,6 +49,12 @@
   register: _tls_key_data
   when: gateway_tls_mode == 'custom' and gateway_create
 
+- name: "gateway | Read custom TLS CA"
+  ansible.builtin.slurp:
+    src: "{{ gateway_tls_ca_file }}"
+  register: _tls_ca_data
+  when: gateway_tls_mode == 'custom' and gateway_create and gateway_tls_ca_file | length > 0
+
 - name: "gateway | Check the custom certificate covers the platform listeners"
   ansible.builtin.include_tasks: custom_cert_sans.yaml
   vars:
@@ -109,9 +115,9 @@
         name: "{{ gateway_tls_secret_name }}"
         namespace: "{{ gateway_namespace }}"
       type: kubernetes.io/tls
-      data:
-        tls.crt: "{{ _tls_cert_data.content }}"
-        tls.key: "{{ _tls_key_data.content }}"
+      data: >-
+        {{ {'tls.crt': _tls_cert_data.content, 'tls.key': _tls_key_data.content}
+           | combine({'ca.crt': _tls_ca_data.content} if _tls_ca_data.content is defined else {}) }}
   when: gateway_tls_mode == 'custom' and gateway_create
 
 # ── TLS: internal root CA (selfsigned mode) ───────────────────────────────────

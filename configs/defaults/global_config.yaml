@@ -63,6 +63,7 @@ routing_mode: "subdomain"                 # subdomain | path
 # --- Custom TLS (only used when gateway_tls_mode=custom) ---
 # gateway_tls_cert_file: "/path/to/cert.pem"
 # gateway_tls_key_file: "/path/to/key.pem"
+# gateway_tls_ca_file: "/path/to/ca.pem"     # optional: private CA, stored as ca.crt
 
 # --- Components ---
 istio_enabled: true
