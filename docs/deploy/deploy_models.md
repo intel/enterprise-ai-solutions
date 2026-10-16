@@ -43,7 +43,7 @@ export HF_TOKEN="hf_your_token_here"
 `--wait` blocks until the model is ready. When it returns it prints the inference endpoint and a ready-to-run example.
 
 > [!NOTE]
-> With `auth_provider: litellm`, the host that `model-manager` prints
+> With `auth_type: litellm_vkey`, the host that `model-manager` prints
 > (`inference.<base_domain_name>`) is **not** the one that serves requests — that
 > host returns `404` in this mode. Use `litellm.<base_domain_name>` instead, as
 > shown under [Access the model](#access-the-model).
@@ -114,9 +114,9 @@ models:
 
 ## Access the model
 
-After a successful deploy, the model-manager prints the exact commands for your `auth_provider`. Refer to those directly, or use the patterns below.
+After a successful deploy, the model-manager prints the exact commands for your `auth_type`. Refer to those directly, or use the patterns below.
 
-### With `auth_provider: litellm`
+### With `auth_type: litellm_vkey`
 
 LiteLLM acts as the unified OpenAI-compatible proxy. All models share the same base URL; the `"model"` field in the request body selects which one.
 
@@ -142,7 +142,7 @@ trailing slash is required) or API for per-key budgets and rate limits. See
 [Deploying and Accessing Models](install_platform.md#deploying-and-accessing-models)
 for minting, listing, and revoking keys.
 
-### With `auth_provider: keycloak`
+### With `auth_type: jwt`
 
 Uses path-based routing through the inference gateway.
 
