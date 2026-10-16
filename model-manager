@@ -71,9 +71,9 @@ if [[ ! -d "$ENV_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${ENV_DIR}/global_config.yaml" ]]; then
-    echo "[WARNING] No global_config.yaml in env/${ES_ENV}/ — auth_provider will default to keycloak." >&2
-    echo "          If you intend to use litellm, ensure env/${ES_ENV}/global_config.yaml exists." >&2
+if [[ ! -f "${ENV_DIR}/config.inference.yaml" ]]; then
+    echo "[WARNING] No config.inference.yaml in env/${ES_ENV}/ — auth_type will default to jwt." >&2
+    echo "          If you intend to use litellm_vkey, run: ./es_auto_installer.sh init inference --env ${ES_ENV}" >&2
 fi
 
 if [[ -f "${ENV_DIR}/kubeconfig.yaml" && -z "${KUBECONFIG:-}" ]]; then
@@ -82,6 +82,9 @@ fi
 
 if [[ -f "${ENV_DIR}/global_config.yaml" ]]; then
     export MM_GLOBAL_CONFIG="${ENV_DIR}/global_config.yaml"
+fi
+if [[ -f "${ENV_DIR}/config.inference.yaml" ]]; then
+    export MM_INFERENCE_CONFIG="${MM_INFERENCE_CONFIG:-${ENV_DIR}/config.inference.yaml}"
 fi
 if [[ -f "${ENV_DIR}/models.yaml" ]]; then
     export MM_CONFIG="${MM_CONFIG:-${ENV_DIR}/models.yaml}"

@@ -79,7 +79,7 @@ export KUBECONFIG=$(pwd)/env/local/kubeconfig.yaml
 kubectl get nodes   # should show Ready
 ```
 
-All settings live in `env/local/global_config.yaml`, created by `init`. Defaults are a single local node with Keycloak OIDC auth. See [Configuration Reference](docs/customize/configuration.md) for every option, and [Deployment Guide](docs/deploy/install_platform.md) for multi-node, bastion, bring-your-own-cluster, and the alternative `litellm` virtual-key auth mode.
+Settings live in `env/local/global_config.yaml` and, for the inference layer (including `auth_type`), `env/local/config.inference.yaml`, both created by `init`. Defaults are a single local node with Keycloak OIDC auth. See [Configuration Reference](docs/customize/configuration.md) for every option, and [Deployment Guide](docs/deploy/install_platform.md) for multi-node, bastion, bring-your-own-cluster, and the alternative `litellm_vkey` (LiteLLM virtual key) auth type.
 
 > [!TIP]
 > `--env` defaults to `local`. Install and teardown are environment-scoped: what you installed with `--env prod` must be torn down with `--env prod`. Remove everything (config preserved) with `./es_auto_installer.sh teardown infrastructure`.

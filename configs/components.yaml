@@ -96,7 +96,8 @@ components:
 
   - name: keycloak
     layer: platform
-    enabled: "{{ keycloak_enabled | default(auth_provider | default('keycloak') != 'litellm') | bool }}"
+    # Both auth modes: people sign in through Keycloak; the gateway trusts its JWTs.
+    enabled: "{{ keycloak_enabled | default(true) | bool }}"
     depends_on: [cert_manager, envoy_gateway, postgresql]
 
   - name: object_store

@@ -11,9 +11,10 @@ env/<name>/global_config.yaml
 ```
 
 Domain names, TLS, authentication, storage, compute, and which components get
-installed all come from this file. There is no other place you need to look, and
-no YAML you have to write from scratch — `init` generates the file for you with
-working defaults.
+installed all come from this file. Solution-specific settings, such as API
+authentication (`auth_type`) and the LiteLLM/Langfuse add-ons, live next to it in
+`env/<name>/config.<solution>.yaml`. There is no YAML you have to write from
+scratch — `init` generates both for you with working defaults.
 
 ### How it fits together
 
@@ -68,7 +69,7 @@ You need to edit the file when one of these is true:
 | Setting | Default | What it does |
 |---|---|---|
 | `base_domain_name` | `solutions.ai` | Every service URL derives from this — `grafana.<domain>`, `keycloak.<domain>`, `inference.<domain>` |
-| `auth_provider` | `keycloak` | Which auth stack deploys and how API calls are authorized — see [Auth provider](#auth-provider) |
+| `auth_type` | `jwt` | Credential API clients send (Keycloak JWT or LiteLLM virtual key). Set in `env/<name>/config.inference.yaml` — see [API authentication](#api-authentication) |
 | `storage_backend` | `local-path` | Where persistent data lives — see [Storage](#storage) |
 | `gateway_tls_mode` | `selfsigned` | Auto-generated CA, or bring your own — see [TLS](#tls) |
 | `kubernetes_accelerator` | `cpu` | Compute target for inference (Intel® Xeon®) |
@@ -81,16 +82,17 @@ Everything else is safe to leave alone until you have a reason to change it.
 
 ## Changing values
 
-**Either** edit `env/<name>/global_config.yaml` and re-run the install:
+**Either** edit `env/<name>/global_config.yaml` (or the solution's
+`env/<name>/config.<solution>.yaml`) and re-run the install:
 
 ```yaml
-auth_provider: "litellm"
+storage_backend: "nfs"
 ```
 
 **Or** override at install time without editing anything:
 
 ```bash
-./es_auto_installer.sh install inference --env local -- -e auth_provider=litellm
+./es_auto_installer.sh install inference --env local -- -e auth_type=litellm_vkey
 ```
 
 Anything after the bare `--` is passed straight to Ansible, so any variable in
@@ -125,8 +127,8 @@ gateway_tls_mode: "selfsigned"            # "selfsigned" = auto-generated CA
 # gateway_tls_key_file:  "/path/to/key.pem"    # Must cover *.<base_domain_name>
 
 # --- Authentication ---
-auth_provider: "keycloak"                 # "keycloak" = full OIDC with SSO, RBAC, identity mgmt
-                                           # "litellm"  = lightweight virtual-key auth (no Keycloak)
+# Keycloak is always deployed. API client auth (auth_type) and the
+# LiteLLM/Langfuse add-ons are set in config.inference.yaml.
 
 # --- Storage ---
 storage_backend: "local-path"             # "local-path" = node-local (single-node only)
@@ -178,7 +180,6 @@ seaweedfs_volume_storage_size: "10Gi"
 |---|---|
 | `base_domain_name` | All service URLs derive from this (e.g. `grafana.<domain>`, `litellm.<domain>`) |
 | `gateway_tls_mode` | How TLS certs are provisioned — auto-generated CA or bring your own |
-| `auth_provider` | Which auth stack deploys and how API requests are authorized |
 | `storage_backend` | Where persistent data lives — must be shared storage for multi-node |
 | `kubernetes_accelerator` | Compute target for inference workloads (Intel® Xeon® CPU) |
 | `kubernetes_cpu_policy` | CPU pinning strategy for inference workloads |
@@ -220,16 +221,28 @@ gateway_tls_key_file:  "/path/to/key.pem"
 
 ---
 
-## Auth provider
+## API authentication
 
-Set via `auth_provider`. Controls which authentication stack is deployed and how model requests are authorized.
+Keycloak is always deployed (realm + client included): people sign in through
+it in both modes. `auth_type`, set in `env/<name>/config.inference.yaml`, only
+selects the credential API clients send.
 
-| `auth_provider` | What's deployed | Request path | Best for |
+| `auth_type` | What's deployed | Request path | Best for |
 |---|---|---|---|
-| `keycloak` (default) | Keycloak + keycloak_config | Envoy Gateway validates JWT → KServe predictor | Production SSO, RBAC, per-user tokens |
-| `litellm` | LiteLLM + Langfuse + Valkey (Keycloak **not** deployed) | Envoy Gateway extAuth → LiteLLM `/key/verify` → KServe | Multi-tenant, per-key budgets, simpler setup |
+| `jwt` (default) | Keycloak + keycloak_config; LiteLLM + Langfuse optional (`litellm_enabled: true`) | Envoy Gateway validates Keycloak JWT (client credentials) → KServe predictor | Production SSO, RBAC, per-client tokens |
+| `litellm_vkey` | Keycloak + keycloak_config + LiteLLM + Langfuse + Valkey | Client → `litellm.<domain>` (LiteLLM validates the virtual key) → KServe | Multi-tenant, per-key budgets |
 
-Switching `auth_provider` changes which components deploy and how the gateway `SecurityPolicy` is configured. It is best set before the first install.
+The gateway `SecurityPolicy` is a Keycloak JWT, deny-by-default, in both modes:
+a route without its own `SecurityPolicy` needs a Keycloak JWT. Routes that
+authenticate themselves (Grafana, Langfuse and Keycloak logins, the LiteLLM API)
+attach their own policy. Langfuse is on whenever LiteLLM is, unless
+`langfuse_enabled: false`. The `litellm_*` / `langfuse_*` settings also live in
+`config.inference.yaml`.
+
+> [!NOTE]
+> The old `auth_provider` setting is deprecated. Preflight maps `keycloak` →
+> `jwt` and `litellm` → `litellm_vkey` with a warning; `auth_provider: none`, or
+> a value that conflicts with `auth_type`, fails preflight.
 
 ---
 
