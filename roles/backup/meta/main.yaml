@@ -1,6 +1,7 @@
 ---
 galaxy_info:
   role_name: backup
+  author: Intel Corporation
   description: >-
     Velero-driven backup and restore engine. Solution-agnostic: what to capture,
     what to clear before replaying and which hooks to run all come from the

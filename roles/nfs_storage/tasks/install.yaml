@@ -226,8 +226,10 @@
     # unmounts it, leaving nfs-server.service reporting active(exited) while
     # no nfsd is actually running. Mount it explicitly before (re)starting.
 
+    # Not ansible.posix.mount: state=mounted writes /etc/fstab, and
+    # state=ephemeral remounts (and reports changed) on every run.
     - name: "nfs_storage | Ensure nfsd filesystem is mounted"
-      ansible.builtin.command: mount -t nfsd nfsd /proc/fs/nfsd
+      ansible.builtin.command: mount -t nfsd nfsd /proc/fs/nfsd  # noqa: command-instead-of-module
       args:
         creates: /proc/fs/nfsd/threads
       delegate_to: "{{ _nfs_target | trim }}"

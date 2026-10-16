@@ -36,6 +36,7 @@
 - name: "kubernetes | validate | Check for not-ready nodes"
   ansible.builtin.shell:
     cmd: |
+      set -o pipefail
       kubectl get nodes --no-headers | grep -v ' Ready' || true
     executable: /bin/bash
   environment:
