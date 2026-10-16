@@ -7,8 +7,9 @@ keycloak_version: "26.6.0"
 keycloak_namespace: "keycloak"
 keycloak_wait_timeout: "300s"
 
-# Gateway integration: publish on the gateway while its component is enabled
-gateway_create: "{{ envoy_gateway_enabled | default(true) }}"
+# Publish Keycloak on the platform gateway.
+# Foreign var (canonical owner: envoy_gateway component flag).
+keycloak_gateway_publish: "{{ envoy_gateway_enabled | default(true) | bool }}"
 
 # Keycloak Operator — kubectl-based install (no OLM required)
 keycloak_k8s_resources_base: "https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources"

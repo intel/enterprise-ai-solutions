@@ -1,0 +1,11 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Internal (not an override surface): the postgresql_databases entries to create.
+# Teardown still removes every listed one.
+__postgresql_effective_databases: >-
+  {%- set out = [] -%}
+  {%- for db in postgresql_databases | default([]) if db.enabled | default(true) | bool -%}
+  {%- set _ = out.append(db) -%}
+  {%- endfor -%}
+  {{ out }}

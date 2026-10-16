@@ -30,17 +30,12 @@ postgresql_admin_user: "postgres"
 postgresql_databases:
   - name: keycloak
     user: keycloak
-  # Inference add-ons: created only when enabled in config.inference.yaml.
+  # Inference add-ons, created only when enabled. Foreign vars (canonical owner:
+  # enterprise-inference config.inference.yaml): auth_type, litellm_enabled,
+  # langfuse_enabled. Keep in step with the litellm/langfuse gates in its components.yaml.
   - name: litellm
     user: litellm
     enabled: "{{ auth_type | default('jwt') == 'litellm_vkey' or litellm_enabled | default(false) | bool }}"
   - name: langfuse
     user: langfuse
     enabled: "{{ (auth_type | default('jwt') == 'litellm_vkey' or litellm_enabled | default(false) | bool) and langfuse_enabled | default(true) | bool }}"
-# Entries to create; teardown still removes every listed one.
-_pg_databases: >-
-  {%- set out = [] -%}
-  {%- for db in postgresql_databases | default([]) if db.enabled | default(true) | bool -%}
-  {%- set _ = out.append(db) -%}
-  {%- endfor -%}
-  {{ out }}

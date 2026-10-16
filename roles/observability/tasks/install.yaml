@@ -713,7 +713,7 @@
             backendRefs:
               - name: kube-prometheus-stack-grafana
                 port: 80
-  when: gateway_create | default(false) | bool
+  when: observability_gateway_publish | bool
 
 - name: "observability | Bypass gateway auth for Grafana (Grafana has its own login)"
   kubernetes.core.k8s:
@@ -729,7 +729,7 @@
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             name: grafana
-  when: gateway_create | default(false) | bool
+  when: observability_gateway_publish | bool
 
 - name: "observability | Store Grafana admin credentials as a cluster Secret"
   kubernetes.core.k8s:

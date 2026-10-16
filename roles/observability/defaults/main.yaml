@@ -83,7 +83,9 @@ observability_otel_grpc_endpoint: "opentelemetry-collector.{{ observability_name
 observability_otel_http_endpoint: "opentelemetry-collector.{{ observability_namespace }}.svc.cluster.local:{{ observability_otel_http_port }}"
 
 # ── Gateway integration ───────────────────────────────────────────────────────
-gateway_create: "{{ envoy_gateway_enabled | default(true) }}"
+# Publish Grafana on the platform gateway.
+# Foreign var (canonical owner: envoy_gateway component flag).
+observability_gateway_publish: "{{ envoy_gateway_enabled | default(true) | bool }}"
 gateway_name: "eg-gateway"
 gateway_namespace: "envoy-gateway-system"
 

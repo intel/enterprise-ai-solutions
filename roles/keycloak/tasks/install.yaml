@@ -231,7 +231,7 @@
             backendRefs:
               - name: keycloak-service
                 port: 8080
-  when: gateway_create | default(false)
+  when: keycloak_gateway_publish | bool
 
 - name: "keycloak | Exclude Keycloak route from gateway JWT policy"
   kubernetes.core.k8s:
@@ -247,4 +247,4 @@
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             name: keycloak
-  when: gateway_create | default(false)
+  when: keycloak_gateway_publish | bool
