@@ -216,7 +216,7 @@
     gateway_publish_namespace: "{{ keycloak_namespace }}"
     gateway_publish_host: "{{ keycloak_hostname }}"
     gateway_publish_path: "{{ keycloak_path }}"
-  when: gateway_create | default(false)
+  when: keycloak_gateway_publish | bool
 
 - name: "keycloak | Create HTTPRoute for gateway"
   kubernetes.core.k8s:
@@ -248,7 +248,7 @@
             backendRefs:
               - name: keycloak-service
                 port: 8080
-  when: gateway_create | default(false)
+  when: keycloak_gateway_publish | bool
 
 - name: "keycloak | Exclude Keycloak route from gateway JWT policy"
   ansible.builtin.include_role:
@@ -258,4 +258,4 @@
     gateway_route_name: keycloak
     gateway_route_namespace: "{{ keycloak_namespace }}"
     gateway_route_policy_name: keycloak-no-auth
-  when: gateway_create | default(false)
+  when: keycloak_gateway_publish | bool

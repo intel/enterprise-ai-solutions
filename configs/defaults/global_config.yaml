@@ -75,15 +75,6 @@ velero_enabled: false                     # opt-in: backup/restore. Requires CSI
 # requires its JWT unless a route authenticates itself. API client auth
 # (auth_type) and the LiteLLM/Langfuse add-ons are set in config.inference.yaml.
 
-# --- PostgreSQL ---
-postgresql_databases:
-  - name: keycloak
-    user: keycloak
-  - name: litellm
-    user: litellm
-  - name: langfuse
-    user: langfuse
-
 # --- Rack-Scale Fabric ---
 # Set to true for rack-scale deployments with high-speed fabric networking.
 # Requires a rack-profile.yaml in the env directory. When false (default),
@@ -129,10 +120,6 @@ seaweedfs_volume_storage_size: "10Gi"
 # observability_prometheus_retention: "30d"
 # observability_prometheus_storage_size: "50Gi"
 
-cert_manager_enabled: true
-metallb_enabled: true
-postgresql_enabled: true
-envoy_gateway_enabled: true
 # Envoy Gateway 1.7.1 by default; true installs 1.9.2 (ListenerSets) and
 # upgrades this platform's own older release. Never downgrades.
 # envoy_gateway_upgrade: false

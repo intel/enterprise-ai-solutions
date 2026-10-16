@@ -717,7 +717,7 @@
     gateway_publish_namespace: "{{ observability_namespace }}"
     gateway_publish_host: "{{ observability_grafana_hostname }}"
     gateway_publish_path: "{{ observability_grafana_path }}"
-  when: gateway_create | default(false) | bool
+  when: observability_gateway_publish | bool
 
 - name: "observability | Expose Grafana via gateway HTTPRoute"
   kubernetes.core.k8s:
@@ -749,7 +749,7 @@
             backendRefs:
               - name: kube-prometheus-stack-grafana
                 port: 80
-  when: gateway_create | default(false) | bool
+  when: observability_gateway_publish | bool
 
 - name: "observability | Bypass gateway auth for Grafana (Grafana has its own login)"
   ansible.builtin.include_role:
@@ -759,7 +759,7 @@
     gateway_route_name: grafana
     gateway_route_namespace: "{{ observability_namespace }}"
     gateway_route_policy_name: grafana-no-auth
-  when: gateway_create | default(false) | bool
+  when: observability_gateway_publish | bool
 
 - name: "observability | Store Grafana admin credentials as a cluster Secret"
   kubernetes.core.k8s:
