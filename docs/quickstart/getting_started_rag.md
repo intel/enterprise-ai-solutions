@@ -199,9 +199,9 @@ The `env/<name>/` directory is the single source of truth for an environment. Ev
 
 | File | Purpose |
 |------|---------|
-| `global_config.yaml` | Domain, TLS, auth provider, proxy, component toggles |
+| `global_config.yaml` | Domain, TLS, proxy, component toggles |
 | `config.erag.yaml` | RAG-specific: registry, models, feature flags, pipeline config (seeded from a flavour) |
-| `config.inference.yaml` | Inference: KServe, CPU policy, model serving |
+| `config.inference.yaml` | Inference: KServe, CPU policy, model serving, API auth (`auth_type`), LiteLLM/Langfuse |
 | `models.yaml` | Model catalog, seeded from `ext/enterprise.ai-inference/model_manager/models.yaml` |
 | `nodes.yaml` | Node definitions for remote deployments |
 | `inventory/hosts.yaml` | Kubespray-compatible inventory (auto-generated or manual) |

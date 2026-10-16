@@ -626,15 +626,15 @@ kubectl get nodes
 
 ## Deploying and Accessing Models
 
-Once the platform is installed, deploy models and access them via the AI gateway. The access pattern depends on which **auth provider** you configured.
+Once the platform is installed, deploy models and access them via the AI gateway. The access pattern depends on the **`auth_type`** set in `env/<env>/config.inference.yaml`. Keycloak is deployed in both modes and handles sign-in to the web UIs; `auth_type` only selects the credential API clients send.
 
 ### Auth Modes at a Glance
 
-| | **Keycloak** (`auth_provider: keycloak`) | **LiteLLM** (`auth_provider: litellm`) |
+| | **Keycloak** (`auth_type: jwt`) | **LiteLLM** (`auth_type: litellm_vkey`) |
 |---|---|---|
-| **What's deployed** | Keycloak OIDC + Envoy AI Gateway | LiteLLM proxy + Langfuse + Valkey (no Keycloak) |
+| **What's deployed** | Keycloak OIDC + Envoy AI Gateway (LiteLLM + Langfuse optional, `litellm_enabled: true`) | Keycloak OIDC + LiteLLM proxy + Langfuse + Valkey |
 | **Auth mechanism** | JWT via client credentials flow | Virtual API keys (or master key) |
-| **Request path** | Client → Envoy AI Gateway (validates JWT) → vLLM pod | Client → Envoy Gateway (extAuth → LiteLLM `/key/verify`) → LiteLLM → KServe |
+| **Request path** | Client → Envoy AI Gateway (validates JWT) → vLLM pod | Client → Envoy Gateway → LiteLLM (validates virtual key) → KServe |
 | **Model endpoint** | `https://inference.<domain>/v1/chat/completions` | `https://litellm.<domain>/v1/chat/completions` |
 | **Model selection** | Via `"model"` field in request body (AI Gateway routes) | Via `"model"` field in request body (LiteLLM routes) |
 | **Best for** | Production SSO, per-user RBAC, audit trail | Multi-tenant, per-key budgets, simpler setup |
@@ -683,11 +683,11 @@ The `--wait` flag blocks until the model is ready to serve requests (typically 2
 
 ### 3. Authenticate and Access
 
-Choose the section matching your `auth_provider`.
+Choose the section matching your `auth_type`.
 
-#### Option A — Keycloak JWT (`auth_provider: "keycloak"`, default)
+#### Option A — Keycloak JWT (`auth_type: jwt`, default)
 
-When `auth_provider=keycloak` (the default), the platform deploys Keycloak for full OIDC identity management. Models are accessed through the Envoy AI Gateway at a single inference endpoint. Authentication uses the **client credentials** flow (no user passwords needed).
+When `auth_type=jwt` (the default), API clients authenticate with Keycloak JWTs. Models are accessed through the Envoy AI Gateway at a single inference endpoint. Authentication uses the **client credentials** flow (no user passwords needed).
 
 **Quick method — use the helper script:**
 
@@ -754,9 +754,9 @@ curl -sk --noproxy '*' \
 
 A request with a missing, malformed, or expired JWT is rejected with `401` at the gateway before it reaches a model.
 
-#### Option B — LiteLLM virtual keys (`auth_provider: "litellm"`)
+#### Option B — LiteLLM virtual keys (`auth_type: litellm_vkey`)
 
-When `auth_provider=litellm`, Keycloak is **not deployed**. LiteLLM acts as both the auth layer and model proxy. All models are auto-registered with LiteLLM at deploy time — you access them through a single endpoint and specify the model name in the request body.
+When `auth_type=litellm_vkey`, API clients use LiteLLM virtual keys; Keycloak still handles sign-in to the web UIs. LiteLLM validates the key itself and acts as the model proxy. All models are auto-registered with LiteLLM at deploy time — you access them through a single endpoint and specify the model name in the request body.
 
 **1. Get the master key:**
 
@@ -833,7 +833,7 @@ More views of both UIs are in [docs/assets/screenshots/](../assets/screenshots/)
 
 ### 4. Access the Model — curl
 
-#### With `auth_provider: "keycloak"` (default)
+#### With `auth_type: jwt` (default)
 
 All models are served through a single inference gateway endpoint. Select the model via the `"model"` field in the request body:
 
@@ -872,7 +872,7 @@ source ./ext/enterprise.ai-inference/model_manager/scripts/get-keycloak-token.sh
 # Exports: TOKEN, GATEWAY_IP, GATEWAY_DOMAIN
 ```
 
-#### With `auth_provider: "litellm"`
+#### With `auth_type: litellm_vkey`
 
 Single endpoint, model selected via request body:
 
@@ -908,7 +908,7 @@ curl -sk --noproxy '*' \
 
 ### 5. Access the Model — Python (OpenAI Client)
 
-#### With `auth_provider: "keycloak"` (default)
+#### With `auth_type: jwt` (default)
 
 ```python
 import os
@@ -935,7 +935,7 @@ for model in client.models.list():
     print(model.id)
 ```
 
-#### With `auth_provider: "litellm"`
+#### With `auth_type: litellm_vkey`
 
 ```python
 import os
@@ -959,10 +959,10 @@ print(response.choices[0].message.content)
 
 ### Token Refresh
 
-| Auth Mode | Token Lifetime | Refresh |
+| `auth_type` | Token Lifetime | Refresh |
 |-----------|---------------|---------|
-| `litellm` | Configurable per key (default: no expiry, or set `duration` at creation) | Create a new virtual key |
-| `keycloak` | 15 minutes (configurable via `--lifespan`) | Re-run the helper script |
+| `litellm_vkey` | Configurable per key (default: no expiry, or set `duration` at creation) | Create a new virtual key |
+| `jwt` | 15 minutes (configurable via `--lifespan`) | Re-run the helper script |
 
 **Keycloak — re-source the helper to get a fresh token:**
 
@@ -1000,6 +1000,6 @@ The `init erag` command clones the inference and Intel AI for Enterprise RAG rep
 | If you want to… | Go to |
 |---|---|
 | Deploy across multiple machines or onto a cluster you already run | [Multi-Node & BYO Cluster](topologies.md) |
-| Change TLS, storage, auth provider, or any other setting used above | [Configuration Reference](../customize/configuration.md) |
+| Change TLS, storage, auth type, or any other setting used above | [Configuration Reference](../customize/configuration.md) |
 | Deploy your first model once the platform is up | [Deploy an LLM](deploy_models.md) |
 | Understand exactly how a request reaches a model after install | [Network Architecture](networking.md) |

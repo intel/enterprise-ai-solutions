@@ -38,9 +38,6 @@ gateway_namespace: "envoy-gateway-system"
 # can override via their own timeouts.request / timeouts.backendRequest.
 gateway_request_timeout: "600s"
 
-# Authentication
-auth_provider: "none"                    # none | keycloak (JWT) | litellm (virtual key)
-
 # ── ONTAP S3 API listener (optional) ─────────────────────────────────────────
 # S3 SigV4 signs the request path verbatim. The shared HTTPS listeners run with
 # Envoy's default path normalization (merge_slashes and
@@ -69,7 +66,7 @@ gateway_s3_listener_enabled: >-
   {{ (ontap_s3_data_lif | default('', true) | string | trim | length > 0)
      and ((routing_mode | default('subdomain')) != 'path') }}
 
-# Routes that must bypass auth even when auth_provider != none.
+# Routes that must bypass the gateway auth policy.
 # Each entry: {name: <policy-name>, namespace: <route-ns>, route: <HTTPRoute-name>}
 # The role creates a SecurityPolicy per entry that overrides the gateway-level policy
 # for that specific HTTPRoute (e.g. a UI route that must be publicly reachable).

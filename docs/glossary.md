@@ -34,17 +34,17 @@ Terms used across this documentation, in alphabetical order.
 
 **Inventory.** The Kubespray-compatible `hosts.yaml` under `env/<name>/inventory/` that lists the machines and their roles. Single-node deployments get a generated localhost inventory.
 
-**Keycloak.** The identity provider deployed when `auth_provider: keycloak`. It issues the OIDC JWTs the gateway validates on every request and provides single sign-on and role-based access.
+**Keycloak.** The identity provider, always deployed. It issues the OIDC JWTs the gateway requires on every route that does not authenticate itself, and provides single sign-on and role-based access.
 
 **KServe.** The Kubernetes model-serving framework that runs the model servers and exposes them as cluster services.
 
 **Kubespray.** The upstream Ansible project used to provision the Kubernetes cluster. It is vendored under `.kubespray/` with its own virtual environment and inventory, and is driven by the `kubernetes` role.
 
-**Langfuse.** LLM observability (traces, prompts, token usage), deployed with the `litellm` auth provider.
+**Langfuse.** LLM observability (traces, prompts, token usage), deployed whenever LiteLLM is, unless `langfuse_enabled: false`.
 
 **Layer.** A group of components installed as a unit, in dependency order: `infrastructure`, `platform`, `inference`, and the opt-in `erag`. Installing a layer pulls in the layers it depends on.
 
-**LiteLLM.** An OpenAI-compatible proxy that issues virtual API keys with per-key budgets. Deployed when `auth_provider: litellm`, in which case Keycloak is not deployed.
+**LiteLLM.** An OpenAI-compatible proxy that issues virtual API keys with per-key budgets. Always deployed with `auth_type: litellm_vkey`; optional with `jwt` (`litellm_enabled: true`).
 
 **MetalLB.** The load balancer that hands out external IP addresses on bare metal, where no cloud load balancer exists.
 
@@ -72,7 +72,7 @@ Terms used across this documentation, in alphabetical order.
 
 **Target.** What an action applies to: a layer such as `platform`, a component such as `istio`, or `erag`. Dependencies resolve automatically unless you pass `--only`.
 
-**Virtual key.** A scoped API key issued by LiteLLM, with its own budget and rate limits, used instead of a user JWT when `auth_provider: litellm`.
+**Virtual key.** A scoped API key issued by LiteLLM, with its own budget and rate limits, used instead of a Keycloak JWT when `auth_type: litellm_vkey`.
 
 **vLLM.** A high-throughput LLM serving runtime, the default for text generation on Xeon.
 
