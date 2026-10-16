@@ -133,6 +133,7 @@
   become: false
   ansible.builtin.shell:
     cmd: |
+      set -o pipefail
       hn=$(hostname)
       if ! getent hosts "$hn" &>/dev/null; then
         echo "127.0.1.1 $hn" | sudo tee -a /etc/hosts >/dev/null
@@ -140,6 +141,7 @@
       else
         echo "ok"
       fi
+    executable: /bin/bash
   register: _hostname_fix
   changed_when: "'added' in _hostname_fix.stdout"
 

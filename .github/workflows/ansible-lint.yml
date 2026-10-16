@@ -7,9 +7,8 @@ name: Ansible Lint
 #
 # Only GitHub-hosted runners and public actions are used.
 #
-# Soft-fail for the initial rollout: findings publish to Security -> Code
-# scanning instead of blocking the branch. Tighten the `exit-code` /
-# `--soft-fail` / `continue-on-error` switches once the backlog is triaged.
+# Blocking: any violation of the rules left enabled below fails the job.
+# Findings are reported in the job log only (no SARIF upload).
 
 on:
   workflow_dispatch:
@@ -59,7 +58,6 @@ jobs:
       # `role | action | desc` naming convention. What is left is correctness
       # and command-shell risk.
       - name: Run ansible-lint
-        continue-on-error: true
         run: >-
           ansible-lint --nocolor
           --skip-list name,var-naming,fqcn,yaml,jinja,key-order

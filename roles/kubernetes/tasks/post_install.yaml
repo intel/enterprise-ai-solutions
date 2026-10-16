@@ -31,12 +31,15 @@
 - name: "kubernetes | post | Wait for all nodes to be Ready"
   ansible.builtin.shell:
     cmd: |
-      kubectl get nodes --no-headers | grep -v ' Ready' | wc -l
+      set -o pipefail
+      kubectl get nodes --no-headers | { grep -v ' Ready' || true; } | wc -l
     executable: /bin/bash
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   register: _k8s_not_ready_count
-  until: (_k8s_not_ready_count.stdout | trim | int) == 0
+  until:
+    - _k8s_not_ready_count.rc == 0
+    - (_k8s_not_ready_count.stdout | trim | int) == 0
   retries: 30
   delay: 10
   changed_when: false

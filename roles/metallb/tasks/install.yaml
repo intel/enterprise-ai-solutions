@@ -180,6 +180,7 @@
             - name: "metallb | Detect running kube-proxy mode"
               ansible.builtin.shell:
                 cmd: |
+                  set -o pipefail
                   kubectl get cm -n kube-system kube-proxy -o jsonpath='{.data.config\.conf}' 2>/dev/null \
                     | grep -E '^mode:' | awk '{print $2}' | tr -d '"' || true
                 executable: /bin/bash

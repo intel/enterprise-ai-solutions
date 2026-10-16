@@ -35,8 +35,7 @@
   ansible.builtin.command: netplan apply
   delegate_to: "{{ item.item }}"
   become: true
-  loop: "{{ _netplan_removed.results }}"
+  loop: "{{ _netplan_removed.results | selectattr('changed') | list }}"
   loop_control:
     label: "{{ item.item }}"
-  when: item.changed
   changed_when: true
