@@ -156,7 +156,7 @@
     kind: Secret
     name: "postgresql-{{ item.name }}-secret"
     namespace: "{{ postgresql_namespace }}"
-  loop: "{{ postgresql_databases | default([]) }}"
+  loop: "{{ _pg_databases }}"
   loop_control:
     label: "{{ item.name }}"
   register: _pg_db_secrets_existing
@@ -177,7 +177,7 @@
       stringData:
         username: "{{ item.user }}"
         password: "{{ item.password | default(lookup('password', '/dev/null length=24 chars=ascii_letters,digits')) }}"
-  loop: "{{ postgresql_databases | default([]) }}"
+  loop: "{{ _pg_databases }}"
   loop_control:
     label: "{{ item.name }}"
     index_var: _idx
@@ -191,7 +191,7 @@
     kind: Secret
     name: "postgresql-{{ item.name }}-secret"
     namespace: "{{ postgresql_namespace }}"
-  loop: "{{ (postgresql_databases | default([]))[1:] }}"
+  loop: "{{ _pg_databases[1:] }}"
   loop_control:
     label: "{{ item.name }}"
   register: _pg_cred_secrets
@@ -274,7 +274,7 @@
 
 - name: "postgresql | Ensure users exist (existing clusters)"
   when:
-    - postgresql_databases | default([]) | length > 1
+    - _pg_databases | length > 1
     - (_pg_cluster_existing.resources | default([]) | length) > 0
   block:
     - name: "postgresql | Copy provisioning script to pod"
@@ -317,10 +317,10 @@
         owner: "{{ item.user }}"
         cluster:
           name: "{{ postgresql_cluster_name }}"
-  loop: "{{ (postgresql_databases | default([]))[1:] }}"
+  loop: "{{ _pg_databases[1:] }}"
   loop_control:
     label: "{{ item.name }}"
-  when: postgresql_databases | default([]) | length > 1
+  when: _pg_databases | length > 1
 
 - name: "postgresql | Wait for databases to be ready"
   kubernetes.core.k8s_info:
@@ -328,7 +328,7 @@
     kind: Database
     name: "{{ item.name }}"
     namespace: "{{ postgresql_namespace }}"
-  loop: "{{ (postgresql_databases | default([]))[1:] }}"
+  loop: "{{ _pg_databases[1:] }}"
   loop_control:
     label: "{{ item.name }}"
   register: _pg_db_status
@@ -337,7 +337,7 @@
     (_pg_db_status.resources[0].status.applied | default(false) | bool)
   retries: 30
   delay: 5
-  when: postgresql_databases | default([]) | length > 1
+  when: _pg_databases | length > 1
 
 - name: "postgresql | Install complete"
   ansible.builtin.debug:
@@ -345,7 +345,7 @@
       CloudNativePG {{ cnpg_version }} operator + PostgreSQL {{ postgresql_version }}
       cluster '{{ postgresql_cluster_name }}' deployed in {{ postgresql_namespace }}
       ({{ postgresql_instances }} instance(s)).
-      Databases: {{ postgresql_databases | map(attribute='name') | join(', ') | default('none') }}.
+      Databases: {{ _pg_databases | map(attribute='name') | join(', ') | default('none') }}.
 
 # ── Reconcile — copy secrets to consumer namespaces ──────────────────────────
 # Runs always so interrupted installs/reruns still propagate secrets.
@@ -358,7 +358,7 @@
       kind: Namespace
       metadata:
         name: "{{ item.target_namespace | default(item.name) }}"
-  loop: "{{ postgresql_databases | default([]) }}"
+  loop: "{{ _pg_databases }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"
 
@@ -372,7 +372,7 @@
         name: "{{ item.target_namespace | default(item.name) }}"
         labels:
           istio.io/dataplane-mode: "ambient"
-  loop: "{{ postgresql_databases | default([]) }}"
+  loop: "{{ _pg_databases }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"
   when: istio_enabled | default(false) | bool
@@ -390,7 +390,7 @@
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
   when: enforce_pss | default(false) | bool
-  loop: "{{ postgresql_databases | default([]) }}"
+  loop: "{{ _pg_databases }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"
 
@@ -400,7 +400,7 @@
     kind: Secret
     name: "postgresql-{{ item.name }}-secret"
     namespace: "{{ postgresql_namespace }}"
-  loop: "{{ postgresql_databases | default([]) }}"
+  loop: "{{ _pg_databases }}"
   loop_control:
     label: "{{ item.name }}"
   register: _pg_db_secrets

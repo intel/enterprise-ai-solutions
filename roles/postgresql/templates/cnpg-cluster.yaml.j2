@@ -10,14 +10,14 @@ spec:
 
   bootstrap:
     initdb:
-      database: {{ postgresql_databases[0].name | default('app') }}
-      owner: {{ postgresql_databases[0].user | default('app') }}
+      database: {{ _pg_databases[0].name | default('app') }}
+      owner: {{ _pg_databases[0].user | default('app') }}
       secret:
-        name: postgresql-{{ postgresql_databases[0].name | default('app') }}-secret
-{% if postgresql_databases | default([]) | length > 1 %}
+        name: postgresql-{{ _pg_databases[0].name | default('app') }}-secret
+{% if _pg_databases | length > 1 %}
       postInitSQLRefs:
         secretRefs:
-{% for db in (postgresql_databases | default([]))[1:] %}
+{% for db in _pg_databases[1:] %}
           - name: postgresql-init-{{ db.name }}
             key: init.sql
 {% endfor %}

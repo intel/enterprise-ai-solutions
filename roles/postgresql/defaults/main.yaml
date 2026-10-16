@@ -24,13 +24,23 @@ postgresql_storage_class: ""          # empty = default StorageClass
 # Superuser — managed by CNPG operator (auto-generated)
 postgresql_admin_user: "postgres"
 
-# Per-consumer databases — list of {name, user, password(optional)}
+# Per-consumer databases — list of {name, user, password(optional), enabled(optional)}
 # Each entry creates a database + user in the CNPG cluster.
 # The first entry is the bootstrap "application" database.
-# Example:
-#   postgresql_databases:
-#     - name: keycloak
-#       user: keycloak
-#     - name: litellm
-#       user: litellm
-postgresql_databases: []
+postgresql_databases:
+  - name: keycloak
+    user: keycloak
+  # Inference add-ons: created only when enabled in config.inference.yaml.
+  - name: litellm
+    user: litellm
+    enabled: "{{ auth_type | default('jwt') == 'litellm_vkey' or litellm_enabled | default(false) | bool }}"
+  - name: langfuse
+    user: langfuse
+    enabled: "{{ (auth_type | default('jwt') == 'litellm_vkey' or litellm_enabled | default(false) | bool) and langfuse_enabled | default(true) | bool }}"
+# Entries to create; teardown still removes every listed one.
+_pg_databases: >-
+  {%- set out = [] -%}
+  {%- for db in postgresql_databases | default([]) if db.enabled | default(true) | bool -%}
+  {%- set _ = out.append(db) -%}
+  {%- endfor -%}
+  {{ out }}
