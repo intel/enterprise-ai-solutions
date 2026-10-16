@@ -1,97 +1,48 @@
 ---
-envoy_gateway_version: "1.7.1"
+# =============================================================================
+# Envoy Gateway — provider for roles/gateway (gateway_provider: envoy)
+# =============================================================================
+# Release lines: baseline by default; envoy_gateway_upgrade: true selects latest
+# for new installs and upgrades this platform's own older release (never
+# downgrades). Envoy AI Gateway follows the installed minor (envoy_ai_gateway).
+envoy_gateway_releases:
+  baseline: {version: "1.7.1", gateway_api: "1.4.1"}
+  latest: {version: "1.9.2", gateway_api: "1.6.1"}
+envoy_gateway_upgrade: false
+_eg_line: "{{ envoy_gateway_releases['latest' if envoy_gateway_upgrade | bool else 'baseline'] }}"
+envoy_gateway_version: "{{ _eg_line.version }}"
 envoy_gateway_namespace: "envoy-gateway-system"
 envoy_gateway_helm_repo: "oci://docker.io/envoyproxy/gateway-helm"
+# Gateway API CRDs (standard channel, the version this release bundles) and
+# the Envoy Gateway CRDs, applied server-side unless detect.yaml finds others.
+envoy_gateway_crds_helm_repo: "oci://docker.io/envoyproxy/gateway-crds-helm"
+envoy_gateway_crds_field_manager: "ai-solutions-envoy-gateway"
 envoy_gateway_wait_timeout: "300s"
 
-# Gateway resource
-gateway_create: true
-gateway_name: "eg-gateway"
-gateway_namespace: "envoy-gateway-system"
+# ── Existing installs (detect.yaml) ──────────────────────────────────────────
+# A controller or CRDs this role did not install are never upgraded or removed.
+# true lets the platform wire an existing controller in (mesh edge, AI Gateway
+# extension) without changing its version.
+envoy_gateway_configure_existing: false
+envoy_gateway_release_name: "envoy-gateway"
+# Oldest controller supported, and the oldest that publishes with ListenerSets.
+envoy_gateway_min_version: "1.7.0"
+gateway_listenerset_min_version: "1.9.0"
+# Gateway API bundled with envoy_gateway_version. Foreign Gateway API CRDs older
+# than this are only upgraded when gateway_api_crds_takeover is true.
+envoy_gateway_gateway_api_version: >-
+  {{ (envoy_gateway_releases.values() | selectattr('version', 'eq', envoy_gateway_version) | first
+      | default(_eg_line)).gateway_api }}
+gateway_api_crds_takeover: false
 
-# Default request timeout for routes attached to the gateway.
-# Envoy's built-in default is 15s which is too aggressive for LLM responses
-# (a Llama-3-8B completion with 512 output tokens on CPU easily takes 30-60s).
-# Applied as a Gateway-scoped BackendTrafficPolicy; individual HTTPRoutes
-# can override via their own timeouts.request / timeouts.backendRequest.
-gateway_request_timeout: "600s"
+# HTTP/2 on every listener whose certificate names only its own host. Envoy
+# Gateway otherwise falls back to HTTP/1.1 on all listeners whose certificates
+# overlap (GEP-3567), which the legacy wildcard causes. Selfsigned mode only:
+# an operator certificate in custom mode may overlap, so the safe default stays.
+gateway_http2_enabled: "{{ gateway_tls_mode == 'selfsigned' }}"
+_eg_alpn_h2: ["h2", "http/1.1"]
 
-# ── ONTAP S3 API listener (optional) ─────────────────────────────────────────
-# S3 SigV4 signs the request path verbatim. The shared HTTPS listeners run with
-# Envoy's default path normalization (merge_slashes and
-# path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT), so a key containing
-# '//' or '%2F' reaches the object store with a different canonical URI than the
-# client signed and the store answers SignatureDoesNotMatch - which reads as a
-# credentials problem. A ClientTrafficPolicy can relax those two rules, but only
-# per listener, so the S3 API gets a listener of its own rather than weakening
-# normalization for the UI, API and keycloak routes that share 'https'.
-#
-# Dot-segment resolution (Envoy's normalize_path) has no Gateway API knob at all
-# and is NOT addressed here; keys containing '..' are rejected by the data-prep
-# service before signing.
-gateway_s3_listener_name: "https-s3"
-# Subdomain the S3 API is published under. Owned here, in the platform layer,
-# because the listener is part of the gateway. A solution layer that publishes an
-# S3 API reads this value rather than the platform reading a solution variable.
-gateway_s3_subdomain: "s3"
-gateway_s3_hostname: "{{ gateway_s3_subdomain ~ '.' ~ base_domain_name }}"
-# ontap_s3_data_lif has to come from env/<env>/global_config.yaml: role defaults
-# are role-scoped, so netapp_trident_csi's copy is not in scope here and the
-# default below is what an unset value resolves to.
-# In routing_mode: path the S3 API shares the apex hostname with the UI, so a
-# dedicated listener is impossible - see the warning printed at install.
-gateway_s3_listener_enabled: >-
-  {{ (ontap_s3_data_lif | default('', true) | string | trim | length > 0)
-     and ((routing_mode | default('subdomain')) != 'path') }}
-
-# Routes that must bypass the gateway auth policy.
-# Each entry: {name: <policy-name>, namespace: <route-ns>, route: <HTTPRoute-name>}
-# The role creates a SecurityPolicy per entry that overrides the gateway-level policy
-# for that specific HTTPRoute (e.g. a UI route that must be publicly reachable).
-gateway_no_auth_routes: []
-
-# ── Protected hostname ownership ─────────────────────────────────────────────
-# The shared listeners admit routes from every namespace (from: All) so tenants
-# can publish their own hostnames without operator intervention. The Gateway API
-# resolves two routes claiming the SAME hostname by match specificity, ignoring
-# which namespace they live in — so a route in any namespace that pins an exact
-# path (e.g. /v1/chat/completions) on a platform hostname out-ranks the platform's
-# own catch-all route and silently takes over the victim's traffic (and bearer
-# token). We reserve each platform hostname to its owning namespace with a
-# ValidatingAdmissionPolicy: an HTTPRoute claiming one of these hostnames from any
-# other namespace is rejected at admission. Tenants keep full freedom on hostnames
-# they do not own. Extend this list to reserve additional hostnames.
-gateway_route_admission_enabled: true
-gateway_protected_hostnames:
-  - hostname: "inference.{{ base_domain_name }}"
-    owner_namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
-  - hostname: "keycloak.{{ base_domain_name }}"
-    owner_namespace: "keycloak"
-  - hostname: "grafana.{{ base_domain_name }}"
-    owner_namespace: "monitoring"
-
-# Keycloak defaults (for SecurityPolicy JWT config — overridden by keycloak role)
-keycloak_hostname: "keycloak.{{ base_domain_name }}"
-keycloak_realm: "inference"
-
-# TLS / Domain — HTTPS is mandatory, there is no plaintext mode
-gateway_tls_mode: "selfsigned"        # selfsigned | custom
-base_domain_name: "inference-example.com"
-gateway_tls_cert_file: ""
-gateway_tls_key_file: ""
-gateway_tls_secret_name: "gateway-tls"
-
-# Internal root CA (selfsigned mode). The wildcard serving leaf chains to this
-# root, so operators import ONE cert (exported to gateway_ca_export_path) to
-# trust every hostname across leaf rotations.
-gateway_ca_bootstrap_issuer_name: "gateway-ca-bootstrap"
-gateway_ca_cert_name: "ai-solutions-ca"
-gateway_ca_secret_name: "ai-solutions-ca"
-gateway_ca_common_name: "AI Solutions Root CA"
-gateway_ca_duration: "87600h"         # 10y root
-gateway_ca_renew_before: "720h"       # 30d
-gateway_ca_export_path: "{{ log_dir }}/{{ gateway_ca_cert_name }}.crt"
-
-# Foreign var (canonical owner: cert_manager) — namespace holding the root CA
-# secret, which is cert-manager's cluster-resource-namespace.
-certmanager_namespace: "cert-manager"
+# Proxy settings live beside our own controller, else in the gateway namespace.
+_eg_proxy_config_namespace: >-
+  {{ envoy_gateway_namespace if (gateway_platform | default({})).controller_managed | default(true) | bool
+     else gateway_namespace }}

@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# Gateway — per-client request limit on one route, enforced at the gateway
+# =============================================================================
+#   gateway_route_name, gateway_route_namespace, gateway_route_state  as in route_auth_exempt.yaml
+#   gateway_route_policy_name         policy name (default <route>-rate-limit)
+#   gateway_rate_limit_requests       requests per unit and client
+#   gateway_rate_limit_unit           Second | Minute (default) | Hour | Day
+#   gateway_rate_limit_client_header  header naming the client (default x-forwarded-for)
+
+- name: "gateway | rate limit | {{ gateway_route_namespace }}/{{ gateway_route_name }}"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: route_rate_limit.yaml

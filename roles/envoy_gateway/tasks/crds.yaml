@@ -1,0 +1,54 @@
+---
+# =============================================================================
+# Envoy Gateway — Gateway API + Envoy Gateway CRDs
+# =============================================================================
+# This role is the only installer of these CRDs, unless detect.yaml found
+# them installed by another tool. Rendered from the release's
+# gateway-crds-helm chart and applied server-side, as upstream recommends: the
+# bundle exceeds the Helm release size limit and Helm never upgrades CRDs.
+
+- name: "envoy_gateway | Render Gateway API and Envoy Gateway CRDs"
+  kubernetes.core.helm_template:
+    chart_ref: "{{ envoy_gateway_crds_helm_repo }}"
+    chart_version: "v{{ envoy_gateway_version }}"
+    include_crds: true
+    values:
+      crds:
+        gatewayAPI:
+          # Off when newer foreign Gateway API CRDs are already in place.
+          enabled: "{{ gateway_platform.gateway_api_apply | bool }}"
+          channel: standard
+        envoyGateway:
+          enabled: true
+  register: _eg_crds_rendered
+  until: _eg_crds_rendered is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
+  changed_when: false
+  check_mode: false
+
+- name: "envoy_gateway | Apply CRDs (server-side)"
+  kubernetes.core.k8s:
+    state: present
+    apply: true
+    server_side_apply:
+      field_manager: "{{ envoy_gateway_crds_field_manager }}"
+      force_conflicts: true
+    definition: "{{ _eg_crds_rendered.stdout | from_yaml_all | select | list }}"
+
+- name: "envoy_gateway | Wait for CRDs to be established"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+    wait: true
+    wait_condition:
+      type: Established
+      status: "True"
+    wait_timeout: 120
+  loop: >-
+    {{ ['gateways.gateway.networking.k8s.io', 'httproutes.gateway.networking.k8s.io',
+        'envoyproxies.gateway.envoyproxy.io']
+       + (['listenersets.gateway.networking.k8s.io']
+          if gateway_platform.gateway_api_apply | bool and envoy_gateway_version is version(gateway_listenerset_min_version, '>=')
+          else []) }}

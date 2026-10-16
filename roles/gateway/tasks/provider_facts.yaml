@@ -1,0 +1,9 @@
+---
+# Facts the provider exports to every role in the play (gateway_platform.facts),
+# e.g. where its proxies run.
+- name: "gateway | Provider facts"
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ item.value }}"
+  loop: "{{ gateway_platform.facts | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

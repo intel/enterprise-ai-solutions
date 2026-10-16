@@ -1,0 +1,16 @@
+---
+- name: "envoy_gateway | validate | Read the controller"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ envoy_gateway_namespace }}"
+    label_selectors: [control-plane=envoy-gateway]
+  register: _eg_deploy
+
+- name: "envoy_gateway | validate | Controller has ready replicas"
+  ansible.builtin.assert:
+    that:
+      - _eg_deploy.resources | length > 0
+      - (_eg_deploy.resources[0].status.readyReplicas | default(0) | int) >= 1
+    fail_msg: "Envoy Gateway in {{ envoy_gateway_namespace }} has 0 ready replicas"
+    success_msg: "Envoy Gateway has {{ _eg_deploy.resources[0].status.readyReplicas | default(0) }} ready replica(s)"

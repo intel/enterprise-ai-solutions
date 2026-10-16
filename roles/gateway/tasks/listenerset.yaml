@@ -1,0 +1,158 @@
+---
+# =============================================================================
+# Gateway — publish a solution's hosts (ListenerSet)
+# =============================================================================
+# Grants the hosts to the namespace, issues its certificate and attaches a
+# ListenerSet to the platform Gateway. Routes then use gateway_listenerset_ref
+# with sectionName set to the listener name.
+#   gateway_listenerset_name       ListenerSet name (e.g. keycloak)
+#   gateway_listenerset_namespace  owning namespace
+#   gateway_listenerset_listeners  [{name, hostname}]
+
+- name: "gateway | listenerset | Grant the hosts"
+  ansible.builtin.include_tasks: host_grant.yaml
+
+- name: "gateway | listenerset | Issue certificate"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ _ls_secret }}"
+        namespace: "{{ gateway_listenerset_namespace }}"
+      spec:
+        secretName: "{{ _ls_secret }}"
+        issuerRef:
+          name: gateway-issuer
+          kind: ClusterIssuer
+        dnsNames: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
+  when: gateway_tls_mode == 'selfsigned'
+
+- name: "gateway | listenerset | Wait for certificate"
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ _ls_secret }}"
+    namespace: "{{ gateway_listenerset_namespace }}"
+  register: _ls_cert
+  until: >-
+    _ls_cert.resources | default([]) | length > 0 and
+    _ls_cert.resources[0].status.conditions | default([])
+      | selectattr('type', 'eq', 'Ready') | selectattr('status', 'eq', 'True') | list | length > 0
+  retries: 30
+  delay: 5
+  when: gateway_tls_mode == 'selfsigned'
+
+# Switching TLS mode leaves the other mode's objects; remove them.
+- name: "gateway | listenerset | Remove the other TLS mode's objects"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ item.namespace }}"
+  loop: >-
+    {{ [{'api': 'cert-manager.io/v1', 'kind': 'Certificate', 'name': _ls_secret, 'namespace': gateway_listenerset_namespace},
+        {'api': 'v1', 'kind': 'Secret', 'name': _ls_secret, 'namespace': gateway_listenerset_namespace}]
+       if gateway_tls_mode == 'custom' else
+       [{'api': 'gateway.networking.k8s.io/v1beta1', 'kind': 'ReferenceGrant',
+         'name': 'listenerset-' ~ gateway_listenerset_namespace ~ '-' ~ gateway_listenerset_name, 'namespace': gateway_namespace}] }}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+
+# Custom mode: the operator's certificate in the gateway namespace serves the
+# hosts, referenced across namespaces by this ListenerSet only.
+# Other controllers add finalizers to ReferenceGrants (Envoy AI Gateway does),
+# so a recent delete may still be pending; applying would then keep the dying one.
+- name: "gateway | listenerset | Wait for a pending ReferenceGrant delete"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1beta1
+    kind: ReferenceGrant
+    name: "listenerset-{{ gateway_listenerset_namespace }}-{{ gateway_listenerset_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _ls_rg
+  until: (_ls_rg.resources | first | default({})).metadata.deletionTimestamp is not defined
+  retries: 24
+  delay: 5
+  when: gateway_tls_mode == 'custom'
+
+- name: "gateway | listenerset | Allow use of the operator certificate"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1beta1
+      kind: ReferenceGrant
+      metadata:
+        name: "listenerset-{{ gateway_listenerset_namespace }}-{{ gateway_listenerset_name }}"
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        from:
+          - group: gateway.networking.k8s.io
+            kind: ListenerSet
+            namespace: "{{ gateway_listenerset_namespace }}"
+        to:
+          - group: ""
+            kind: Secret
+            name: "{{ gateway_tls_secret_name }}"
+  when: gateway_tls_mode == 'custom'
+
+- name: "gateway | listenerset | Read the operator certificate"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: "{{ gateway_tls_secret_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _ls_operator_cert
+  when: gateway_tls_mode == 'custom'
+
+- name: "gateway | listenerset | Check the operator certificate covers the hosts"
+  ansible.builtin.include_tasks: custom_cert_sans.yaml
+  vars:
+    _gw_cert_pem: "{{ _ls_operator_cert.resources[0].data['tls.crt'] | b64decode }}"
+    _gw_cert_hosts: "{{ gateway_listenerset_listeners | map(attribute='hostname') | list }}"
+    _gw_cert_context: "ListenerSet {{ gateway_listenerset_namespace }}/{{ gateway_listenerset_name }}"
+  when: gateway_tls_mode == 'custom' and _ls_operator_cert.resources | default([]) | length > 0
+
+- name: "gateway | listenerset | Apply ListenerSet"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: ListenerSet
+      metadata:
+        name: "{{ gateway_listenerset_name }}"
+        namespace: "{{ gateway_listenerset_namespace }}"
+      spec:
+        parentRef:
+          name: "{{ gateway_name }}"
+          namespace: "{{ gateway_namespace }}"
+        listeners: >-
+          {%- set out = [] -%}
+          {%- for l in gateway_listenerset_listeners -%}
+          {%- set _ = out.append({'name': l.name, 'hostname': l.hostname, 'port': 443, 'protocol': 'HTTPS',
+                                  'tls': {'mode': 'Terminate', 'certificateRefs': [_ls_cert_ref]},
+                                  'allowedRoutes': {'namespaces': {'from': 'Same'}}}) -%}
+          {%- endfor -%}
+          {{ out }}
+
+- name: "gateway | listenerset | Wait for ListenerSet to be programmed"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: ListenerSet
+    name: "{{ gateway_listenerset_name }}"
+    namespace: "{{ gateway_listenerset_namespace }}"
+  register: _ls_status
+  until: >-
+    _ls_status.resources | default([]) | length > 0 and
+    _ls_status.resources[0].status.conditions | default([])
+      | selectattr('type', 'in', ['Accepted', 'Programmed']) | selectattr('status', 'eq', 'True') | list | length == 2
+  retries: 24
+  delay: 5
+
+- name: "gateway | listenerset | Route parent"
+  ansible.builtin.set_fact:
+    gateway_listenerset_ref:
+      group: gateway.networking.k8s.io
+      kind: ListenerSet
+      name: "{{ gateway_listenerset_name }}"
+      namespace: "{{ gateway_listenerset_namespace }}"

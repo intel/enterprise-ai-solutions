@@ -3,11 +3,6 @@
 # Istio — Upgrade
 # =============================================================================
 
-- name: "istio | Install Gateway API CRDs"
-  kubernetes.core.k8s:
-    state: present
-    src: "{{ istio_gateway_api_crds_url }}"
-
 - name: "istio | Upgrade Helm chart"
   kubernetes.core.helm:
     name: "{{ istio_helm_release_name }}"

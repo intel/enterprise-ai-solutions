@@ -38,6 +38,12 @@ observability_grafana_admin_user: "admin"
 # Password managed by tasks/credentials.yaml — stored in 'observability-credentials' Secret.
 observability_grafana_admin_password: ""
 observability_grafana_hostname: "grafana.{{ base_domain_name | default('solutions.ai') }}"
+# Path mode (routing_mode: path): served under <base>/grafana.
+observability_grafana_path: "/grafana"
+_obs_grafana_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
+observability_grafana_url: >-
+  {{ 'https://' ~ base_domain_name ~ observability_grafana_path if _obs_grafana_path_mode | bool
+     else 'https://' ~ observability_grafana_hostname }}
 
 # ── Prometheus retention & storage ───────────────────────────────────────────
 observability_prometheus_retention: "30d"
@@ -84,8 +90,8 @@ observability_otel_http_endpoint: "opentelemetry-collector.{{ observability_name
 
 # ── Gateway integration ───────────────────────────────────────────────────────
 # Publish Grafana on the platform gateway.
-# Foreign var (canonical owner: envoy_gateway component flag).
-observability_gateway_publish: "{{ envoy_gateway_enabled | default(true) | bool }}"
+# Foreign var (canonical owner: gateway component flag; envoy_gateway_enabled is its alias).
+observability_gateway_publish: "{{ gateway_enabled | default(envoy_gateway_enabled | default(true)) | bool }}"
 gateway_name: "eg-gateway"
 gateway_namespace: "envoy-gateway-system"
 

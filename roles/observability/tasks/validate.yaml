@@ -161,5 +161,5 @@
   ansible.builtin.debug:
     msg: >-
       Observability stack validation passed.
-      Grafana: https://{{ observability_grafana_hostname }}
+      Grafana: {{ observability_grafana_url }}
       All components healthy in namespace '{{ observability_namespace }}'.
