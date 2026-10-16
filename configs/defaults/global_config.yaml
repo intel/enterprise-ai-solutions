@@ -112,11 +112,6 @@ seaweedfs_volume_storage_size: "10Gi"
 # observability_prometheus_retention: "30d"
 # observability_prometheus_storage_size: "50Gi"
 
-cert_manager_enabled: true
-metallb_enabled: true
-postgresql_enabled: true
-envoy_gateway_enabled: true
-
 # =============================================================================
 # Optional Features (only read when the matching option above selects them)
 # =============================================================================

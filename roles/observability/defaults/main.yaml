@@ -83,7 +83,7 @@ observability_otel_grpc_endpoint: "opentelemetry-collector.{{ observability_name
 observability_otel_http_endpoint: "opentelemetry-collector.{{ observability_namespace }}.svc.cluster.local:{{ observability_otel_http_port }}"
 
 # ── Gateway integration ───────────────────────────────────────────────────────
-gateway_create: "{{ envoy_gateway_enabled | default(false) }}"
+gateway_create: "{{ envoy_gateway_enabled | default(true) }}"
 gateway_name: "eg-gateway"
 gateway_namespace: "envoy-gateway-system"
 
