@@ -1,0 +1,11 @@
+---
+# =============================================================================
+# Intel GPU Plugin Role Defaults
+# =============================================================================
+
+
+# Upstream ref of intel/intel-device-plugins-for-kubernetes.
+intel_gpu_plugin_ref: "main"
+intel_gpu_plugin_manifest: "https://raw.githubusercontent.com/intel/intel-device-plugins-for-kubernetes/{{ intel_gpu_plugin_ref }}/deployments/gpu_plugin/base/intel-gpu-plugin.yaml"
+# Resource the vllm-xpu runtime requests
+intel_gpu_plugin_resource: "gpu.intel.com/xe"

@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# Intel GPU Plugin — Validate
+# =============================================================================
+
+- name: "intel_gpu_plugin | validate | Check Intel GPU Plugin DaemonSet rollout"
+  ansible.builtin.shell: |
+    set -e
+    read -r ns name <<< "$(kubectl get daemonsets -A \
+      -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+      | grep -i intel-gpu-plugin | head -1)"
+    [ -n "$name" ] || { echo "intel-gpu-plugin DaemonSet not found"; exit 1; }
+    kubectl rollout status "daemonset/$name" -n "$ns" --timeout=60s
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: "intel_gpu_plugin | validate | Get nodes"
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: _val_gpu_nodes
+
+- name: "intel_gpu_plugin | validate | Check a node advertises {{ intel_gpu_plugin_resource }}"
+  vars:
+    _gpu_nodes: >-
+      {{ _val_gpu_nodes.resources | default([])
+         | selectattr('status.allocatable', 'defined')
+         | selectattr('status.allocatable.' ~ intel_gpu_plugin_resource, 'defined')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that: _gpu_nodes | length > 0
+    fail_msg: "No node advertises {{ intel_gpu_plugin_resource }} — check the Intel GPU driver and the plugin pods."
+    success_msg: "Nodes advertising {{ intel_gpu_plugin_resource }}: {{ _gpu_nodes | join(', ') }}"

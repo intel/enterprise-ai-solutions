@@ -97,28 +97,69 @@
                     memory: 32Mi
             restartPolicy: Always
 
-- name: "nri_cpu_balloons | advanced | Wait for probe pods Running"
+# Every schedulable node must report before topology is collected. A node whose
+# probe pod is not Running yet (still pulling the image, just joined) is not a
+# failure anywhere downstream — it is silently treated as "not in topology": it
+# gets no nri.intel.com/* capability labels and its node.<NAME> BalloonsPolicy
+# CR is pruned (install_advanced.yaml drift reconciliation), so model-manager
+# sees no NRI-capable node there and TP>1 placement on it is lost.
+- name: "nri_cpu_balloons | advanced | Wait for probe DaemonSet fully rolled out"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: node-topology-optimizer
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _optimizer_ds
+  until:
+    - _optimizer_ds.resources | length > 0
+    - (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+    - (_optimizer_ds.resources[0].status.numberReady | default(0) | int) >= (_optimizer_ds.resources[0].status.desiredNumberScheduled | int)
+  retries: 30
+  delay: 5
+  # A slow node (image pull) must not fail the install: coverage is checked below,
+  # and only zero Running probes is fatal (assert further down).
+  ignore_errors: true
+
+# The DaemonSet-level check can pass a moment before a fresh Pod query reflects
+# the same state (e.g. right after a node joins). Retry the Running-pod count
+# against the same desiredNumberScheduled target rather than taking a single
+# snapshot that could drop a node.
+- name: "nri_cpu_balloons | advanced | Collect Running probe pods (retry until every expected node reports in)"
   kubernetes.core.k8s_info:
     kind: Pod
     namespace: "{{ nri_cpu_balloons.namespace }}"
     label_selectors:
       - app=node-topology-optimizer
   register: _optimizer_pods
-  until: >
-    (_optimizer_pods.resources | default([]) | length) > 0
-    and (_optimizer_pods.resources
-         | selectattr('status.phase', 'equalto', 'Running')
-         | list | length) > 0
-  retries: 30
+  until: >-
+    (_optimizer_pods.resources | default([])
+      | selectattr('status.phase', 'equalto', 'Running')
+      | rejectattr('metadata.deletionTimestamp', 'defined')
+      | list | length) >= (_optimizer_ds.resources[0].status.desiredNumberScheduled | int)
+  retries: 12
   delay: 5
+  # Partial coverage is reported below rather than failing the install
+  # (failed_when does not apply once until-retries are exhausted).
+  ignore_errors: true
 
 - name: "nri_cpu_balloons | advanced | Filter Running probe pods (one per node)"
   ansible.builtin.set_fact:
     _optimizer_running: >-
-      {{ (_optimizer_pods.resources
+      {{ (_optimizer_pods.resources | default([])
           | selectattr('status.phase', 'equalto', 'Running')
           | rejectattr('metadata.deletionTimestamp', 'defined')
           | list) }}
+
+- name: "nri_cpu_balloons | advanced | Warn if probe coverage is still incomplete after retrying"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: only {{ _optimizer_running | length }} of
+      {{ _optimizer_ds.resources[0].status.desiredNumberScheduled }} expected
+      node-topology-optimizer pods are Running after retrying. Proceeding with
+      partial coverage — any node missing here gets no nri.intel.com/* labels
+      and its node.<NAME> BalloonsPolicy CR is pruned, so TP>1 models cannot be
+      placed on it until this role is re-run.
+  when: (_optimizer_running | length) < (_optimizer_ds.resources[0].status.desiredNumberScheduled | int)
 
 - name: "nri_cpu_balloons | advanced | Assert at least one probe pod ready"
   ansible.builtin.assert:

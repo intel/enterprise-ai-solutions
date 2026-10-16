@@ -1,0 +1,41 @@
+---
+# =============================================================================
+# Intel GPU Plugin — Install
+# =============================================================================
+# The DaemonSet schedules onto nodes added later on its own.
+# =============================================================================
+
+- name: "intel_gpu_plugin | Deploy Intel GPU Plugin DaemonSet (base overlay, no NFD required)"
+  ansible.builtin.command:
+    cmd: "kubectl apply -f {{ intel_gpu_plugin_manifest }}"
+  register: gpu_plugin_deploy
+  retries: 3
+  delay: 10
+  until: gpu_plugin_deploy.rc == 0
+  changed_when: "'configured' in gpu_plugin_deploy.stdout or 'created' in gpu_plugin_deploy.stdout"
+
+- name: "intel_gpu_plugin | Wait for Intel GPU Plugin DaemonSet rollout (best effort)"
+  ansible.builtin.shell: |
+    set -e
+    read -r ns name <<< "$(kubectl get daemonsets -A \
+      -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+      | grep -i intel-gpu-plugin | head -1)"
+    if [ -n "$ns" ] && [ -n "$name" ]; then
+      kubectl rollout status "daemonset/$name" -n "$ns" --timeout=180s
+    else
+      echo "intel-gpu-plugin DaemonSet not found yet; skipping rollout wait"
+    fi
+  args:
+    executable: /bin/bash
+  register: gpu_plugin_rollout
+  changed_when: false
+  ignore_errors: true
+
+- name: "intel_gpu_plugin | Deployment status"
+  ansible.builtin.debug:
+    msg:
+      - "================================================================"
+      - "Intel GPU Plugin Deployment Status"
+      - "================================================================"
+      - "Manifest ref: {{ intel_gpu_plugin_ref }}"
+      - "{{ gpu_plugin_rollout.stdout_lines | default(['rollout status unavailable']) }}"

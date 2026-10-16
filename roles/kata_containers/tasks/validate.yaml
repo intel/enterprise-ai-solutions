@@ -1,0 +1,49 @@
+---
+# =============================================================================
+# Kata Containers — Validate
+# =============================================================================
+
+# Install skips Kata (warn, no failure) when no node has /dev/kvm or no shim is
+# left to install — validate reports that state instead of failing on it.
+- name: "kata_containers | validate | Check whether kata-deploy is installed"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: "{{ kata_release_name }}"
+    namespace: "{{ kata_namespace }}"
+  register: _val_kata_installed
+
+- name: "kata_containers | validate | Kata not installed (skipped at install)"
+  ansible.builtin.debug:
+    msg: >-
+      kata_containers_enabled is set but kata-deploy is not installed — install skipped
+      Kata (no node with /dev/kvm, or no shim left to install). See the install output.
+  when: _val_kata_installed.resources | default([]) | length == 0
+
+- name: "kata_containers | validate | End when Kata was skipped at install"
+  ansible.builtin.meta: end_role
+  when: _val_kata_installed.resources | default([]) | length == 0
+
+- name: "kata_containers | validate | Check kata-deploy DaemonSet rollout"
+  ansible.builtin.command: >-
+    kubectl -n {{ kata_namespace }} rollout status daemonset/{{ kata_release_name }}
+    --timeout=60s
+  register: _val_kata_ds
+  changed_when: false
+
+- name: "kata_containers | validate | Get RuntimeClasses"
+  kubernetes.core.k8s_info:
+    api_version: node.k8s.io/v1
+    kind: RuntimeClass
+  register: _val_kata_rc
+
+- name: "kata_containers | validate | Check a requested Kata RuntimeClass exists"
+  vars:
+    _requested: >-
+      {{ ([kata_fc_runtime_class] if kata_runtime | default('kata-fc') in ['kata-fc', 'both'] else [])
+         + ([kata_qemu_runtime_class] if kata_runtime | default('kata-fc') in ['kata-qemu', 'both'] else []) }}
+    _present: "{{ _val_kata_rc.resources | map(attribute='metadata.name') | list }}"
+  ansible.builtin.assert:
+    that: _requested | intersect(_present) | length > 0
+    fail_msg: "None of the requested Kata RuntimeClasses ({{ _requested | join(', ') }}) exist"
+    success_msg: "Kata RuntimeClasses present: {{ _requested | intersect(_present) | join(', ') }}"

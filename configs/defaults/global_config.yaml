@@ -126,6 +126,10 @@ metallb_enabled: true
 postgresql_enabled: true
 envoy_gateway_enabled: true
 
+# --- Kata Containers (microVM runtime for Agent Sandbox — requires agent-toolkit) ---
+kata_containers_enabled: false
+kata_runtime: "kata-fc"                   # kata-fc | kata-qemu | both
+
 # =============================================================================
 # Optional Features (only read when the matching option above selects them)
 # =============================================================================
