@@ -7,9 +7,8 @@ name: Bandit
 #
 # Only GitHub-hosted runners and public actions are used.
 #
-# Soft-fail for the initial rollout: findings publish to Security -> Code
-# scanning instead of blocking the branch. Tighten the `exit-code` /
-# `--soft-fail` / `continue-on-error` switches once the backlog is triaged.
+# Blocking: any finding fails the job. Findings also publish to Security ->
+# Code scanning.
 
 on:
   workflow_dispatch:
@@ -76,11 +75,13 @@ jobs:
       # Severity is deliberately not filtered: several real tests (e.g. B105
       # hardcoded password) report LOW, so raising the floor would hide them.
       # Scanned once. The readable summary below is rendered from the SARIF
-      # that scan produced rather than by scanning the tree a second time.
+      # that scan produced rather than by scanning the tree a second time;
+      # Bandit's exit code is held until the summary has been printed.
       - name: Run Bandit
         run: |
+          rc=0
           bandit -r . -x ./venv,./.venv,./src/tests,./collections -s B101,B404,B601,B603 \
-            -f sarif -o bandit-results.sarif --exit-zero
+            -f sarif -o bandit-results.sarif || rc=$?
           jq -r '"Bandit: \(.runs[0].results | length) finding(s)",
             (.runs[0].results[]
               | "  \(.level)\t\(.ruleId)\t"
@@ -88,6 +89,7 @@ jobs:
                 + ":\(.locations[0].physicalLocation.region.startLine)\t"
                 + "\(.message.text | split("\n")[0])")' \
             bandit-results.sarif
+          exit "$rc"
 
       - name: Upload Bandit SARIF
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
