@@ -2,6 +2,8 @@
 envoy_gateway_version: "1.7.1"
 envoy_gateway_namespace: "envoy-gateway-system"
 envoy_gateway_helm_repo: "oci://docker.io/envoyproxy/gateway-helm"
+# OpenShift only: rendered for the Envoy Gateway CRDs alone (see install.yaml).
+envoy_gateway_crds_helm_repo: "oci://docker.io/envoyproxy/gateway-crds-helm"
 envoy_gateway_wait_timeout: "300s"
 
 # Gateway resource
