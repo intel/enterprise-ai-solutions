@@ -150,6 +150,7 @@ components:
 | `layer` | yes | Your layer, or an existing one you're extending. |
 | `depends_on` | yes (may be `[]`) | Component names **in the same layer only**. |
 | `enabled` | no (default `true`) | `true`/`false`, or a Jinja expression rendering to one. |
+| `teardown` | no (default `labels`) | `labels`: delete what install labelled (see [Ownership labels](#ownership-labels)). `role`: run the role's `teardown.yaml` instead. `both`: delete by label, then run `teardown.yaml`, for components that also change hosts. |
 
 ### Rules that actually bite
 
@@ -234,7 +235,7 @@ roles/<name>/
 | File | Required | Contract |
 |---|---|---|
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
-| `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
+| `tasks/teardown.yaml` | yes | Runs only with `teardown: role` or `both`. Removes what labels cannot: host changes, changes to objects that existed before. Succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
 | `tasks/*_openshift.yaml` | yes, except infrastructure roles | Used on OpenShift instead of the files above. Same steps as on Kubernetes: include the Kubernetes file. Not used on OpenShift: `install` and `validate` fail with the reason, `teardown` is a `debug` no-op, so a layer teardown passes. |
 | `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. |
@@ -267,6 +268,45 @@ than merging.
 
 Roles receive `component_action` (`install` | `teardown` | `validate`) plus `env_dir`,
 `env_name` and `kubernetes_kubeconfig`.
+
+### Ownership labels
+
+Roles do not label anything themselves. Around every component, of every layer, the core's
+`ownership` role labels each object the component created:
+
+```
+ai-solutions.intel.com/env:       <env name>
+ai-solutions.intel.com/layer:     <layer>
+ai-solutions.intel.com/component: <component>
+```
+
+Before the first component it records the UID of every object on the cluster. After each
+component, also one that failed, it labels the objects that
+
+- were not there before, so they appeared while the component ran,
+- have no `ownerReferences` (their owner is labelled, and garbage collection removes them),
+- were written by the installer's own tools: Helm, `kubernetes.core.k8s`, `kubectl`/`oc`,
+  `model-manager` (`ownership_managers`). Objects an operator creates in parallel are left alone.
+
+Teardown then deletes `env=<env>,component=<component>` in this order: custom resources
+first, while their operators still run; then webhooks and APIServices; namespaced objects
+(Helm release secrets included); namespaces; cluster-scoped objects; CRDs last. It waits
+for each step. If an object is still there after `ownership_delete_timeout`, it fails and
+stops before the next step, which may hold the controller that clears the object's
+finalizer. Run teardown again once the cause is fixed.
+
+What this means for a role:
+
+- **Create, don't adopt.** An object that existed before the component ran (a namespace
+  the customer made, a ConfigMap the role patches) is never labelled, so it is never
+  deleted. Revert such changes in `teardown.yaml` and set `teardown: both`.
+- **Don't recreate objects with `force: true`** (replace). The new object keeps its UID but
+  loses the labels.
+- **Use the tools above.** An object created by anything else (a Job, a script in a pod)
+  is not labelled. In a namespace the component created that is fine: it goes with the
+  namespace.
+- **Add your own field manager.** A server-side apply with `field_manager: <name>` writes
+  as `<name>`, not as one of the tools above. Add it to `ownership_managers`.
 
 ---
 

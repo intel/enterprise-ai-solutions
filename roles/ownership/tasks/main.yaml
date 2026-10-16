@@ -1,0 +1,69 @@
+---
+# =============================================================================
+# Ownership — label what a component installs, delete it again on teardown
+# =============================================================================
+# ownership_action:
+#   snapshot  before the first component: record what is already on the cluster
+#   label     after each component: label what it created
+#   teardown  instead of (or before) a component's own teardown: delete by label
+# =============================================================================
+
+- name: "ownership | Record the objects already on the cluster"
+  when: ownership_action == 'snapshot'
+  ownership_k8s:
+    action: snapshot
+    state_file: "{{ ownership_state_file }}"
+    skip_resources: "{{ ownership_skip_resources }}"
+
+- name: "ownership | Label what {{ component.name | default('') }} created"
+  when: ownership_action == 'label'
+  ownership_k8s:
+    action: label
+    state_file: "{{ ownership_state_file }}"
+    label_prefix: "{{ ownership_label_prefix }}"
+    env: "{{ env_name | default('local') }}"
+    layer: "{{ component.layer | default('unknown') }}"
+    component: "{{ component.name }}"
+    managers: "{{ ownership_managers }}"
+    skip_resources: "{{ ownership_skip_resources }}"
+  register: _ownership_labelled
+
+- name: "ownership | Labelled {{ _ownership_labelled.labelled | default([]) | length }} objects of {{ component.name | default('') }}"
+  when:
+    - ownership_action == 'label'
+    - _ownership_labelled.labelled | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _ownership_labelled.labelled }}"
+
+- name: "ownership | Delete what {{ component.name | default('') }} created"
+  when: ownership_action == 'teardown'
+  ownership_k8s:
+    action: delete
+    label_prefix: "{{ ownership_label_prefix }}"
+    env: "{{ env_name | default('local') }}"
+    component: "{{ component.name }}"
+    skip_resources: "{{ ownership_skip_resources }}"
+    timeout: "{{ ownership_delete_timeout }}"
+  register: _ownership_deleted
+
+- name: "ownership | Fail when objects of {{ component.name | default('') }} are still there"
+  when:
+    - ownership_action == 'teardown'
+    - _ownership_deleted.left | default([]) | length > 0
+  ansible.builtin.fail:
+    msg: |-
+      Still present after {{ ownership_delete_timeout }}s ({{ _ownership_deleted.phase }} phase).
+      Teardown stopped there and kept the later phases, which may hold the controller that
+      clears the finalizers. Find out why (kubectl describe), then run teardown again.
+      {{ _ownership_deleted.left | join('\n') }}
+
+- name: "ownership | Nothing of {{ component.name | default('') }} is labelled"
+  when:
+    - ownership_action == 'teardown'
+    - _ownership_deleted.deleted | default([]) | length == 0
+  ansible.builtin.debug:
+    msg: >-
+      No object carries {{ ownership_label_prefix }}/component={{ component.name }} in env
+      {{ env_name | default('local') }}. Either it is not installed, or it was installed before
+      ownership labels existed; for the latter, set ownership_enabled: false to run the role's
+      own teardown.
