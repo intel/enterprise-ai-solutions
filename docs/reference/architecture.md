@@ -13,12 +13,14 @@ This repository provides:
 - **Cross-repo orchestration** — Auto-discovers and integrates external solution repos
 
 External solution repositories (e.g., `enterprise-inference`, `enterprise-rag`) contribute additional layers:
-- **Inference layer** — KServe, LiteLLM (proxy + auth), Langfuse (observability), LLM services, Envoy AI Gateway, NRI CPU balloons
+- **Inference layer** — KServe, LiteLLM (proxy + virtual keys), Langfuse (observability), LLM services, Envoy AI Gateway, NRI CPU balloons
 - **Application layer** — RAG pipelines, UI, vector databases (opt-in)
 
-**Auth modes:** The stack supports two authentication providers (set via `auth_provider` in `global_config.yaml`):
-- `litellm` — LiteLLM virtual keys; Keycloak is not deployed; LiteLLM acts as both auth (extAuth `/key/verify`) and model proxy
-- `keycloak` — Keycloak OIDC JWT; LiteLLM/Langfuse are not deployed; direct KServe path-based routing
+**Auth modes:** Keycloak is always deployed and people sign in through it. `auth_type` in `env/<name>/config.inference.yaml` selects the credential API clients send:
+- `jwt` (default) — Keycloak JWT (client credentials) on the inference endpoint; LiteLLM + Langfuse optional (`litellm_enabled: true`)
+- `litellm_vkey` — LiteLLM virtual keys on `litellm.<domain>`; LiteLLM validates the key and proxies to the model; Langfuse on unless `langfuse_enabled: false`
+
+The gateway `SecurityPolicy` is a Keycloak JWT, deny-by-default, in both modes: a route without its own `SecurityPolicy` needs a Keycloak JWT. Routes that authenticate themselves (UI logins, the LiteLLM API) attach their own policy.
 
 ---
 
@@ -45,7 +47,7 @@ infrastructure  →  platform  →  inference  →  erag (opt-in)
                                                  app_watcher
                                                  app_post_install
 
-* keycloak is auto-disabled when auth_provider=litellm
+* keycloak is always on (keycloak_enabled defaults true)
 † velero is opt-in (velero_enabled) and needs snapshot-capable storage
 ```
 
@@ -97,17 +99,17 @@ playbooks/site.yaml (universal dispatcher)
 │   ├─ role: metallb              → tasks/install.yaml (LoadBalancer services)
 │   ├─ role: envoy_gateway        → tasks/install.yaml (helm install + TLS)
 │   ├─ role: postgresql           → tasks/install.yaml (CNPG operator + clusters)
-│   ├─ role: keycloak             → tasks/install.yaml (skipped when auth_provider=litellm)
+│   ├─ role: keycloak             → tasks/install.yaml (both auth modes)
 │   ├─ role: object_store         → tasks/install.yaml (backend selection)
 │   ├─ role: seaweedfs            → tasks/install.yaml (S3-compatible object storage)
 │   └─ role: observability        → tasks/install.yaml (prometheus/grafana/loki/tempo)
 │
 ├─ [Inference Layer]
-│   ├─ role: keycloak_config      → tasks/install.yaml (realm + client — skipped when auth_provider=litellm)
+│   ├─ role: keycloak_config      → tasks/install.yaml (realm + client — both auth modes)
 │   ├─ role: envoy_ai_gateway     → tasks/install.yaml (apply manifests)
 │   ├─ role: kserve               → tasks/install.yaml (CRDs + controller + deploy mode)
-│   ├─ role: litellm              → tasks/install.yaml (proxy + extAuth — only when auth_provider=litellm)
-│   ├─ role: langfuse             → tasks/install.yaml (observability — only when auth_provider=litellm)
+│   ├─ role: litellm              → tasks/install.yaml (proxy — auth_type=litellm_vkey, or litellm_enabled)
+│   ├─ role: langfuse             → tasks/install.yaml (observability — with LiteLLM unless langfuse_enabled: false)
 │   ├─ role: llm_services         → tasks/install.yaml (runtimes + default models)
 │   └─ role: nri_cpu_balloons     → tasks/install.yaml (CPU pinning — only when cpu_policy=nri-balloons)
 │
@@ -208,7 +210,7 @@ enterprise-ai-solutions/
     │       └── teardown.yaml
     ├── keycloak/
     │   └── tasks/
-    │       ├── install.yaml                    # Keycloak (skipped when auth_provider=litellm)
+    │       ├── install.yaml                    # Keycloak (both auth modes)
     │       └── teardown.yaml
     ├── object_store/
     │   └── tasks/
@@ -244,7 +246,7 @@ enterprise-inference/
     │       └── teardown.yaml
     ├── keycloak_config/
     │   └── tasks/
-    │       ├── install.yaml                    # Realm + client (skipped when auth_provider=litellm)
+    │       ├── install.yaml                    # Realm + client (both auth modes)
     │       └── teardown.yaml
     ├── kserve/
     │   ├── defaults/main.yaml
@@ -255,7 +257,7 @@ enterprise-inference/
     ├── litellm/
     │   ├── defaults/main.yaml                  # Version, sizing, cache, gateway integration
     │   └── tasks/
-    │       ├── install.yaml                    # Helm deploy + extAuth SecurityPolicy + ReferenceGrant
+    │       ├── install.yaml                    # Helm deploy + HTTPRoute + own SecurityPolicy
     │       ├── tls.yaml                        # Certificate provisioning
     │       ├── teardown.yaml
     │       └── validate.yaml
@@ -348,8 +350,8 @@ Components are defined in `components.yaml` files (this repo + ext repos). Each 
 | inference | keycloak_config*, envoy_ai_gateway, kserve, litellm**, langfuse**, llm_services, nri_cpu_balloons*** | `install inference` (explicitly named, or auto-pulled by `install erag`) |
 | erag | app_inference_models, app_pre_install, app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats, app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher, app_post_install | `install erag` (opt-in, requires `init erag` first) |
 
-\* Keycloak + keycloak_config are auto-disabled when `auth_provider=litellm`
-\*\* LiteLLM + Langfuse are auto-enabled when `auth_provider=litellm`
+\* Keycloak + keycloak_config run in both auth modes (`keycloak_enabled` defaults `true`)
+\*\* LiteLLM is always on with `auth_type=litellm_vkey`, optional with `jwt` (`litellm_enabled: true`); Langfuse follows LiteLLM unless `langfuse_enabled: false`
 \*\*\* NRI CPU balloons enabled when `kubernetes_cpu_policy=nri-balloons` and `kubernetes_accelerator=cpu`
 
 The `erag` layer must be explicitly targeted: `install erag --env <name>`. See [../../ext/enterprise.ai-erag/docs/README.md](../../ext/enterprise.ai-erag/docs/README.md) (exists after `init erag` clones the repo) for RAG-layer documentation.
@@ -563,9 +565,9 @@ All roles follow the same pattern: `defaults/main.yaml` for config, `tasks/main.
 | `metallb` | MetalLB for LoadBalancer services. IP ranges from `env/<name>/nodes.yaml` or `global_config.yaml`. |
 | `cert_manager` | Helm install cert-manager (prerequisite for KServe, Istio, gateway TLS). |
 | `istio` | Istio ambient mesh (1.27.x). All workload namespaces enrolled via `istio.io/dataplane-mode: ambient` label. Provides zero-trust mTLS without sidecars. |
-| `envoy_gateway` | Helm install from OCI registry, waits for deployment rollout, TLS config, SecurityPolicy for auth. |
+| `envoy_gateway` | Helm install from OCI registry, waits for deployment rollout, TLS config, deny-by-default Keycloak JWT SecurityPolicy on the gateway. |
 | `postgresql` | CNPG operator + PostgreSQL clusters for Keycloak, LiteLLM, Langfuse. |
-| `keycloak` | Keycloak operator + instance. Auto-disabled when `auth_provider=litellm`. |
+| `keycloak` | Keycloak operator + instance. Deployed in both auth modes. |
 | `object_store` | Selects and configures the object store backend (seaweedfs/rustfs). |
 | `seaweedfs` | S3-compatible object storage for Loki, Tempo, Langfuse blob storage. |
 | `observability` | Prometheus + Grafana + Loki + Tempo stack. |
@@ -596,7 +598,7 @@ External repos live under `ext/<dest>/` and are cloned on first run based on per
 | File | Purpose |
 |------|---------|
 | `defaults/main.yaml` | Version, namespace, sizing (single/multi-node), cache, gateway integration, TLS |
-| `tasks/install.yaml` | Helm deploy LiteLLM proxy + Valkey cache. Creates `ReferenceGrant` so Envoy Gateway's `SecurityPolicy` can reference LiteLLM service for extAuth. Creates `no-auth SecurityPolicy` on LiteLLM's own HTTPRoute (LiteLLM validates keys internally). |
+| `tasks/install.yaml` | Helm deploy LiteLLM proxy + Valkey cache. Creates LiteLLM's HTTPRoute; with `auth_type=litellm_vkey` attaches a `no-auth SecurityPolicy` to it (LiteLLM validates virtual keys itself), otherwise the gateway's Keycloak JWT policy applies. |
 | `tasks/tls.yaml` | Provisions TLS certificate for the LiteLLM hostname |
 | `tasks/teardown.yaml` | Helm uninstall + cleanup namespace |
 | `tasks/validate.yaml` | Health check against LiteLLM `/health` endpoint |
@@ -613,7 +615,7 @@ External repos live under `ext/<dest>/` and are cloned on first run based on per
 
 | File | Purpose |
 |------|---------|
-| `tasks/install.yaml` | Creates Keycloak realm `inference`, client `inference-client`, OIDC SecurityPolicy on gateway. Skipped when `auth_provider=litellm`. |
+| `tasks/install.yaml` | Creates Keycloak realm `inference` and client `inference-client`. Runs in both auth modes. |
 | `tasks/teardown.yaml` | Removes realm and client |
 
 #### llm_services
@@ -622,7 +624,7 @@ External repos live under `ext/<dest>/` and are cloned on first run based on per
 |------|---------|
 | `defaults/main.yaml` | `llm_services_namespace`, runtime + model settings |
 | `tasks/install.yaml` | Creates namespace, applies `files/runtimes/*.yaml` (ServingRuntimes), installs LLMInferenceService CRDs + kserve-runtime-configs |
-| `tasks/deploy_models.yaml` | Deploys models from `default-models.yaml` at initial install. Sets `MM_LITELLM_ENABLED=true` when `auth_provider=litellm` for auto-registration. |
+| `tasks/deploy_models.yaml` | Deploys models from `default-models.yaml` at initial install. Sets `MM_LITELLM_ENABLED=true` when `auth_type=litellm_vkey` for auto-registration. |
 | `tasks/teardown.yaml` | Deletes all InferenceServices, ServingRuntimes, and namespace |
 | `tasks/validate.yaml` | Lists runtimes and deployed LLM services |
 | `files/runtimes/vllm-runtime.yaml` | vLLM ServingRuntime: OpenAI-compatible API server |

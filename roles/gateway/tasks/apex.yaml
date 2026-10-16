@@ -69,9 +69,7 @@
     gateway_route_name: apex-landing
     gateway_route_namespace: "{{ gateway_namespace }}"
     gateway_route_policy_name: apex-landing-no-auth
-  when:
-    - gateway_path_mode | bool and gateway_landing_path | length > 0
-    - auth_provider in ['keycloak', 'litellm']
+  when: gateway_path_mode | bool and gateway_landing_path | length > 0
 
 - name: "gateway | apex | Remove the landing redirect when off"
   when: not (gateway_path_mode | bool and gateway_landing_path | length > 0)

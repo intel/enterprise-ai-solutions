@@ -4,7 +4,7 @@
 
 How to integrate **your tool, framework, or application** with the Intel® AI for Enterprise Solutions inference stack — without modifying the stack itself.
 
-> **TL;DR** — point any OpenAI-compatible client at the inference endpoint and pass a Bearer token. With `auth_provider=litellm`: use `https://${LITELLM_DOMAIN}/v1/chat/completions` with a LiteLLM virtual key. With `auth_provider=keycloak`: use `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1/chat/completions` with a Keycloak JWT.
+> **TL;DR** — point any OpenAI-compatible client at the inference endpoint and pass a Bearer token. With `auth_type=litellm_vkey`: use `https://${LITELLM_DOMAIN}/v1/chat/completions` with a LiteLLM virtual key. With `auth_type=jwt`: use `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1/chat/completions` with a Keycloak JWT.
 
 ---
 
@@ -16,7 +16,7 @@ The stack is built on open standards. Anything that speaks them works:
 |---|---|---|
 | **OpenAI REST API** (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) | vLLM behind KServe + LiteLLM proxy (or Envoy AI Gateway) | Drop-in compatibility with the entire OpenAI ecosystem |
 | **Open Inference Protocol** / KFServing v2 (`/v2/models/<m>/infer`) | KServe predictors (sklearn, XGBoost, PyTorch, TF, ONNX, Triton, custom) | Serve **traditional ML** models on the same stack |
-| **Bearer token auth** | LiteLLM virtual keys (`auth_provider=litellm`) or Keycloak OIDC JWT (`auth_provider=keycloak`) | Standard `Authorization: Bearer <token>` works with any HTTP client |
+| **Bearer token auth** | LiteLLM virtual keys (`auth_type=litellm_vkey`) or Keycloak OIDC JWT (`auth_type=jwt`) | Standard `Authorization: Bearer <token>` works with any HTTP client |
 | **Gateway API + Kubernetes CRDs** | Envoy Gateway, KServe, cert-manager, Istio ambient | Add models / routes / policies declaratively — no stack edits |
 
 ---
@@ -34,7 +34,7 @@ GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
   -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
 ```
 
-#### With `auth_provider=litellm`
+#### With `auth_type=litellm_vkey`
 
 ```bash
 # LiteLLM hostname
@@ -45,7 +45,7 @@ TOKEN=$(kubectl get secret litellm-master-key -n litellm \
   -o jsonpath='{.data.master_key}' | base64 -d)
 ```
 
-#### With `auth_provider=keycloak` (default)
+#### With `auth_type=jwt` (default)
 
 ```bash
 # Keycloak hostname (from the Keycloak CR)
@@ -75,7 +75,7 @@ TOKEN=$(curl -sk --noproxy '*' --resolve ${KEYCLOAK_DOMAIN}:443:${GATEWAY_IP} \
 
 ### 2. Call the model
 
-#### With `auth_provider=litellm`
+#### With `auth_type=litellm_vkey`
 
 ```bash
 curl -sk --noproxy '*' --resolve ${LITELLM_DOMAIN}:443:${GATEWAY_IP} \
@@ -91,7 +91,7 @@ curl -sk --noproxy '*' --resolve ${LITELLM_DOMAIN}:443:${GATEWAY_IP} \
 
 LiteLLM handles model routing — all models share the same base URL (`/v1/...`). Specify the model name in the request body.
 
-#### With `auth_provider=keycloak` (default)
+#### With `auth_type=jwt` (default)
 
 ```bash
 curl -sk --noproxy '*' --resolve ${GATEWAY_DOMAIN}:443:${GATEWAY_IP} \
@@ -117,14 +117,14 @@ That same endpoint + token is what every framework below uses.
 import os
 from openai import OpenAI
 
-# auth_provider=litellm:
+# auth_type=litellm_vkey:
 client = OpenAI(
     base_url=f"https://{os.environ['LITELLM_DOMAIN']}/v1",
     api_key=os.environ["TOKEN"],   # LiteLLM virtual key or master key
     http_client=__import__("httpx").Client(verify=False),  # for self-signed certs
 )
 
-# auth_provider=keycloak:
+# auth_type=jwt:
 # client = OpenAI(
 #     base_url=f"https://{os.environ['GATEWAY_DOMAIN']}/llm-inference/llama-3-2-1b/v1",
 #     api_key=os.environ["TOKEN"],   # Keycloak JWT
@@ -147,8 +147,8 @@ print(resp.choices[0].message.content)
 Pick your tool. Each one needs only **base URL + API key** — both already provided above.
 
 > **Note on base URL:** All examples below use `BASE_URL` which is:
-> - With `auth_provider=litellm`: `https://${LITELLM_DOMAIN}/v1` (LiteLLM routes to the model)
-> - With `auth_provider=keycloak`: `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1` (direct KServe path)
+> - With `auth_type=litellm_vkey`: `https://${LITELLM_DOMAIN}/v1` (LiteLLM routes to the model)
+> - With `auth_type=jwt`: `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1` (direct KServe path)
 
 ### RAG — LangChain
 
@@ -252,7 +252,7 @@ The stack does **not** need to know about them — they're consumed by your appl
 
 | Tool | How it integrates |
 |---|---|
-| **Langfuse** | ✅ Bundled with the stack when `auth_provider=litellm`. LiteLLM auto-sends traces to the in-cluster Langfuse instance — no client-side instrumentation needed. Access at `https://langfuse.<base_domain_name>`. |
+| **Langfuse** | ✅ Bundled with the stack whenever LiteLLM is on (`auth_type=litellm_vkey`, or `litellm_enabled: true`), unless `langfuse_enabled: false`. LiteLLM auto-sends traces to the in-cluster Langfuse instance — no client-side instrumentation needed. Access at `https://langfuse.<base_domain_name>`. |
 | **Phoenix / Arize** | Use the OpenInference instrumentor for OpenAI; spans are emitted to your Phoenix collector. |
 | **Ragas / DeepEval** | Pass the same `ChatOpenAI` / `OpenAILike` LLM into the eval harness. |
 | **Promptfoo** | Use provider `openai:chat:llama-3-2-1b` with `apiBaseUrl` + `apiKey` in `promptfoo.yaml`. |
@@ -294,13 +294,14 @@ Pick the model that fits your client:
 | **Client-credentials JWT** (default) | ✅ shipped | Service-to-service, batch jobs, agents | `grant_type=client_credentials` against Keycloak token endpoint (see top of guide) |
 | **Password JWT** | ✅ supported by Keycloak | User-facing apps with login | `grant_type=password` — issue per-user tokens (enable Direct Access Grants on the client first) |
 | **Authorization Code Flow** | ✅ supported by Keycloak | Web apps with full SSO | Standard OIDC redirect flow against Keycloak (configure `redirectUris`) |
-| **LiteLLM virtual key** | ✅ shipped | Multi-tenant SaaS, per-key budgets/limits | Set `auth_provider: litellm` in `global_config.yaml`. LiteLLM issues virtual keys with per-key budgets, rate limits, and model access controls. Langfuse observability auto-enabled. |
-| **No auth** | ✅ shipped | Local dev only | `auth_provider: "none"` in `global_config.yaml` |
+| **LiteLLM virtual key** | ✅ shipped | Multi-tenant SaaS, per-key budgets/limits | Set `auth_type: litellm_vkey` in `env/<name>/config.inference.yaml`. LiteLLM issues virtual keys with per-key budgets, rate limits, and model access controls. Langfuse observability auto-enabled. |
 
 **Gateway auth enforcement:**
 
-- **`auth_provider=litellm`**: Envoy Gateway sends every request to LiteLLM's `/key/verify` as extAuth. LiteLLM validates the virtual key, enforces per-key budgets/rate-limits, and forwards to the model backend. No OIDC configuration needed.
-- **`auth_provider=keycloak`**: Envoy Gateway `SecurityPolicy` validates JWTs:
+The gateway `SecurityPolicy` is a Keycloak JWT and deny-by-default in both modes: a route without its own `SecurityPolicy` needs a Keycloak JWT. Routes that authenticate themselves (Grafana, Langfuse and Keycloak logins, the LiteLLM API) attach their own policy.
+
+- **`auth_type=litellm_vkey`**: clients call `litellm.<base_domain_name>`. LiteLLM validates the virtual key itself, enforces per-key budgets/rate-limits, and forwards to the model backend.
+- **`auth_type=jwt`**: the gateway validates Keycloak JWTs:
   - **Issuer**: `https://${KEYCLOAK_HOSTNAME}/realms/inference`
   - **Audience**: `inference-client`
   - **JWKS URI**: `http://keycloak-service.keycloak.svc.cluster.local:8080/realms/inference/protocol/openid-connect/certs`
@@ -640,7 +641,7 @@ Create a Keycloak client + a routing policy without touching the stack code:
 
 Your app then uses its own `client_id` / `client_secret` to fetch tokens — same endpoint, different identity.
 
-> Per-key budgets and quotas are available via LiteLLM virtual keys when `auth_provider: litellm` is configured.
+> Per-key budgets and quotas are available via LiteLLM virtual keys when `auth_type: litellm_vkey` is configured.
 
 ---
 

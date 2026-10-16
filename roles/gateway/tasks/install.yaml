@@ -144,7 +144,7 @@
     gateway_route_name: http-to-https-redirect
     gateway_route_namespace: "{{ gateway_namespace }}"
     gateway_route_policy_name: http-to-https-redirect-no-auth
-  when: gateway_create and auth_provider in ['keycloak', 'litellm']
+  when: gateway_create
 
 # ── Apex host: path grants and landing (path mode) ───────────────────────────
 - name: "gateway | Apex host"
@@ -294,7 +294,7 @@
       {{ gateway_platform.provider }} controller v{{ gateway_platform.version | default('?', true) }}
       in {{ gateway_platform.controller_namespace }}
       ({{ gateway_platform.controller_action if gateway_platform.controller_managed | bool else 'existing, unchanged' }}).
-      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}){{ ' + auth (' + auth_provider + ')' if auth_provider != 'none' else '' }}.
+      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}) + Keycloak JWT auth.
       {{ 'Solutions publish hosts with ListenerSets' if _gw_attach_mode == 'listenerset'
          else 'Solutions attach routes to the wildcard listener (shared mode)' }} from namespaces labelled
       {{ gateway_listeners_label_key }}={{ gateway_listeners_label_value }}.
