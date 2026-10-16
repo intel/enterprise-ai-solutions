@@ -1,0 +1,60 @@
+---
+# =============================================================================
+# Kubernetes — remove-node (Kubespray remove-node.yml)
+# =============================================================================
+# Flow (driven by es_auto_installer.sh):
+#   Phase 1 (_scale_phase=prep, default): ensure kubespray stack only. The
+#            inventory is deliberately NOT regenerated here — remove-node.yml
+#            needs the node(s) being removed to still be present in it (with
+#            their connection details) so it can reach them to drain and
+#            reset. Regenerating from the already-edited nodes.yaml at this
+#            point would drop them first, and remove-node.yml's "Reset node" /
+#            "Post node removal" plays would then match zero hosts and
+#            silently do nothing — the -e node=<name> extra-var only selects
+#            among hosts the inventory actually defines.
+#   Phase 2: es_auto_installer.sh runs Kubespray remove-node.yml directly
+#            (live output) against the still-unregenerated inventory.
+#   Phase 3 (_scale_phase=post): NOW regenerate the inventory from nodes.yaml,
+#            so the removed node(s) are finally dropped. es_auto_installer.sh
+#            then deletes their now-stale host_vars file(s).
+#
+# BYO clusters are refused — a bring-your-own cluster is not managed by
+# Kubespray at all. Kubespray also refuses to remove the first
+# kube_control_plane/etcd host directly; es_auto_installer.sh detects that
+# case from the current inventory and refuses before this role ever runs.
+# =============================================================================
+
+- name: "kubernetes | remove-node | Refuse on BYO cluster"
+  ansible.builtin.fail:
+    msg: "remove-node is not supported for a BYO cluster (existing_kubernetes is set)."
+  when: existing_kubernetes | default('') | trim | length > 0
+
+- name: "kubernetes | remove-node | Post phase — drop removed node(s) from inventory"
+  when: _scale_phase | default('prep') == 'post'
+  block:
+    - name: "kubernetes | remove-node | Regenerate inventory from nodes.yaml"
+      ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+
+    - name: "kubernetes | remove-node | Post phase complete"
+      ansible.builtin.debug:
+        msg: "Inventory regenerated at {{ kubespray_custom_inventory }} — removed node(s) dropped."
+
+- name: "kubernetes | remove-node | End role (post phase complete)"
+  when: _scale_phase | default('prep') == 'post'
+  meta: end_role
+
+# =====================================================================
+# PHASE: prep — ensure kubespray only, inventory untouched
+# =====================================================================
+
+- name: "kubernetes | remove-node | Ensure kubespray stack"
+  ansible.builtin.include_tasks: kubespray_ensure.yaml
+
+- name: "kubernetes | remove-node | Prep complete"
+  ansible.builtin.debug:
+    msg: >-
+      es_auto_installer.sh now runs Kubespray remove-node.yml for the removed
+      node(s), against the current inventory (unregenerated on purpose).
+
+- name: "kubernetes | remove-node | End role (prep complete — remove-node.yml runs from caller)"
+  meta: end_role
