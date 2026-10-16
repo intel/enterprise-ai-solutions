@@ -183,6 +183,15 @@ base_domain_name: "<apps domain>"                  # e.g. erag.apps.<cluster>.<d
 auth_provider: keycloak                            # needs step 6; litellm needs no Keycloak
 ```
 
+> [!CAUTION]
+> **Set `existing_kubernetes` before you run any `install` command.** Without it the installer does not use your `oc` login. It treats the env as a cluster to build, and runs Kubespray against the env's inventory, which is `localhost` by default. That installs Kubernetes on the machine you run the installer from, and the platform layer goes into that new cluster instead of OpenShift. Check it with:
+>
+> ```bash
+> yq '.existing_kubernetes' env/ocp/global_config.yaml   # must print your kubeconfig path, not null
+> ```
+>
+> Pass `--env ocp` to every command as well. Without `--env` the installer uses `env/local`, with that env's settings and kubeconfig.
+
 What changes on OpenShift without any setting:
 
 | Area | Kubernetes | OpenShift |
