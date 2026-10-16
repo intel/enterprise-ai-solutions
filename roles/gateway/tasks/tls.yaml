@@ -1,10 +1,10 @@
 ---
 # =============================================================================
-# Envoy Gateway — TLS serving certificate
+# Gateway — TLS serving certificate
 # =============================================================================
 # Produces the secret gateway_tls_secret_name in gateway_namespace, consumed by
 # the Gateway HTTPS listeners. Modes:
-#   selfsigned — internal root CA signs a wildcard leaf; the root cert is
+#   selfsigned — internal root CA signs one leaf per listener; the root cert is
 #                exported to log_dir so operators import ONE file to trust
 #                every hostname across leaf rotations
 #   custom     — secret built from operator-supplied cert/key files
@@ -12,7 +12,7 @@
 # Requires gateway_namespace to already exist (created in install.yaml).
 # =============================================================================
 
-- name: "envoy_gateway | Validate TLS configuration"
+- name: "gateway | Validate TLS configuration"
   ansible.builtin.assert:
     that:
       - gateway_tls_mode in ['selfsigned', 'custom']
@@ -24,7 +24,7 @@
     success_msg: "TLS mode '{{ gateway_tls_mode }}' with domain '{{ base_domain_name }}'"
   when: gateway_create
 
-- name: "envoy_gateway | Validate custom cert files exist"
+- name: "gateway | Validate custom cert files exist"
   ansible.builtin.assert:
     that:
       - gateway_tls_cert_file | default('') | length > 0
@@ -37,19 +37,75 @@
 
 # ── TLS: custom certs ─────────────────────────────────────────────────────────
 
-- name: "envoy_gateway | Read custom TLS certificate"
+- name: "gateway | Read custom TLS certificate"
   ansible.builtin.slurp:
     src: "{{ gateway_tls_cert_file }}"
   register: _tls_cert_data
   when: gateway_tls_mode == 'custom' and gateway_create
 
-- name: "envoy_gateway | Read custom TLS key"
+- name: "gateway | Read custom TLS key"
   ansible.builtin.slurp:
     src: "{{ gateway_tls_key_file }}"
   register: _tls_key_data
   when: gateway_tls_mode == 'custom' and gateway_create
 
-- name: "envoy_gateway | Create TLS secret from user-provided certs"
+- name: "gateway | Read custom TLS CA"
+  ansible.builtin.slurp:
+    src: "{{ gateway_tls_ca_file }}"
+  register: _tls_ca_data
+  when: gateway_tls_mode == 'custom' and gateway_create and gateway_tls_ca_file | length > 0
+
+- name: "gateway | Check the custom certificate covers the platform listeners"
+  ansible.builtin.include_tasks: custom_cert_sans.yaml
+  vars:
+    _gw_cert_pem: "{{ _tls_cert_data.content | b64decode }}"
+    _gw_cert_hosts: >-
+      {{ [base_domain_name]
+         + (['*.' ~ base_domain_name] if _gw_wildcard_on | bool else [])
+         + ([gateway_s3_hostname] if gateway_s3_listener_enabled | bool else []) }}
+    _gw_cert_context: "platform listeners"
+  when: gateway_tls_mode == 'custom' and gateway_create
+
+# After selfsigned mode, cert-manager would keep rewriting the secret.
+- name: "gateway | Remove selfsigned platform leaves (custom mode)"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ item }}-cert"
+    namespace: "{{ gateway_namespace }}"
+  loop: "{{ _gw_platform_certs_all }}"
+  when: gateway_tls_mode == 'custom' and gateway_create
+
+- name: "gateway | Remove selfsigned leaf secrets the operator certificate replaces"
+  kubernetes.core.k8s:
+    state: absent
+    kind: Secret
+    name: "{{ item }}"
+    namespace: "{{ gateway_namespace }}"
+  loop: "{{ _gw_platform_certs_all | difference([gateway_tls_secret_name]) }}"
+  when: gateway_tls_mode == 'custom' and gateway_create
+
+- name: "gateway | Read the TLS secret"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: "{{ gateway_tls_secret_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_tls_secret
+  when: gateway_tls_mode == 'custom' and gateway_create
+
+# Recreated clean, without cert-manager's annotations (first custom run only).
+- name: "gateway | Drop the TLS secret cert-manager issued"
+  kubernetes.core.k8s:
+    state: absent
+    kind: Secret
+    name: "{{ gateway_tls_secret_name }}"
+    namespace: "{{ gateway_namespace }}"
+  when:
+    - gateway_tls_mode == 'custom' and gateway_create
+    - "'cert-manager.io/certificate-name' in ((_gw_tls_secret.resources | first | default({})).metadata.annotations | default({}))"
+
+- name: "gateway | Create TLS secret from user-provided certs"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -59,17 +115,17 @@
         name: "{{ gateway_tls_secret_name }}"
         namespace: "{{ gateway_namespace }}"
       type: kubernetes.io/tls
-      data:
-        tls.crt: "{{ _tls_cert_data.content }}"
-        tls.key: "{{ _tls_key_data.content }}"
+      data: >-
+        {{ {'tls.crt': _tls_cert_data.content, 'tls.key': _tls_key_data.content}
+           | combine({'ca.crt': _tls_ca_data.content} if _tls_ca_data.content is defined else {}) }}
   when: gateway_tls_mode == 'custom' and gateway_create
 
 # ── TLS: internal root CA (selfsigned mode) ───────────────────────────────────
 # selfSigned bootstrap ClusterIssuer → root CA Certificate (isCA) →
-# CA ClusterIssuer 'gateway-issuer'. The wildcard serving leaf below chains to
-# the root, so importing the root cert once trusts every hostname.
+# CA ClusterIssuer 'gateway-issuer'. Every serving leaf chains to the root,
+# so importing the root cert once trusts every hostname.
 
-- name: "envoy_gateway | Create self-signed bootstrap ClusterIssuer"
+- name: "gateway | Create self-signed bootstrap ClusterIssuer"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -85,7 +141,7 @@
   delay: 10
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Create root CA Certificate"
+- name: "gateway | Create root CA Certificate"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -109,7 +165,7 @@
           group: cert-manager.io
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Wait for root CA secret"
+- name: "gateway | Wait for root CA secret"
   kubernetes.core.k8s_info:
     api_version: v1
     kind: Secret
@@ -123,7 +179,7 @@
   delay: 5
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Create CA ClusterIssuer (gateway-issuer)"
+- name: "gateway | Create CA ClusterIssuer (gateway-issuer)"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -136,30 +192,33 @@
           secretName: "{{ gateway_ca_secret_name }}"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Create Certificate for gateway TLS"
+# One leaf per platform listener, each naming only its own host, so a browser
+# never reuses one listener's HTTP/2 connection for another listener's host.
+- name: "gateway | Create platform listener Certificates"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: cert-manager.io/v1
       kind: Certificate
       metadata:
-        name: gateway-tls-cert
+        name: "{{ item.secret }}-cert"
         namespace: "{{ gateway_namespace }}"
       spec:
-        secretName: "{{ gateway_tls_secret_name }}"
+        secretName: "{{ item.secret }}"
         issuerRef:
           name: gateway-issuer
           kind: ClusterIssuer
-        dnsNames:
-          - "{{ base_domain_name }}"
-          - "*.{{ base_domain_name }}"
+        dnsNames: ["{{ item.host }}"]
+  loop: "{{ _gw_platform_certs }}"
+  loop_control:
+    label: "{{ item.host }}"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Wait for TLS certificate to be ready"
+- name: "gateway | Wait for platform listener Certificates to be ready"
   kubernetes.core.k8s_info:
     api_version: cert-manager.io/v1
     kind: Certificate
-    name: gateway-tls-cert
+    name: "{{ item.secret }}-cert"
     namespace: "{{ gateway_namespace }}"
   register: _gw_cert
   until:
@@ -167,23 +226,42 @@
     - _gw_cert.resources[0].status.conditions | default([]) | selectattr('type','eq','Ready') | selectattr('status','eq','True') | list | length > 0
   retries: 30
   delay: 5
+  loop: "{{ _gw_platform_certs }}"
+  loop_control:
+    label: "{{ item.host }}"
+  when: gateway_tls_mode == 'selfsigned' and gateway_create
+
+# Prune leaves whose listener is off (e.g. the legacy wildcard).
+- name: "gateway | Remove leaves of disabled platform listeners"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.1.api }}"
+    kind: "{{ item.1.kind }}"
+    name: "{{ item.0 }}{{ item.1.suffix }}"
+    namespace: "{{ gateway_namespace }}"
+  loop: >-
+    {{ _gw_platform_certs_all | difference(_gw_platform_certs | map(attribute='secret'))
+       | product([{'api': 'cert-manager.io/v1', 'kind': 'Certificate', 'suffix': '-cert'},
+                  {'api': 'v1', 'kind': 'Secret', 'suffix': ''}]) | list }}
+  loop_control:
+    label: "{{ item.1.kind }}/{{ item.0 }}{{ item.1.suffix }}"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
 # ── Export root CA for browser / OS trust store ───────────────────────────────
 # Public cert only — the CA private key stays in the cluster.
 
-- name: "envoy_gateway | Export root CA certificate to {{ gateway_ca_export_path }}"
+- name: "gateway | Export root CA certificate to {{ gateway_ca_export_path }}"
   ansible.builtin.copy:
     content: "{{ _ca_secret.resources[0].data['ca.crt'] | b64decode }}"
     dest: "{{ gateway_ca_export_path }}"
     mode: "0644"
   when: gateway_tls_mode == 'selfsigned' and gateway_create
 
-- name: "envoy_gateway | Root CA trust instructions"
+- name: "gateway | Root CA trust instructions"
   ansible.builtin.debug:
     msg:
       - "Root CA exported: {{ gateway_ca_export_path }}"
-      - "Import it to stop browser warnings on https://*.{{ base_domain_name }}"
+      - "Import it to stop browser warnings on https://{{ base_domain_name }} and its subdomains"
       - "Firefox:  Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import"
       - "Chrome:   Settings → Privacy and security → Security → Manage certificates → Authorities → Import"
       - "Linux:    sudo cp {{ gateway_ca_export_path }} /usr/local/share/ca-certificates/{{ gateway_ca_cert_name }}.crt && sudo update-ca-certificates"

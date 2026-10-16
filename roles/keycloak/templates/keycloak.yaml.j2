@@ -9,14 +9,13 @@ spec:
   ingress:
     enabled: false
   hostname:
-    # Frontend URL — how external clients (browsers, APISIX via gateway) see Keycloak.
-    # HTTPS because the gateway terminates TLS; issuer claim in tokens will be
-    # https://{{ keycloak_hostname }}/realms/<realm>.
-    hostname: https://{{ keycloak_hostname }}
+    # Frontend URL — how external clients see Keycloak (HTTPS, the gateway
+    # terminates TLS); tokens carry {{ keycloak_frontend_url }}/realms/<realm>.
+    hostname: {{ keycloak_frontend_url }}
     # backchannelDynamic: requests arriving via cluster-internal DNS
     # (e.g. apisix → keycloak-service.keycloak.svc.cluster.local:8080) use the
     # Host header for backchannel URLs — so a token issued at
-    # https://{{ keycloak_hostname }} is still validated when introspected via
+    # {{ keycloak_frontend_url }} is still validated when introspected via
     # the in-cluster service.  Without this, APISIX's authz-keycloak gets 400
     # "Invalid bearer token" because iss-claim and backchannel issuer disagree.
     backchannelDynamic: true
@@ -51,6 +50,11 @@ spec:
       value: "{{ keycloak_metrics_enabled | lower }}"
     - name: hostname-strict
       value: "false"
+{% if keycloak_relative_path != '/' %}
+    # Path mode: serve every endpoint under the prefix the advertised URL carries.
+    - name: http-relative-path
+      value: "{{ keycloak_relative_path }}"
+{% endif %}
 {% set _keycloak_proxy = (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0) %}
 {% if _platform_affinity | default({}) | length > 0 or _keycloak_proxy %}
   unsupported:
@@ -71,7 +75,7 @@ spec:
                 value: "{{ https_proxy }}"
 {% endif %}
               - name: NO_PROXY
-                value: "{{ ([no_proxy | default('')] | select | list + [keycloak_hostname]) | join(',') }}"
+                value: "{{ ([no_proxy | default('')] | select | list + [keycloak_route_host]) | join(',') }}"
 {% endif %}
 {% if _platform_affinity | default({}) | length > 0 %}
         affinity:

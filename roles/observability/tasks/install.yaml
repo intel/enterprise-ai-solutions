@@ -307,6 +307,13 @@
             initChownData:
               enabled: false
             grafana.ini:
+              # Serves under its path in path mode; the gateway passes it through.
+              server:
+                root_url: "{{ observability_grafana_url }}/"
+                serve_from_sub_path: "{{ _obs_grafana_path_mode | bool }}"
+              # Served only over HTTPS through the gateway.
+              security:
+                cookie_secure: true
               plugins:
                 plugin_admin_enabled: true
               auth:
@@ -680,6 +687,38 @@
 # 6. Grafana HTTPRoute (expose via Envoy Gateway)
 # =============================================================================
 
+# grafana.ini is applied on a fresh install only; after a routing_mode change
+# Grafana keeps advertising its old URL until the release is reinstalled.
+- name: "observability | Read Grafana's live root_url"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: kube-prometheus-stack-grafana
+    namespace: "{{ observability_namespace }}"
+  register: _obs_grafana_cm
+
+- name: "observability | Grafana URL does not match routing_mode"
+  vars:
+    _ini: "{{ (_obs_grafana_cm.resources | first | default({})).data | default({}) }}"
+  ansible.builtin.debug:
+    msg: >-
+      Grafana still serves for a different routing_mode (expected root_url
+      {{ observability_grafana_url }}/). Reinstall it:
+      teardown observability, then install observability.
+  when:
+    - _ini['grafana.ini'] is defined
+    - (observability_grafana_url ~ '/') not in _ini['grafana.ini']
+
+- name: "observability | Publish Grafana"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: publish.yaml
+  vars:
+    gateway_publish_name: grafana
+    gateway_publish_namespace: "{{ observability_namespace }}"
+    gateway_publish_host: "{{ observability_grafana_hostname }}"
+    gateway_publish_path: "{{ observability_grafana_path }}"
+  when: gateway_create | default(false) | bool
+
 - name: "observability | Expose Grafana via gateway HTTPRoute"
   kubernetes.core.k8s:
     state: present
@@ -691,16 +730,13 @@
         namespace: "{{ observability_namespace }}"
       spec:
         parentRefs:
-          # Pin to the HTTPS listener only. Without sectionName an HTTPRoute
-          # attaches to every compatible listener, including the plaintext
-          # HTTP:80 one, which would serve Grafana admin credentials in cleartext.
-          - name: "{{ gateway_name }}"
-            namespace: "{{ gateway_namespace }}"
-            sectionName: https
+          # Its own HTTPS listener or the apex (path mode); never plaintext :80.
+          - "{{ gateway_publish.parent_ref }}"
         hostnames:
-          - "{{ observability_grafana_hostname }}"
+          - "{{ gateway_publish.host }}"
         rules:
-          - filters:
+          - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
+            filters:
               # HSTS: only ever reach Grafana over HTTPS on a compliant browser,
               # so a later plaintext attempt is refused before the admin
               # credential leaves the browser. Only honored over HTTPS, so it is
@@ -716,19 +752,13 @@
   when: gateway_create | default(false) | bool
 
 - name: "observability | Bypass gateway auth for Grafana (Grafana has its own login)"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: gateway.envoyproxy.io/v1alpha1
-      kind: SecurityPolicy
-      metadata:
-        name: grafana-no-auth
-        namespace: "{{ observability_namespace }}"
-      spec:
-        targetRefs:
-          - group: gateway.networking.k8s.io
-            kind: HTTPRoute
-            name: grafana
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: grafana
+    gateway_route_namespace: "{{ observability_namespace }}"
+    gateway_route_policy_name: grafana-no-auth
   when: gateway_create | default(false) | bool
 
 - name: "observability | Store Grafana admin credentials as a cluster Secret"
@@ -804,6 +834,6 @@
       Components: kube-prometheus-stack {{ observability_kube_prometheus_stack_version }},
       Loki {{ observability_loki_version }}, Tempo {{ observability_tempo_version }},
       OTel Collector {{ observability_otel_collector_version }}.
-      Grafana: https://{{ observability_grafana_hostname }}
+      Grafana: {{ observability_grafana_url }}
       OTLP gRPC: {{ observability_otel_grpc_endpoint }}
       OTLP HTTP: {{ observability_otel_http_endpoint }}

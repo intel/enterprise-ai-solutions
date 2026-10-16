@@ -1,0 +1,57 @@
+---
+# A route on the platform Gateway may claim a host granted to a namespace
+# (annotation {{ gateway_hostnames_annotation }}) only from that namespace, so a
+# more specific route elsewhere cannot take its traffic. Evaluated once per
+# granted namespace; hosts granted to none stay open to every namespace.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: eg-route-hostname-grant
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: Namespace
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["gateway.networking.k8s.io"]
+        apiVersions: ["v1", "v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["httproutes", "grpcroutes"]
+  matchConditions:
+    - name: platform-gateway
+      expression: >-
+        has(object.spec.parentRefs) && object.spec.parentRefs.exists(p,
+          (!has(p.kind) || p.kind == 'Gateway') && p.name == {{ gateway_name | to_json }} &&
+          (has(p.namespace) ? p.namespace : object.metadata.namespace) == {{ gateway_namespace | to_json }})
+    - name: claims-hosts
+      expression: has(object.spec.hostnames) && size(object.spec.hostnames) > 0
+  variables:
+    - name: granted
+      expression: >-
+        has(params.metadata.annotations) &&
+        {{ gateway_hostnames_annotation | to_json }} in params.metadata.annotations
+          ? params.metadata.annotations[{{ gateway_hostnames_annotation | to_json }}].split(',').map(h, h.trim())
+          : []
+  validations:
+    - expression: >-
+        object.metadata.namespace == params.metadata.name ||
+        !object.spec.hostnames.exists(h, h in variables.granted)
+      messageExpression: >-
+        "Route '" + object.metadata.namespace + "/" + object.metadata.name +
+        "' claims a host granted to namespace '" + params.metadata.name + "' [" +
+        variables.granted.join(", ") + "]. Use a host your namespace owns."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: eg-route-hostname-grant
+spec:
+  policyName: eg-route-hostname-grant
+  validationActions: ["Deny"]
+  paramRef:
+    selector:
+      matchLabels:
+        {{ gateway_listeners_label_key }}: {{ gateway_listeners_label_value | to_json }}
+    parameterNotFoundAction: Allow

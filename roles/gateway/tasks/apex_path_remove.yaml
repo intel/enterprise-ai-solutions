@@ -1,0 +1,40 @@
+---
+# =============================================================================
+# Gateway — release an apex path grant (reverse of apex_path.yaml)
+# =============================================================================
+# Same inputs. Tolerates a missing ConfigMap or namespace.
+
+- name: "gateway | apex path | Read path grants"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: "{{ gateway_path_grants_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_ap_grants
+  failed_when: false
+
+- name: "gateway | apex path | Release {{ gateway_apex_path }}"
+  vars:
+    _data: "{{ (_gw_ap_grants.resources | default([]) | first | default({})).data | default({}) }}"
+  when: _data.get(_gw_ap_key, '') == gateway_apex_namespace
+  kubernetes.core.k8s:
+    state: patched
+    kind: ConfigMap
+    name: "{{ gateway_path_grants_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+    definition:
+      data: "{{ {_gw_ap_key: None} }}"
+
+# Drop the apex label once the namespace holds no grant.
+- name: "gateway | apex path | Drop the apex label of {{ gateway_apex_namespace }}"
+  vars:
+    _data: "{{ (_gw_ap_grants.resources | default([]) | first | default({})).data | default({}) }}"
+    _left: "{{ _data | dict2items | rejectattr('key', 'eq', _gw_ap_key) | selectattr('value', 'eq', gateway_apex_namespace) | list }}"
+  when: _left | length == 0
+  kubernetes.core.k8s:
+    state: patched
+    kind: Namespace
+    name: "{{ gateway_apex_namespace }}"
+    definition:
+      metadata:
+        labels: "{{ {gateway_apex_label_key: None} }}"
+  failed_when: false

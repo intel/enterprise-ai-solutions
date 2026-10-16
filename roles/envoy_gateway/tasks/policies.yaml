@@ -1,0 +1,173 @@
+---
+# =============================================================================
+# Envoy Gateway — policies hook: listener, timeout and auth policies
+# =============================================================================
+
+# ── ALPN: HTTP/2 on exact-host listeners, HTTP/1.1 on the wildcard ──────────
+# Gateway-wide policy reaches every listener, ListenerSets included, except
+# those claimed by a listener-scoped policy (wildcard, S3). Exact-host
+# certificates cannot be coalesced, so HTTP/2 is safe there.
+- name: "envoy_gateway | HTTP/2 on exact-host listeners"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if gateway_http2_enabled | bool else 'absent' }}"
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: ClientTrafficPolicy
+      metadata:
+        name: "{{ gateway_name }}-alpn"
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            name: "{{ gateway_name }}"
+        tls:
+          alpnProtocols: "{{ _eg_alpn_h2 }}"
+  when: gateway_create
+
+# The wildcard certificate covers every subdomain, so over HTTP/2 a browser
+# may reuse its connection for a ListenerSet host and land on this listener,
+# where any namespace may hold a route for that host. HTTP/1.1 never coalesces.
+- name: "envoy_gateway | Restrict the wildcard listener to HTTP/1.1"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if _gw_wildcard_on | bool else 'absent' }}"
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: ClientTrafficPolicy
+      metadata:
+        name: "{{ gateway_name }}-wildcard-http1"
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            name: "{{ gateway_name }}"
+            sectionName: https
+        tls:
+          alpnProtocols: ["http/1.1"]
+  when: gateway_create
+
+# ── ClientTrafficPolicy - S3 API path handling ───────────────────────────────
+
+- name: "envoy_gateway | Apply S3 listener ClientTrafficPolicy (SigV4 path handling)"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'client-traffic-policy.yaml.j2') | from_yaml }}"
+  when:
+    - gateway_create
+    - gateway_s3_listener_enabled | bool
+
+# Turning ontap_s3_data_lif off (or switching to routing_mode: path) removes the
+# listener the policy targets, and a ClientTrafficPolicy with a dangling
+# sectionName stays on the Gateway status as an unresolved policy. Prune it.
+- name: "envoy_gateway | Remove the S3 listener ClientTrafficPolicy when the listener is gone"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    name: "{{ gateway_name }}-s3-path"
+    namespace: "{{ gateway_namespace }}"
+  # The CRD is absent on a platform that never installed the Backend/policy
+  # extension APIs, and the policy is absent on every install that never had an
+  # S3 listener - neither is an error.
+  failed_when: false
+  when: not (gateway_s3_listener_enabled | bool)
+
+# ── BackendTrafficPolicy — default request timeout ───────────────────────────
+
+- name: "envoy_gateway | Apply gateway-default BackendTrafficPolicy (timeout)"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'backend-traffic-policy.yaml.j2') | from_yaml }}"
+  when: gateway_create
+
+# ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
+
+# An apply merges, so auth sections the template no longer renders (an older
+# release's extAuth) would stay on the live policy. Null them out first.
+- name: "envoy_gateway | Read the current gateway SecurityPolicy"
+  kubernetes.core.k8s_info:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+  register: _eg_auth_live
+  when: gateway_create
+
+- name: "envoy_gateway | Drop auth sections the policy no longer has"
+  vars:
+    _rendered: "{{ (lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | select | first).spec }}"
+    _stale: >-
+      {{ ((_eg_auth_live.resources | default([]) | first | default({})).spec | default({})).keys()
+         | difference(_rendered.keys()) | list }}
+  kubernetes.core.k8s:
+    state: patched
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+    merge_type: merge
+    definition:
+      spec: >-
+        {%- set out = {} -%}
+        {%- for k in _stale -%}{%- set _ = out.update({k: None}) -%}{%- endfor -%}
+        {{ out }}
+  when: gateway_create and _stale | length > 0
+
+- name: "envoy_gateway | Apply SecurityPolicy (Keycloak JWT)"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | list }}"
+  when: gateway_create
+
+- name: "envoy_gateway | No-auth overrides (gateway_no_auth_routes)"
+  ansible.builtin.include_tasks: route_auth_exempt.yaml
+  loop: "{{ gateway_no_auth_routes }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.route }}"
+  vars:
+    gateway_route_name: "{{ item.route }}"
+    gateway_route_namespace: "{{ item.namespace }}"
+    gateway_route_policy_name: "{{ item.name }}"
+  when: gateway_no_auth_routes | length > 0 and gateway_create
+
+# ServiceMonitors require Prometheus Operator CRDs which are installed by the
+# observability role (runs after envoy_gateway). Skip silently if not yet present.
+- name: "envoy_gateway | Check if Prometheus Operator CRDs are available"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: servicemonitors.monitoring.coreos.com
+  register: _eg_sm_crd
+  failed_when: false
+
+- name: "envoy_gateway | Create ServiceMonitor for Envoy Gateway metrics"
+  when:
+    - gateway_platform.controller_managed | bool
+    - (_eg_sm_crd.resources | default([])) | length > 0
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: envoy-gateway
+        namespace: "{{ envoy_gateway_namespace }}"
+        labels:
+          app: envoy-gateway
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: gateway-helm
+        namespaceSelector:
+          matchNames:
+            - "{{ envoy_gateway_namespace }}"
+        endpoints:
+          - port: metrics
+            path: /metrics
+            interval: 30s
+
+- name: "envoy_gateway | ServiceMonitor skipped (Prometheus Operator not yet installed)"
+  when: (_eg_sm_crd.resources | default([])) | length == 0
+  ansible.builtin.debug:
+    msg: "Prometheus Operator CRDs not found — Envoy Gateway ServiceMonitor will be created by the observability role."

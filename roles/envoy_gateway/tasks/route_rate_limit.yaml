@@ -1,0 +1,30 @@
+---
+# Local (per-proxy) limit, no external rate-limit service. A Distinct match on
+# the client header gives each client its own counter.
+- name: "envoy_gateway | rate limit | {{ gateway_route_namespace }}/{{ gateway_route_name }}"
+  kubernetes.core.k8s:
+    state: "{{ gateway_route_state | default('present') }}"
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: BackendTrafficPolicy
+      metadata:
+        name: "{{ gateway_route_policy_name | default(gateway_route_name ~ '-rate-limit', true) }}"
+        namespace: "{{ gateway_route_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: "{{ gateway_route_name }}"
+        rateLimit:
+          type: Local
+          local:
+            rules:
+              - clientSelectors:
+                  - headers:
+                      - name: "{{ gateway_rate_limit_client_header | default('x-forwarded-for', true) }}"
+                        type: Distinct
+                limit:
+                  requests: "{{ gateway_rate_limit_requests | default(0) | int }}"
+                  unit: "{{ gateway_rate_limit_unit | default('Minute', true) }}"
+  register: _eg_rate_limit
+  failed_when: _eg_rate_limit is failed and gateway_route_state | default('present') == 'present'

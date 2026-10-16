@@ -802,6 +802,7 @@ _ensure_venv() {
     if [[ -x "$VENV/bin/ansible-playbook" ]]; then
         info "Using existing venv: $VENV"
         export PATH="$VENV/bin:$PATH"
+        _ensure_collections
         return
     fi
 
@@ -820,16 +821,29 @@ _ensure_venv() {
     _quiet bash -c "'$VENV/bin/pip' install --upgrade pip && '$VENV/bin/pip' install -r '$SCRIPT_DIR/requirements.txt'" \
         || err "pip install failed (network/proxy issue?)."
 
-    if [[ -f "$SCRIPT_DIR/collections/requirements.yml" ]]; then
-        local pv; pv=$("$VENV/bin/python3" -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
-        infon "Installing Ansible collections"
-        _quiet "$VENV/bin/ansible-galaxy" collection install \
-            -r "$SCRIPT_DIR/collections/requirements.yml" --force \
-            -p "$VENV/lib/${pv}/site-packages" \
-            || err "ansible-galaxy collection install failed (network/proxy issue?)."
-    fi
     export PATH="$VENV/bin:$PATH"
+    _ensure_collections
     ok "Ansible $(ansible --version | head -1)"
+}
+
+# Installs the pinned collections into the venv when any is missing or at another
+# version, and searches the venv first so older copies (~/.ansible, /usr/share)
+# cannot shadow them.
+_ensure_collections() {
+    local req="$SCRIPT_DIR/collections/requirements.yml"
+    [[ -f "$req" ]] || return 0
+    local dest; dest=$("$VENV/bin/python3" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+    export ANSIBLE_COLLECTIONS_PATH="${dest}:${ANSIBLE_COLLECTIONS_PATH:-$HOME/.ansible/collections:/usr/share/ansible/collections}"
+    local name want have stale=false
+    while IFS='|' read -r name want; do
+        have=$("$VENV/bin/python3" -c 'import json,sys; print(json.load(open(sys.argv[1]))["collection_info"]["version"])' \
+            "$dest/ansible_collections/${name//.//}/MANIFEST.json" 2>/dev/null)
+        [[ -n "$want" && "$have" != "$want" ]] && stale=true
+    done < <(yq -r '.collections[] | [.name, (.version // "")] | join("|")' "$req")
+    [[ $stale == true ]] || return 0
+    infon "Installing Ansible collections"
+    _quiet "$VENV/bin/ansible-galaxy" collection install -r "$req" --force -p "$dest" \
+        || err "ansible-galaxy collection install failed (network/proxy issue?)."
 }
 
 # ensure_deps: verify host prerequisites, then venv + pip + collections.
@@ -1319,7 +1333,7 @@ parse_args() {
 # _target_exists <name> — a layer or a component in the merged registry.
 # Here-string for the same reason as _layer_exists.
 _target_exists() {
-    local names; names=$(_merged_components | yq -r '.layers[].name, .components[].name' 2>/dev/null)
+    local names; names=$(_merged_components | yq -r '.layers[].name, .components[].name, .components[].aliases[]?' 2>/dev/null)
     grep -qxF -- "$1" <<< "$names"
 }
 

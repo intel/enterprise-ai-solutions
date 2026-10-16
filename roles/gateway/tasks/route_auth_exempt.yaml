@@ -1,0 +1,13 @@
+---
+# =============================================================================
+# Gateway — exempt one route from gateway auth (own login, public redirect)
+# =============================================================================
+#   gateway_route_name         HTTPRoute name
+#   gateway_route_namespace    its namespace
+#   gateway_route_policy_name  policy name (default <route>-no-auth)
+#   gateway_route_state        present (default) | absent
+
+- name: "gateway | auth exempt | {{ gateway_route_namespace }}/{{ gateway_route_name }}"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: route_auth_exempt.yaml

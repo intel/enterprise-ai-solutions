@@ -1,0 +1,145 @@
+---
+# =============================================================================
+# Gateway — Teardown
+# =============================================================================
+# Our own objects always go; the provider removes the controller and CRDs only
+# if it installed them (gateway_platform).
+
+- name: "gateway | Load the platform record"
+  ansible.builtin.include_tasks: platform.yaml
+  vars:
+    _gw_detect_strict: false
+
+- name: "gateway | Remove the provider's policies"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: policies_remove.yaml
+
+# Explicitly: the gateway namespace may outlive this (an existing controller's).
+- name: "gateway | Delete the platform's own routes"
+  kubernetes.core.k8s:
+    api_version: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    name: "{{ item }}"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  loop: [http-to-https-redirect, apex-landing]
+  failed_when: false
+
+- name: "gateway | Drop their auth exemptions"
+  ansible.builtin.include_tasks: route_auth_exempt.yaml
+  loop: [http-to-https-redirect, apex-landing]
+  loop_control:
+    loop_var: _gw_route
+  vars:
+    gateway_route_name: "{{ _gw_route }}"
+    gateway_route_namespace: "{{ gateway_namespace }}"
+    gateway_route_policy_name: "{{ _gw_route }}-no-auth"
+    gateway_route_state: absent
+
+# Cluster-scoped, so the namespace deletion below does not remove them.
+- name: "gateway | Delete admission policies (hostname and path grants)"
+  kubernetes.core.k8s:
+    api_version: admissionregistration.k8s.io/v1
+    kind: "{{ item.1 }}"
+    name: "{{ item.0 }}"
+    state: absent
+  loop: >-
+    {{ ['eg-listener-hostname-grant', 'eg-route-hostname-grant', 'eg-apex-path-grant', 'eg-protected-hostname-ownership']
+       | product(['ValidatingAdmissionPolicyBinding', 'ValidatingAdmissionPolicy']) | list }}
+  loop_control:
+    label: "{{ item.1 }}/{{ item.0 }}"
+  failed_when: false
+
+- name: "gateway | Delete Gateway resource"
+  kubernetes.core.k8s:
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: "{{ gateway_name }}"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  failed_when: false
+  when: gateway_create
+
+- name: "gateway | Delete CA ClusterIssuers"
+  kubernetes.core.k8s:
+    api_version: cert-manager.io/v1
+    kind: ClusterIssuer
+    name: "{{ item }}"
+    state: absent
+  loop:
+    - gateway-issuer
+    - "{{ gateway_ca_bootstrap_issuer_name }}"
+  failed_when: false
+  when: gateway_tls_mode == 'selfsigned'
+
+# The CA lives in certmanager_namespace, which this role never deletes —
+# so the Certificate must go explicitly or it lingers with a dead issuer.
+- name: "gateway | Delete root CA Certificate"
+  kubernetes.core.k8s:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ gateway_ca_cert_name }}"
+    namespace: "{{ certmanager_namespace }}"
+    state: absent
+  failed_when: false
+  when: gateway_tls_mode == 'selfsigned'
+
+- name: "gateway | Delete root CA secret"
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Secret
+    name: "{{ gateway_ca_secret_name }}"
+    namespace: "{{ certmanager_namespace }}"
+    state: absent
+  failed_when: false
+  when: gateway_tls_mode == 'selfsigned'
+
+- name: "gateway | Remove exported root CA certificate"
+  ansible.builtin.file:
+    path: "{{ gateway_ca_export_path }}"
+    state: absent
+  when: gateway_tls_mode == 'selfsigned'
+
+- name: "gateway | Delete platform listener Certificates"
+  kubernetes.core.k8s:
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ item }}-cert"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  loop: "{{ _gw_platform_certs_all }}"
+  failed_when: false
+  when: gateway_tls_mode == 'selfsigned'
+
+- name: "gateway | Delete TLS secrets"
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Secret
+    name: "{{ item }}"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  loop: "{{ _gw_platform_certs_all }}"
+  failed_when: false
+
+- name: "gateway | Remove the controller, if the provider installed it"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: controller_remove.yaml
+
+- name: "gateway | Delete the platform record"
+  kubernetes.core.k8s:
+    kind: ConfigMap
+    name: "{{ gateway_platform_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  failed_when: false
+
+- name: "gateway | Delete gateway namespace (if different)"
+  kubernetes.core.k8s:
+    kind: Namespace
+    name: "{{ gateway_namespace }}"
+    state: absent
+    wait: true
+    wait_timeout: 300
+  when: gateway_namespace != gateway_platform.controller_namespace

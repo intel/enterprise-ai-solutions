@@ -53,9 +53,17 @@ gateway_tls_mode: "selfsigned"            # selfsigned | custom
 base_domain_name: "solutions.ai"
 gateway_request_timeout: "600s"           # Envoy default is 15s — too short for LLM
 
+# --- Routing ---
+# subdomain: each service on its own host (keycloak.<base>, grafana.<base>, ...)
+# path:      one host, each service under its path (<base>/keycloak, ...);
+#            Langfuse stays on its own subdomain
+routing_mode: "subdomain"                 # subdomain | path
+# gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects
+
 # --- Custom TLS (only used when gateway_tls_mode=custom) ---
 # gateway_tls_cert_file: "/path/to/cert.pem"
 # gateway_tls_key_file: "/path/to/key.pem"
+# gateway_tls_ca_file: "/path/to/ca.pem"     # optional: private CA, stored as ca.crt
 
 # --- Components ---
 istio_enabled: true
@@ -125,6 +133,9 @@ cert_manager_enabled: true
 metallb_enabled: true
 postgresql_enabled: true
 envoy_gateway_enabled: true
+# Envoy Gateway 1.7.1 by default; true installs 1.9.2 (ListenerSets) and
+# upgrades this platform's own older release. Never downgrades.
+# envoy_gateway_upgrade: false
 
 # =============================================================================
 # Optional Features (only read when the matching option above selects them)

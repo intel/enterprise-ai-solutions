@@ -19,14 +19,15 @@
 - name: "keycloak | Teardown"
   when: (_kc_crd.resources | default([])) | length > 0
   block:
-    - name: "keycloak | Delete SecurityPolicy (no-auth)"
-      kubernetes.core.k8s:
-        api_version: gateway.envoyproxy.io/v1alpha1
-        kind: SecurityPolicy
-        name: keycloak-no-auth
-        namespace: "{{ keycloak_namespace }}"
-        state: absent
-      failed_when: false
+    - name: "keycloak | Drop the gateway auth exemption"
+      ansible.builtin.include_role:
+        name: gateway
+        tasks_from: route_auth_exempt.yaml
+      vars:
+        gateway_route_name: keycloak
+        gateway_route_namespace: "{{ keycloak_namespace }}"
+        gateway_route_policy_name: keycloak-no-auth
+        gateway_route_state: absent
 
     - name: "keycloak | Delete HTTPRoute"
       kubernetes.core.k8s:
@@ -36,6 +37,16 @@
         namespace: "{{ keycloak_namespace }}"
         state: absent
       failed_when: false
+
+    - name: "keycloak | Unpublish Keycloak"
+      ansible.builtin.include_role:
+        name: gateway
+        tasks_from: unpublish.yaml
+      vars:
+        gateway_publish_name: keycloak
+        gateway_publish_namespace: "{{ keycloak_namespace }}"
+        gateway_publish_host: "{{ keycloak_hostname }}"
+        gateway_publish_path: "{{ keycloak_path }}"
 
     - name: "keycloak | Delete Keycloak CR"
       kubernetes.core.k8s:

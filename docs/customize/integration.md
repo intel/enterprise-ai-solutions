@@ -463,7 +463,7 @@ The stack uses the **Kubernetes Gateway API** (Envoy Gateway implementation), wh
 
 ### Gateway listener (already deployed)
 
-`roles/envoy_gateway/templates/gateway.yaml.j2` provisions a wildcard-host HTTPS listener:
+`roles/gateway/templates/gateway.yaml.j2` provisions a wildcard-host HTTPS listener:
 
 ```yaml
 listeners:

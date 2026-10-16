@@ -1,0 +1,300 @@
+---
+# =============================================================================
+# Gateway — install the platform Gateway
+# =============================================================================
+# Provider hooks (gateway_provider) handle the controller and its policies;
+# everything else is plain Gateway API.
+
+- name: "gateway | Detect the existing controller and CRDs"
+  ansible.builtin.include_role:
+    name: "{{ gateway_provider }}_gateway"
+    tasks_from: detect.yaml
+
+- name: "gateway | Provider facts"
+  ansible.builtin.include_tasks: provider_facts.yaml
+
+- name: "gateway | Controller, CRDs and GatewayClass"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: controller.yaml
+
+# ── Gateway namespace ─────────────────────────────────────────────────────────
+
+- name: "gateway | Create gateway namespace (if different)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gateway_namespace }}"
+  when: gateway_create and gateway_namespace != gateway_platform.controller_namespace
+
+- name: "gateway | Label gateway namespace — Istio"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gateway_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when:
+    - gateway_create
+    - gateway_namespace != gateway_platform.controller_namespace
+    - istio_enabled | default(false) | bool
+
+- name: "gateway | Label gateway namespace — PSS"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ gateway_namespace }}"
+        labels:
+          pod-security.kubernetes.io/enforce: "restricted"
+          pod-security.kubernetes.io/audit: "restricted"
+          pod-security.kubernetes.io/warn: "restricted"
+  when:
+    - gateway_create
+    - gateway_namespace != gateway_platform.controller_namespace
+    - enforce_pss | default(false) | bool
+
+# ── TLS serving certificate ───────────────────────────────────────────────────
+
+- name: "gateway | Provision TLS serving certificate"
+  ansible.builtin.include_tasks: tls.yaml
+
+# ── Gateway ───────────────────────────────────────────────────────────────────
+
+# Applying merges into the live Gateway, so a field the template drops stays.
+- name: "gateway | Stop accepting ListenerSets (shared mode)"
+  kubernetes.core.k8s:
+    state: patched
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: "{{ gateway_name }}"
+    namespace: "{{ gateway_namespace }}"
+    merge_type: merge
+    definition:
+      spec:
+        allowedListeners: null
+  failed_when: false        # Gateway not created yet
+  when: gateway_create and _gw_attach_mode == 'shared'
+
+- name: "gateway | Apply Gateway resource"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'gateway.yaml.j2') | from_yaml_all | list }}"
+  when: gateway_create
+
+- name: "gateway | Wait for Gateway to be accepted"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: "{{ gateway_name }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_status
+  until:
+    - _gw_status.resources | length > 0
+    - _gw_status.resources[0].status.conditions | default([]) | selectattr('type','eq','Accepted') | selectattr('status','eq','True') | list | length > 0
+  retries: 60
+  delay: 5
+  when: gateway_create
+
+# ── Plaintext HTTP:80 → HTTPS redirect ───────────────────────────────────────
+# The HTTP:80 listener exists so browsers hitting http:// still land on the
+# stack, but it must never SERVE anything in cleartext. This catch-all route
+# (no hostname, so it matches every host on the http listener via sectionName)
+# 301-redirects all plaintext traffic to HTTPS. The http listener admits only
+# this namespace and service routes attach to their own HTTPS listeners, so
+# anything that reaches :80 is bounced before a credential goes upstream.
+- name: "gateway | Redirect all plaintext HTTP:80 traffic to HTTPS"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: http-to-https-redirect
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        parentRefs:
+          - name: "{{ gateway_name }}"
+            namespace: "{{ gateway_namespace }}"
+            sectionName: http
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            filters:
+              - type: RequestRedirect
+                requestRedirect:
+                  scheme: https
+                  statusCode: 301
+  when: gateway_create
+
+# The gateway-wide auth policy would answer 401 before the redirect can 301.
+- name: "gateway | Exempt the HTTP→HTTPS redirect route from gateway auth"
+  ansible.builtin.include_tasks: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: http-to-https-redirect
+    gateway_route_namespace: "{{ gateway_namespace }}"
+    gateway_route_policy_name: http-to-https-redirect-no-auth
+  when: gateway_create
+
+# ── Apex host: path grants and landing (path mode) ───────────────────────────
+- name: "gateway | Apex host"
+  ansible.builtin.include_tasks: apex.yaml
+  when: gateway_create
+
+# ── Solution listener admission (hostname grants) ────────────────────────────
+# See gateway_listeners_label_key / gateway_hostnames_annotation in defaults.
+- name: "gateway | Admit ListenerSet hosts only when granted to their namespace"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if _gw_attach_mode == 'listenerset' else 'absent' }}"
+    definition: "{{ lookup('ansible.builtin.template', 'listener-hostname-admission-policy.yaml.j2') | from_yaml_all | select | list }}"
+  when: gateway_create and gateway_listener_admission_enabled | bool
+
+# Shared mode serves granted hosts on the wildcard listener, open to all
+# namespaces; this keeps each one to its namespace in both modes.
+- name: "gateway | Admit routes on granted hosts only from their namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'route-hostname-admission-policy.yaml.j2') | from_yaml_all | select | list }}"
+  when: gateway_create and gateway_listener_admission_enabled | bool
+
+# Superseded by the grant policy: platform hosts now live on ListenerSets.
+- name: "gateway | Remove the hostname reservation policy"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: admissionregistration.k8s.io/v1
+    kind: "{{ item }}"
+    name: eg-protected-hostname-ownership
+  loop: [ValidatingAdmissionPolicyBinding, ValidatingAdmissionPolicy]
+  when: gateway_create
+
+- name: "gateway | Listener, timeout and auth policies"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: policies.yaml
+
+# Gateway API resolves overlapping listener hostnames by specificity, so the
+# moment 'https-s3' claims s3.<base_domain> exactly, the '*.<base_domain>'
+# wildcard listener stops covering that name. Any pre-existing route that claims
+# the S3 hostname while pinning sectionName: https therefore flips to
+# Accepted=False / NoMatchingListenerHostname - in practice the SeaweedFS S3
+# route from a deployment that used the in-cluster object store. That route is
+# exactly what the ONTAP S3 proxy replaces, and the RAG layer removes it when it
+# activates, but the platform layer runs first so the operator is told here.
+- name: "gateway | Find routes still pinned to 'https' for the S3 hostname"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+  register: _gw_s3_routes
+  # Read-only; a cluster without the Gateway API HTTPRoute CRD is not this task's
+  # problem, and the report below simply has nothing to say.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - gateway_create
+    - gateway_s3_listener_enabled | bool
+
+- name: "gateway | Report routes claiming the S3 hostname"
+  vars:
+    _claimants: >-
+      {{ _gw_s3_routes.resources | default([])
+         | selectattr('spec.hostnames', 'defined')
+         | selectattr('spec.hostnames', 'contains', gateway_s3_hostname) | list }}
+  ansible.builtin.debug:
+    msg: |
+      The '{{ gateway_s3_listener_name }}' listener now owns
+      {{ gateway_s3_hostname }} exclusively. {{ _claimants | length }} HTTPRoute(s)
+      claim that hostname:
+      {% for r in _claimants %}
+      {% set _secs = r.spec.parentRefs | default([]) | selectattr('name', 'equalto', gateway_name) | map(attribute='sectionName', default='(unpinned)') | list %}
+        {{ r.metadata.namespace }}/{{ r.metadata.name }} sectionName={{ _secs | join(',') | default('(not this gateway)', true) }}{{ '  <-- OK' if gateway_s3_listener_name in _secs else '  <-- now Accepted=False' }}
+      {% endfor %}
+      Gateway API resolves overlapping listener hostnames by specificity, so a route
+      pinned to sectionName: https no longer intersects {{ gateway_s3_hostname }} and
+      goes Accepted=False with reason NoMatchingListenerHostname. The ONTAP S3
+      reverse proxy in the RAG layer binds to '{{ gateway_s3_listener_name }}' and
+      removes the in-cluster object store's S3 route, so the marker above is
+      expected to be OK once that layer is installed. If you are not deploying it,
+      set ontap_s3_data_lif back to empty, or re-pin the route with
+      sectionName: {{ gateway_s3_listener_name }}.
+  when:
+    - gateway_create
+    - gateway_s3_listener_enabled | bool
+    - _claimants | length > 0
+
+- name: "gateway | S3 path normalization not relaxed (routing_mode: path)"
+  ansible.builtin.debug:
+    msg: >-
+      routing_mode is 'path', so the ONTAP S3 API shares the apex hostname
+      {{ base_domain_name }} with the UI and cannot have a listener of its own.
+      Envoy's default path normalization therefore still applies to S3 requests:
+      an object key containing '//' or '%2F' will reach the object store with a
+      different canonical URI than the client signed, and the store will answer
+      SignatureDoesNotMatch. The data-prep service rejects such keys before
+      signing. Use routing_mode 'subdomain' to get the dedicated
+      '{{ gateway_s3_listener_name }}' listener and its ClientTrafficPolicy.
+  when:
+    - gateway_create
+    - ontap_s3_data_lif | default('', true) | string | trim | length > 0
+    - (routing_mode | default('subdomain')) == 'path'
+
+# ── Record the platform for later runs and other repos (platform.yaml) ──────
+- name: "gateway | Find ListenerSets on the platform Gateway"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: ListenerSet
+  register: _gw_ls_live
+  failed_when: false
+  when: _gw_attach_mode == 'shared'
+
+# Without allowedListeners the Gateway detaches them; republishing moves each
+# service to the wildcard listener.
+- name: "gateway | Services to republish after the switch to shared mode"
+  vars:
+    _detached: >-
+      {{ _gw_ls_live.resources | default([])
+         | selectattr('spec.parentRef.name', 'eq', gateway_name)
+         | map(attribute='metadata.namespace') | unique | list }}
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: services attach via the wildcard listener now (shared mode), so ListenerSets in
+      {{ _detached | join(', ') }} no longer serve. Reinstall those services to republish them.
+  when: _gw_attach_mode == 'shared' and _detached | length > 0
+
+- name: "gateway | Record the platform"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ gateway_platform_configmap }}"
+        namespace: "{{ gateway_namespace }}"
+      data:
+        platform: "{{ gateway_platform | to_json }}"
+
+- name: "gateway | Notices"
+  ansible.builtin.debug:
+    msg: "{{ gateway_platform.notices }}"
+  when: gateway_platform.notices | default([]) | length > 0
+
+- name: "gateway | Install complete"
+  ansible.builtin.debug:
+    msg: >-
+      {{ gateway_platform.provider }} controller v{{ gateway_platform.version | default('?', true) }}
+      in {{ gateway_platform.controller_namespace }}
+      ({{ gateway_platform.controller_action if gateway_platform.controller_managed | bool else 'existing, unchanged' }}).
+      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}) + Keycloak JWT auth.
+      {{ 'Solutions publish hosts with ListenerSets' if _gw_attach_mode == 'listenerset'
+         else 'Solutions attach routes to the wildcard listener (shared mode)' }} from namespaces labelled
+      {{ gateway_listeners_label_key }}={{ gateway_listeners_label_value }}.

@@ -1,0 +1,75 @@
+---
+# Path mode: an HTTPRoute on the apex host may only match paths whose longest
+# covering grant (ConfigMap {{ gateway_path_grants_configmap }}) belongs to its
+# own namespace, so a '/' owner cannot out-rank another service's path.
+# Regex matches are refused (their reach cannot be checked).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: eg-apex-path-grant
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["gateway.networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["httproutes"]
+  matchConditions:
+    # Routes that can attach to the apex listener of the platform gateway.
+    - name: apex-route
+      expression: >-
+        object.spec.parentRefs.exists(p,
+          (!has(p.kind) || p.kind == 'Gateway') && p.name == {{ gateway_name | to_json }} &&
+          (has(p.namespace) ? p.namespace : object.metadata.namespace) == {{ gateway_namespace | to_json }} &&
+          (has(p.sectionName) ? p.sectionName == 'https-apex'
+            : (!has(object.spec.hostnames) || size(object.spec.hostnames) == 0 ||
+               {{ base_domain_name | to_json }} in object.spec.hostnames)))
+  variables:
+    # "<path> <namespace>" per grant.
+    - name: owners
+      expression: >-
+        has(params.data) ? params.data.map(k,
+          (k == '_root' ? '/' : '/' + k.replace('.', '/')) + ' ' + params.data[k]) : []
+    # "<type> <value>" per path match (a rule or match without a path is '/').
+    - name: matches
+      expression: >-
+        (has(object.spec.rules) ? object.spec.rules : []).map(r,
+          has(r.matches) && size(r.matches) > 0
+            ? r.matches.map(m, has(m.path)
+                ? (has(m.path.type) ? m.path.type : 'PathPrefix') + ' ' + (has(m.path.value) ? m.path.value : '/')
+                : 'PathPrefix /')
+            : ['PathPrefix /'])
+  validations:
+    - expression: >-
+        variables.matches.all(rule, rule.all(m,
+          m.split(' ')[0] != 'RegularExpression' &&
+          variables.owners.exists(o,
+            o.split(' ')[1] == object.metadata.namespace &&
+            (o.split(' ')[0] == '/' || m.split(' ')[1] == o.split(' ')[0] ||
+             m.split(' ')[1].startsWith(o.split(' ')[0] + '/')) &&
+            !variables.owners.exists(o2,
+              o2.split(' ')[1] != object.metadata.namespace &&
+              size(o2.split(' ')[0]) > size(o.split(' ')[0]) &&
+              (o2.split(' ')[0] == '/' || m.split(' ')[1] == o2.split(' ')[0] ||
+               m.split(' ')[1].startsWith(o2.split(' ')[0] + '/'))))))
+      messageExpression: >-
+        "HTTPRoute '" + object.metadata.namespace + "/" + object.metadata.name +
+        "' matches an apex path not granted to its namespace (or a regex path). Grants: [" +
+        variables.owners.join(", ") + "]."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: eg-apex-path-grant
+spec:
+  policyName: eg-apex-path-grant
+  validationActions: ["Deny"]
+  paramRef:
+    name: {{ gateway_path_grants_configmap | to_json }}
+    namespace: {{ gateway_namespace | to_json }}
+    parameterNotFoundAction: Deny
