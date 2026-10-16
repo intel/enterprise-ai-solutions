@@ -58,8 +58,10 @@ gateway_request_timeout: "600s"           # Envoy default is 15s — too short f
 # gateway_tls_key_file: "/path/to/key.pem"
 
 # --- Components ---
-istio_enabled: true
-observability_enabled: true
+# Both default to "not OpenShift": there the mesh is Service Mesh 3 and metrics
+# belong to the cluster's monitoring. true/false still overrides.
+istio_enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
+observability_enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 
 # --- Authentication ---

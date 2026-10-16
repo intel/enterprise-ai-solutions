@@ -17,9 +17,82 @@
     msg: "Envoy Gateway release already deployed in {{ envoy_gateway_namespace }} — skipping install."
   when: _eg_release.status is defined and _eg_release.status is not none
 
+# ── OpenShift: SCC for the fixed UID ─────────────────────────────────────────
+# The chart (controller, certgen hook) and the proxy pods Envoy Gateway
+# generates all pin runAsUser/runAsGroup 65532, which OpenShift's default
+# restricted-v2 SCC rejects. nonroot-v2 admits any non-root UID with the same
+# restrictions otherwise. Bound before the Helm install so the pre-install
+# certgen hook is admitted.
+- name: "envoy_gateway | OpenShift: allow the fixed non-root UID"
+  when: cluster_distribution | default('kubernetes') == 'openshift'
+  block:
+    - name: "envoy_gateway | OpenShift: create namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ envoy_gateway_namespace }}"
+
+    - name: "envoy_gateway | OpenShift: grant nonroot-v2 SCC to the namespace's service accounts"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: envoy-gateway-scc-nonroot-v2
+            namespace: "{{ envoy_gateway_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: system:openshift:scc:nonroot-v2
+          subjects:
+            - apiGroup: rbac.authorization.k8s.io
+              kind: Group
+              name: "system:serviceaccounts:{{ envoy_gateway_namespace }}"
+
 - name: "envoy_gateway | Install"
   when: _eg_release.status is not defined or _eg_release.status is none
   block:
+    # On OpenShift the Ingress Operator owns the Gateway API CRDs: an admission policy
+    # rejects any other client creating them, so the gateway-helm chart, which bundles
+    # them in crds/, fails. There the Envoy Gateway CRDs come from the CRDs-only chart
+    # instead, without the Gateway API ones, and gateway-helm skips its crds/. The CRDs
+    # are rendered and applied server-side, as upstream documents: as a Helm release
+    # they exceed the 1 MiB release Secret.
+    - name: "envoy_gateway | OpenShift: install the Envoy Gateway CRDs only"
+      when: cluster_distribution | default('kubernetes') == 'openshift'
+      block:
+        - name: "envoy_gateway | OpenShift: render the Envoy Gateway CRDs"
+          ansible.builtin.command:
+            argv:
+              - helm
+              - template
+              - envoy-gateway-crds
+              - "{{ envoy_gateway_crds_helm_repo }}"
+              - --version
+              - "v{{ envoy_gateway_version }}"
+              - --set
+              - crds.gatewayAPI.enabled=false
+              - --set
+              - crds.envoyGateway.enabled=true
+          register: _eg_crds_render
+          changed_when: false
+          until: _eg_crds_render is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "envoy_gateway | OpenShift: apply the Envoy Gateway CRDs"
+          kubernetes.core.k8s:
+            state: present
+            apply: true
+            server_side_apply:
+              field_manager: envoy-gateway-crds
+              force_conflicts: true
+            definition: "{{ _eg_crds_render.stdout | from_yaml_all | select | list }}"
+
     - name: "envoy_gateway | Install Envoy Gateway via Helm (OCI) — standalone"
       kubernetes.core.helm:
         name: envoy-gateway
@@ -27,6 +100,7 @@
         release_namespace: "{{ envoy_gateway_namespace }}"
         create_namespace: true
         chart_version: "v{{ envoy_gateway_version }}"
+        skip_crds: "{{ cluster_distribution | default('kubernetes') == 'openshift' }}"
         wait: "{{ helm_wait }}"
         timeout: "{{ helm_timeout }}"
         values:
@@ -196,7 +270,27 @@
 # operators can remove the taint; the label is the stable Kubernetes
 # control-plane marker. Toleration is kept for the case where the taint
 # is still in place.
-- name: "envoy_gateway | Create EnvoyProxy config (DaemonSet on control-plane nodes)"
+#
+# OpenShift: no LoadBalancer (MetalLB is skipped). The OpenShift router already
+# owns :80/:443 on the nodes and forwards to Envoy through passthrough Routes
+# (openshift_routes.yaml), so Envoy is a plain Deployment behind a ClusterIP
+# Service and any node can run it.
+- name: "envoy_gateway | Create EnvoyProxy config ({{ 'Deployment, ClusterIP' if cluster_distribution | default('kubernetes') == 'openshift' else 'DaemonSet on control-plane nodes' }})"
+  vars:
+    _eg_k8s_provider_cp_daemonset:
+      envoyDaemonSet:
+        pod:
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+    _eg_k8s_provider_openshift:
+      envoyDeployment:
+        replicas: "{{ gateway_envoy_replicas | int }}"
+      envoyService:
+        type: ClusterIP
   kubernetes.core.k8s:
     state: present
     definition:
@@ -208,15 +302,9 @@
       spec:
         provider:
           type: Kubernetes
-          kubernetes:
-            envoyDaemonSet:
-              pod:
-                nodeSelector:
-                  node-role.kubernetes.io/control-plane: ""
-                tolerations:
-                  - key: node-role.kubernetes.io/control-plane
-                    operator: Exists
-                    effect: NoSchedule
+          kubernetes: >-
+            {{ _eg_k8s_provider_openshift if cluster_distribution | default('kubernetes') == 'openshift'
+               else _eg_k8s_provider_cp_daemonset }}
 
 - name: "envoy_gateway | Create GatewayClass"
   kubernetes.core.k8s:
@@ -253,6 +341,14 @@
   retries: 60
   delay: 5
   when: gateway_create
+
+- name: "envoy_gateway | OpenShift: publish gateway hostnames as passthrough Routes"
+  ansible.builtin.include_tasks: openshift_routes.yaml
+  vars:
+    _openshift_route_hosts: "{{ gateway_openshift_route_hosts }}"
+  when:
+    - gateway_create
+    - cluster_distribution | default('kubernetes') == 'openshift'
 
 # ── Plaintext HTTP:80 → HTTPS redirect ───────────────────────────────────────
 # The HTTP:80 listener exists so browsers hitting http:// still land on the

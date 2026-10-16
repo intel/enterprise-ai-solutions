@@ -65,6 +65,9 @@
             #     normally and the node is treated like any other worker.
             #
             # Pod-level hardening: non-root, no privilege escalation, seccomp.
+            # The UID stays fixed on OpenShift too: kube-system is exempt from
+            # SCC admission there, so nothing would assign one, and busybox
+            # runs as root by default, which runAsNonRoot refuses.
             securityContext:
               runAsNonRoot: true
               runAsUser: 65534
@@ -297,6 +300,9 @@
     INDENT: "2"
     MAX_TP: "{{ _nri_max_tp_size }}"
     PKG_NODE: "{{ _nri_cluster_pkgnode }}"
+    # RHOAI's v1alpha1 LLMInferenceService cannot annotate its pods, so on
+    # OpenShift its workload label selects the -tp1 balloon instead.
+    TP1_MATCH_LABEL: "{{ 'kserve.io/component=workload' if cluster_distribution | default('kubernetes') == 'openshift' else '' }}"
   delegate_to: localhost
   changed_when: false
   register: _gen_balloons
@@ -327,6 +333,9 @@
     INDENT: "2"
     MAX_TP: "{{ item.value.max_tp }}"
     PKG_NODE: "{{ item.value.pkgnode }}"
+    # RHOAI's v1alpha1 LLMInferenceService cannot annotate its pods, so on
+    # OpenShift its workload label selects the -tp1 balloon instead.
+    TP1_MATCH_LABEL: "{{ 'kserve.io/component=workload' if cluster_distribution | default('kubernetes') == 'openshift' else '' }}"
   delegate_to: localhost
   changed_when: false
   register: _gen_balloons_per_node

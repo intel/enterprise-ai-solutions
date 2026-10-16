@@ -263,6 +263,49 @@
   loop: "{{ _nri_per_node_topology | dict2items }}"
   loop_control:
     label: "node.{{ item.key }} (max_tp={{ item.value.max_tp }}, reserved={{ item.value.reserved_count | default('?') }})"
+  register: _nri_node_policies
+
+# The plugin started on the `default` CR, and switching to node.<NAME> makes the
+# runtime re-synchronize it. On CRI-O (OpenShift) that sync fails when a container
+# exits meanwhile ("failed to synchronize plugin"), and from then on the plugin gets
+# no container events, so new pods are never placed in a balloon. Restarting the
+# plugin once its node policy exists lets it start on that policy with one sync.
+- name: "nri_cpu_balloons | OpenShift: restart the plugin on its node policy"
+  when:
+    - cluster_distribution | default('kubernetes') == 'openshift'
+    - _nri_node_policies is changed
+  block:
+    - name: "nri_cpu_balloons | OpenShift: roll the plugin DaemonSet"
+      kubernetes.core.k8s:
+        state: patched
+        api_version: apps/v1
+        kind: DaemonSet
+        name: "{{ nri_cpu_balloons.helm.release_name }}"
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+        definition:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  kubectl.kubernetes.io/restartedAt: "{{ now(utc=true).isoformat() }}"
+
+    - name: "nri_cpu_balloons | OpenShift: wait for the restarted plugin"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: "{{ nri_cpu_balloons.helm.release_name }}"
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+      register: _nri_ds_rolled
+      vars:
+        _st: "{{ _nri_ds_rolled.resources[0].status | default({}) }}"
+      until:
+        - _nri_ds_rolled.resources | length > 0
+        - (_st.observedGeneration | default(0) | int) >= (_nri_ds_rolled.resources[0].metadata.generation | int)
+        - (_st.updatedNumberScheduled | default(0) | int) == (_st.desiredNumberScheduled | default(0) | int)
+        - (_st.numberReady | default(0) | int) == (_st.desiredNumberScheduled | default(0) | int)
+        - (_st.numberUnavailable | default(0) | int) == 0
+      retries: 30
+      delay: 10
 
 # -----------------------------------------------------------------------------
 # Drift / scale-down reconciliation.

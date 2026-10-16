@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# cert-manager on OpenShift — provided by the cert-manager Operator
+# =============================================================================
+# The operator (namespace cert-manager-operator) runs cert-manager in the
+# cert-manager namespace and owns its CRDs. A Helm release next to it would
+# fight over the same CRDs and webhooks, so this only checks the operator.
+# =============================================================================
+
+- name: "cert_manager | OpenShift: teardown is a no-op"
+  ansible.builtin.debug:
+    msg: "cert-manager belongs to the cert-manager Operator on this cluster; nothing to tear down."
+  when: component_action == 'teardown'
+
+- name: "cert_manager | OpenShift: check the cert-manager operator"
+  when: component_action != 'teardown'
+  block:
+    - name: "cert_manager | OpenShift: look up the webhook"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: cert-manager-webhook
+        namespace: cert-manager
+      register: _cm_ocp_webhook
+
+    - name: "cert_manager | OpenShift: require the cert-manager operator"
+      ansible.builtin.assert:
+        that: (_cm_ocp_webhook.resources | first | default({})).status.readyReplicas | default(0) | int >= 1
+        fail_msg: |-
+          cert-manager is not running in namespace cert-manager. Install the cert-manager
+          Operator for Red Hat OpenShift (package openshift-cert-manager-operator) from
+          OperatorHub before running the installer (docs/deploy/openshift.md, step 2).
+        success_msg: "cert-manager provided by the cluster (OLM) — skipping Helm install."
