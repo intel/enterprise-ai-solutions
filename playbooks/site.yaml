@@ -34,6 +34,15 @@
     - name: "Preflight"
       ansible.builtin.include_tasks: includes/preflight.yaml
 
+    - name: "Record what is already on the cluster (ownership labels)"
+      ansible.builtin.include_role:
+        name: ownership
+      vars:
+        ownership_action: snapshot
+      when:
+        - component_action == 'install'
+        - ownership_enabled | default(true) | bool
+
   tasks:
     - name: "Execute components"
       ansible.builtin.include_tasks: includes/run_component.yaml
