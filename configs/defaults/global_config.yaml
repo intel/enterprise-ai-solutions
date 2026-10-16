@@ -70,7 +70,9 @@ observability_enabled: true
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 
 # --- Authentication ---
-auth_provider: "keycloak"                 # keycloak | litellm
+# Keycloak is always deployed: people sign in through it and the gateway
+# requires its JWT unless a route authenticates itself. API client auth
+# (auth_type) and the LiteLLM/Langfuse add-ons are set in config.inference.yaml.
 
 # --- PostgreSQL ---
 postgresql_databases:
@@ -118,7 +120,7 @@ kubernetes_accelerator: "cpu"
 object_store_backend: "seaweedfs"
 seaweedfs_volume_storage_size: "10Gi"
 
-# --- Keycloak (only used when auth_provider=keycloak) ---
+# --- Keycloak ---
 # keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted
 
 # --- Observability ---

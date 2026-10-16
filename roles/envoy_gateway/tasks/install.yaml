@@ -294,9 +294,7 @@
 
 # The gateway-level JWT SecurityPolicy targets the whole Gateway, so without an
 # override the redirect route answers 401 before it can 301. Exempt it so a
-# plaintext client is bounced to HTTPS instead of being rejected. Only needed
-# when an auth provider is attached; with auth_provider: none there is no
-# gateway policy to override.
+# plaintext client is bounced to HTTPS instead of being rejected.
 - name: "envoy_gateway | Exempt the HTTP→HTTPS redirect route from gateway auth"
   kubernetes.core.k8s:
     state: present
@@ -311,7 +309,7 @@
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             name: http-to-https-redirect
-  when: gateway_create and auth_provider in ['keycloak', 'litellm']
+  when: gateway_create
 
 # ── Apex host: path grants and landing (path mode) ───────────────────────────
 - name: "envoy_gateway | Apex host"
@@ -482,17 +480,48 @@
 
 # ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
 
-- name: "envoy_gateway | Apply SecurityPolicy ({{ auth_provider }})"
+# An apply merges, so auth sections the template no longer renders (an older
+# release's extAuth) would stay on the live policy. Null them out first.
+- name: "envoy_gateway | Read the current gateway SecurityPolicy"
+  kubernetes.core.k8s_info:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+  register: _eg_auth_live
+  when: gateway_create
+
+- name: "envoy_gateway | Drop auth sections the policy no longer has"
+  vars:
+    _rendered: "{{ (lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | select | first).spec }}"
+    _stale: >-
+      {{ ((_eg_auth_live.resources | default([]) | first | default({})).spec | default({})).keys()
+         | difference(_rendered.keys()) | list }}
+  kubernetes.core.k8s:
+    state: patched
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+    merge_type: merge
+    definition:
+      spec: >-
+        {%- set out = {} -%}
+        {%- for k in _stale -%}{%- set _ = out.update({k: None}) -%}{%- endfor -%}
+        {{ out }}
+  when: gateway_create and _stale | length > 0
+
+- name: "envoy_gateway | Apply SecurityPolicy (Keycloak JWT)"
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | list }}"
-  when: auth_provider in ['keycloak', 'litellm'] and gateway_create
+  when: gateway_create
 
 - name: "envoy_gateway | Apply no-auth SecurityPolicy overrides"
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('ansible.builtin.template', 'security-policy-no-auth.yaml.j2') | from_yaml_all | list }}"
-  when: auth_provider in ['keycloak', 'litellm'] and gateway_no_auth_routes | length > 0 and gateway_create
+  when: gateway_no_auth_routes | length > 0 and gateway_create
 
 # ServiceMonitors require Prometheus Operator CRDs which are installed by the
 # observability role (runs after envoy_gateway). Skip silently if not yet present.
@@ -537,6 +566,6 @@
   ansible.builtin.debug:
     msg: >-
       Envoy Gateway v{{ envoy_gateway_version }} installed in {{ envoy_gateway_namespace }}.
-      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}){{ ' + auth (' + auth_provider + ')' if auth_provider != 'none' else '' }}.
+      Gateway '{{ gateway_name }}' created with TLS ({{ gateway_tls_mode }}) + Keycloak JWT auth.
       Solutions publish hosts with ListenerSets from namespaces labelled
       {{ gateway_listeners_label_key }}={{ gateway_listeners_label_value }}.

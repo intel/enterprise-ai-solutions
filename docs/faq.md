@@ -80,9 +80,9 @@ You define the nodes in the environment inventory, and you need shared storage: 
 
 `local-path` (default, single node), `nfs` (auto-provisioned on the first control-plane node), `ceph` (Rook-Ceph, replicated block storage), and `netapp-trident` with ONTAP. See [Storage](customize/configuration.md#storage) and [NetApp ONTAP and Trident](deploy/netapp_ontap.md).
 
-### Which authentication provider should I choose?
+### Which API authentication type should I choose?
 
-`keycloak`, the default, gives OIDC single sign-on, role-based access, and per-user JWTs, and is the production choice. `litellm` issues virtual API keys with per-key budgets and deploys no Keycloak, which suits multi-tenant API access and simpler setups. See [Auth provider](customize/configuration.md#auth-provider).
+Keycloak is always deployed and handles sign-in in both modes; `auth_type` only selects what API clients send. `jwt`, the default, uses Keycloak JWTs (client credentials) on the inference endpoint and is the production choice. `litellm_vkey` uses LiteLLM virtual API keys with per-key budgets on `litellm.<domain>`, which suits multi-tenant API access. See [API authentication](customize/configuration.md#api-authentication).
 
 ### Can I use my own TLS certificates?
 
@@ -110,7 +110,7 @@ Yes, a Hugging Face token exported as `HF_TOKEN` before deploying. Llama, Mistra
 
 ### How do I call the model once it is running?
 
-Any OpenAI-compatible client, with a Bearer token. With `keycloak`, source the token helper script to get a JWT and the gateway address; with `litellm`, use a virtual key. See [Integration Guide](customize/integration.md).
+Any OpenAI-compatible client, with a Bearer token. With `auth_type: jwt`, source the token helper script to get a JWT and the gateway address; with `litellm_vkey`, use a virtual key. See [Integration Guide](customize/integration.md).
 
 ### Can I serve more than one model at a time?
 

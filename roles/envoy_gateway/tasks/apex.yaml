@@ -77,9 +77,7 @@
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
             name: apex-landing
-  when:
-    - gateway_path_mode | bool and gateway_landing_path | length > 0
-    - auth_provider in ['keycloak', 'litellm']
+  when: gateway_path_mode | bool and gateway_landing_path | length > 0
 
 - name: "envoy_gateway | apex | Remove the landing redirect when off"
   when: not (gateway_path_mode | bool and gateway_landing_path | length > 0)

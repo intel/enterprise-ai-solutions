@@ -9,7 +9,10 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: {{ gateway_name }}
-{% if auth_provider == 'keycloak' %}
+{# Deny-by-default in both auth modes: a route without its own SecurityPolicy
+   needs a Keycloak JWT. Routes that authenticate elsewhere (UI logins, LiteLLM
+   virtual keys) attach their own policy, which overrides this one. #}
+{% if keycloak_enabled | default(true) | bool %}
   jwt:
     providers:
       - name: keycloak
@@ -18,14 +21,8 @@ spec:
           - "{{ keycloak_client_id | default('inference-client') }}"
         remoteJWKS:
           uri: "{{ keycloak_jwks_url }}"
-{% elif auth_provider == 'litellm' %}
-  extAuth:
-    http:
-      backendRef:
-        name: litellm
-        namespace: litellm
-        port: 4000
-      headersToBackend:
-        - Authorization
-      path: /key/verify
+{% else %}
+  # Keycloak turned off: nothing can present a token, so refuse outright.
+  authorization:
+    defaultAction: Deny
 {% endif %}
