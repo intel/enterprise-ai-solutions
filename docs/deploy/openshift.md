@@ -17,7 +17,7 @@ On OpenShift the installer does not provision cluster-wide services. You install
 
 | Owner | Installs | Examples |
 |---|---|---|
-| **Cluster admin (you), from the marketplace** | Operators, plus the cluster-scoped singleton each one needs | LVMS + `LVMCluster`, cert-manager, Service Mesh 3 + `Istio`/`IstioCNI`/`ZTunnel`, CloudNativePG, Red Hat build of Keycloak, NFD + `NodeFeatureDiscovery`, LWS, Custom Metrics Autoscaler + `KedaController`, OpenShift AI + `DataScienceCluster`; optionally MetalLB |
+| **Cluster admin (you), from the marketplace** | Operators, plus the cluster-scoped singleton each one needs | LVMS + `LVMCluster`, cert-manager, Service Mesh 3 + `Istio`/`IstioCNI`/`ZTunnel`, CloudNativePG, Red Hat build of Keycloak, NFD + `NodeFeatureDiscovery`, LWS, Custom Metrics Autoscaler + `KedaController`, OpenShift AI + `DataScienceCluster` |
 | **Installer (`es_auto_installer.sh`)** | Resources scoped to the application, in namespaces it creates and labels | Enabling user-workload monitoring _(planned)_, CNPG `Cluster`, `Keycloak` instance and realm, `ServiceMonitor`/`PodMonitor`, LiteLLM, Langfuse, inference models, eRAG applications |
 
 The rule: **the installer never installs, upgrades, or deletes an operator, a CRD, or a cluster singleton that it did not create.** The one exception is user-workload monitoring: the installer switches it on by merging `enableUserWorkload: true` into `cluster-monitoring-config`, keeps any settings already there, and never switches it off. Anything the installer creates carries an ownership label, and teardown removes only labelled objects _(planned)_.
@@ -49,22 +49,12 @@ To stay on the tested versions, subscribe to the channel in the table with `inst
 | 9 | LeaderWorkerSet | `leader-worker-set` (redhat-operators) | `stable-v1.0` → 1.0.1 | | [LeaderWorkerSet Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ai_workloads/leader-worker-set-operator) | **Yes** (llm-d serving) |
 | 10 | Red Hat Connectivity Link | `rhcl-operator` (redhat-operators) | `stable` → 1.4.3 | | [Install Connectivity Link](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.4/html/install_connectivity_link/rhcl-install-on-ocp) | **Yes** (OpenShift AI `LLMInferenceService`) |
 | 11 | OpenShift AI | `rhods-operator` (redhat-operators) | `stable-3.3` → 3.3.4 | `stable-3.x` → 3.5.1 (not tested) | [Installing OpenShift AI](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html/installing_and_uninstalling_openshift_ai_self-managed/installing-and-deploying-openshift-ai_install) | **Yes** |
-| 12 | MetalLB | `metallb-operator` (redhat-operators) | not installed in the test | `stable` → 4.22.0 | [MetalLB](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ingress_and_load_balancing/load-balancing-with-metallb) | Optional (multi-node, dedicated VIP) |
-| 13 | Logging, tracing, dashboards | see [step 13](#13-optional-operators) | not installed in the test | | | Optional |
-
-To report the versions on your cluster, for example in a bug report:
-
-```bash
-oc get csv -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase | awk '!seen[$2]++'
-```
-
-**No marketplace equivalent** exists for the following. The installer still deploys them with Helm into its own namespaces: LiteLLM, Langfuse, Envoy Gateway / Envoy AI Gateway (see [Known gaps](#known-gaps)), and the eRAG applications. The NFS CSI driver is **not used** on OpenShift. NRI CPU balloons work as on Kubernetes: CRI-O enables NRI, and the installer sets the chart's `openshift.grant-scc` so its plugin gets an SCC.
 
 ---
 
 ## Step-by-step
 
-Install in this order. Each step lists only what the stack needs beyond the linked guide.
+Each step lists only what the stack needs beyond the linked guide. The order does not matter, except that the DataScienceCluster (step 11) needs LeaderWorkerSet and the `Kuadrant` instance (steps 9 and 10) first. Everything must be in place before you run the installer.
 
 ### 1. Storage: default StorageClass
 
@@ -147,67 +137,8 @@ oc get dsc default-dsc -o jsonpath='{.status.conditions[?(@.type=="KserveLLMInfe
 
 OpenShift AI owns the KServe CRDs and controller. On OpenShift the installer never deploys upstream KServe: the `kserve` component only checks that the `DataScienceCluster` has KServe `Managed` and ready, then adds the inference Gateway. Its teardown does nothing _(planned)_.
 
-### 12. MetalLB
-
-_Optional. Skip this on single-node clusters._ The stack is reached through the OpenShift router (`*.apps` wildcard domain) on the nodes' ports 80/443, so no `LoadBalancer` Service is needed. Install MetalLB only on a multi-node bare-metal cluster where you want a dedicated virtual IP in front of a `LoadBalancer` Service.
-
-### 13. Optional operators
-
-| Need | Install | Instead of installer flag |
-|---|---|---|
-| Logs in Loki | [Logging](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/logging) (`cluster-logging`, `loki-operator`) | `observability_enabled` (Loki part) |
-| Distributed tracing | [Tempo](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/distributed_tracing) and [OpenTelemetry](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/red_hat_build_of_opentelemetry) | `observability_enabled` (Tempo/OTel part) |
-| Dashboards in the console | [Cluster Observability Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/cluster_observability_operator) (`UIPlugin`) | Grafana |
-| Grafana | `grafana-operator` (community-operators, unsupported by Red Hat) | Grafana |
-| CPU pinning for inference | Node Tuning Operator (built in) with a `PerformanceProfile` | `kubernetes_cpu_policy: nri-balloons` |
-
 ---
 
-## Verify all prerequisites
-
-Run this before the installer. Every line should end in `OK`. The installer's preflight check runs the same checks and stops on the first failure _(planned)_.
-
-```bash
-#!/usr/bin/env bash
-# openshift-prereq-check.sh
-ok()   { printf '%-45s OK\n' "$1"; }
-fail() { printf '%-45s MISSING  %s\n' "$1" "$2"; rc=1; }
-rc=0
-
-csv() {   # csv <label> <namespace> <name-prefix>
-  oc get csv -n "$2" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null \
-    | grep -q "^$3.* Succeeded$" && ok "$1" || fail "$1" "operator CSV $3* not Succeeded in $2"
-}
-crd() { oc get crd "$2" >/dev/null 2>&1 && ok "$1" || fail "$1" "CRD $2"; }
-
-oc get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}' \
-  | grep -q . && ok "default StorageClass" || fail "default StorageClass" "none marked default"
-
-csv "cert-manager"               cert-manager-operator   cert-manager-operator
-csv "Service Mesh 3"             openshift-operators     servicemeshoperator3
-oc get istio default -o jsonpath='{.status.state}' 2>/dev/null | grep -q Healthy \
-  && ok "Istio control plane (ambient)" || fail "Istio control plane (ambient)" "Istio/default not Healthy"
-oc get ztunnel default >/dev/null 2>&1 && ok "ZTunnel" || fail "ZTunnel" "ZTunnel/default"
-crd "Gateway API"                gateways.gateway.networking.k8s.io
-csv "CloudNativePG"              openshift-operators     cloudnative-pg
-csv "Red Hat build of Keycloak"  keycloak                rhbk-operator      # skip if auth_provider=litellm
-oc get kedacontroller -n openshift-keda keda >/dev/null 2>&1 && ok "KEDA" || fail "KEDA" "KedaController/keda"
-oc get nodefeaturediscovery -n openshift-nfd >/dev/null 2>&1 && ok "Node Feature Discovery" || fail "Node Feature Discovery" "NodeFeatureDiscovery instance"
-crd "LeaderWorkerSet"            leaderworkersets.leaderworkerset.x-k8s.io
-csv "Connectivity Link"          kuadrant-system         rhcl-operator
-oc get kuadrant -n kuadrant-system -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True \
-  && ok "Kuadrant" || fail "Kuadrant" "Kuadrant instance not Ready"
-csv "OpenShift AI"               redhat-ods-operator     rhods-operator
-oc get dsc -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q Ready \
-  && ok "DataScienceCluster" || fail "DataScienceCluster" "no DSC in phase Ready"
-crd "KServe (from OpenShift AI)" inferenceservices.serving.kserve.io
-oc get dsc -o jsonpath='{.items[0].status.conditions[?(@.type=="KserveLLMInferenceServiceDependencies")].status}' 2>/dev/null | grep -q True \
-  && ok "LLMInferenceService dependencies" || fail "LLMInferenceService dependencies" "see DSC condition KserveLLMInferenceServiceDependencies"
-
-exit $rc
-```
-
----
 ## Platform detection
 
 Preflight detects the platform before it resolves the components to install, so the same `global_config.yaml` works on Kubernetes and OpenShift. There is no OpenShift-specific setting.
@@ -245,16 +176,4 @@ The installer does not support all of the flow above yet. The blocking items sto
 | **SCC** | Charts set fixed `runAsUser`/`fsGroup`; namespaces get only Pod Security labels, which do not grant an SCC on OpenShift | Leave UID/GID unset on OpenShift so `restricted-v2` assigns them; grant a dedicated SCC only where a component really needs one | **Yes** |
 | **User-workload monitoring** | Not configured on OpenShift; `observability` deploys kube-prometheus-stack instead | When OpenShift is detected, merge `enableUserWorkload: true` into `cluster-monitoring-config` without overwriting the customer's settings, configure `user-workload-monitoring-config` with the StorageClass, and wait for `prometheus-user-workload` | **Yes** (no metrics, no autoscaling) |
 | **Platform components** | Preflight detects OpenShift, but every component still installs as on Kubernetes | Skip what the cluster provides, check the marketplace operators from [Prerequisites](#prerequisites), and create only the instances | **Yes** |
-| **Preflight checks** | Does not run the checks in [Verify all prerequisites](#verify-all-prerequisites) | Run those checks before the first component | No |
-
----
-
-## Related Docs
-
-| If you want to… | Go to |
-|---|---|
-| Install on a vanilla Kubernetes cluster you already run | [Multi-Node & BYO Cluster](topologies.md#bring-your-own-kubernetes-byo) |
-| Check host and network prerequisites | [Prerequisites](../quickstart/prerequisites.md) |
-| Set `storage_backend` and the other installer options | [Configuration Reference](../customize/configuration.md#storage) |
-| Use NetApp ONTAP as the storage backend | [NetApp ONTAP and Trident](netapp_ontap.md) |
-| Understand how a request reaches a model | [Network Architecture](networking.md) |
+| **Preflight checks** | Does not check the operators in [Prerequisites](#prerequisites) | Check them before the first component | No |
