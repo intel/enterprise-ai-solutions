@@ -76,6 +76,23 @@
   loop_control:
     label: "{{ item.metadata.namespace }}/{{ item.status.installedCSV }}"
 
+# A Manual-approval Subscription waits on an unapproved InstallPlan for the first
+# install and for every upgrade; name it so the admin knows what to approve.
+- name: "Preflight - OpenShift: read the InstallPlans the Subscriptions wait on"
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: InstallPlan
+    name: "{{ item.status.installPlanRef.name }}"
+    namespace: "{{ item.metadata.namespace }}"
+  register: _prq_plans
+  failed_when: false
+  loop: >-
+    {{ _prq_subs.resources | default([])
+       | selectattr('spec.name', 'in', _prq_needed | selectattr('package', 'defined') | map(attribute='package') | list)
+       | selectattr('status.installPlanRef.name', 'defined') | list }}
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.status.installPlanRef.name }}"
+
 - name: "Preflight - OpenShift: read operator instances"
   kubernetes.core.k8s_info:
     api_version: "{{ item.1.api_version }}"
@@ -216,6 +233,7 @@
            subscriptions=_prq_subs | default({}),
            extensions=_prq_exts | default({}),
            csvs=_prq_csvs | default({}),
+           installplans=_prq_plans | default({}),
            instances=_prq_instances | default({}),
            storage=_prq_storage,
            strict=openshift_prereq_strict | default(false)) }}
