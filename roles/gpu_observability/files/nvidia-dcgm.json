@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "NVIDIA GPU health from the DCGM exporter: utilization, framebuffer memory, temperature, power, and error counters. Based on Grafana dashboard ID 12239, adapted for ConfigMap provisioning.",
+  "description": "NVIDIA GPU health from the DCGM exporter: utilization, framebuffer memory, temperature, power, and error counters. Written for this project; queries and panels are original. Panel themes follow NVIDIA's DCGM Exporter dashboard (grafana.com ID 12239).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,

@@ -3,6 +3,10 @@
 #
 # Custom DCGM exporter counter set for the agentic-ai-stack.
 #
+# Derived from etc/dcp-metrics-included.csv in NVIDIA dcgm-exporter
+# (https://github.com/NVIDIA/dcgm-exporter), Copyright NVIDIA Corporation,
+# licensed under the Apache License, Version 2.0.
+#
 # This is the stock NVIDIA dcp-metrics-included.csv PLUS reliability and
 # throughput-diagnostic fields the default set leaves out (ECC, clock-throttle
 # reasons, thermal/power violation time, NVLink error counters, total

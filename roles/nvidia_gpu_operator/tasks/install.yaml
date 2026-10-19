@@ -70,6 +70,7 @@
     - name: "nvidia_gpu_operator | nvidia | Create DCGM custom metrics ConfigMap"
       ansible.builtin.shell:
         cmd: |
+          set -o pipefail
           kubectl create configmap dcgm-metrics-config \
             --from-file=dcgm-metrics.csv=/tmp/dcgm-metrics.csv \
             -n {{ nvidia_gpu_operator_namespace }} \
@@ -122,6 +123,7 @@
           -n {{ nvidia_gpu_operator_namespace }}
           --timeout=300s
       register: _gpu_nfd_rollout
+      changed_when: false
       failed_when: _gpu_nfd_rollout.rc != 0
       ignore_errors: true
       when: nvidia_gpu_operator_nfd_enabled | bool
