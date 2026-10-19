@@ -307,10 +307,13 @@ On OpenShift, `install` and `validate` check the [Prerequisites](#prerequisites)
 Preflight prints one line per requirement, then stops with every requirement that failed, the reason, and the step to follow:
 
 ```
-  ✗ LeaderWorkerSet: TOO OLD
-      leader-worker-set.v1.0.1 1.0.1 is older than the tested 1.1.0
-      see docs/deploy/openshift.md#9-leaderworkerset
+  ✗ cert-manager: TOO OLD
+      cert-manager-operator.v1.20.0 1.20.0 is older than the tested 1.20.1
+      an upgrade to cert-manager-operator.v1.20.1 is waiting: InstallPlan cert-manager-operator/install-kvghn is not approved; approve it: oc patch installplan install-kvghn -n cert-manager-operator --type merge -p '{"spec":{"approved":true}}'
+      see docs/deploy/openshift.md#2-cert-manager
 ```
+
+With `installPlanApproval: Manual`, OLM waits for you to approve the first install and every upgrade. When a Subscription waits on an InstallPlan, the message names the plan and the command that approves it. The installer never approves it for you.
 
 A version newer than the tested one, the optional Custom Metrics Autoscaler, and anything the installer identity is not allowed to read are warnings; the run continues. Set `openshift_prereq_strict: true` to fail on untested newer versions too.
 
