@@ -419,3 +419,14 @@
       Action: {{ component_action }}
       Target: {{ target }}
       Components: {{ _active_components | map(attribute='name') | list | join(', ') }}
+
+# ── OpenShift prerequisites ───────────────────────────────────────────────────
+# The cluster admin installs the operators (docs/deploy/openshift.md); stop here,
+# with the full list, if the plan needs one that is missing, not ready or too old.
+
+- name: "Preflight - OpenShift prerequisites"
+  ansible.builtin.include_tasks: preflight_openshift.yaml
+  when:
+    - cluster_distribution | default('kubernetes') == 'openshift'
+    - component_action | default('install') in ['install', 'validate']
+    - openshift_prereq_check | default(true) | bool
