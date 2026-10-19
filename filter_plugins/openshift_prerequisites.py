@@ -10,7 +10,8 @@ Usage in playbooks/includes/preflight_openshift.yaml:
     {{ openshift_prerequisites | openshift_prereq_select(planned_layers) }}
     {{ needed | openshift_prereq_report(platform=..., distribution_version=..., apis=...,
                                         subscriptions=..., extensions=..., csvs=...,
-                                        instances=..., storage=..., strict=...) }}
+                                        installplans=..., instances=..., storage=...,
+                                        strict=...) }}
 
 The inputs are k8s_info results as registered (failed_when: false), so a read that
 failed carries `msg` instead of `resources`. A read the identity is not allowed to
@@ -91,6 +92,12 @@ class _Row(object):
     def note(self, detail):
         self.details.append(detail)
 
+    def hint(self, detail):
+        """A how-to-fix line: goes with the problems when the row has any, else a note."""
+        self.details.append(detail)
+        if self.level != OK:
+            self.problems.append(detail)
+
     def result(self):
         return {"name": self.req.get("name"), "title": self.req.get("title", self.req.get("name")),
                 "doc": self.req.get("doc", ""), "level": self.level, "status": self.status,
@@ -100,7 +107,7 @@ class _Row(object):
 def _check_version(row, what, installed, tested, strict):
     if not tested:
         row.note("%s %s" % (what, installed or "?"))
-        return
+        return None
     cmp = compare_version(installed, tested)
     if cmp is None:
         row.add(WARN, "UNVERIFIED", "%s version '%s' is not comparable with tested %s" % (what, installed, tested))
@@ -111,6 +118,27 @@ def _check_version(row, what, installed, tested, strict):
                 "%s %s is newer than the tested %s (not validated)" % (what, installed, tested))
     else:
         row.note("%s %s" % (what, installed))
+    return cmp
+
+
+def _pending_plan(sub, installplans):
+    """(namespace, name, [CSVs]) of the unapproved InstallPlan the Subscription waits on, else None."""
+    ns, name = _get(sub, "metadata.namespace"), _get(sub, "status.installPlanRef.name")
+    if not name:
+        return None
+    res = next((r for r in (installplans or {}).get("results") or []
+                if _get(r, "item.metadata.namespace") == ns
+                and _get(r, "item.status.installPlanRef.name") == name), None)
+    plan = ((res or {}).get("resources") or [None])[0]
+    if plan is None or _get(plan, "spec.approved") is not False:
+        return None
+    return ns, name, _get(plan, "spec.clusterServiceVersionNames") or []
+
+
+def _approve_hint(plan):
+    ns, name, _csvs = plan
+    return ("approve it: oc patch installplan %s -n %s --type merge -p '{\"spec\":{\"approved\":true}}'"
+            % (name, ns))
 
 
 def _check_apis(row, req, apis):
@@ -121,7 +149,7 @@ def _check_apis(row, req, apis):
         row.add(FAIL, "MISSING", "the cluster does not serve %s" % ", ".join(missing))
 
 
-def _check_package(row, req, subscriptions, extensions, csvs, strict):
+def _check_package(row, req, subscriptions, extensions, csvs, installplans, strict):
     package = req.get("package")
     if not package:
         return
@@ -161,10 +189,17 @@ def _check_package(row, req, subscriptions, extensions, csvs, strict):
                 "%s is installed in %s, it must be in %s (the operator watches only its own namespace)"
                 % (package, ns, want_ns))
     csv_name = _get(sub, "status.installedCSV")
+    plan = _pending_plan(sub, installplans)
     if not csv_name:
-        row.add(FAIL, "NOT INSTALLED",
-                "Subscription %s/%s has no installed CSV (state: %s); approve its InstallPlan"
-                % (ns, _get(sub, "metadata.name"), _get(sub, "status.state") or "none"))
+        if plan:
+            row.add(FAIL, "NOT INSTALLED",
+                    "Subscription %s/%s has no installed CSV: InstallPlan %s (%s) is waiting for approval"
+                    % (ns, _get(sub, "metadata.name"), plan[1], ", ".join(plan[2]) or "?"))
+            row.hint(_approve_hint(plan))
+        else:
+            row.add(FAIL, "NOT INSTALLED",
+                    "Subscription %s/%s has no installed CSV (state: %s); approve its InstallPlan"
+                    % (ns, _get(sub, "metadata.name"), _get(sub, "status.state") or "none"))
         return
 
     csv_res = next((r for r in (csvs or {}).get("results") or []
@@ -183,6 +218,10 @@ def _check_package(row, req, subscriptions, extensions, csvs, strict):
         row.add(FAIL, "NOT READY", "CSV %s/%s is %s: %s"
                 % (ns, csv_name, phase or "unknown", _get(csv, "status.message") or ""))
     _check_version(row, csv_name, _get(csv, "spec.version"), req.get("version"), strict)
+    upgrade = [c for c in (plan or (None, None, []))[2] if c != csv_name]
+    if upgrade:
+        row.hint("an upgrade to %s is waiting: InstallPlan %s/%s is not approved; %s"
+                 % (", ".join(upgrade), plan[0], plan[1], _approve_hint(plan)))
 
 
 def _instance_mismatches(obj, spec):
@@ -316,8 +355,8 @@ def openshift_prereq_select(prereqs, planned_layers):
 
 
 def openshift_prereq_report(prereqs, platform=None, distribution_version="", apis=None,
-                            subscriptions=None, extensions=None, csvs=None, instances=None,
-                            storage=None, strict=False):
+                            subscriptions=None, extensions=None, csvs=None, installplans=None,
+                            instances=None, storage=None, strict=False):
     rows = []
     if platform:
         row = _Row(platform)
@@ -326,7 +365,7 @@ def openshift_prereq_report(prereqs, platform=None, distribution_version="", api
     for req in prereqs or []:
         row = _Row(req)
         _check_apis(row, req, apis or [])
-        _check_package(row, req, subscriptions, extensions, csvs, _truthy(strict))
+        _check_package(row, req, subscriptions, extensions, csvs, installplans, _truthy(strict))
         _check_instances(row, req, instances)
         if _truthy(req.get("storage", False)):
             _check_storage(row, storage)
