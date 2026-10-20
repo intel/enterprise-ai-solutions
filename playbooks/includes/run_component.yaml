@@ -22,7 +22,17 @@
 
 # `always`: a component that fails halfway still gets what it created labelled.
 # Otherwise the next run would record those objects as already there, and
-# teardown would never remove them.
+# teardown would never remove them. A run that is killed never gets to `always`:
+# `begin` notes the component, and the next run's snapshot labels it first.
+- name: "Note that {{ component.name }} runs"
+  ansible.builtin.include_role:
+    name: ownership
+  vars:
+    ownership_action: begin
+  when:
+    - component_action == 'install'
+    - ownership_enabled | default(true) | bool
+
 - name: "Execute {{ component.name }}"
   block:
     - name: "Execute {{ component.name }}"

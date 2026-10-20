@@ -288,6 +288,16 @@ component, also one that failed, it labels the objects that
 - were written by the installer's own tools: Helm, `kubernetes.core.k8s`, `kubectl`/`oc`,
   `model-manager` (`ownership_managers`). Objects an operator creates in parallel are left alone.
 
+Helm releases are labelled whole: when the release's first release secret (`v1`) is new,
+or one of its release secrets is already labelled for the component, all objects Helm annotates with that release
+(`meta.helm.sh/release-name`) and all its release secrets are labelled. A release that was
+there before keeps its release secrets unlabelled too, so teardown never deletes part of a
+release's history and leaves the release broken.
+
+A run that is killed (Ctrl-C, a lost session) never gets to label the component it was in.
+The component is noted in the state file before it runs, and the next `install` or
+`teardown` labels what appeared since, as that component, before it records the cluster.
+
 Teardown then deletes `env=<env>,component=<component>` in this order: custom resources
 first, while their operators still run; then webhooks and APIServices; namespaced objects
 (Helm release secrets included); namespaces; cluster-scoped objects; CRDs last. It waits
