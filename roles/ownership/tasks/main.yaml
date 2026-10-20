@@ -3,7 +3,9 @@
 # Ownership — label what a component installs, delete it again on teardown
 # =============================================================================
 # ownership_action:
-#   snapshot  before the first component: record what is already on the cluster
+#   snapshot  before the first component (install and teardown): record what is
+#             already on the cluster, after labelling what a killed run left
+#   begin     before each component: note that it runs, for snapshot to recover
 #   label     after each component: label what it created
 #   teardown  instead of (or before) a component's own teardown: delete by label
 # =============================================================================
@@ -13,7 +15,26 @@
   ownership_k8s:
     action: snapshot
     state_file: "{{ ownership_state_file }}"
+    label_prefix: "{{ ownership_label_prefix }}"
+    managers: "{{ ownership_managers }}"
     skip_resources: "{{ ownership_skip_resources }}"
+  register: _ownership_snapshot
+
+- name: "ownership | Labelled {{ _ownership_snapshot.labelled | default([]) | length }} objects of {{ _ownership_snapshot.recovered.component | default('') }}, left by a run that stopped"
+  when:
+    - ownership_action == 'snapshot'
+    - _ownership_snapshot.recovered is defined
+  ansible.builtin.debug:
+    msg: "{{ _ownership_snapshot.labelled }}"
+
+- name: "ownership | Note that {{ component.name | default('') }} runs"
+  when: ownership_action == 'begin'
+  ownership_k8s:
+    action: begin
+    state_file: "{{ ownership_state_file }}"
+    env: "{{ env_name | default('local') }}"
+    layer: "{{ component.layer | default('unknown') }}"
+    component: "{{ component.name }}"
 
 - name: "ownership | Label what {{ component.name | default('') }} created"
   when: ownership_action == 'label'
