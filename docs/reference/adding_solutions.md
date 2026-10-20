@@ -5,7 +5,8 @@ stack. The ai-solutions repo owns `infrastructure`, `platform` and `inference`; 
 above that lives in its own repo and is cloned into `ext/` on demand.
 
 This is the complete reference for wiring one up - the layer manifest, the component
-registry, roles, config, flavours, and how to verify it. It is the source of truth for
+registry, roles, config, flavours, how to use the platform's gateway, Keycloak and models
+from your layer, and how to verify it. It is the source of truth for
 these file formats; the YAML files themselves are kept comment-light and point back here.
 
 ---
@@ -211,13 +212,16 @@ One role per component, at `<subdir>/roles/<component-name>/`.
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /
-`ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. Variables
+`ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. The one
+sanctioned shell-out is the `model-manager` CLI (see
+[Deploying a model](#deploying-a-model)). Variables
 are flat (`my_api_replicas`), never nested dicts - config files are merged by Ansible
 extra-vars precedence, so a nested dict from one file replaces the other's wholesale rather
 than merging.
 
 Roles receive `component_action` (`install` | `teardown` | `validate`) plus `env_dir`,
-`env_name` and `kubernetes_kubeconfig`.
+`env_name` and `kubernetes_kubeconfig`. `log_dir` (`env/<env>/logs`) is where generated
+credentials belong - write them there with mode `0600`.
 
 ---
 
@@ -257,9 +261,146 @@ Set `model_catalog:` to a path from your repo root and `init` seeds it to
 one. Everything else your repo ships (image lists, compatibility matrices, version files) is
 private to it; ai-solutions reads nothing else.
 
+Seeding is first-writer-wins: when an env already has a `models.yaml` (seeded by another
+layer), yours is skipped. A catalog only describes models; to actually deploy one from your
+layer, see [Deploying a model](#deploying-a-model).
+
 ---
 
-## 7. Running it
+## 7. Using the platform from your layer
+
+The point of a layer is to not rebuild what the platform already runs. These are the
+integration points a solution typically needs.
+
+### Publishing a host
+
+Publish through the core `gateway` role instead of writing Gateway listeners yourself; it
+handles subdomain and path routing modes, the shared TLS certificate and listener
+admission. `publish.yaml` sets `gateway_publish.parent_ref` for your HTTPRoute:
+
+```yaml
+- name: "my_ui | Publish the host"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: publish.yaml
+  vars:
+    gateway_publish_name: my-ui
+    gateway_publish_namespace: "{{ my_ui_namespace }}"
+    gateway_publish_host: "{{ my_ui_hostname }}"   # e.g. my-ui.{{ base_domain_name }}
+    gateway_publish_mode: subdomain                # omit to follow routing_mode; set a
+                                                   # gateway_publish_path for path mode
+
+- name: "my_ui | Create HTTPRoute"
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata: {name: my-ui, namespace: "{{ my_ui_namespace }}"}
+      spec:
+        parentRefs: ["{{ gateway_publish.parent_ref }}"]
+        hostnames: ["{{ my_ui_hostname }}"]
+        rules: [{backendRefs: [{name: my-ui, port: 80}]}]
+```
+
+Teardown mirrors it with `tasks_from: unpublish.yaml` and the same variables.
+
+**The gateway is deny-by-default.** A Gateway-wide policy requires a Keycloak JWT on every
+route that has no policy of its own. An API your clients call with a token needs nothing
+more. A browser UI that runs its own login gets `401` on every request until you exempt its
+route:
+
+```yaml
+- name: "my_ui | Exempt the route from gateway auth (it has its own login)"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: my-ui
+    gateway_route_namespace: "{{ my_ui_namespace }}"
+    gateway_route_policy_name: my-ui-no-auth
+    # gateway_route_state: absent   # in teardown.yaml
+```
+
+Reference: `roles/langfuse` in enterprise-inference (publish, route, exemption, teardown).
+
+### Single sign-on
+
+Keycloak runs in the platform; there is no shared "create my client" role. Give your
+solution its own realm (or its own client in an existing realm), created by a component
+that runs before the app - the platform keeps the admin credentials in the
+`keycloak-admin-secret` Secret in the `keycloak` namespace. Store the generated client
+secret in a Kubernetes Secret, reuse it on reruns so credentials do not rotate, and make the
+Secret authoritative over Keycloak: a `KeycloakRealmImport` is a no-op on a realm that
+already exists. Browsers are sent to Keycloak's public URL; in-cluster token and userinfo
+calls go to `http://keycloak-service.keycloak.svc:8080` (plus `/keycloak` in path mode).
+
+References: `roles/keycloak_config` in enterprise-inference (client-credentials client),
+`deployment/roles/app_keycloak_config` in enterprise-rag (browser login, users, Grafana SSO).
+
+### Calling a model
+
+In-cluster, the inference layer serves an OpenAI-compatible endpoint that needs no token:
+
+| Model kind | Base URL |
+|---|---|
+| Chat / completion | `http://ai-gateway.envoy-gateway-system.svc/v1` - routes on the request's `model` field |
+| Embedding, reranking | `http://ai-gateway.envoy-gateway-system.svc/llm-inference/<model>/v1` |
+
+`GET /v1/models` on the first URL lists chat models only. Clients outside the cluster go
+through the platform gateway with a Keycloak JWT - see
+[../customize/integration.md](../customize/integration.md).
+
+### Deploying a model
+
+If your layer needs a model, deploy it through the `model-manager` wrapper, labelled so you
+can find what you own. Skip the deploy when a serving resource of that name already exists -
+another layer deployed it, and it stays theirs:
+
+```yaml
+- name: "my_app | Look up the model"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ my_app_model }}"
+    namespace: llm-inference
+  loop:
+    - {api_version: serving.kserve.io/v1alpha2, kind: LLMInferenceService}   # vllm
+    - {api_version: serving.kserve.io/v1beta1, kind: InferenceService}       # openvino
+  register: _my_model
+
+- name: "my_app | Deploy the model"
+  ansible.builtin.command:
+    argv: ["{{ playbook_dir }}/../model-manager", deploy, "{{ my_app_model }}",
+           --label, "my-solution.example.com/managed-by=my_app", --wait]
+  changed_when: true
+  environment:
+    KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') }}"
+    ES_ENV: "{{ env_dir | basename }}"   # the wrapper prompts for an env otherwise, and has no tty
+  when: _my_model.results | map(attribute='resources') | flatten | length == 0
+```
+
+The model name must exist in the env's catalog (`env/<env>/models.yaml`, read by default).
+A layer that needs models the inference catalog does not ship can seed its own catalog
+under a different name and pass it as `MM_CONFIG`. In teardown, query both kinds with
+`label_selectors` and `model-manager undeploy` only what carries your label - never a
+model you reused.
+
+Reference: `deployment/roles/app_inference_models` in enterprise-rag (own catalog, ownership
+label, reconcile on config change).
+
+### Namespaces and pods
+
+- Label your namespaces `istio.io/dataplane-mode: ambient` when `istio_enabled`, and apply the
+  Pod Security labels when `enforce_pss` - the core roles do both; follow them.
+- Charts that ship their own NetworkPolicies can block ambient's HBONE port (15008) and the
+  route to the model endpoint. Disable them or allow both.
+- Pods that reach the internet (package installs, model downloads) need `http_proxy` /
+  `https_proxy` / `no_proxy` from `global_config.yaml`; keep `.svc` and `.cluster.local` in
+  `no_proxy` so in-cluster calls skip the proxy.
+
+---
+
+## 8. Running it
 
 ```bash
 ./es_auto_installer.sh init mylayer                     # clone + seed env/local/
@@ -277,8 +418,13 @@ private to it; ai-solutions reads nothing else.
 There is no `all` target - name the topmost layer you want and its closure follows.
 
 `init` is the only command that clones; `install` treats a missing repo as fatal and tells
-you which `init` to run. Install resolves **downward** (a target needs what it depends on),
+you which `init` to run. It clones with plain `git`, so a private or internal repo needs git
+credentials on the host first (for example `gh auth setup-git`). Running `init` for your
+layer in an env already inited for another layer adds yours alongside it; nothing already
+seeded is overwritten. Install resolves **downward** (a target needs what it depends on),
 teardown resolves **upward** (a target's dependants go first) and reverses the order.
+`install mylayer` re-runs every layer below yours - idempotent, but slow; while iterating on
+a running cluster, `install my_api --only` runs just that component.
 
 Ansible flags go after `--`: `install mylayer -- --check -vvv`. Set `ES_LOG_LEVEL=debug` for
 verbose output plus `ansible -vvv`, or `trace` to add bash xtrace. Per-run logs land in
@@ -286,7 +432,14 @@ verbose output plus `ansible -vvv`, or `trace` to add bash xtrace. Per-run logs 
 
 ---
 
-## 8. Verify before opening the PR
+## 9. Verify before opening the PR
+
+> [!WARNING]
+> A new env has no `kubeconfig.yaml`, and `install` without `--only` treats that as "no
+> cluster": it runs Kubespray `cluster.yml` against the env's inventory. On a host that
+> already runs a cluster, point the new env at it first - set
+> `existing_kubernetes: /path/to/kubeconfig` in `env/dev/global_config.yaml`, or copy the
+> kubeconfig to `env/dev/kubeconfig.yaml`.
 
 ```bash
 ./es_auto_installer.sh init mylayer --env dev
@@ -305,7 +458,7 @@ order your components will run in.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause |
 |---|---|
@@ -316,6 +469,10 @@ order your components will run in.
 | `'x' is undefined` during preflight | An `enabled:` expression lacks `| default(...)`. |
 | Role not found | Component name doesn't match the role directory, or `roles/` isn't under `deployment_subdir`. |
 | A component runs too early/late | Its `depends_on` is missing, or it names a component in another layer - put the edge on the layer instead. |
+| `401` on your app's host from the gateway | The route has no policy of its own, so the deny-by-default gateway policy demands a JWT - exempt it (see [Publishing a host](#publishing-a-host)). |
+| `init` fails with `could not read Username for 'https://github.com'` | The repo is private or internal and the host has no git credentials. |
+| `install` on a new env starts provisioning Kubernetes | The env has no `kubeconfig.yaml` - see the warning in [Verify](#9-verify-before-opening-the-pr). |
+| Pods cannot reach the model endpoint | A chart NetworkPolicy blocks it, or `no_proxy` lacks `.svc`. |
 | A component silently never runs | Its `enabled:` rendered to something falsey. `show` and the "Skipped (disabled)" preflight line list what was dropped. |
 
 Resolution and ordering live in
