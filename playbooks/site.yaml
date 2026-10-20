@@ -34,13 +34,14 @@
     - name: "Preflight"
       ansible.builtin.include_tasks: includes/preflight.yaml
 
+    # Teardown too: it first labels what a killed install left unlabelled.
     - name: "Record what is already on the cluster (ownership labels)"
       ansible.builtin.include_role:
         name: ownership
       vars:
         ownership_action: snapshot
       when:
-        - component_action == 'install'
+        - component_action in ['install', 'teardown']
         - ownership_enabled | default(true) | bool
 
   tasks:

@@ -13,7 +13,8 @@ ownership_enabled: true
 # env + component, so two envs on one cluster never remove each other's objects.
 ownership_label_prefix: "ai-solutions.intel.com"
 
-# UIDs of the objects already on the cluster. Rewritten after every component.
+# UIDs of the objects already on the cluster, rewritten after every component, and
+# the component that runs now (cleared once it is labelled).
 ownership_state_file: "{{ tmp_dir | default(playbook_dir ~ '/../env/local/logs/tmp') }}/ownership-uids.json"
 
 # Field managers of the installer's own tools. An object that appeared during a
@@ -29,6 +30,7 @@ ownership_managers:
   - oc
   - model-manager
   - ai-solutions-envoy-gateway   # envoy_gateway: server-side apply of its CRDs (envoy_gateway_crds_field_manager)
+  - erag-app-apisix              # erag app_apisix: server-side apply of its CRDs (apisix_crds_field_manager)
   - cert-manager-certificates-issuing  # the Secret of a Certificate the component created
 
 # Never listed: high-churn objects that always have an owner, and APIs that are

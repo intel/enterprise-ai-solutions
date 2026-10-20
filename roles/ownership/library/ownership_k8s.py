@@ -3,7 +3,10 @@
 """
 Ansible module — label what a component created, and delete by those labels.
 
-  snapshot  record the UID of every object on the cluster in state_file
+  snapshot  record the UID of every object on the cluster in state_file. When a
+            run was killed while a component ran (see begin), first label what
+            that component created
+  begin     note in state_file which component runs now; label clears it again
   label     label every object created since the last snapshot (or label), then
             record the cluster again, so the next component starts from here
   delete    delete every object that matches selector, in dependency order
@@ -14,6 +17,15 @@ An object is labelled when all of these hold:
   - one of `managers` wrote it (managedFields): the installer's own tools, not
     an operator reconciling in parallel
   - it has no `<prefix>/component` label yet: the first creator keeps it
+
+Helm releases are labelled whole or not at all. A release is the component's when
+its first release secret (v1) is new, or one already carries the component's labels:
+then every object annotated with the release (meta.helm.sh/release-name and
+-namespace) and every release secret is labelled, even one recorded before. The
+release secrets of any other release are left alone, so teardown never deletes
+the history of a release it does not remove. "All release secrets are new" is not
+enough: an operator that runs Helm itself (the OpenShift Ingress Operator's istiod)
+writes a revision every few minutes and prunes the old ones.
 
 Lists use metadata-only responses (PartialObjectMetadataList), so a snapshot of a
 large cluster is a few MB, not the full objects.
@@ -35,7 +47,7 @@ DOCUMENTATION = r"""
 module: ownership_k8s
 short_description: Label the objects a component created, and delete by label
 options:
-  action: {type: str, required: true, choices: [snapshot, label, delete]}
+  action: {type: str, required: true, choices: [snapshot, begin, label, delete]}
   state_file: {type: path, description: UIDs seen so far (snapshot, label)}
   env: {type: str, description: Env name, the <prefix>/env label (label, delete)}
   layer: {type: str, description: Layer, the <prefix>/layer label (label)}
@@ -144,34 +156,84 @@ def _phase(res):
     return "namespaced" if res["namespaced"] else "cluster"
 
 
-def _write(path, uids):
+def _read(path):
+    """(uids, pending): uids None when there is no baseline yet, pending the component
+    a run was in when it stopped, or None."""
+    try:
+        with open(path) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None, None
+    return state.get("uids"), state.get("pending")
+
+
+def _write(path, uids, pending=None):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"uids": sorted(uids) if uids is not None else None}, f)
+        json.dump({"uids": sorted(uids) if uids is not None else None, "pending": pending}, f)
     os.replace(tmp, path)
 
 
-def snapshot(api, p):
-    _write(p["state_file"], _all_objects(api, _discover(api, set(p["skip_resources"]))).keys())
+def snapshot(api, p, module):
+    known, pending = _read(p["state_file"])
+    if pending and known is not None:
+        # The last run stopped inside a component, before it was labelled: label what
+        # appeared since, as that component, before it would count as already there.
+        result = label(api, dict(p, **pending), module)
+        return {"changed": result["changed"], "recovered": pending, "labelled": result["labelled"]}
+    if not module.check_mode:
+        _write(p["state_file"], _all_objects(api, _discover(api, set(p["skip_resources"]))).keys())
+    return {"changed": False, "labelled": []}
+
+
+def begin(p, module):
+    known, _ = _read(p["state_file"])
+    if not module.check_mode:
+        _write(p["state_file"], known, {"env": p["env"], "layer": p["layer"], "component": p["component"]})
     return {"changed": False}
 
 
+def _helm_claims(objects, known, p):
+    """(claimed, foreign): UIDs of the component's Helm releases, objects and release
+    secrets, and UIDs of the release secrets of every other release."""
+    prefix = p["label_prefix"]
+    releases, first = {}, {}
+    for uid, (res, meta) in objects.items():
+        labels = meta.get("labels") or {}
+        if res["group"] == "" and res["resource"] == "secrets" and labels.get("owner") == "helm" and labels.get("name"):
+            release = (meta.get("namespace"), labels["name"])
+            releases.setdefault(release, []).append(uid)
+            if labels.get("version") == "1":
+                first[release] = uid
+    ours, foreign = set(), set()
+    for release, uids in releases.items():
+        mine = (release in first and first[release] not in known) or any(
+            (objects[u][1].get("labels") or {}).get(prefix + "/env") == p["env"]
+            and (objects[u][1].get("labels") or {}).get(prefix + "/component") == p["component"] for u in uids)
+        (ours if mine else foreign).add(release)
+    claimed = {u for release in ours for u in releases[release]}
+    foreign = {u for release in foreign for u in releases[release]}
+    for uid, (res, meta) in objects.items():
+        annotations = meta.get("annotations") or {}
+        if (annotations.get("meta.helm.sh/release-namespace"), annotations.get("meta.helm.sh/release-name")) in ours:
+            claimed.add(uid)
+    return claimed, foreign
+
+
 def label(api, p, module):
-    try:
-        with open(p["state_file"]) as f:
-            known = json.load(f).get("uids")
-    except (OSError, ValueError):
-        known = None
+    known, _ = _read(p["state_file"])
     objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
     labelled = []
     if known is not None:  # no baseline (the cluster did not exist yet): label nothing
         prefix = p["label_prefix"]
         labels = {prefix + "/env": p["env"], prefix + "/layer": p["layer"], prefix + "/component": p["component"]}
         known, managers, key = set(known), set(p["managers"]), prefix + "/component"
+        claimed, foreign = _helm_claims(objects, known, p)
         for uid, (res, meta) in sorted(objects.items(), key=lambda o: _ref(*o[1])):
-            if uid in known or meta.get("ownerReferences") or key in (meta.get("labels") or {}):
+            if uid in foreign or meta.get("ownerReferences") or key in (meta.get("labels") or {}):
                 continue
-            if not managers & {m.get("manager") for m in meta.get("managedFields") or []}:
+            if uid not in claimed and (uid in known
+                                       or not managers & {m.get("manager") for m in meta.get("managedFields") or []}):
                 continue
             if module.check_mode:
                 labelled.append(_ref(res, meta))
@@ -232,7 +294,7 @@ def delete(api, p, module):
 def main():
     module = AnsibleModule(
         argument_spec={
-            "action": {"type": "str", "required": True, "choices": ["snapshot", "label", "delete"]},
+            "action": {"type": "str", "required": True, "choices": ["snapshot", "begin", "label", "delete"]},
             "state_file": {"type": "path"},
             "env": {"type": "str"},
             "layer": {"type": "str", "default": "unknown"},
@@ -242,13 +304,16 @@ def main():
             "label_prefix": {"type": "str", "default": "ai-solutions.intel.com"},
             "timeout": {"type": "int", "default": 600},
         },
-        required_if=[("action", "snapshot", ["state_file"]), ("action", "label", ["state_file", "env", "component"]),
+        required_if=[("action", "snapshot", ["state_file"]), ("action", "begin", ["state_file", "env", "component"]),
+                     ("action", "label", ["state_file", "env", "component"]),
                      ("action", "delete", ["env", "component"])],
         supports_check_mode=True,
     )
     if client is None:
         module.fail_json(msg="the kubernetes Python client is required")
     p = module.params
+    if p["action"] == "begin":
+        module.exit_json(**begin(p, module))
     kubeconfig = os.environ.get("K8S_AUTH_KUBECONFIG") or os.environ.get("KUBECONFIG") or "~/.kube/config"
     if p["action"] != "delete" and not os.path.exists(os.path.expanduser(kubeconfig)):
         # Kubespray has not built the cluster yet: the next label call takes the baseline.
@@ -266,7 +331,7 @@ def main():
         module.fail_json(msg="cluster at %s not reachable: %s" % (kubeconfig, e))
     try:
         if p["action"] == "snapshot":
-            module.exit_json(**snapshot(api, p))
+            module.exit_json(**snapshot(api, p, module))
         module.exit_json(**(label(api, p, module) if p["action"] == "label" else delete(api, p, module)))
     except ApiException as e:
         try:
