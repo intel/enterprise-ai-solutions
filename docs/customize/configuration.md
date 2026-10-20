@@ -187,7 +187,7 @@ seaweedfs_volume_storage_size: "10Gi"
 | `velero_enabled` | Whether the backup mechanism is deployed — needs snapshot-capable storage |
 | `gateway_request_timeout` | Max time the gateway waits for a model response before timing out |
 | `object_store_backend` | Backend for log/trace/blob storage |
-| `existing_kubernetes` | Point to an existing kubeconfig to skip cluster provisioning entirely |
+| `existing_kubernetes` | Point to an existing kubeconfig to skip cluster provisioning entirely. `KUBECONFIG` is not supported: the installer uses this path, or `env/<name>/kubeconfig.yaml` for a managed cluster |
 
 ---
 
