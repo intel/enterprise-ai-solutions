@@ -1460,6 +1460,8 @@ main() {
     _resolve_kubeconfig
     vars+=(-e "kubernetes_kubeconfig=${KUBE_CFG}")
     [[ "$IS_BYO" == "true" ]] && vars+=(-e "existing_kubernetes=${KUBE_CFG}")
+    # --force also answers the kubernetes role's "Kubespray will remove Docker" prompt.
+    [[ "$FORCE" == "true" ]] && vars+=(-e "kubernetes_docker_removal_ack=true")
     # Export after the path is resolved so Ansible collections and kubectl
     # both see the correct kubeconfig. Kubespray's subshell unsets these (see
     # run_kubespray) so kubespray's own internal kubectl is unaffected.
