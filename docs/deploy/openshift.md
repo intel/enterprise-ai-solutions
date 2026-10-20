@@ -7,7 +7,7 @@ How to prepare a customer-owned OpenShift cluster with Red Hat OpenShift AI, ins
 On OpenShift the installer does not provision cluster-wide services. You install the operators from the marketplace and create their cluster-level instances. The installer then checks that everything is in place and deploys only application-scoped resources into its own namespaces.
 
 > [!WARNING]
-> **Preview: OpenShift support is not yet complete.** This guide describes the target flow. Several installer behaviours it relies on are **planned, not yet implemented**. They are marked _(planned)_ below and summarised in [Known gaps](#known-gaps).
+> **Preview: OpenShift support is not yet complete.** This guide describes the target flow. Several installer behaviours it relies on are **planned, not yet implemented**. They are marked _(planned)_ below and summarised in [Known gaps](#known-gaps). Today the installer only [detects the platform](#platform-detection); the components start using the result in follow-up changes.
 >
 > Until the OpenShift-safe teardown lands, **never run `./es_auto_installer.sh teardown infrastructure` or `teardown platform` against an OpenShift cluster.** The current teardown roles delete CRDs by API group (for example all `gateway.networking.k8s.io`, `monitoring.coreos.com`, and `*kserve*` CRDs). On OpenShift those CRDs are owned by the cluster and by OpenShift AI.
 
@@ -135,7 +135,7 @@ oc get dsc default-dsc -o jsonpath='{.status.phase}{"\n"}'        # Ready
 oc get dsc default-dsc -o jsonpath='{.status.conditions[?(@.type=="KserveLLMInferenceServiceDependencies")].status}{"\n"}'   # True (needs step 10)
 ```
 
-OpenShift AI owns the KServe CRDs and controller. On OpenShift the installer never deploys upstream KServe: the `kserve` component only checks that the `DataScienceCluster` has KServe `Managed` and ready, then adds the inference Gateway (see the [inference layer on OpenShift](../../ext/enterprise.ai-inference/docs/deploy/openshift.md)). Its teardown does nothing.
+OpenShift AI owns the KServe CRDs and controller. On OpenShift the installer never deploys upstream KServe: the `kserve` component only checks that the `DataScienceCluster` has KServe `Managed` and ready, then adds the inference Gateway. Its teardown does nothing _(planned)_.
 
 ---
 
@@ -162,66 +162,7 @@ Preflight prints the result, for example:
 Platform: openshift 4.22.17 (Kubernetes v1.35.8, 133 API group/versions)
 ```
 
-To skip detection, set `cluster_distribution` in `global_config.yaml`. The other facts then fall back to the empty values above. Roles and `components.yaml` branch on `cluster_distribution`; [Installer configuration](#installer-configuration) lists what changes.
-
----
-
-## Installer configuration
-
-Create an environment and point it at the cluster. Use a kubeconfig whose context has `cluster-admin`.
-
-```bash
-./es_auto_installer.sh init platform --env ocp     # init inference / init erag for the layers above
-```
-
-There is no OpenShift-specific configuration: the same `global_config.yaml` works on Kubernetes and OpenShift. In `env/ocp/global_config.yaml`, set only what describes this cluster:
-
-```yaml
-existing_kubernetes: "/home/<user>/.kube/config"   # absolute path; skips all Kubespray phases
-base_domain_name: "<apps domain>"                  # e.g. erag.apps.<cluster>.<domain>
-# http_proxy / https_proxy / no_proxy if needed; no_proxy must cover the API server
-auth_provider: keycloak                            # needs step 6; litellm needs no Keycloak
-```
-
-> [!CAUTION]
-> **Set `existing_kubernetes` before you run any `install` command.** Without it the installer does not use your `oc` login. It treats the env as a cluster to build, and runs Kubespray against the env's inventory, which is `localhost` by default. That installs Kubernetes on the machine you run the installer from, and the platform layer goes into that new cluster instead of OpenShift. Check it with:
->
-> ```bash
-> yq '.existing_kubernetes' env/ocp/global_config.yaml   # must print your kubeconfig path, not null
-> ```
->
-> Pass `--env ocp` to every command as well. Without `--env` the installer uses `env/local`, with that env's settings and kubeconfig.
-
-What changes on OpenShift without any setting:
-
-| Area | Kubernetes | OpenShift |
-|---|---|---|
-| `istio`, `observability`, `metallb`, `seaweedfs` | installed | skipped: Service Mesh 3, cluster monitoring and the router provide them |
-| `istio_enabled`, `observability_enabled` | default `true` | default `false` (the seeded values are expressions on `cluster_distribution`; an explicit `true`/`false` still wins) |
-| Storage (`storage_backend: local-path`) | local-path provisioner | the cluster's default StorageClass (step 1), as `custom`, assumed RWO. Set `storage_custom_rwx: true` for an RWX class (ODF CephFS, Trident) |
-| `cert_manager` | installed from Helm | checks that the cert-manager Operator runs (step 2); teardown does nothing |
-| `postgresql` | CNPG operator from Helm, then the `Cluster` | checks the marketplace CNPG operator (step 5), then creates only the `Cluster` |
-| `keycloak` | upstream operator, then the instance | checks the Red Hat build of Keycloak operator (step 6), then creates only the instance and realm |
-| `gateway` (Envoy) | Envoy as a DaemonSet on the control plane, behind a `LoadBalancer` | Envoy as a Deployment behind a `ClusterIP` Service; the OpenShift router forwards each hostname the Gateway serves (the apex host, and each service's host as it publishes) to it through a TLS passthrough `Route`, so Envoy still terminates TLS. Add hosts published outside the installer with `gateway_openshift_extra_route_hosts`. Its namespace's service accounts get the `nonroot-v2` SCC for the chart's fixed UID. Only the Envoy Gateway CRDs are applied: the Gateway API CRDs belong to the Ingress Operator, which rejects changes to them. The Ingress Operator's CRDs have no `ListenerSet` (OCP 4.22: v1.4.1), so services share the wildcard listener (`shared` attach mode) |
-| `nri_cpu_balloons` | NRI balloons | NRI balloons, with `openshift.grant-scc: true`; pods of OpenShift AI's `LLMInferenceService` land in `vllm-balloon-tp1` by their `kserve.io/component: workload` label |
-
-`global_config.yaml` is loaded as extra vars, which `set_fact` cannot override. That is why the platform-dependent defaults are expressions in the file itself, not facts that preflight sets. An env seeded before this change has literal `istio_enabled: true` / `observability_enabled: true`. On OpenShift the components are still skipped, but `istio_enabled: true` makes roles label their namespaces for ambient mode, so preflight warns about it. Replace both lines with the ones from `configs/defaults/global_config.yaml`.
-
-Then:
-
-```bash
-oc whoami && oc get dsc                       # sanity check: right cluster, OpenShift AI ready
-./es_auto_installer.sh install platform --env ocp
-```
-
-The inference layer (`install inference`) is described in the [inference layer on OpenShift](../../ext/enterprise.ai-inference/docs/deploy/openshift.md).
-
-**What the installer deploys on OpenShift.** Every namespace it creates gets the ownership label _(planned)_. In the platform layer it deploys:
-
-- the CNPG `Cluster` and the per-database credentials (`postgresql` namespace);
-- the `Keycloak` instance and realm (`keycloak` namespace);
-- Envoy Gateway, its Gateway and the passthrough `Route`s, in `envoy-gateway-system`;
-- user-workload monitoring: `enableUserWorkload: true` merged into `openshift-monitoring/cluster-monitoring-config`, plus retention and a PVC in `user-workload-monitoring-config` _(planned)_.
+To skip detection, set `cluster_distribution` in `global_config.yaml`. The other facts then fall back to the empty values above.
 
 ---
 
@@ -234,6 +175,5 @@ The installer does not support all of the flow above yet. The blocking items sto
 | **Teardown safety** | Teardown roles delete CRDs by API group or regex (`kserve`, `envoy_gateway`, `observability`, `cert_manager`, `istio`, `metallb`, `keycloak`) and whole namespaces | An ownership label on everything the installer creates; teardown deletes only labelled objects and never CRDs it did not create | **Yes**: do not run teardown |
 | **SCC** | Charts set fixed `runAsUser`/`fsGroup`; namespaces get only Pod Security labels, which do not grant an SCC on OpenShift | Leave UID/GID unset on OpenShift so `restricted-v2` assigns them; grant a dedicated SCC only where a component really needs one | **Yes** |
 | **User-workload monitoring** | Not configured on OpenShift; `observability` deploys kube-prometheus-stack instead | When OpenShift is detected, merge `enableUserWorkload: true` into `cluster-monitoring-config` without overwriting the customer's settings, configure `user-workload-monitoring-config` with the StorageClass, and wait for `prometheus-user-workload` | **Yes** (no metrics, no autoscaling) |
-| **Preflight checks** | Detects OpenShift and gates components on it; does not check the operators in [Prerequisites](#prerequisites) | Check them before the first component | No |
-| **SeaweedFS** | Skipped on OpenShift. Its main consumer is the observability stack (Loki/Tempo buckets), which OpenShift replaces with its own monitoring and logging; it also installs into `monitoring` and pins `runAsUser`/`fsGroup: 1000`, which `restricted-v2` rejects. Langfuse needs this object store, so it does not work on OpenShift yet | Decide the object store for Langfuse (and for Loki/Tempo, if OpenShift Logging is used): SeaweedFS without fixed UIDs, or an existing S3 / ODF bucket | **Yes**, for Langfuse |
-| **NRI plugin sync** | If a CRI-O sync with the NRI plugin fails (`failed to synchronize plugin` in the CRI-O journal), the plugin gets no container events and new pods run unpinned. The installer restarts the plugin after it applies the node policy, which is when this happens; after a policy change of your own, restart it by hand: `oc delete pod -n kube-system -l app.kubernetes.io/name=nri-resource-policy-balloons` | Detect a failed sync and restart the plugin | No |
+| **Platform components** | Preflight detects OpenShift, but every component still installs as on Kubernetes | Skip what the cluster provides, check the marketplace operators from [Prerequisites](#prerequisites), and create only the instances | **Yes** |
+| **Preflight checks** | Does not check the operators in [Prerequisites](#prerequisites) | Check them before the first component | No |
