@@ -1,18 +1,17 @@
 // Copyright (C) 2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
-import { registerRoute, registerSidebarEntry } from '@kinvolk/headlamp-plugin/lib';
-import { Dashboards } from './Dashboards';
+import {
+  registerAppLogo,
+  registerOverviewChartsProcessor,
+  registerRoute,
+  registerSidebarEntry,
+} from '@kinvolk/headlamp-plugin/lib';
+import { BrandLogo } from './Branding';
 import { Models } from './Models';
+import { aboutTile, platformTile } from './Overview';
 
 const pages = [
-  {
-    name: 'ea-dashboards',
-    label: 'Dashboards',
-    url: '/enterprise-ai/dashboards',
-    icon: 'mdi:view-dashboard-outline',
-    component: Dashboards,
-  },
   {
     name: 'ea-models',
     label: 'Models',
@@ -38,3 +37,11 @@ for (const page of pages) {
     component: page.component,
   });
 }
+
+registerAppLogo(BrandLogo);
+
+// Landing page (cluster overview): About on top, Headlamp's tiles, then services and models.
+registerOverviewChartsProcessor({
+  id: 'enterprise-ai',
+  processor: charts => [aboutTile, ...charts, platformTile],
+});
