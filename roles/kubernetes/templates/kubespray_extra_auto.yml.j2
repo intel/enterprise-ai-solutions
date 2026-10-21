@@ -56,6 +56,11 @@ kube_memory_reserved: "{{ kubelet_kube_reserved.memory | default('1Gi') }}"
 system_cpu_reserved: "{{ kubelet_system_reserved.cpu | default('500m') }}"
 system_memory_reserved: "{{ kubelet_system_reserved.memory | default('1Gi') }}"
 {% endif %}
+{% if kata_confidential_runtime | default('') | length > 0 %}
+{# Confidential pods boot a VM and pull the image inside it; the 2m kubelet default is too short. #}
+kubelet_config_extra_args:
+  runtimeRequestTimeout: "30m"
+{% endif %}
 {% if http_proxy | default('') | length > 0 or https_proxy | default('') | length > 0 %}
 http_proxy: "{{ http_proxy }}"
 https_proxy: "{{ https_proxy }}"

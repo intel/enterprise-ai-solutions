@@ -41,9 +41,29 @@
   vars:
     _requested: >-
       {{ ([kata_fc_runtime_class] if kata_runtime | default('kata-fc') in ['kata-fc', 'both'] else [])
-         + ([kata_qemu_runtime_class] if kata_runtime | default('kata-fc') in ['kata-qemu', 'both'] else []) }}
+         + ([kata_qemu_runtime_class] if kata_runtime | default('kata-fc') in ['kata-qemu', 'both'] else [])
+         + ([kata_confidential_runtime] if kata_confidential_runtime | default('') | length > 0 else []) }}
     _present: "{{ _val_kata_rc.resources | map(attribute='metadata.name') | list }}"
   ansible.builtin.assert:
     that: _requested | intersect(_present) | length > 0
     fail_msg: "None of the requested Kata RuntimeClasses ({{ _requested | join(', ') }}) exist"
     success_msg: "Kata RuntimeClasses present: {{ _requested | intersect(_present) | join(', ') }}"
+
+# kata-deploy counts TDX key slots only when NFD runs; without it the scheduler can oversubscribe them.
+- name: "kata_containers | validate | Get TDX-eligible nodes"
+  kubernetes.core.k8s_info:
+    kind: Node
+    label_selectors:
+      - "{{ kata_tdx_node_label_key }}=true"
+  register: _val_tdx_nodes
+  when: kata_confidential_runtime | default('') == 'kata-qemu-tdx'
+
+- name: "kata_containers | validate | Warn when TDX key slots are not advertised"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: no TDX-eligible node advertises tdx.intel.com/keys — NFD was not running when
+      kata-deploy was installed. Re-run the kata_containers install once NFD is deployed.
+  when:
+    - kata_confidential_runtime | default('') == 'kata-qemu-tdx'
+    - "'tdx.intel.com/keys' not in (_val_tdx_nodes.resources | default([])
+        | map(attribute='status.allocatable', default={}) | map('list') | flatten)"

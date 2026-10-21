@@ -422,5 +422,6 @@ Example: `config.erag.yaml` sets RAG pipeline parameters like `ui_enabled`, `edp
 |---|---|
 | See every CLI command and flag that reads this file | [CLI Reference](cli.md) |
 | Configure per-node CPU pinning (`kubernetes_cpu_policy: nri-balloons`) in depth | [NRI CPU Balloons](nri_cpu_balloons.md) |
+| Run pods in Kata VMs or Intel® TDX Trust Domains (`kata_containers_enabled`, `kata_confidential_runtime`) | [Kata & Confidential Runtime](kata_confidential_containers.md) |
 | Set up soft affinity for platform vs. inference workloads (`node_topology_enabled`) | [Node Topology & Workload Placement](node_topology.md) |
 | Go from a fresh clone to a running cluster using these settings | [Deployment Guide](../deploy/install_platform.md) |

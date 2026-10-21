@@ -12,7 +12,11 @@
 
 # Kata runtime to use for sandboxes (options: kata-fc, kata-qemu, both)
 kata_runtime: "kata-fc"
-kata_version: "3.32.0"  # https://github.com/kata-containers/kata-containers kata-deploy chart version
+kata_version: "4.2.0"  # https://github.com/kata-containers/kata-containers kata-deploy chart version
+
+# Confidential runtime installed alongside kata_runtime (options: "", kata-qemu-coco-dev, kata-qemu-tdx).
+# kata-qemu-coco-dev runs the same CoCo flow in a normal VM, for testing without TDX hardware.
+kata_confidential_runtime: ""
 
 # Kata Containers configuration (microVM runtime for Agent Sandbox)
 kata_namespace: "kube-system"
@@ -23,6 +27,8 @@ kata_chart_ref: "oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 # Keep it free of dots — the key is passed through `helm --set nodeSelector.<key>`.
 kata_node_label_key: "ei-kata-eligible"
 kata_node_label_value: "true"
+# Applied to nodes whose kvm_intel module has TDX enabled; kata-qemu-tdx pods are scheduled only there.
+kata_tdx_node_label_key: "ei-tdx-eligible"
 
 # RuntimeClasses created by the kata-deploy chart for the selected shims
 kata_fc_runtime_class: "kata-fc"
