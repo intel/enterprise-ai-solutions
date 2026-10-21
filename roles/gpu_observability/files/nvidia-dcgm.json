@@ -77,7 +77,7 @@
       }
     ]
   },
-  "time": { "from": "now-6h", "to": "now" },
+  "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
   "timezone": "",
   "title": "NVIDIA DCGM Exporter",
