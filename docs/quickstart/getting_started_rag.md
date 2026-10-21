@@ -218,9 +218,9 @@ inference_namespace: "llm-inference"
 inference_models:
   - name: llama3-8b-awq
     role: llm
-  - name: bge-base-en
+  - name: nomic-embed
     role: embedding
-  - name: bge-reranker
+  - name: bge-reranker-v2-m3
     role: reranking
 ```
 
