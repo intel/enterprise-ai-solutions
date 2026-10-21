@@ -72,44 +72,79 @@
         | selectattr('type', 'eq', 'Done') | selectattr('status', 'eq', 'True') | list | length == 0)
 
 # ── Through the gateway, as a browser sees it ────────────────────────────────
+# Skipped, with a notice, when the Headlamp host does not resolve here.
+
+- name: "headlamp | validate | Resolve {{ headlamp_hostname }} and {{ __headlamp_issuer_host }}"
+  ansible.builtin.getent:
+    database: ahostsv4
+    key: "{{ item }}"
+    fail_key: false
+  loop: ["{{ headlamp_hostname }}", "{{ __headlamp_issuer_host }}"]
+  register: __headlamp_val_dns
+
+- name: "headlamp | validate | Hosts that resolve"
+  ansible.builtin.set_fact:
+    # getent maps a name that does not resolve to null.
+    __headlamp_val_resolves: >-
+      {{ __headlamp_val_dns.results | map(attribute='ansible_facts.getent_ahostsv4') | map('dict2items') | flatten
+         | selectattr('value', 'none') | list | length == 0 }}
+
+- name: "headlamp | validate | Hosts not in DNS"
+  ansible.builtin.debug:
+    msg: >-
+      NOTICE: {{ headlamp_hostname }} or {{ __headlamp_issuer_host }} does not resolve here, so the
+      Headlamp sign-in and token checks were skipped. Add them to DNS (a *.{{ base_domain_name }}
+      record covers every app host).
+  when: not __headlamp_val_resolves | bool
 
 - name: "headlamp | validate | Gateway CA and address"
   ansible.builtin.include_role:
     name: gateway
     tasks_from: client_trust.yaml
+  when: __headlamp_val_resolves | bool
 
-# The UI loads, and sign-in sends people to the platform realm: Headlamp's
-# /oidc in apiserver mode, the gateway's own redirect in gateway mode.
-- name: "headlamp | validate | UI and sign-in redirect"
-  ansible.builtin.shell: |
-    set -euo pipefail
-    d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
-    printf '%s' "$CA_PEM" > "$d/ca.crt"
-    cacert=(); [ -s "$d/ca.crt" ] && cacert=(--cacert "$d/ca.crt")
-    c=(curl -sS --max-time 20 --noproxy '*' "${cacert[@]}" --resolve "$HOST:443:$GATEWAY_IP")
-    if [ "$MODE" = apiserver ]; then
-      ui=$("${c[@]}" -o "$d/ui" -w '%{http_code}' "$URL/"); grep -q '<title>Headlamp' "$d/ui" || ui="$ui(no Headlamp page)"
-      login="$URL/oidc?cluster=main"
-    else
-      ui=skipped; login="$URL/"
-    fi
-    to=$("${c[@]}" -o /dev/null -w '%{http_code} %{redirect_url}' "$login")
-    echo "ui=$ui login=${to%% *} to=${to#* }"
-  args:
-    executable: /bin/bash
-  environment:
-    CA_PEM: "{{ gateway_trust.ca_pem }}"
-    HOST: "{{ headlamp_hostname }}"
-    URL: "{{ headlamp_url }}"
-    GATEWAY_IP: "{{ gateway_trust.address }}"
-    MODE: "{{ headlamp_auth_mode }}"
-  register: __headlamp_val_http
-  changed_when: false
-  failed_when: >-
-    __headlamp_val_http.rc != 0
-    or not (__headlamp_val_http.stdout is search('ui=(200|skipped) '))
-    or not (__headlamp_val_http.stdout is search('login=30[23] to=' ~ (__headlamp_issuer_url ~ '/protocol/openid-connect/auth') | regex_escape))
-  when: headlamp_gateway_publish | bool
+- name: "headlamp | validate | Through the gateway"
+  when: __headlamp_val_resolves | bool
+  block:
+    - name: "headlamp | validate | CA files"
+      ansible.builtin.tempfile:
+        suffix: .crt
+      loop: [gateway, cluster]
+      register: __headlamp_val_ca
+
+    - name: "headlamp | validate | Write the gateway CA"
+      ansible.builtin.copy:
+        content: "{{ gateway_trust.ca_pem }}"
+        dest: "{{ __headlamp_val_ca.results[0].path }}"
+        mode: "0600"
+      when: gateway_trust.ca_pem | length > 0
+
+    # The UI loads, and sign-in sends people to the platform realm: Headlamp's
+    # /oidc in apiserver mode, the gateway's own redirect in gateway mode.
+    - name: "headlamp | validate | UI loads"
+      ansible.builtin.uri:
+        url: "{{ headlamp_url }}/"
+        ca_path: "{{ __headlamp_val_ca.results[0].path if gateway_trust.ca_pem | length > 0 else omit }}"
+        use_proxy: false
+        timeout: 20
+        return_content: true
+      register: __headlamp_val_ui
+      failed_when: __headlamp_val_ui.status != 200 or '<title>Headlamp' not in __headlamp_val_ui.content
+      when: headlamp_gateway_publish | bool and __headlamp_apiserver_mode | bool
+
+    - name: "headlamp | validate | Sign-in redirect"
+      ansible.builtin.uri:
+        url: "{{ headlamp_url ~ ('/oidc?cluster=main' if __headlamp_apiserver_mode | bool else '/') }}"
+        ca_path: "{{ __headlamp_val_ca.results[0].path if gateway_trust.ca_pem | length > 0 else omit }}"
+        use_proxy: false
+        timeout: 20
+        follow_redirects: none
+        status_code: [302, 303]
+      register: __headlamp_val_login
+      failed_when: >-
+        __headlamp_val_login.status not in [302, 303]
+        or not (__headlamp_val_login.location | default('') is match((__headlamp_issuer_url ~ '/protocol/openid-connect/auth') | regex_escape))
+      when: headlamp_gateway_publish | bool
 
 # ── API server trust (apiserver mode) ────────────────────────────────────────
 
@@ -135,45 +170,66 @@
 
     # A machine identity of the realm asks the API server who it is: success
     # proves the issuer, audience, CA and claim mappings all line up.
+    - name: "headlamp | validate | Keycloak token for the check client"
+      when: __headlamp_val_resolves | bool
+      ansible.builtin.uri:
+        url: "{{ __headlamp_issuer_url }}/protocol/openid-connect/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: client_credentials
+          client_id: "{{ __headlamp_check_client_id }}"
+          client_secret: "{{ (__headlamp_val_check.resources | first | default({'data': {'value': ''}})).data.value | b64decode }}"
+        ca_path: "{{ __headlamp_val_ca.results[0].path if gateway_trust.ca_pem | length > 0 else omit }}"
+        use_proxy: false
+        timeout: 20
+      register: __headlamp_val_token
+      no_log: true
+
+    # Token only, straight to the API server: no client certificate that would answer instead.
+    - name: "headlamp | validate | API server from the kubeconfig"
+      when: __headlamp_val_resolves | bool
+      vars:
+        _kcfg: >-
+          {{ lookup('ansible.builtin.file', lookup('ansible.builtin.env', 'K8S_AUTH_KUBECONFIG')
+             or lookup('ansible.builtin.env', 'KUBECONFIG') or '~/.kube/config' | expanduser) | from_yaml }}
+        _ctx: "{{ (_kcfg.contexts | selectattr('name', 'eq', _kcfg['current-context']) | first).context }}"
+      ansible.builtin.set_fact:
+        __headlamp_val_cluster: "{{ (_kcfg.clusters | selectattr('name', 'eq', _ctx.cluster) | first).cluster }}"
+
+    - name: "headlamp | validate | Write the cluster CA"
+      ansible.builtin.copy:
+        content: "{{ __headlamp_val_cluster['certificate-authority-data'] | b64decode }}"
+        dest: "{{ __headlamp_val_ca.results[1].path }}"
+        mode: "0600"
+      when:
+        - __headlamp_val_resolves | bool
+        - "'certificate-authority-data' in __headlamp_val_cluster"
+
     - name: "headlamp | validate | Who am I, with a Keycloak token"
-      ansible.builtin.shell: |
-        set -euo pipefail
-        d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
-        printf '%s' "$CA_PEM" > "$d/issuer-ca.crt"
-        # Secret via a 0600 file, never on a command line (visible in ps).
-        umask 077; printf '%s' "$CHECK_SECRET" > "$d/check-secret"
-        cacert=(); [ -s "$d/issuer-ca.crt" ] && cacert=(--cacert "$d/issuer-ca.crt")
-        token=$(curl -sS --fail --max-time 20 --noproxy '*' "${cacert[@]}" \
-          --resolve "$ISSUER_HOST:443:$GATEWAY_IP" -d grant_type=client_credentials \
-          --data-urlencode "client_id=$CHECK_ID" --data-urlencode "client_secret@$d/check-secret" \
-          "$ISSUER/protocol/openid-connect/token" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
-        # Token only: no client certificate that would answer instead.
-        kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' \
-          | base64 -d > "$d/cluster-ca.crt"
-        server=$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}')
-        printf 'apiVersion: v1\nkind: Config\nclusters: [{name: c, cluster: {server: "%s", certificate-authority: "%s"}}]\nusers: [{name: u, user: {token: "%s"}}]\ncontexts: [{name: x, context: {cluster: c, user: u}}]\ncurrent-context: x\n' \
-          "$server" "$d/cluster-ca.crt" "$token" > "$d/kubeconfig"
-        chmod 600 "$d/kubeconfig"
-        kubectl --kubeconfig "$d/kubeconfig" auth whoami -o jsonpath='{.status.userInfo.username}'
-      args:
-        executable: /bin/bash
-      environment:
-        CA_PEM: "{{ gateway_trust.ca_pem }}"
-        ISSUER: "{{ __headlamp_issuer_url }}"
-        ISSUER_HOST: "{{ __headlamp_issuer_host }}"
-        GATEWAY_IP: "{{ gateway_trust.address }}"
-        CHECK_ID: "{{ __headlamp_check_client_id }}"
-        CHECK_SECRET: "{{ (__headlamp_val_check.resources | first | default({'data': {'value': ''}})).data.value | b64decode }}"
+      when: __headlamp_val_resolves | bool
+      ansible.builtin.uri:
+        url: "{{ __headlamp_val_cluster.server }}/apis/authentication.k8s.io/v1/selfsubjectreviews"
+        method: POST
+        body_format: json
+        body: {apiVersion: authentication.k8s.io/v1, kind: SelfSubjectReview}
+        headers:
+          Authorization: "Bearer {{ __headlamp_val_token.json.access_token }}"
+        ca_path: >-
+          {{ __headlamp_val_ca.results[1].path if 'certificate-authority-data' in __headlamp_val_cluster
+             else __headlamp_val_cluster['certificate-authority'] | default(omit) }}
+        use_proxy: false
+        timeout: 20
+        status_code: [201, 401, 403]
       register: __headlamp_val_whoami
-      changed_when: false
-      failed_when: false
       no_log: true
 
     - name: "headlamp | validate | Keycloak identities reach Kubernetes"
+      when: __headlamp_val_resolves | bool
       vars:
         _want: "{{ headlamp_oidc_prefix }}service-account-{{ __headlamp_check_client_id }}"
         _byo: "{{ existing_kubernetes | default('', true) | length > 0 }}"
-        _ok: "{{ __headlamp_val_whoami.rc == 0 and __headlamp_val_whoami.stdout == _want }}"
+        _ok: "{{ __headlamp_val_whoami.status | default(0) == 201 and __headlamp_val_whoami.json.status.userInfo.username == _want }}"
       ansible.builtin.assert:
         that: _ok | bool or _byo | bool
         fail_msg: >-
@@ -183,9 +239,18 @@
         success_msg: "{{ 'API server accepts Keycloak tokens (' ~ _want ~ ').' if _ok | bool
                          else 'NOTICE: the API server does not accept Keycloak tokens yet; the cluster owner must add the issuer (see install notice).' }}"
 
+# Certificates only (public), so a failed run leaving one behind exposes nothing.
+- name: "headlamp | validate | Remove the CA files"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ __headlamp_val_ca.results | default([]) | selectattr('path', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.path }}"
+
 - name: "headlamp | validate | Summary"
   ansible.builtin.debug:
     msg: >-
       Headlamp OK ({{ headlamp_auth_mode }} mode): pod healthy, route, gateway and network policies in place,
       realm {{ keycloak_platform_realm }} imported{{ ', UI and sign-in redirect answer through the gateway'
-      if headlamp_gateway_publish | bool else '' }}.
+      if headlamp_gateway_publish | bool and __headlamp_val_resolves | bool else '' }}.

@@ -55,17 +55,21 @@
 
     # The controller's view of DNS, so a notice rather than a failure.
     - name: "gateway | path redirect | Resolve {{ _target.hostname }} and {{ base_domain_name }}"
-      ansible.builtin.command:
-        argv: [getent, ahostsv4, "{{ item }}"]
+      ansible.builtin.getent:
+        database: ahostsv4
+        key: "{{ item }}"
+        fail_key: false
       loop: ["{{ _target.hostname }}", "{{ base_domain_name }}"]
       register: _gw_redirect_dns
-      changed_when: false
-      failed_when: false
       when: _on | bool
 
     - name: "gateway | path redirect | {{ _target.hostname }} not in DNS like {{ base_domain_name }}"
       vars:
-        _addrs: "{{ _gw_redirect_dns.results | map(attribute='stdout_lines') | map('map', 'split') | map('map', 'first') | map('unique') | map('sort') | list }}"
+        # getent maps each address to its entries, or the name to null when it does not resolve.
+        _addrs: >-
+          {{ _gw_redirect_dns.results | map(attribute='ansible_facts.getent_ahostsv4')
+             | map('dict2items') | map('rejectattr', 'value', 'none') | map('map', attribute='key')
+             | map('sort') | list }}
       ansible.builtin.debug:
         msg: >-
           NOTICE: {{ _target.hostname }} {{ 'does not resolve' if _addrs[0] | length == 0
