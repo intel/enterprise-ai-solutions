@@ -36,6 +36,7 @@
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 
@@ -43,8 +44,13 @@ UNIVERSAL_RESOURCES = ("cpu", "memory", "ephemeral-storage")
 
 
 def kubectl_json(*args):
+    # Resolve to an absolute path up front so subprocess never does its own
+    # PATH lookup on a bare "kubectl" (Bandit B607).
+    kubectl = shutil.which("kubectl")
+    if kubectl is None:
+        raise FileNotFoundError("kubectl not found in PATH")
     out = subprocess.run(
-        ["kubectl", "get", *args, "-o", "json"],
+        [kubectl, "get", *args, "-o", "json"],
         capture_output=True, text=True, check=True,
     )
     return json.loads(out.stdout)["items"]
