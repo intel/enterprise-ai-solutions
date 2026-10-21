@@ -57,6 +57,9 @@
     kata_kvm_hosts: "{{ _kata_node_results | dict2items | selectattr('value.kvm_ok') | map(attribute='key') | list }}"
     kata_devmapper_hosts: "{{ _kata_node_results | dict2items | selectattr('value.devmapper_ok') | map(attribute='key') | list }}"
     kata_tdx_hosts: "{{ _kata_node_results | dict2items | selectattr('value.kvm_ok') | selectattr('value.tdx_ok') | map(attribute='key') | list }}"
+    kata_tdx_old_kvm_hosts: >-
+      {{ _kata_node_results | dict2items | selectattr('value.tdx_enabled') | rejectattr('value.tdx_ok')
+         | map(attribute='key') | list }}
 
 - name: "kata_containers | Warn when no node has hardware virtualisation"
   ansible.builtin.debug:
@@ -79,10 +82,19 @@
       {{ (kata_confidential_runtime | default('') == 'kata-qemu-coco-dev'
           or (kata_confidential_runtime | default('') == 'kata-qemu-tdx' and kata_tdx_hosts | length > 0)) | bool }}
 
+- name: "kata_containers | Warn about nodes whose kernel lacks the upstream KVM TDX interface"
+  ansible.builtin.debug:
+    msg:
+      - "WARNING: {{ kata_tdx_old_kvm_hosts | join(', ') }}: kvm_intel tdx=Y but KVM does not offer the TDX VM type — excluded from kata-qemu-tdx."
+      - "Kata's QEMU needs the upstream KVM TDX interface (Linux >= 6.16), e.g. the Ubuntu 24.04 HWE kernel."
+  when:
+    - kata_confidential_runtime | default('') == 'kata-qemu-tdx'
+    - kata_tdx_old_kvm_hosts | length > 0
+
 - name: "kata_containers | Warn when kata-qemu-tdx was requested but no node has TDX enabled"
   ansible.builtin.debug:
     msg:
-      - "WARNING: kata-qemu-tdx requested but no KVM node reports kvm_intel tdx=Y — skipping the TDX shim."
+      - "WARNING: kata-qemu-tdx requested but no node can run TDX guests — skipping the TDX shim."
       - "Enable TDX (and TME-MK) in BIOS and boot a TDX host kernel, then re-run."
       - "Verify on a node with: cat /sys/module/kvm_intel/parameters/tdx"
   when:
@@ -134,7 +146,7 @@
         # expression cannot be used directly as a YAML mapping key).
         labels: >-
           {{ { kata_node_label_key: kata_node_label_value }
-             | combine({ kata_tdx_node_label_key: 'true' } if _tdx | bool else {}) }}
+             | combine({ kata_tdx_node_label_key: ('true' if _tdx | bool else none) }) }}
   loop: "{{ k8s_nodes.resources }}"
   loop_control:
     label: "{{ item.metadata.name }}"
