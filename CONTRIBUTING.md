@@ -41,7 +41,7 @@ To submit code:
 ```bash
 git clone https://github.com/<your-github-username>/<repository>.git
 cd <repository>
-git remote add upstream https://github.com/intel-innersource/<repository>.git
+git remote add upstream https://github.com/intel/<repository>.git
 ```
 
 ### 2. Create a branch
@@ -205,19 +205,19 @@ Include additional context that may help reviewers assess the change, when appli
 
 ## Contributing across the AI Solutions portfolio
  
-AI Solutions is delivered as a portfolio of related projects maintained across multiple repositories. Each repository owns a specific layer or capability, while [`applications.ai.enterprise.ai-solutions`][ai-solutions] serves as the parent integration repository that assembles and releases the complete solution.
+AI Solutions is delivered as a portfolio of related projects maintained across multiple repositories. Each repository owns a specific layer or capability, while [`enterprise-ai-solutions`][ai-solutions] serves as the parent integration repository that assembles and releases the complete solution.
 
 Repositories within the AI Solutions include:
  
-- [`applications.ai.enterprise.ai-inference`][ai-inference]
-- [`applications.ai.enterprise.ai-erag`][ai-erag]
+- [`enterprise-inference`][ai-inference]
+- [`enterprise-rag`][ai-erag]
 
 The complete list of portfolio repositories can be found in [README.md](README.md) or under [`configs/repos`](configs/repos/).
 
 
-When implementing a feature or a fix, contributors should make changes in the repository that owns the functionality. For example, a change to Enterprise RAG functionality should be implemented in [`applications.ai.enterprise.ai-erag`][ai-erag].
+When implementing a feature or a fix, contributors should make changes in the repository that owns the functionality. For example, a change to Enterprise RAG functionality should be implemented in [`enterprise-rag`][ai-erag].
 
-If the change affects the integration layer provided by [`applications.ai.enterprise.ai-solutions`][ai-solutions], the corresponding updates must also be made in the parent repository. This may include:
+If the change affects the integration layer provided by [`enterprise-ai-solutions`][ai-solutions], the corresponding updates must also be made in the parent repository. This may include:
 - updating the component revision referenced in `configs/repos`,
 - adjusting solution or deployment configuration when required,
 - updating documentation,
@@ -231,7 +231,7 @@ When a contribution spans multiple repositories:
 5. Merge the AI Solutions integration change only after the required component changes are available.
  
 
-A contribution is considered complete only when all affected repositories are updated and the change is fully integrated into [`applications.ai.enterprise.ai-solutions`][ai-solutions].
+A contribution is considered complete only when all affected repositories are updated and the change is fully integrated into [`enterprise-ai-solutions`][ai-solutions].
 
 
 ## Pull request activity and review process
@@ -297,8 +297,8 @@ To avoid losing valuable contributions:
 
 In such cases, credit to the original author will be preserved.
 
-[ai-solutions]: https://github.com/intel-innersource/applications.ai.enterprise.ai-solutions
-[ai-inference]: https://github.com/intel-innersource/applications.ai.enterprise.ai-inference
-[ai-erag]: https://github.com/intel-innersource/applications.ai.enterprise.ai-erag
-[ai-solutions-issues]: https://github.com/intel-innersource/applications.ai.enterprise.ai-solutions/issues
-[ai-solutions-pulls]: https://github.com/intel-innersource/applications.ai.enterprise.ai-solutions/pulls
+[ai-solutions]: https://github.com/intel/enterprise-ai-solutions
+[ai-inference]: https://github.com/intel/enterprise-inference
+[ai-erag]: https://github.com/intel/enterprise-rag
+[ai-solutions-issues]: https://github.com/intel/enterprise-ai-solutions/issues
+[ai-solutions-pulls]: https://github.com/intel/enterprise-ai-solutions/pulls
