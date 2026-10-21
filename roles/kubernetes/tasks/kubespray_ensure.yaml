@@ -19,6 +19,8 @@
     repo: "{{ kubespray_repo }}"
     dest: "{{ kubespray_dir }}"
     version: "{{ kubespray_version }}"
+    # A commit pin is fetched by SHA; a shallow clone holds only the old ref.
+    refspec: "{{ kubespray_version if kubespray_version is match('^[0-9a-f]{40}$') else omit }}"
     depth: 1
     force: true
   when: not _kubespray_exists.stat.exists
@@ -28,6 +30,8 @@
     repo: "{{ kubespray_repo }}"
     dest: "{{ kubespray_dir }}"
     version: "{{ kubespray_version }}"
+    # A commit pin is fetched by SHA; a shallow clone holds only the old ref.
+    refspec: "{{ kubespray_version if kubespray_version is match('^[0-9a-f]{40}$') else omit }}"
     force: true
   when: _kubespray_exists.stat.exists
 
