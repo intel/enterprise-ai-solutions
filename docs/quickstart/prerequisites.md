@@ -54,7 +54,7 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 |---|---|---|
 | Python | ≥ 3.11 | Also installs the matching `python<ver>-venv` package |
 | yq | v4.53.2 | [mikefarah/yq](https://github.com/mikefarah/yq) — YAML processor used by the installer |
-| kubectl | v1.34.3 | |
+| kubectl | v1.36.5 | |
 | helm | v3.20.2 | |
 
 > **`git` must already be installed** before running `configure`. It is preinstalled on most Ubuntu and RHEL images. The installer uses it to clone external repos on first run.
