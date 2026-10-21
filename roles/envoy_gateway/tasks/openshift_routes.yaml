@@ -21,7 +21,9 @@
     state: absent
     api_version: route.openshift.io/v1
     kind: Route
-    name: "{{ ('gw-' ~ (item | replace('.', '-')))[:63] | regex_replace('-+$', '') }}"
+    name: >-
+      {{ ('gw-' ~ item | replace('.', '-')) if (item | length) <= 60
+         else ('gw-' ~ item | replace('.', '-'))[:54] | regex_replace('-+$', '') ~ '-' ~ (item | hash('sha1'))[:8] }}
     namespace: "{{ envoy_gateway_namespace }}"
   loop: "{{ _openshift_route_hosts | select | unique | list }}"
   failed_when: false
@@ -51,8 +53,12 @@
       apiVersion: route.openshift.io/v1
       kind: Route
       metadata:
-        # Route names are DNS labels: derive from the hostname, max 63 chars.
-        name: "{{ ('gw-' ~ (item | replace('.', '-')))[:63] | regex_replace('-+$', '') }}"
+        # Route names are DNS labels: derive from the hostname, max 63 chars. A
+        # longer one is cut and gets a hash of the full hostname, so two hosts that
+        # differ only after the cut get different Routes.
+        name: >-
+          {{ ('gw-' ~ item | replace('.', '-')) if (item | length) <= 60
+             else ('gw-' ~ item | replace('.', '-'))[:54] | regex_replace('-+$', '') ~ '-' ~ (item | hash('sha1'))[:8] }}
         namespace: "{{ envoy_gateway_namespace }}"
         labels:
           app.kubernetes.io/managed-by: ai-solutions

@@ -17,6 +17,9 @@
     # restricted-v2 SCC rejects. nonroot-v2 admits any non-root UID with the same
     # restrictions otherwise. Bound before Helm so the pre-install certgen hook is
     # admitted; only in the namespace of the controller this role manages.
+    # Granted to the namespace's service-account group, not named accounts:
+    # Envoy Gateway names the proxy service accounts itself (one per Gateway, with
+    # a hash), so they cannot be listed up front.
     - name: "envoy_gateway | OpenShift: create namespace"
       kubernetes.core.k8s:
         state: present
