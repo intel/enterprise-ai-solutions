@@ -24,6 +24,10 @@
     definition:
       data: "{{ {_gw_ap_key: None} }}"
 
+- name: "gateway | apex path | Admission policy without the grant"
+  ansible.builtin.include_tasks: apex_policy.yaml
+  when: _gw_ap_grants.resources | default([]) | length > 0
+
 # Drop the apex label once the namespace holds no grant.
 - name: "gateway | apex path | Drop the apex label of {{ gateway_apex_namespace }}"
   vars:

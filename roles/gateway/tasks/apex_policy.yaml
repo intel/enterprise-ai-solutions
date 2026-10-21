@@ -1,0 +1,28 @@
+---
+# =============================================================================
+# Gateway — apex path admission policy, rendered from the path grants
+# =============================================================================
+# Re-run after every grant change. Skipped when the grants ConfigMap is gone
+# (gateway torn down), so a late unpublish cannot recreate the policy.
+
+- name: "gateway | apex policy | Read path grants"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: "{{ gateway_path_grants_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_apol_grants
+
+- name: "gateway | apex policy | Admit apex routes only within their path grants"
+  vars:
+    _data: "{{ (_gw_apol_grants.resources | first | default({})).data | default({}) }}"
+    # "<path> <namespace>" per grant; key '_root' is '/', 'a.b' is '/a/b'.
+    _gw_apex_owners: >-
+      {%- set out = [] -%}
+      {%- for k, ns in _data | dictsort -%}
+      {%- set _ = out.append(('/' if k == '_root' else '/' ~ k | replace('.', '/')) ~ ' ' ~ ns) -%}
+      {%- endfor -%}
+      {{ out }}
+  kubernetes.core.k8s:
+    state: "{{ 'present' if gateway_path_mode | bool else 'absent' }}"
+    definition: "{{ lookup('ansible.builtin.template', 'apex-path-admission-policy.yaml.j2') | from_yaml_all | select | list }}"
+  when: _gw_apol_grants.resources | length > 0
