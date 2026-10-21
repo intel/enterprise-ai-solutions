@@ -19,6 +19,7 @@
 #   cluster_kubernetes_minor      int, 0 when not probed
 #   cluster_apis                  served group/versions, [] when not probed
 #   cluster_default_storageclass  name of the default StorageClass, '' if none, not probed or unreadable
+#   cluster_node_count            Nodes in the cluster, 0 when not probed or unreadable
 #
 # One global_config.yaml serves both platforms: a role's dispatcher picks its
 # vars/<cluster_distribution>.yaml from it, instead of
@@ -106,7 +107,18 @@
     - _platform_sc is not skipped
     - _platform_sc.resources is not defined
 
-- name: "Preflight - Publish the default StorageClass"
+# The inventory of a BYO cluster is just localhost, so the storage multi-node
+# check (storage/tasks/resolve.yaml) needs the real node count. Read with or
+# without detection, like the StorageClasses.
+- name: "Preflight - Read Nodes"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _platform_nodes
+  failed_when: false
+  when: existing_kubernetes | default('') | trim | length > 0
+
+- name: "Preflight - Publish the default StorageClass and node count"
   vars:
     # Annotation keys contain dots, which selectattr cannot address.
     _default_sc: >-
@@ -119,6 +131,7 @@
       {{ ns.name }}
   ansible.builtin.set_fact:
     cluster_default_storageclass: "{{ _default_sc | trim }}"
+    cluster_node_count: "{{ _platform_nodes.resources | default([]) | length }}"
   when: _platform_sc is not skipped
 
 # A hand-set value skips detection; anything else would load no vars/<distribution>.yaml
@@ -149,6 +162,7 @@
     cluster_kubernetes_minor: "{{ cluster_kubernetes_minor | default(0) | int }}"
     cluster_apis: "{{ cluster_apis | default([]) }}"
     cluster_default_storageclass: "{{ cluster_default_storageclass | default('') }}"
+    cluster_node_count: "{{ cluster_node_count | default(0) | int }}"
 
 - name: "Preflight - Show platform"
   ansible.builtin.debug:
