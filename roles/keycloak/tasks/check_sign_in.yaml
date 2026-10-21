@@ -1,0 +1,47 @@
+---
+# =============================================================================
+# Keycloak — validate: an app's sign-in sends the browser to the platform realm
+# =============================================================================
+#   keycloak_sign_in:
+#     name      app name, for messages
+#     url       URL that starts sign-in (through the gateway)
+#     nextauth  NextAuth provider id: sign-in starts with a CSRF-protected POST
+#               to <url>/api/auth/signin/<id> (optional)
+# Fails unless the answer is a redirect to the realm's authorization endpoint.
+
+- name: "keycloak | sign-in check | Gateway CA and address"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: client_trust.yaml
+
+- name: "keycloak | sign-in check | {{ keycloak_sign_in.name }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+    printf '%s' "$CA_PEM" > "$d/ca.crt"
+    cacert=(); [ -s "$d/ca.crt" ] && cacert=(--cacert "$d/ca.crt")
+    host=$(printf '%s' "$URL" | sed -E 's#^https://([^/:]+).*#\1#')
+    c=(curl -sS --max-time 20 --noproxy '*' "${cacert[@]}" --resolve "$host:443:$GATEWAY_IP" -b "$d/jar" -c "$d/jar")
+    if [ -n "$NEXTAUTH" ]; then
+      csrf=$("${c[@]}" "$URL/api/auth/csrf" | sed -n 's/.*"csrfToken":"\([^"]*\)".*/\1/p')
+      "${c[@]}" -o /dev/null -w '%{http_code} %{redirect_url}' --data-urlencode "csrfToken=$csrf" \
+        --data-urlencode "callbackUrl=$URL/" "$URL/api/auth/signin/$NEXTAUTH"
+    else
+      "${c[@]}" -o /dev/null -w '%{http_code} %{redirect_url}' "$URL"
+    fi
+  args:
+    executable: /bin/bash
+  environment:
+    CA_PEM: "{{ gateway_trust.ca_pem }}"
+    GATEWAY_IP: "{{ gateway_trust.address }}"
+    URL: "{{ keycloak_sign_in.url }}"
+    NEXTAUTH: "{{ keycloak_sign_in.nextauth | default('') }}"
+  register: _kc_sign_in
+  changed_when: false
+  failed_when: >-
+    _kc_sign_in.rc != 0
+    or not (_kc_sign_in.stdout is search('^30[23] ' ~ (keycloak_platform_issuer_url ~ '/protocol/openid-connect/auth') | regex_escape))
+
+- name: "keycloak | sign-in check | {{ keycloak_sign_in.name }} OK"
+  ansible.builtin.debug:
+    msg: "{{ keycloak_sign_in.name }} signs people in through Keycloak realm {{ keycloak_platform_realm }}."

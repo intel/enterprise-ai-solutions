@@ -1,0 +1,53 @@
+---
+# =============================================================================
+# Gateway — let an in-cluster client call platform hosts at their public URL
+# =============================================================================
+# For servers that must fetch e.g. Keycloak's discovery document by its public
+# URL: they need the CA behind the gateway certificate and, where the platform
+# hostnames are not in DNS, the gateway address for a hostAliases entry.
+#   gateway_trust_namespace   namespace for the CA ConfigMap (optional)
+#   gateway_trust_configmap   its name, key ca.crt (optional; none written if unset)
+# Sets gateway_trust: {ca_pem, address}. ca_pem is empty for a publicly trusted
+# certificate (use the system store); the ConfigMap is then removed.
+
+- name: "gateway | client trust | Gateway certificate and address"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ gateway_namespace }}"
+  loop:
+    - {api: v1, kind: Secret, name: "{{ gateway_tls_secret_name }}"}
+    - {api: gateway.networking.k8s.io/v1, kind: Gateway, name: "{{ gateway_name }}"}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  register: _gw_trust
+  no_log: true
+
+- name: "gateway | client trust | Result"
+  ansible.builtin.set_fact:
+    gateway_trust:
+      ca_pem: >-
+        {{ (((_gw_trust.results[0].resources | first | default({})).data | default({})).get('ca.crt', '')) | b64decode }}
+      address: >-
+        {{ (_gw_trust.results[1].resources | first | default({})).status.addresses | default([])
+           | map(attribute='value') | first | default('') }}
+
+- name: "gateway | client trust | Gateway address known"
+  ansible.builtin.assert:
+    that: gateway_trust.address | length > 0
+    fail_msg: "Gateway {{ gateway_namespace }}/{{ gateway_name }} has no address yet; install the gateway first."
+    quiet: true
+
+- name: "gateway | client trust | CA ConfigMap"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if gateway_trust.ca_pem | length > 0 else 'absent' }}"
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ gateway_trust_configmap }}"
+        namespace: "{{ gateway_trust_namespace }}"
+      data:
+        ca.crt: "{{ gateway_trust.ca_pem }}"
+  when: gateway_trust_configmap is defined

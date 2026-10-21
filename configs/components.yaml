@@ -133,7 +133,8 @@ components:
   - name: observability
     layer: platform
     enabled: "{{ observability_enabled | default(true) | bool }}"
-    depends_on: [cert_manager, metallb, seaweedfs]
+    # keycloak: Grafana sign-in (observability_grafana_sso).
+    depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 
   - name: gpu_observability
     layer: platform
@@ -144,6 +145,14 @@ components:
     layer: platform
     enabled: "{{ velero_enabled | default(false) | bool }}"
     depends_on: []
+
+  # Kubernetes web UI; people sign in through Keycloak (platform realm).
+  # teardown both: its own teardown also resets the API server trust on the nodes.
+  - name: headlamp
+    layer: platform
+    teardown: both
+    enabled: "{{ headlamp_enabled | default(false) | bool }}"
+    depends_on: [cert_manager, gateway, keycloak]
 
   # --- Inference ---
   # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy

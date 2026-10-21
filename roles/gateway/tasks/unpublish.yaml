@@ -18,3 +18,24 @@
     gateway_listenerset_listeners: [{name: "{{ gateway_publish_name }}", hostname: "{{ gateway_publish_host }}"}]
     gateway_apex_namespace: "{{ gateway_publish_namespace }}"
     gateway_apex_path: "{{ _gp_path }}"
+
+- name: "gateway | unpublish | Read the portal"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ gateway_portal_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_portal
+
+- name: "gateway | unpublish | Portal entry for {{ gateway_publish_name }}"
+  kubernetes.core.k8s:
+    state: patched
+    merge_type: merge
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ gateway_portal_configmap }}"
+        namespace: "{{ gateway_namespace }}"
+      data: "{{ {gateway_publish_name: none} }}"
+  when: gateway_publish_name in ((_gw_portal.resources | first | default({})).data | default({}))

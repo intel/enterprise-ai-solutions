@@ -1,0 +1,47 @@
+---
+# Internal: run a kcadm script in the Keycloak pod, logged in as the admin.
+#   _kc_script   bash run after login: $k is kcadm, $c its private config;
+#                print CHANGED when it changed anything
+# Sets _kc_kcadm (stdout).
+
+- name: "keycloak | kcadm | Admin credentials and pod"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: "{{ item.kind }}"
+    namespace: "{{ keycloak_namespace }}"
+    name: "{{ item.name | default(omit) }}"
+    label_selectors: "{{ item.labels | default(omit) }}"
+    field_selectors: "{{ item.fields | default(omit) }}"
+  loop:
+    - {kind: Secret, name: keycloak-admin-secret}
+    - {kind: Pod, labels: [app=keycloak], fields: [status.phase=Running]}
+  loop_control:
+    label: "{{ item.kind }}"
+  register: _kc_kcadm_ctx
+  no_log: true
+
+# Every value is shell-quoted, so no credential can break out of the script.
+- name: "keycloak | kcadm | Run"
+  vars:
+    _admin: "{{ (_kc_kcadm_ctx.results[0].resources | first).data }}"
+    _full: |-
+      set -eu
+      k=/opt/keycloak/bin/kcadm.sh; c=$(mktemp); trap 'rm -f "$c"' EXIT
+      $k config credentials --config "$c" --server {{ ("http://localhost:8080" ~ (keycloak_path if _keycloak_path_mode | bool else "")) | quote }} --realm master \
+        --user {{ _admin.username | b64decode | quote }} --password {{ _admin.password | b64decode | quote }} >/dev/null
+      {{ _kc_script }}
+  kubernetes.core.k8s_exec:
+    namespace: "{{ keycloak_namespace }}"
+    pod: "{{ (_kc_kcadm_ctx.results[1].resources | first).metadata.name }}"
+    command: "bash -c {{ _full | quote }}"
+  register: _kc_kcadm
+  changed_when: "'CHANGED' in _kc_kcadm.stdout"
+  no_log: true
+  failed_when: false
+
+# kcadm's own errors carry no credentials; the script (which does) stays hidden.
+- name: "keycloak | kcadm | Result"
+  ansible.builtin.assert:
+    that: _kc_kcadm.rc | default(1) == 0
+    fail_msg: "kcadm failed (rc {{ _kc_kcadm.rc | default('?') }}): {{ _kc_kcadm.stderr | default('') | trim }}"
+    quiet: true
