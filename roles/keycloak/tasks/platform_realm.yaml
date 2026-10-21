@@ -3,7 +3,7 @@
 # Keycloak — platform SSO realm (people sign in here for every platform UI)
 # =============================================================================
 # A realm import only ever creates the realm; settings that may change later
-# (session timeouts) are converged with kcadm on every run.
+# (session timeouts) are converged with kcadm calls on every run.
 
 - name: "keycloak | platform realm | Bootstrap admin password (once)"
   when: keycloak_platform_bootstrap_admin | bool
@@ -60,14 +60,19 @@
   retries: 60
   delay: 5
 
-- name: "keycloak | platform realm | Session timeouts"
+- name: "keycloak | platform realm | Read session timeouts"
   ansible.builtin.include_tasks: kcadm.yaml
   vars:
-    _kc_want: "{{ keycloak_platform_session_idle_timeout | int }},{{ keycloak_platform_session_max_lifespan | int }}"
-    _kc_script: |-
-      r={{ keycloak_platform_realm | quote }}
-      have=$($k get "realms/$r" --config "$c" --fields ssoSessionIdleTimeout,ssoSessionMaxLifespan --format csv --noquotes)
-      [ "$have" = {{ _kc_want | quote }} ] && exit 0
-      $k update "realms/$r" --config "$c" -s ssoSessionIdleTimeout={{ keycloak_platform_session_idle_timeout | int }} \
-        -s ssoSessionMaxLifespan={{ keycloak_platform_session_max_lifespan | int }}
-      echo CHANGED
+    _kc_args: [get, "realms/{{ keycloak_platform_realm }}", --fields, "ssoSessionIdleTimeout,ssoSessionMaxLifespan"]
+
+- name: "keycloak | platform realm | Set session timeouts"
+  ansible.builtin.include_tasks: kcadm.yaml
+  vars:
+    _want:
+      ssoSessionIdleTimeout: "{{ keycloak_platform_session_idle_timeout | int }}"
+      ssoSessionMaxLifespan: "{{ keycloak_platform_session_max_lifespan | int }}"
+    _kc_args: [update, "realms/{{ keycloak_platform_realm }}", -b, "{{ _want | to_json }}"]
+    _kc_write: true
+  when: >-
+    (_kc_kcadm.stdout | from_json).ssoSessionIdleTimeout | default(0) | int != keycloak_platform_session_idle_timeout | int
+    or (_kc_kcadm.stdout | from_json).ssoSessionMaxLifespan | default(0) | int != keycloak_platform_session_max_lifespan | int

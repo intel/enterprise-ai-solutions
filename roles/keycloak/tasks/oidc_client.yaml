@@ -57,7 +57,6 @@
 
 # The desired client, hashed into an attribute: a run writes only when it differs.
 - name: "keycloak | client {{ keycloak_client.id }} | Converge"
-  ansible.builtin.include_tasks: kcadm.yaml
   vars:
     _c: "{{ keycloak_client }}"
     _attrs: >-
@@ -91,19 +90,52 @@
     _all_mappers: "{{ _mappers + _audience_mappers }}"
     _hash: "{{ (_rep | combine({'attributes': _attrs, 'protocolMappers': _all_mappers}) | to_json) | hash('sha256') }}"
     _with_hash: "{{ _rep | combine({'attributes': _attrs | combine({'enterprise-ai.config-hash': _hash})}) }}"
-    _kc_script: |-
-      r={{ keycloak_platform_realm | quote }}
-      id=$($k get clients -r "$r" --config "$c" -q clientId={{ _c.id | quote }} --fields id --format csv --noquotes)
-      if [ -z "$id" ]; then
-        printf '%s' {{ (_with_hash | combine({'protocolMappers': _all_mappers}) | to_json) | quote }} | $k create clients -r "$r" --config "$c" -f - >/dev/null
-        echo CHANGED; exit 0
-      fi
-      have=$($k get "clients/$id" -r "$r" --config "$c" | sed -n 's/.*"enterprise-ai.config-hash" : "\([0-9a-f]*\)".*/\1/p')
-      [ "$have" = {{ _hash | quote }} ] && exit 0
-      printf '%s' {{ (_with_hash | to_json) | quote }} | $k update "clients/$id" -r "$r" --config "$c" --merge -f -
-      models=$($k get "clients/$id/protocol-mappers/models" -r "$r" --config "$c")
-      {% for m in _all_mappers %}
-      echo "$models" | grep -qF {{ ('"name" : "' ~ m.name ~ '"') | quote }} || printf '%s' {{ (m | to_json) | quote }} \
-        | $k create "clients/$id/protocol-mappers/models" -r "$r" --config "$c" -f - >/dev/null
-      {% endfor %}
-      echo CHANGED
+    _r: "{{ keycloak_platform_realm }}"
+  block:
+    - name: "keycloak | client {{ keycloak_client.id }} | Look it up"
+      ansible.builtin.include_tasks: kcadm.yaml
+      vars:
+        _kc_args: [get, clients, -r, "{{ _r }}", -q, "clientId={{ _c.id }}", --fields, "id,attributes(enterprise-ai.config-hash)"]
+
+    - name: "keycloak | client {{ keycloak_client.id }} | What Keycloak has"
+      ansible.builtin.set_fact:
+        _kc_found: "{{ _kc_kcadm.stdout | from_json | first | default({}) }}"
+        _kc_missing: []
+
+    - name: "keycloak | client {{ keycloak_client.id }} | Create"
+      ansible.builtin.include_tasks: kcadm.yaml
+      vars:
+        _kc_args: [create, clients, -r, "{{ _r }}", -b, "{{ _with_hash | combine({'protocolMappers': _all_mappers}) | to_json }}"]
+        _kc_write: true
+      when: _kc_found.id is not defined
+
+    - name: "keycloak | client {{ keycloak_client.id }} | Update"
+      when:
+        - _kc_found.id is defined
+        - (_kc_found.attributes | default({}))['enterprise-ai.config-hash'] | default('') != _hash
+      block:
+        - name: "keycloak | client {{ keycloak_client.id }} | Update settings"
+          ansible.builtin.include_tasks: kcadm.yaml
+          vars:
+            _kc_args: [update, "clients/{{ _kc_found.id }}", -r, "{{ _r }}", --merge, -b, "{{ _with_hash | to_json }}"]
+            _kc_write: true
+
+        - name: "keycloak | client {{ keycloak_client.id }} | Read its mappers"
+          ansible.builtin.include_tasks: kcadm.yaml
+          vars:
+            _kc_args: [get, "clients/{{ _kc_found.id }}/protocol-mappers/models", -r, "{{ _r }}", --fields, name]
+
+        # A loop is evaluated before its when, so it reads a fact set only here.
+        - name: "keycloak | client {{ keycloak_client.id }} | Mappers it lacks"
+          ansible.builtin.set_fact:
+            _kc_missing: "{{ _all_mappers | rejectattr('name', 'in', _kc_kcadm.stdout | from_json | map(attribute='name') | list) | list }}"
+
+        - name: "keycloak | client {{ keycloak_client.id }} | Add missing mappers"
+          ansible.builtin.include_tasks: kcadm.yaml
+          vars:
+            _kc_args: [create, "clients/{{ _kc_found.id }}/protocol-mappers/models", -r, "{{ _r }}", -b, "{{ _kc_mapper | to_json }}"]
+            _kc_write: true
+          loop: "{{ _kc_missing }}"
+          loop_control:
+            loop_var: _kc_mapper
+            label: "{{ _kc_mapper.name }}"
