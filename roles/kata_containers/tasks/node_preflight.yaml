@@ -189,13 +189,25 @@
   failed_when: false
   changed_when: false
 
+- name: "kata_containers | {{ kata_node }} | Check whether kvm_intel has TDX enabled"
+  ansible.builtin.slurp:
+    src: /sys/module/kvm_intel/parameters/tdx
+  register: kvm_tdx_param
+  delegate_to: "{{ kata_node }}"
+  failed_when: false
+  when: kata_confidential_runtime | default('') == 'kata-qemu-tdx'
+
 - name: "kata_containers | {{ kata_node }} | Record node capabilities"
   ansible.builtin.set_fact:
     _kata_node_results: >-
       {{ _kata_node_results | default({}) | combine({kata_node: {
            'kvm_ok': (kvm_device.stat.exists or (kvm_device_retry.stat.exists | default(false))) | bool,
-           'devmapper_ok': ((devmapper_check.stdout | default('0') | trim) == '1') | bool }}) }}
+           'devmapper_ok': ((devmapper_check.stdout | default('0') | trim) == '1') | bool,
+           'tdx_ok': ((kvm_tdx_param.content | default('') | b64decode | trim) == 'Y') | bool }}) }}
 
 - name: "kata_containers | {{ kata_node }} | Display node preflight result"
   ansible.builtin.debug:
-    msg: "{{ kata_node }}: kvm={{ _kata_node_results[kata_node].kvm_ok }} devmapper={{ _kata_node_results[kata_node].devmapper_ok }}"
+    msg: >-
+      {{ kata_node }}: kvm={{ _kata_node_results[kata_node].kvm_ok }}
+      devmapper={{ _kata_node_results[kata_node].devmapper_ok }}
+      tdx={{ _kata_node_results[kata_node].tdx_ok }}
