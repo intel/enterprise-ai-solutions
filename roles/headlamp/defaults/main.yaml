@@ -1,0 +1,71 @@
+---
+# =============================================================================
+# Headlamp — Kubernetes web UI; people sign in through Keycloak (platform realm)
+# =============================================================================
+
+headlamp_namespace: "headlamp"
+headlamp_chart_repo: "https://kubernetes-sigs.github.io/headlamp/"
+headlamp_chart_version: "0.46.0"
+headlamp_image_tag: "v0.46.0"
+headlamp_session_ttl: 28800           # seconds (8h): Headlamp's session cookie
+# Tokens are refreshed when they expire, so the lifespan must be shorter than
+# keycloak_platform_session_idle_timeout (the realm's sign-out after inactivity).
+headlamp_token_lifespan: 900          # seconds (15 min): ID/access token lifetime
+headlamp_resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: 500m, memory: 512Mi}
+
+# Own subdomain in every routing mode: OIDC refresh is skipped under a base URL
+# (headlamp#7513) and a separate origin isolates the UI's session cookies.
+headlamp_hostname: "headlamp.{{ base_domain_name | default('inference-example.com') }}"
+headlamp_url: "https://{{ headlamp_hostname }}"
+# Path mode: <base><headlamp_path> redirects to headlamp_url (nothing served there).
+headlamp_path: "/headlamp"
+
+# apiserver: Headlamp signs people in and passes their own token to the API
+#   server, which trusts Keycloak; RBAC and audit are per person. Needs the
+#   API server configured (automatic on clusters this installer builds).
+# gateway: the gateway signs people in and admits only keycloak_platform_admin_group;
+#   Headlamp then uses ONE shared ServiceAccount (headlamp_gateway_cluster_role)
+#   for everyone, with no per-person RBAC or audit. For clusters whose API
+#   server cannot be configured.
+headlamp_auth_mode: "apiserver"        # apiserver | gateway
+headlamp_gateway_cluster_role: "view"  # gateway mode: what the shared account may do
+
+# ── Keycloak (platform realm, owned by the keycloak role) ────────────────────
+headlamp_oidc_client_id: "headlamp"
+# Members of keycloak_platform_admin_group are cluster-admin, so whoever
+# administers the realm controls the cluster: protect Keycloak admins like
+# cluster admins.
+
+# ── API server trust (apiserver mode) ────────────────────────────────────────
+# Keycloak identities become oidc:<user> / oidc:<group>, never system:*.
+headlamp_oidc_prefix: "oidc:"
+# Map the Keycloak host to the gateway address on control-plane nodes and in the
+# Headlamp pod. Set false where DNS resolves the platform hostnames.
+headlamp_pin_issuer_host: true
+
+# Foreign vars (canonical owner: keycloak role).
+keycloak_namespace: "keycloak"
+keycloak_hostname: "keycloak.{{ base_domain_name | default('inference-example.com') }}"
+keycloak_path: "/keycloak"
+keycloak_frontend_url: >-
+  {{ 'https://' ~ base_domain_name ~ keycloak_path if (routing_mode | default('subdomain')) == 'path'
+     else 'https://' ~ keycloak_hostname }}
+keycloak_platform_realm: "platform"
+keycloak_platform_admin_group: "platform-admins"
+keycloak_platform_bootstrap_admin: true
+keycloak_platform_bootstrap_admin_user: "platform-admin"
+keycloak_platform_session_idle_timeout: 3600
+keycloak_platform_issuer_url: "{{ keycloak_frontend_url }}/realms/{{ keycloak_platform_realm }}"
+keycloak_platform_issuer_internal: >-
+  http://keycloak-service.{{ keycloak_namespace }}.svc.cluster.local:8080{{
+  keycloak_path if (routing_mode | default('subdomain')) == 'path' else '' }}/realms/{{ keycloak_platform_realm }}
+# Foreign vars (canonical owner: gateway role).
+gateway_name: "eg-gateway"
+gateway_namespace: "envoy-gateway-system"
+gateway_tls_secret_name: "gateway-tls"
+# Foreign var (canonical owner: gateway component flag; envoy_gateway_enabled is its alias).
+headlamp_gateway_publish: "{{ gateway_enabled | default(envoy_gateway_enabled | default(true)) | bool }}"
+# Foreign var (canonical owner: kubernetes role).
+kubernetes_apiserver_authn_dir: "/etc/kubernetes/authn"

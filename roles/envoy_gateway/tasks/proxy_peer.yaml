@@ -1,0 +1,15 @@
+---
+# NetworkPolicy peer matching the platform Gateway's Envoy proxies. Both the
+# namespace and the labels are required: labels alone could be copied by any pod.
+- name: "envoy_gateway | proxy peer"
+  ansible.builtin.set_fact:
+    _gw_proxy_peer:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: "{{ (gateway_platform | default({})).controller_namespace | default(envoy_gateway_namespace, true) }}"
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: envoy
+          app.kubernetes.io/component: proxy
+          gateway.envoyproxy.io/owning-gateway-name: "{{ gateway_name }}"
+          gateway.envoyproxy.io/owning-gateway-namespace: "{{ gateway_namespace }}"

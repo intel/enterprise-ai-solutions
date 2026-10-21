@@ -1,0 +1,60 @@
+---
+# A route-level SecurityPolicy overrides the Gateway-wide JWT check: Envoy runs
+# the OIDC login, keeps the tokens in cookies and admits only allowed groups.
+- name: "envoy_gateway | sso | {{ gateway_route_namespace }}/{{ gateway_route_name }}"
+  vars:
+    _s: "{{ gateway_sso | default({}) }}"
+    _oidc: "{{ (_s.issuer_internal | default('')) ~ '/protocol/openid-connect' }}"
+    _id_cookie: "{{ gateway_route_name }}-id"
+  kubernetes.core.k8s:
+    state: "{{ gateway_route_state | default('present') }}"
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: SecurityPolicy
+      metadata:
+        name: "{{ gateway_route_policy_name | default(gateway_route_name ~ '-sso', true) }}"
+        namespace: "{{ gateway_route_namespace }}"
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+            name: "{{ gateway_route_name }}"
+        oidc:
+          provider:
+            issuer: "{{ _s.issuer | default('') }}"
+            authorizationEndpoint: "{{ _s.issuer | default('') }}/protocol/openid-connect/auth"
+            endSessionEndpoint: "{{ _s.issuer | default('') }}/protocol/openid-connect/logout"
+            tokenEndpoint: "{{ _oidc }}/token"
+          clientID: "{{ _s.client_id | default('') }}"
+          clientSecret:
+            name: "{{ _s.client_secret_name | default('') }}"
+          redirectURL: "{{ _s.redirect_url | default('') }}"
+          logoutPath: /oauth2/logout
+          refreshToken: true
+          cookieNames:
+            idToken: "{{ _id_cookie }}"
+            accessToken: "{{ gateway_route_name }}-at"
+        jwt:
+          providers:
+            - name: sso
+              issuer: "{{ _s.issuer | default('') }}"
+              audiences: ["{{ _s.client_id | default('') }}"]
+              remoteJWKS:
+                uri: "{{ _oidc }}/certs"
+              extractFrom:
+                cookies: ["{{ _id_cookie }}"]
+        authorization:
+          defaultAction: Deny
+          rules:
+            - name: allowed-groups
+              action: Allow
+              principal:
+                jwt:
+                  provider: sso
+                  claims:
+                    - name: groups
+                      valueType: StringArray
+                      values: "{{ _s.allowed_groups | default([]) }}"
+  register: _eg_sso
+  # Removing tolerates a cluster without the Envoy Gateway API.
+  failed_when: _eg_sso is failed and gateway_route_state | default('present') == 'present'

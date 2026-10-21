@@ -1,0 +1,191 @@
+---
+# =============================================================================
+# Headlamp — Validate
+# =============================================================================
+
+- name: "headlamp | validate | Deployment ready"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: headlamp
+    namespace: "{{ headlamp_namespace }}"
+  register: __headlamp_val_deploy
+  failed_when: >-
+    __headlamp_val_deploy.resources | length == 0
+    or (__headlamp_val_deploy.resources[0].status.readyReplicas | default(0) | int) < 1
+
+# Ready now, and not stuck or crash-looping (a restart is reported, not failed).
+- name: "headlamp | validate | Pod healthy"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ headlamp_namespace }}"
+    label_selectors: [app.kubernetes.io/name=headlamp, app.kubernetes.io/instance=headlamp]
+  register: __headlamp_val_pods
+  failed_when: >-
+    __headlamp_val_pods.resources | length == 0
+    or (__headlamp_val_pods.resources | map(attribute='status.containerStatuses') | flatten
+        | selectattr('state.waiting', 'defined') | list | length > 0)
+
+- name: "headlamp | validate | Restarts"
+  vars:
+    _restarts: >-
+      {{ __headlamp_val_pods.resources | map(attribute='status.containerStatuses') | flatten
+         | map(attribute='restartCount') | sum }}
+  ansible.builtin.debug:
+    msg: "NOTICE: Headlamp restarted {{ _restarts }} time(s); see kubectl -n {{ headlamp_namespace }} logs deploy/headlamp --previous."
+  when: _restarts | int > 0
+
+- name: "headlamp | validate | Route, gateway policy and network policy"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ headlamp_namespace }}"
+  loop:
+    - {api: gateway.networking.k8s.io/v1, kind: HTTPRoute, name: headlamp, accepted: true}
+    - api: gateway.envoyproxy.io/v1alpha1
+      kind: SecurityPolicy
+      name: "{{ 'headlamp-no-auth' if __headlamp_apiserver_mode | bool else 'headlamp-sso' }}"
+      accepted: true
+    - {api: networking.k8s.io/v1, kind: NetworkPolicy, name: headlamp-gateway-only, accepted: false}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  register: __headlamp_val_gw
+  failed_when: >-
+    __headlamp_val_gw.resources | length == 0
+    or (item.accepted and (__headlamp_val_gw.resources[0].status.ancestors
+                           | default(__headlamp_val_gw.resources[0].status.parents | default([]))
+        | map(attribute='conditions') | flatten
+        | selectattr('type', 'eq', 'Accepted') | selectattr('status', 'eq', 'True') | list | length == 0))
+  when: headlamp_gateway_publish | bool
+
+- name: "headlamp | validate | Realm imported"
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: KeycloakRealmImport
+    name: "{{ keycloak_platform_realm }}-realm"
+    namespace: "{{ keycloak_namespace }}"
+  register: __headlamp_val_realm
+  failed_when: >-
+    __headlamp_val_realm.resources | length == 0
+    or (__headlamp_val_realm.resources[0].status.conditions | default([])
+        | selectattr('type', 'eq', 'Done') | selectattr('status', 'eq', 'True') | list | length == 0)
+
+# ── Through the gateway, as a browser sees it ────────────────────────────────
+
+- name: "headlamp | validate | Gateway CA and address"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: client_trust.yaml
+
+# The UI loads, and sign-in sends people to the platform realm: Headlamp's
+# /oidc in apiserver mode, the gateway's own redirect in gateway mode.
+- name: "headlamp | validate | UI and sign-in redirect"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+    printf '%s' "$CA_PEM" > "$d/ca.crt"
+    cacert=(); [ -s "$d/ca.crt" ] && cacert=(--cacert "$d/ca.crt")
+    c=(curl -sS --max-time 20 --noproxy '*' "${cacert[@]}" --resolve "$HOST:443:$GATEWAY_IP")
+    if [ "$MODE" = apiserver ]; then
+      ui=$("${c[@]}" -o "$d/ui" -w '%{http_code}' "$URL/"); grep -q '<title>Headlamp' "$d/ui" || ui="$ui(no Headlamp page)"
+      login="$URL/oidc?cluster=main"
+    else
+      ui=skipped; login="$URL/"
+    fi
+    to=$("${c[@]}" -o /dev/null -w '%{http_code} %{redirect_url}' "$login")
+    echo "ui=$ui login=${to%% *} to=${to#* }"
+  args:
+    executable: /bin/bash
+  environment:
+    CA_PEM: "{{ gateway_trust.ca_pem }}"
+    HOST: "{{ headlamp_hostname }}"
+    URL: "{{ headlamp_url }}"
+    GATEWAY_IP: "{{ gateway_trust.address }}"
+    MODE: "{{ headlamp_auth_mode }}"
+  register: __headlamp_val_http
+  changed_when: false
+  failed_when: >-
+    __headlamp_val_http.rc != 0
+    or not (__headlamp_val_http.stdout is search('ui=(200|skipped) '))
+    or not (__headlamp_val_http.stdout is search('login=30[23] to=' ~ (__headlamp_issuer_url ~ '/protocol/openid-connect/auth') | regex_escape))
+  when: headlamp_gateway_publish | bool
+
+# ── API server trust (apiserver mode) ────────────────────────────────────────
+
+- name: "headlamp | validate | API server accepts Keycloak tokens"
+  when: __headlamp_apiserver_mode | bool
+  block:
+    - name: "headlamp | validate | Admin group bound"
+      kubernetes.core.k8s_info:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        name: "headlamp-{{ keycloak_platform_admin_group }}"
+      register: __headlamp_val_crb
+      failed_when: __headlamp_val_crb.resources | length == 0
+
+    - name: "headlamp | validate | Read the check client"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ __headlamp_check_secret_name }}"
+        namespace: "{{ keycloak_namespace }}"
+      register: __headlamp_val_check
+      no_log: true
+
+    # A machine identity of the realm asks the API server who it is: success
+    # proves the issuer, audience, CA and claim mappings all line up.
+    - name: "headlamp | validate | Who am I, with a Keycloak token"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+        printf '%s' "$CA_PEM" > "$d/issuer-ca.crt"
+        # Secret via a 0600 file, never on a command line (visible in ps).
+        umask 077; printf '%s' "$CHECK_SECRET" > "$d/check-secret"
+        cacert=(); [ -s "$d/issuer-ca.crt" ] && cacert=(--cacert "$d/issuer-ca.crt")
+        token=$(curl -sS --fail --max-time 20 --noproxy '*' "${cacert[@]}" \
+          --resolve "$ISSUER_HOST:443:$GATEWAY_IP" -d grant_type=client_credentials \
+          --data-urlencode "client_id=$CHECK_ID" --data-urlencode "client_secret@$d/check-secret" \
+          "$ISSUER/protocol/openid-connect/token" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+        # Token only: no client certificate that would answer instead.
+        kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' \
+          | base64 -d > "$d/cluster-ca.crt"
+        server=$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}')
+        printf 'apiVersion: v1\nkind: Config\nclusters: [{name: c, cluster: {server: "%s", certificate-authority: "%s"}}]\nusers: [{name: u, user: {token: "%s"}}]\ncontexts: [{name: x, context: {cluster: c, user: u}}]\ncurrent-context: x\n' \
+          "$server" "$d/cluster-ca.crt" "$token" > "$d/kubeconfig"
+        chmod 600 "$d/kubeconfig"
+        kubectl --kubeconfig "$d/kubeconfig" auth whoami -o jsonpath='{.status.userInfo.username}'
+      args:
+        executable: /bin/bash
+      environment:
+        CA_PEM: "{{ gateway_trust.ca_pem }}"
+        ISSUER: "{{ __headlamp_issuer_url }}"
+        ISSUER_HOST: "{{ __headlamp_issuer_host }}"
+        GATEWAY_IP: "{{ gateway_trust.address }}"
+        CHECK_ID: "{{ __headlamp_check_client_id }}"
+        CHECK_SECRET: "{{ (__headlamp_val_check.resources | first | default({'data': {'value': ''}})).data.value | b64decode }}"
+      register: __headlamp_val_whoami
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: "headlamp | validate | Keycloak identities reach Kubernetes"
+      vars:
+        _want: "{{ headlamp_oidc_prefix }}service-account-{{ __headlamp_check_client_id }}"
+        _byo: "{{ existing_kubernetes | default('', true) | length > 0 }}"
+        _ok: "{{ __headlamp_val_whoami.rc == 0 and __headlamp_val_whoami.stdout == _want }}"
+      ansible.builtin.assert:
+        that: _ok | bool or _byo | bool
+        fail_msg: >-
+          The API server did not accept a Keycloak token from realm {{ keycloak_platform_realm }}
+          (expected user {{ _want }}). Check {{ __headlamp_authn_file }} on the control-plane nodes
+          and the kube-apiserver log; the cluster must have been built with kubernetes_apiserver_authn_enabled.
+        success_msg: "{{ 'API server accepts Keycloak tokens (' ~ _want ~ ').' if _ok | bool
+                         else 'NOTICE: the API server does not accept Keycloak tokens yet; the cluster owner must add the issuer (see install notice).' }}"
+
+- name: "headlamp | validate | Summary"
+  ansible.builtin.debug:
+    msg: >-
+      Headlamp OK ({{ headlamp_auth_mode }} mode): pod healthy, route, gateway and network policies in place,
+      realm {{ keycloak_platform_realm }} imported{{ ', UI and sign-in redirect answer through the gateway'
+      if headlamp_gateway_publish | bool else '' }}.

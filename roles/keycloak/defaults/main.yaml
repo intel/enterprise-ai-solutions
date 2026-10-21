@@ -39,3 +39,25 @@ keycloak_metrics_enabled: true
 # These defaults are used by the Envoy SecurityPolicy template if not overridden.
 keycloak_realm: "inference"
 keycloak_client_id: "inference-client"
+
+# ── Platform SSO realm ────────────────────────────────────────────────────────
+# One realm people sign in to for every platform UI (Headlamp, Grafana, Langfuse,
+# LiteLLM). Members of the admin group are admins in each; others are read-only.
+# Apps add their OIDC client with tasks_from: oidc_client.yaml.
+keycloak_platform_realm: "platform"
+keycloak_platform_admin_group: "platform-admins"
+# Day-0 admin: generated temporary password (Secret platform-bootstrap-admin in
+# this namespace), changed at first login. Off when identities are federated in.
+keycloak_platform_bootstrap_admin: true
+keycloak_platform_bootstrap_admin_user: "platform-admin"
+# Langfuse and LiteLLM key accounts by email, so the bootstrap admin has one.
+keycloak_platform_bootstrap_admin_email: "{{ keycloak_platform_bootstrap_admin_user }}@{{ base_domain_name | default('inference-example.com') }}"
+keycloak_platform_bootstrap_admin_mfa: true   # force OTP enrolment at first login
+# Signed out after this long without a token refresh, or at the max lifespan.
+keycloak_platform_session_idle_timeout: 3600  # seconds (1 h)
+keycloak_platform_session_max_lifespan: 28800 # seconds (8 h)
+# Issuer as browsers see it, and in-cluster (token exchange, key fetch).
+keycloak_platform_issuer_url: "{{ keycloak_frontend_url }}/realms/{{ keycloak_platform_realm }}"
+keycloak_platform_issuer_internal: >-
+  http://keycloak-service.{{ keycloak_namespace }}.svc.cluster.local:8080{{
+  keycloak_path if _keycloak_path_mode | bool else '' }}/realms/{{ keycloak_platform_realm }}

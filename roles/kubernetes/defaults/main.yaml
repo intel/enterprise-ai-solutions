@@ -35,6 +35,13 @@ kubespray_dir: "{{ playbook_dir }}/../.kubespray"
 # kubespray-owned and left as-is.
 kubespray_bin_dir_local: "{{ kubespray_dir }}/bin"
 
+# --- API server authentication ---
+# Structured AuthenticationConfiguration (--authentication-config). Seeded empty
+# here; its content is owned by the headlamp role (Keycloak issuer), and the API
+# server reloads it live.
+kubernetes_apiserver_authn_enabled: true
+kubernetes_apiserver_authn_dir: "/etc/kubernetes/authn"
+
 # --- Networking ---
 kubernetes_cni: "calico"
 kubernetes_cluster_cidr: "10.233.64.0/18"

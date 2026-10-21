@@ -55,3 +55,18 @@
         {{ {'name': gateway_name, 'namespace': gateway_namespace, 'sectionName': 'https-apex'} if _gp_mode != 'subdomain'
            else gateway_listenerset_ref | combine({'sectionName': gateway_publish_name}) if _gw_attach_mode == 'listenerset'
            else {'name': gateway_name, 'namespace': gateway_namespace, 'sectionName': 'https'} }}
+
+- name: "gateway | publish | Portal entry for {{ gateway_publish_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ gateway_portal_configmap }}"
+        namespace: "{{ gateway_namespace }}"
+      data: >-
+        {{ {gateway_publish_name: {'title': gateway_publish_portal.title,
+                                   'description': gateway_publish_portal.description | default(''),
+                                   'url': gateway_publish.frontend_url ~ gateway_publish_portal.path | default('')} | to_json} }}
+  when: gateway_publish_portal is defined
