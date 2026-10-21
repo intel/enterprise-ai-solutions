@@ -30,7 +30,8 @@ Firecracker has no TDX support; `kata-fc` stays isolation-only.
 | CPU | Intel Xeon with TDX: 4th/5th Gen Xeon Scalable (TDX SKUs) or Xeon 6 |
 | Memory | Every memory channel populated the same way |
 | BIOS | VT-x; TME; TME-MT (memory integrity disabled); TDX; TDX SEAM Loader; TME-MT/TDX key split > 0; SGX (for attestation) |
-| Host kernel | Upstream KVM TDX support (Linux ≥ 6.16), e.g. Ubuntu 24.04 HWE kernel, with `kvm_intel.tdx=1` on the kernel command line |
+| Host OS | Ubuntu 24.04 with the HWE kernel (installer-supported, tested). Ubuntu 25.10 / 26.04 have TDX host support built in, but the installer's kubespray supports Ubuntu 22.04 / 24.04 only, so use them with `existing_kubernetes`. Any kernel needs upstream KVM TDX support (Linux ≥ 6.16) |
+| Kernel parameters | `nohibernate kvm_intel.tdx=1` |
 
 BIOS menu location depends on the platform (Intel reference BIOS):
 
@@ -39,18 +40,23 @@ BIOS menu location depends on the platform (Intel reference BIOS):
 | Birch Stream, Oak Stream | EDKII Menu → Socket Configuration → **Security Configuration** |
 | Eagle Stream | EDKII Menu → Socket Configuration → **Processor Configuration** |
 
-Host kernel (Ubuntu 24.04):
+Host OS, following [Ubuntu's Intel TDX guide](https://ubuntu.com/server/docs/how-to/virtualisation/intel-tdx/):
 
 ```bash
+# Ubuntu 24.04: switch to the HWE kernel (Ubuntu 25.10 / 26.04 already have TDX host support)
 sudo apt-get install -y linux-generic-hwe-24.04
-sudo sed -i 's/^GRUB_CMDLINE_LINUX="\(.*\)"/GRUB_CMDLINE_LINUX="\1 kvm_intel.tdx=1"/' /etc/default/grub
+
+# all releases: enable TDX in KVM
+sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nohibernate kvm_intel.tdx=1"/' /etc/default/grub
 sudo update-grub && sudo reboot
 ```
 
+Kata ships its own QEMU and TDX firmware, so the host's `qemu-system-x86` / `ovmf-inteltdx` packages are not needed.
+
 > [!WARNING]
-> The 6.8 `-intel` kernel installed by canonical/tdx on Ubuntu 24.04 enables TDX but uses a pre-upstream
-> KVM interface. Kata's QEMU fails on it with `vm-type TDX not supported by KVM`. The canonical/tdx setup
-> script also pins GRUB to that kernel; select the HWE kernel with `grub-set-default`.
+> The PPA-based setup from the former canonical/tdx project installs a 6.8 `-intel` kernel on Ubuntu 24.04. It
+> enables TDX but uses a pre-upstream KVM interface, and Kata's QEMU fails with `vm-type TDX not supported by KVM`.
+> Its setup script also pins GRUB to that kernel; select the HWE kernel with `grub-set-default`.
 
 Verify on each node:
 
@@ -129,6 +135,6 @@ spec:
 |---|---|
 | Install warns "no cluster node exposes /dev/kvm" | VT-x off in BIOS, or a VM without nested virtualisation |
 | Warns "kvm_intel tdx=Y but KVM does not offer the TDX VM type" | Host kernel too old (see the warning in section 2) |
-| Warns "no node can run TDX guests" | TDX not enabled in BIOS, or `kvm_intel.tdx=1` missing |
+| Warns "no node can run TDX guests" | TDX not enabled in BIOS, or `kvm_intel.tdx=1` missing from the kernel command line |
 | `kata-qemu-tdx` pod stuck in `ContainerCreating`, containerd log `vm-type TDX not supported by KVM` | Host kernel too old (section 2) |
 | Validate warns "no TDX-eligible node advertises tdx.intel.com/keys" | NFD was not running when kata-deploy was installed; re-run the install |
