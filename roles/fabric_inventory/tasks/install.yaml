@@ -276,7 +276,7 @@
       - "ecmp_nodes: {{ groups.get('ecmp_nodes', []) | join(', ') }}"
       - "fabric_routers: {{ groups.get('fabric_routers', []) | join(', ') }}"
 
-# The exported facts and the no_proxy update live in facts.yaml, which preflight
+# The exported facts and the no_proxy check live in facts.yaml, which preflight
 # runs for every action.
 
 - name: "fabric_inventory | ━━━ DONE ━━━"

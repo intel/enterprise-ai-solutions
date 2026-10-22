@@ -1304,9 +1304,30 @@ def rack_profile_validate(profile_data):
     }
 
 
+def no_proxy_uncovered(cidrs, no_proxy):
+    """Return the CIDRs that no no_proxy entry covers.
+
+    An entry covers a CIDR when it is the same network or a supernet of it.
+    Host names and domain suffixes in no_proxy are ignored.
+    """
+    nets = []
+    for entry in str(no_proxy or "").split(","):
+        try:
+            nets.append(ipaddress.ip_network(entry.strip(), strict=False))
+        except ValueError:
+            continue
+    uncovered = []
+    for cidr in cidrs or []:
+        net = ipaddress.ip_network(str(cidr), strict=False)
+        if not any(net.version == n.version and net.subnet_of(n) for n in nets):
+            uncovered.append(str(cidr))
+    return uncovered
+
+
 class FilterModule:
     def filters(self):
         return {
             "rack_profile_parse": rack_profile_parse,
             "rack_profile_validate": rack_profile_validate,
+            "no_proxy_uncovered": no_proxy_uncovered,
         }
