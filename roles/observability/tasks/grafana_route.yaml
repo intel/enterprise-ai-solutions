@@ -1,0 +1,59 @@
+---
+# =============================================================================
+# Observability — publish Grafana on the platform gateway (K8s and OpenShift)
+#   observability_grafana_service       Grafana's Service
+#   observability_grafana_service_port  its port
+# =============================================================================
+
+- name: "observability | Publish Grafana"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: publish.yaml
+  vars:
+    gateway_publish_name: grafana
+    gateway_publish_namespace: "{{ observability_namespace }}"
+    gateway_publish_host: "{{ observability_grafana_hostname }}"
+    gateway_publish_path: "{{ observability_grafana_path }}"
+  when: observability_gateway_publish | bool
+
+- name: "observability | Expose Grafana via gateway HTTPRoute"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: grafana
+        namespace: "{{ observability_namespace }}"
+      spec:
+        parentRefs:
+          # Its own HTTPS listener or the apex (path mode); never plaintext :80.
+          - "{{ gateway_publish.parent_ref }}"
+        hostnames:
+          - "{{ gateway_publish.host }}"
+        rules:
+          - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
+            filters:
+              # HSTS: only ever reach Grafana over HTTPS on a compliant browser,
+              # so a later plaintext attempt is refused before the admin
+              # credential leaves the browser. Only honored over HTTPS, so it is
+              # set here on the :443 route, not the :80 redirect.
+              - type: ResponseHeaderModifier
+                responseHeaderModifier:
+                  set:
+                    - name: Strict-Transport-Security
+                      value: "max-age=31536000; includeSubDomains"
+            backendRefs:
+              - name: "{{ observability_grafana_service }}"
+                port: "{{ observability_grafana_service_port | int }}"
+  when: observability_gateway_publish | bool
+
+- name: "observability | Bypass gateway auth for Grafana (Grafana has its own login)"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: grafana
+    gateway_route_namespace: "{{ observability_namespace }}"
+    gateway_route_policy_name: grafana-no-auth
+  when: observability_gateway_publish | bool
