@@ -1,0 +1,229 @@
+---
+# =============================================================================
+# Kata Containers — Node preflight (one node: kata_node)
+# =============================================================================
+
+- name: "kata_containers | {{ kata_node }} | Check for /dev/kvm"
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: kvm_device
+  delegate_to: "{{ kata_node }}"
+
+# Facts come from the installer host, so read these on the node
+- name: "kata_containers | {{ kata_node }} | Read CPU flags"
+  ansible.builtin.command: grep -m1 '^flags' /proc/cpuinfo
+  register: _kata_cpu_flags_raw
+  delegate_to: "{{ kata_node }}"
+  failed_when: false
+  changed_when: false
+
+- name: "kata_containers | {{ kata_node }} | Read kernel release"
+  ansible.builtin.command: uname -r
+  register: _kata_node_kernel
+  delegate_to: "{{ kata_node }}"
+  failed_when: false
+  changed_when: false
+
+- name: "kata_containers | {{ kata_node }} | Record CPU flags"
+  ansible.builtin.set_fact:
+    _kata_cpu_flags: "{{ ((_kata_cpu_flags_raw.stdout | default('')).split(':', 1) | last).split() }}"
+
+- name: "kata_containers | {{ kata_node }} | Load KVM kernel modules when /dev/kvm is absent"
+  ansible.builtin.command: "modprobe {{ item }}"
+  become: true
+  delegate_to: "{{ kata_node }}"
+  loop: "{{ ['kvm'] + _kvm_vendor_module }}"
+  vars:
+    _kvm_vendor_module: "{{ ['kvm_intel'] if 'vmx' in _kata_cpu_flags else [] }}"
+  when: not kvm_device.stat.exists
+  failed_when: false
+  changed_when: false
+
+- name: "kata_containers | {{ kata_node }} | Re-check /dev/kvm after loading modules"
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: kvm_device_retry
+  delegate_to: "{{ kata_node }}"
+  when: not kvm_device.stat.exists
+
+- name: "kata_containers | {{ kata_node }} | Ensure vhost_vsock is loaded and persisted"
+  when: kvm_device.stat.exists or (kvm_device_retry.stat.exists | default(false))
+  become: true
+  delegate_to: "{{ kata_node }}"
+  block:
+    - name: "kata_containers | {{ kata_node }} | Load vhost_vsock kernel module"
+      ansible.builtin.command: modprobe vhost_vsock
+      failed_when: false
+      changed_when: false
+
+    - name: "kata_containers | {{ kata_node }} | Persist vhost_vsock across reboots"
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/vhost_vsock.conf
+        content: "vhost_vsock\n"
+        mode: "0644"
+
+- name: "kata_containers | {{ kata_node }} | Check for /dev/vhost-vsock"
+  ansible.builtin.stat:
+    path: /dev/vhost-vsock
+  register: _kata_vsock_device
+  delegate_to: "{{ kata_node }}"
+
+# Firecracker needs devmapper; kubespray rewrites config.toml, so apply it on every run
+- name: "kata_containers | {{ kata_node }} | Set up containerd devmapper snapshotter for Firecracker"
+  when:
+    - (kvm_device.stat.exists or (kvm_device_retry.stat.exists | default(false)))
+    - (kata_runtime | default('kata-fc')) in ['kata-fc', 'both']
+  become: true
+  delegate_to: "{{ kata_node }}"
+  block:
+    - name: "kata_containers | {{ kata_node }} | Ensure dmsetup is installed"
+      ansible.builtin.shell: |
+        command -v dmsetup >/dev/null 2>&1 && { echo present; exit 0; }
+        if command -v apt-get >/dev/null 2>&1; then
+          DEBIAN_FRONTEND=noninteractive apt-get install -y dmsetup
+        elif command -v dnf >/dev/null 2>&1; then
+          dnf install -y device-mapper
+        else
+          yum install -y device-mapper
+        fi
+      args:
+        executable: /bin/bash
+      register: _kata_dmsetup
+      changed_when: "'present' not in _kata_dmsetup.stdout"
+
+    - name: "kata_containers | {{ kata_node }} | Install devmapper thin-pool setup script"
+      ansible.builtin.copy:
+        dest: /usr/local/bin/containerd-devmapper-setup.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Recreate the containerd devmapper thin-pool (idempotent)
+          set -euo pipefail
+          DATA_DIR=/var/lib/containerd/devmapper
+          POOL_NAME=containerd-thinpool
+          DATA_SIZE=100G
+          META_SIZE=1G
+          if dmsetup info "${POOL_NAME}" >/dev/null 2>&1; then exit 0; fi
+          mkdir -p "${DATA_DIR}"
+          [ -f "${DATA_DIR}/data" ] || truncate -s "${DATA_SIZE}" "${DATA_DIR}/data"
+          [ -f "${DATA_DIR}/meta" ] || truncate -s "${META_SIZE}" "${DATA_DIR}/meta"
+          DATA_DEV=$(losetup -j "${DATA_DIR}/data" | awk -F: 'NR==1{print $1}')
+          [ -n "${DATA_DEV}" ] || DATA_DEV=$(losetup --find --show "${DATA_DIR}/data")
+          META_DEV=$(losetup -j "${DATA_DIR}/meta" | awk -F: 'NR==1{print $1}')
+          [ -n "${META_DEV}" ] || META_DEV=$(losetup --find --show "${DATA_DIR}/meta")
+          LENGTH_SECTORS=$(( $(blockdev --getsize64 "${DATA_DEV}") / 512 ))
+          dmsetup create "${POOL_NAME}" \
+            --table "0 ${LENGTH_SECTORS} thin-pool ${META_DEV} ${DATA_DEV} 128 32768"
+
+    - name: "kata_containers | {{ kata_node }} | Install devmapper thin-pool systemd unit (recreates pool on boot)"
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/containerd-devmapper.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Setup containerd devmapper thin-pool (Kata Firecracker)
+          DefaultDependencies=no
+          After=systemd-udev-settle.service
+          Before=containerd.service
+          Wants=systemd-udev-settle.service
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/bin/containerd-devmapper-setup.sh
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: "kata_containers | {{ kata_node }} | Enable and start the thin-pool unit (creates the pool now)"
+      ansible.builtin.systemd:
+        name: containerd-devmapper.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # A duplicate TOML table would stop containerd
+    - name: "kata_containers | {{ kata_node }} | Check whether devmapper snapshotter is already configured"
+      ansible.builtin.command: grep -q 'io.containerd.snapshotter.v1.devmapper' /etc/containerd/config.toml
+      register: kata_devmapper_present
+      failed_when: false
+      changed_when: false
+
+    - name: "kata_containers | {{ kata_node }} | Register the devmapper snapshotter in containerd config"
+      ansible.builtin.blockinfile:
+        path: /etc/containerd/config.toml
+        marker: "# {mark} kata devmapper snapshotter (managed)"
+        block: |
+          [plugins."io.containerd.snapshotter.v1.devmapper"]
+            root_path = "/var/lib/containerd/devmapper"
+            pool_name = "containerd-thinpool"
+            base_image_size = "10GB"
+            discard_blocks = true
+      register: kata_devmapper_cfg
+      when: kata_devmapper_present.rc != 0
+
+    - name: "kata_containers | {{ kata_node }} | Keep unpacked layers so overlayfs and devmapper can share images"
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: '^(\s*)discard_unpacked_layers\s*=\s*true'
+        replace: '\g<1>discard_unpacked_layers = false'
+      register: kata_discard_cfg
+
+    - name: "kata_containers | {{ kata_node }} | Restart containerd to load the devmapper snapshotter"
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+      when: (kata_devmapper_cfg is changed) or (kata_discard_cfg is changed)
+
+  rescue:
+    - name: "kata_containers | {{ kata_node }} | Devmapper setup failed — kata-fc unavailable on this node"
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: containerd devmapper setup failed on {{ kata_node }}
+          ({{ ansible_failed_result.msg | default('see task output above') }}).
+          The node is excluded from kata-fc; kata-qemu is unaffected.
+
+- name: "kata_containers | {{ kata_node }} | Check containerd devmapper snapshotter status"
+  ansible.builtin.shell: |
+    set -o pipefail
+    # localhost-mode clusters keep kubespray binaries (ctr) in <kubespray_dir>/bin
+    export PATH="${PATH}:/usr/local/bin:/usr/bin{{ (':' ~ kubespray_dir ~ '/bin') if kubespray_dir is defined else '' }}"
+    command -v ctr >/dev/null 2>&1 || { echo 0; exit 0; }
+    ctr -a /run/containerd/containerd.sock plugins ls 2>/dev/null \
+      | awk '$2 ~ /devmapper$/ && $NF == "ok" { found = 1 } END { print found + 0 }'
+  args:
+    executable: /bin/bash
+  become: true
+  delegate_to: "{{ kata_node }}"
+  register: devmapper_check
+  failed_when: false
+  changed_when: false
+
+# Firecracker on AMX CPUs needs kernel >= 5.17
+- name: "kata_containers | {{ kata_node }} | Record node capabilities"
+  vars:
+    _kernel: "{{ _kata_node_kernel.stdout | default('') | trim }}"
+    _kernel_minor: "{{ _kernel | regex_search('^[0-9]+[.][0-9]+') | default('', true) }}"
+    _amx: "{{ 'amx_tile' in _kata_cpu_flags }}"
+  ansible.builtin.set_fact:
+    _kata_node_results: >-
+      {{ _kata_node_results | default({}) | combine({kata_node: {
+           'kvm_ok': (kvm_device.stat.exists or (kvm_device_retry.stat.exists | default(false))) | bool,
+           'devmapper_ok': ((devmapper_check.stdout | default('0') | trim) == '1') | bool,
+           'vsock_ok': (_kata_vsock_device.stat.exists | default(false)) | bool,
+           'amx': _amx | bool,
+           'kernel': _kernel if _kernel else 'unknown',
+           'fc_amx_blocked': ((_amx | bool) and (_kernel_minor | length > 0)
+                              and (_kernel_minor is version('5.17', '<'))) | bool }}) }}
+
+- name: "kata_containers | {{ kata_node }} | Record node preflight summary"
+  vars:
+    _r: "{{ _kata_node_results[kata_node] }}"
+  ansible.builtin.set_fact:
+    _kata_node_results: >-
+      {{ _kata_node_results | combine({kata_node: {'summary':
+           kata_node ~ ': kernel=' ~ _r.kernel ~ ' kvm=' ~ _r.kvm_ok ~ ' vsock=' ~ _r.vsock_ok
+           ~ ' devmapper=' ~ _r.devmapper_ok ~ ' amx=' ~ _r.amx ~ ' fc_amx_blocked=' ~ _r.fc_amx_blocked}},
+         recursive=true) }}
+
+- name: "kata_containers | {{ kata_node }} | Display node preflight result"
+  ansible.builtin.debug:
+    msg: "{{ _kata_node_results[kata_node].summary }}"

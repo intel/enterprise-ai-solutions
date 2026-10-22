@@ -8,7 +8,13 @@ container_manager: "{{ kubernetes_container_manager }}"
 kube_pods_subnet: "{{ kubernetes_cluster_cidr }}"
 kube_service_addresses: "{{ kubernetes_service_cidr }}"
 dns_mode: "{{ kubernetes_dns_mode }}"
+# CoreDNS autoscaler: by node count, not cores (at most one CoreDNS pod per node)
+dns_cores_per_replica: 0
+dns_nodes_per_replica: 64
+dns_min_replicas: "{% raw %}{{ [2, groups['k8s_cluster'] | length] | min }}{% endraw %}"
 kube_proxy_mode: "{{ kubernetes_kube_proxy_mode }}"
+# In-cluster image registry; the agent toolkit turns it on
+registry_enabled: {{ kubernetes_registry_enabled | default(false) | bool | lower }}
 {% if not (_k8s_needs_ssh | bool) %}
 # localhost mode: keep kubespray binaries off the shared /usr/local/bin so
 # reset.yml never deletes the operator's configure-installed kubectl/helm.

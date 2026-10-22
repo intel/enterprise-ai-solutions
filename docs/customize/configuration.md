@@ -403,6 +403,39 @@ existing_kubernetes: "/absolute/path/to/kubeconfig"   # skips all Kubespray phas
 
 ---
 
+## Kata Containers
+
+Opt-in microVM runtime for the Agent Sandbox of the Intel® Agent Toolkit: each
+sandbox runs as a microVM with its own guest kernel instead of a pod sharing
+the host kernel. Set the two Kata switches in `env/<name>/global_config.yaml`,
+where `init` seeds them (a value there wins over `config.agent-toolkit.yaml`).
+
+| Setting | Default | Description |
+|---|---|---|
+| `kata_containers_enabled` | `false` | Install Kata Containers (the `kata_containers` platform component) with the upstream kata-deploy chart |
+| `kata_runtime` | `kata-fc` | `kata-fc` (Firecracker) \| `kata-qemu` \| `both`: which RuntimeClasses kata-deploy creates |
+| `kubernetes_registry_enabled` | `false` | Kubespray's in-cluster image registry (`kube-system`, ClusterIP, port 5000). `config.agent-toolkit.yaml` turns it on; it applies only when Kubespray provisions the cluster, so run `init agent-toolkit` before the first install |
+
+Before anything is installed, every node in the inventory is checked and
+prepared:
+
+- `/dev/kvm` (Intel VT-x on bare metal, or nested virtualisation on a VM) and
+  `/dev/vhost-vsock`. The installer loads `kvm_intel` and `vhost_vsock` itself.
+- `kata-fc` and `both` also need containerd's devmapper snapshotter: the
+  installer creates a sparse loopback thin-pool under
+  `/var/lib/containerd/devmapper` and registers it in the containerd config. On
+  CPUs with AMX, Firecracker needs a kernel 5.17 or later.
+
+A missing prerequisite stops the install with its cause and every node's
+preflight result. Nodes without `/dev/kvm` are left out as long as one node has
+it. Kata is not supported on a BYO cluster (`existing_kubernetes`) or on
+OpenShift: the host preparation runs over SSH on the inventory nodes, so the
+install stops there. Teardown removes the kata-deploy release and the node
+label; the thin-pool unit, the containerd config entry and the `vhost_vsock`
+module entry stay on the nodes.
+
+---
+
 ## Version pinning
 
 Component versions are set in `global_config.yaml` and can be overridden at runtime:
@@ -422,6 +455,7 @@ In addition to `global_config.yaml`, each solution layer has its own configurati
 
 - **`env/<name>/config.inference.yaml`** — seeded by `init inference` from the inference repo's `config.yaml`
 - **`env/<name>/config.erag.yaml`** — seeded by `init erag` from the chosen flavour's `config.yaml` (default: `chatqna`)
+- **`env/<name>/config.agent-toolkit.yaml`** — seeded by `init agent-toolkit` from the agent toolkit repo's `config.yaml`
 
 These files are **flat** override surfaces loaded via `-e @file`, so nested dicts clobber role defaults rather than merging. The installer loads them in manifest order (dependencies first), then loads `global_config.yaml`, so `global_config.yaml` wins over layer configs. This lets you set solution-specific defaults in your layer config and override them globally when needed.
 
