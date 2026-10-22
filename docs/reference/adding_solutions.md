@@ -206,7 +206,7 @@ One role per component, at `<subdir>/roles/<component-name>/`.
 | File | Required | Contract |
 |---|---|---|
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
-| `tasks/teardown.yaml` | yes | Runs only with `teardown: role` or `both`. Removes what labels cannot: host changes, changes to objects that existed before. Succeeds when nothing is installed. |
+| `tasks/teardown.yaml` | yes | Runs only with `teardown: role` or `both`. Removes what labels cannot: host changes, changes other than labels to objects that existed before. Succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
@@ -245,11 +245,20 @@ or one of its release secrets is already labelled for the component, all objects
 there before keeps its release secrets unlabelled too, so teardown never deletes part of a
 release's history and leaves the release broken.
 
+Labels a component adds to a Namespace or Node that was there before (a customer's
+namespace that joins the mesh with `istio.io/dataplane-mode`, a node placement label) are
+recorded, not labelled: the object gets the annotation
+`ai-solutions.intel.com/labels-before.<env>.<component>`, with the value each key had before
+(`null`: absent) and the value set. Only keys that one of the tools above wrote count
+(`managedFields`); kinds are listed in `ownership_restore_resources`. Teardown puts the old
+values back for the keys that still hold the value set, and drops the annotation. A key
+someone changed since is left as it is.
+
 A run that is killed (Ctrl-C, a lost session) never gets to label the component it was in.
 The component is noted in the state file before it runs, and the next `install` or
 `teardown` labels what appeared since, as that component, before it records the cluster.
 
-Teardown then deletes `env=<env>,component=<component>` in this order: custom resources
+Teardown first restores the recorded labels, then deletes `env=<env>,component=<component>` in this order: custom resources
 first, while their operators still run; then webhooks and APIServices; namespaced objects
 (Helm release secrets included); namespaces; cluster-scoped objects; CRDs last. It waits
 for each step. If an object is still there after `ownership_delete_timeout`, it fails and
@@ -260,7 +269,8 @@ What this means for a role:
 
 - **Create, don't adopt.** An object that existed before the component ran (a namespace
   the customer made, a ConfigMap the role patches) is never labelled, so it is never
-  deleted. Revert such changes in `teardown.yaml` and set `teardown: both`.
+  deleted. Labels added to an existing Namespace or Node are put back for you; revert any
+  other change to it in `teardown.yaml` and set `teardown: both`.
 - **Don't recreate objects with `force: true`** (replace). The new object keeps its UID but
   loses the labels.
 - **Use the tools above.** An object created by anything else (a Job, a script in a pod)

@@ -18,6 +18,14 @@ An object is labelled when all of these hold:
     an operator reconciling in parallel
   - it has no `<prefix>/component` label yet: the first creator keeps it
 
+Labels the installer adds to an object that was already there (a Namespace it
+does not own gets istio.io/dataplane-mode, a Node a placement label) are recorded
+instead, in the annotation <prefix>/labels-before.<env>.<component> on that object:
+each key with the value it had before (null: absent) and the value set. Teardown
+restores the keys that still hold the value set. Only `restore_resources` are
+followed (Namespaces and Nodes by default), only keys a field manager in `managers`
+wrote, and only objects whose labels the state file holds.
+
 Helm releases are labelled whole or not at all. A release is the component's when
 its first release secret (v1) is new, or one already carries the component's labels:
 then every object annotated with the release (meta.helm.sh/release-name and
@@ -33,6 +41,7 @@ large cluster is a few MB, not the full objects.
 
 import json
 import os
+import re
 import time
 
 from ansible.module_utils.basic import AnsibleModule
@@ -55,6 +64,7 @@ options:
   managers: {type: list, elements: str, description: Field managers that count as the installer}
   skip_resources: {type: list, elements: str, description: "resource or resource.group never listed"}
   label_prefix: {type: str, description: Prefix of the component label}
+  restore_resources: {type: list, elements: str, description: "resources whose added labels teardown restores"}
   timeout: {type: int, default: 600, description: Seconds to wait per delete phase}
 """
 
@@ -157,39 +167,119 @@ def _phase(res):
 
 
 def _read(path):
-    """(uids, pending): uids None when there is no baseline yet, pending the component
-    a run was in when it stopped, or None."""
+    """(uids, pending, labels): uids None when there is no baseline yet, pending the
+    component a run was in when it stopped, or None, labels uid -> labels of the
+    objects in restore_resources."""
     try:
         with open(path) as f:
             state = json.load(f)
     except (OSError, ValueError):
-        return None, None
-    return state.get("uids"), state.get("pending")
+        return None, None, {}
+    return state.get("uids"), state.get("pending"), state.get("labels") or {}
 
 
-def _write(path, uids, pending=None):
+def _write(path, uids, pending=None, labels=None):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"uids": sorted(uids) if uids is not None else None, "pending": pending}, f)
+        json.dump({"uids": sorted(uids) if uids is not None else None, "pending": pending,
+                   "labels": labels or {}}, f)
     os.replace(tmp, path)
 
 
+def _restorable(objects, p):
+    """uid -> labels of every object in restore_resources."""
+    wanted = set(p["restore_resources"])
+    return {uid: meta.get("labels") or {} for uid, (res, meta) in objects.items()
+            if res["resource"] in wanted or "%s.%s" % (res["resource"], res["group"]) in wanted}
+
+
+def _before_key(p):
+    """<prefix>/labels-before.<env>.<component>, a valid annotation name (63 chars)."""
+    name = re.sub(r"[^A-Za-z0-9_.-]", "-", "labels-before.%s.%s" % (p["env"], p["component"]))[:63]
+    return "%s/%s" % (p["label_prefix"], name.strip("-_."))
+
+
+def _patch(api, res, meta, body):
+    try:
+        api.call_api(_path(res, meta), "PATCH", header_params={"Content-Type": "application/merge-patch+json"},
+                     body={"metadata": body}, auth_settings=["BearerToken"], _preload_content=False)
+    except ApiException as e:
+        if e.status != 404:  # 404: deleted since the list
+            raise
+        return False
+    return True
+
+
+def _record_added(api, objects, known, before, p, module):
+    """Record, on each object that was already there, the labels an installer tool
+    added or changed since the last snapshot. Returns the refs recorded."""
+    managers, prefix, key = set(p["managers"]), p["label_prefix"] + "/", _before_key(p)
+    recorded = []
+    for uid, labels in sorted(_restorable(objects, p).items(), key=lambda o: _ref(*objects[o[0]])):
+        res, meta = objects[uid]
+        if uid not in known or uid not in before or prefix + "component" in labels:
+            continue  # new (labelled instead), no recorded labels, or ours: deleted whole
+        ours = set()
+        for m in meta.get("managedFields") or []:
+            if m.get("manager") in managers:
+                ours |= {f[2:] for f in ((m.get("fieldsV1") or {}).get("f:metadata") or {}).get("f:labels") or {}}
+        old = before[uid]
+        added = {k: [old.get(k), v] for k, v in labels.items()
+                 if k in ours and old.get(k) != v and not k.startswith(prefix)}
+        if not added:
+            continue
+        try:
+            record = json.loads((meta.get("annotations") or {}).get(key) or "{}")
+        except ValueError:
+            record = {}
+        # A key already recorded keeps its first value before; it now holds the new value set.
+        record = dict(added, **{k: [v[0], added[k][1] if k in added else v[1]] for k, v in record.items()})
+        if module.check_mode or _patch(api, res, meta, {"annotations": {key: json.dumps(record, sort_keys=True)}}):
+            recorded.append("%s: %s" % (_ref(res, meta), ", ".join(sorted(added))))
+    return recorded
+
+
+def _restore(api, resources, p, module):
+    """Put back the labels recorded by _record_added for this env and component."""
+    key, restored = _before_key(p), []
+    for res in resources:
+        if res["resource"] not in p["restore_resources"] \
+                and "%s.%s" % (res["resource"], res["group"]) not in p["restore_resources"]:
+            continue
+        for meta in (item["metadata"] for item in _list(api, res)):
+            raw = (meta.get("annotations") or {}).get(key)
+            if raw is None:
+                continue
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                record = {}
+            labels = meta.get("labels") or {}
+            # Keys changed again since by someone else are left as they are.
+            back = {k: v[0] for k, v in record.items() if labels.get(k) == v[1]}
+            if module.check_mode or _patch(api, res, meta, {"labels": back, "annotations": {key: None}}):
+                restored.append("%s: %s" % (_ref(res, meta), ", ".join(sorted(back)) or "(nothing left to restore)"))
+    return restored
+
+
 def snapshot(api, p, module):
-    known, pending = _read(p["state_file"])
+    known, pending, _ = _read(p["state_file"])
     if pending and known is not None:
         # The last run stopped inside a component, before it was labelled: label what
         # appeared since, as that component, before it would count as already there.
         result = label(api, dict(p, **pending), module)
-        return {"changed": result["changed"], "recovered": pending, "labelled": result["labelled"]}
+        return {"changed": result["changed"], "recovered": pending, "labelled": result["labelled"],
+                "recorded": result["recorded"]}
     if not module.check_mode:
-        _write(p["state_file"], _all_objects(api, _discover(api, set(p["skip_resources"]))).keys())
-    return {"changed": False, "labelled": []}
+        objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
+        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p))
+    return {"changed": False, "labelled": [], "recorded": []}
 
 
 def begin(p, module):
-    known, _ = _read(p["state_file"])
+    known, _, labels = _read(p["state_file"])
     if not module.check_mode:
-        _write(p["state_file"], known, {"env": p["env"], "layer": p["layer"], "component": p["component"]})
+        _write(p["state_file"], known, {"env": p["env"], "layer": p["layer"], "component": p["component"]}, labels)
     return {"changed": False}
 
 
@@ -221,9 +311,9 @@ def _helm_claims(objects, known, p):
 
 
 def label(api, p, module):
-    known, _ = _read(p["state_file"])
+    known, _, before = _read(p["state_file"])
     objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
-    labelled = []
+    labelled, recorded = [], []
     if known is not None:  # no baseline (the cluster did not exist yet): label nothing
         prefix = p["label_prefix"]
         labels = {prefix + "/env": p["env"], prefix + "/layer": p["layer"], prefix + "/component": p["component"]}
@@ -235,21 +325,12 @@ def label(api, p, module):
             if uid not in claimed and (uid in known
                                        or not managers & {m.get("manager") for m in meta.get("managedFields") or []}):
                 continue
-            if module.check_mode:
+            if module.check_mode or _patch(api, res, meta, {"labels": labels}):
                 labelled.append(_ref(res, meta))
-                continue
-            try:
-                api.call_api(_path(res, meta), "PATCH", header_params={"Content-Type": "application/merge-patch+json"},
-                             body={"metadata": {"labels": labels}}, auth_settings=["BearerToken"],
-                             _preload_content=False)
-            except ApiException as e:
-                if e.status != 404:  # 404: deleted since the list
-                    raise
-                continue
-            labelled.append(_ref(res, meta))
+        recorded = _record_added(api, objects, known, before, p, module)
     if not module.check_mode:
-        _write(p["state_file"], objects.keys())
-    return {"changed": bool(labelled), "labelled": labelled}
+        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p))
+    return {"changed": bool(labelled or recorded), "labelled": labelled, "recorded": recorded}
 
 
 def _exists(api, res, meta):
@@ -263,7 +344,9 @@ def _exists(api, res, meta):
 
 def delete(api, p, module):
     selector = "%s/env=%s,%s/component=%s" % (p["label_prefix"], p["env"], p["label_prefix"], p["component"])
-    objects = _all_objects(api, _discover(api, set(p["skip_resources"])), selector)
+    resources = _discover(api, set(p["skip_resources"]))
+    objects = _all_objects(api, resources, selector)
+    restored = _restore(api, resources, p, module)
     deleted = []
     for phase in PHASES:
         targets = sorted((t for t in objects.values() if _phase(t[0]) == phase), key=lambda t: _ref(*t))
@@ -287,8 +370,9 @@ def delete(api, p, module):
             time.sleep(5)
         left = [_ref(*t) for t in targets]
         if left:  # stop: a later phase may hold the controller that clears the finalizers
-            return {"changed": bool(deleted), "deleted": deleted, "left": left, "phase": phase}
-    return {"changed": bool(deleted), "deleted": deleted, "left": []}
+            return {"changed": bool(deleted or restored), "deleted": deleted, "restored": restored,
+                    "left": left, "phase": phase}
+    return {"changed": bool(deleted or restored), "deleted": deleted, "restored": restored, "left": []}
 
 
 def main():
@@ -302,6 +386,7 @@ def main():
             "managers": {"type": "list", "elements": "str", "default": []},
             "skip_resources": {"type": "list", "elements": "str", "default": []},
             "label_prefix": {"type": "str", "default": "ai-solutions.intel.com"},
+            "restore_resources": {"type": "list", "elements": "str", "default": ["namespaces", "nodes"]},
             "timeout": {"type": "int", "default": 600},
         },
         required_if=[("action", "snapshot", ["state_file"]), ("action", "begin", ["state_file", "env", "component"]),
@@ -318,7 +403,7 @@ def main():
     if p["action"] != "delete" and not os.path.exists(os.path.expanduser(kubeconfig)):
         # Kubespray has not built the cluster yet: the next label call takes the baseline.
         _write(p["state_file"], None)
-        module.exit_json(changed=False, reachable=False, labelled=[])
+        module.exit_json(changed=False, reachable=False, labelled=[], recorded=[])
     try:
         cfg = client.Configuration()
         config.load_kube_config(config_file=kubeconfig, client_configuration=cfg)
