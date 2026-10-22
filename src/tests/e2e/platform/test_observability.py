@@ -5,6 +5,11 @@
 
 import allure
 import kr8s
+import pytest
+
+pytestmark = pytest.mark.not_on_openshift(
+    reason="Observability is not installed on OpenShift: the cluster monitoring provides it"
+)
 
 
 @allure.testcase("IEASG-T683")

@@ -5,6 +5,11 @@
 
 import allure
 import kr8s
+import pytest
+
+pytestmark = pytest.mark.not_on_openshift(
+    reason="SeaweedFS is not installed on OpenShift: its consumer, observability, is not"
+)
 
 
 @allure.testcase("IEASG-T682")

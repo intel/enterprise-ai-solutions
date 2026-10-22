@@ -5,6 +5,11 @@
 
 import allure
 import kr8s
+import pytest
+
+pytestmark = pytest.mark.not_on_openshift(
+    reason="MetalLB is not installed on OpenShift: the router exposes services"
+)
 
 
 @allure.testcase("IEASG-T673")
