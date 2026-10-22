@@ -776,7 +776,10 @@ def _gen_hosts_yaml(ctx):
         # All nodes use SSH — including the bastion (local: true is accepted
         # but ignored so that the deploy node SSHs to itself via mgmt_ip,
         # giving uniform delegate_to behaviour across every fabric role).
+        # Stated explicitly: the playbook runs with connection: local, which a
+        # delegated task inherits unless the host sets ansible_connection.
         lines.append(f"      ansible_host: {mgmt_ip}")
+        lines.append("      ansible_connection: ssh")
         lines.append(
             f"      ansible_user: "
             f"{node.get('ansible_user', c['default_ansible_user'])}")
