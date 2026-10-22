@@ -18,6 +18,7 @@
     label_prefix: "{{ ownership_label_prefix }}"
     managers: "{{ ownership_managers }}"
     skip_resources: "{{ ownership_skip_resources }}"
+    restore_resources: "{{ ownership_restore_resources }}"
   register: _ownership_snapshot
 
 - name: "ownership | Labelled {{ _ownership_snapshot.labelled | default([]) | length }} objects of {{ _ownership_snapshot.recovered.component | default('') }}, left by a run that stopped"
@@ -26,6 +27,13 @@
     - _ownership_snapshot.recovered is defined
   ansible.builtin.debug:
     msg: "{{ _ownership_snapshot.labelled }}"
+
+- name: "ownership | Recorded labels {{ _ownership_snapshot.recovered.component | default('') }} added to existing objects"
+  when:
+    - ownership_action == 'snapshot'
+    - _ownership_snapshot.recorded | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _ownership_snapshot.recorded }}"
 
 - name: "ownership | Note that {{ component.name | default('') }} runs"
   when: ownership_action == 'begin'
@@ -47,6 +55,7 @@
     component: "{{ component.name }}"
     managers: "{{ ownership_managers }}"
     skip_resources: "{{ ownership_skip_resources }}"
+    restore_resources: "{{ ownership_restore_resources }}"
   register: _ownership_labelled
 
 - name: "ownership | Labelled {{ _ownership_labelled.labelled | default([]) | length }} objects of {{ component.name | default('') }}"
@@ -56,6 +65,13 @@
   ansible.builtin.debug:
     msg: "{{ _ownership_labelled.labelled }}"
 
+- name: "ownership | Recorded labels {{ component.name | default('') }} added to existing objects"
+  when:
+    - ownership_action == 'label'
+    - _ownership_labelled.recorded | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _ownership_labelled.recorded }}"
+
 - name: "ownership | Delete what {{ component.name | default('') }} created"
   when: ownership_action == 'teardown'
   ownership_k8s:
@@ -64,8 +80,16 @@
     env: "{{ env_name | default('local') }}"
     component: "{{ component.name }}"
     skip_resources: "{{ ownership_skip_resources }}"
+    restore_resources: "{{ ownership_restore_resources }}"
     timeout: "{{ ownership_delete_timeout }}"
   register: _ownership_deleted
+
+- name: "ownership | Restored the labels {{ component.name | default('') }} added to existing objects"
+  when:
+    - ownership_action == 'teardown'
+    - _ownership_deleted.restored | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _ownership_deleted.restored }}"
 
 - name: "ownership | Fail when objects of {{ component.name | default('') }} are still there"
   when:
@@ -82,6 +106,7 @@
   when:
     - ownership_action == 'teardown'
     - _ownership_deleted.deleted | default([]) | length == 0
+    - _ownership_deleted.restored | default([]) | length == 0
   ansible.builtin.debug:
     msg: >-
       No object carries {{ ownership_label_prefix }}/component={{ component.name }} in env
