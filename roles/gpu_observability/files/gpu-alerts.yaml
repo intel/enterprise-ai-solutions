@@ -3,8 +3,8 @@
 #
 # GPU health alerting rules, written for this project on top of the metrics
 # exported by the NVIDIA DCGM exporter.
-# Applied by playbooks/deploy-observability.yml only when the rack profile has
-# NVIDIA GPU nodes (rack_scale_gpu_vendor == "nvidia").
+# Applied by the gpu_observability role only when the rack profile has NVIDIA
+# GPU nodes (rack_scale_gpu_vendor == "nvidia").
 #
 # The `release: observability` label is REQUIRED — the kube-prometheus-stack
 # Prometheus is configured with ruleSelector matchLabels {release: observability},
