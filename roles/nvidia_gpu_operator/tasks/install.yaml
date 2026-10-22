@@ -43,16 +43,13 @@
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
     - name: "nvidia_gpu_operator | nvidia | Add Helm repository"
-      ansible.builtin.command:
-        cmd: >-
-          helm repo add {{ nvidia_gpu_operator_helm_repo_name }}
-          {{ nvidia_gpu_operator_helm_repo }}
+      kubernetes.core.helm_repository:
+        name: "{{ nvidia_gpu_operator_helm_repo_name }}"
+        repo_url: "{{ nvidia_gpu_operator_helm_repo }}"
       register: _gpu_helm_repo
-      changed_when: "'already exists' not in _gpu_helm_repo.stdout"
-
-    - name: "nvidia_gpu_operator | nvidia | Update Helm repositories"
-      ansible.builtin.command: helm repo update
-      changed_when: false
+      until: _gpu_helm_repo is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
     - name: "nvidia_gpu_operator | nvidia | Create namespace"
       kubernetes.core.k8s:
@@ -81,70 +78,63 @@
         - not (nvidia_gpu_operator_nfd_enabled | bool)
         - _gpu_shared_nfd.status is not defined or _gpu_shared_nfd.status is none
 
-    - name: "nvidia_gpu_operator | nvidia | Copy DCGM metrics CSV"
-      ansible.builtin.copy:
-        src: dcgm-metrics.csv
-        dest: /tmp/dcgm-metrics.csv
-        mode: "0644"
-
     - name: "nvidia_gpu_operator | nvidia | Create DCGM custom metrics ConfigMap"
-      ansible.builtin.shell:
-        cmd: |
-          set -o pipefail
-          kubectl create configmap dcgm-metrics-config \
-            --from-file=dcgm-metrics.csv=/tmp/dcgm-metrics.csv \
-            -n {{ nvidia_gpu_operator_namespace }} \
-            --dry-run=client -o yaml | kubectl apply -f -
-        executable: /bin/bash
-      changed_when: true
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: dcgm-metrics-config
+            namespace: "{{ nvidia_gpu_operator_namespace }}"
+          data:
+            dcgm-metrics.csv: "{{ lookup('ansible.builtin.file', 'dcgm-metrics.csv', rstrip=false) }}"
 
-    - name: "nvidia_gpu_operator | nvidia | Write Helm values file"
-      ansible.builtin.copy:
-        content: |
+    - name: "nvidia_gpu_operator | nvidia | Deploy GPU Operator via Helm"
+      kubernetes.core.helm:
+        name: "{{ nvidia_gpu_operator_release_name }}"
+        chart_ref: "{{ nvidia_gpu_operator_chart }}"
+        chart_version: "{{ nvidia_gpu_operator_version }}"
+        release_namespace: "{{ nvidia_gpu_operator_namespace }}"
+        update_repo_cache: true
+        wait: true
+        timeout: "{{ nvidia_gpu_operator_wait_timeout }}"
+        values:
           driver:
-            enabled: {{ nvidia_gpu_operator_driver_enabled | lower }}
+            enabled: "{{ nvidia_gpu_operator_driver_enabled | bool }}"
           toolkit:
-            enabled: {{ nvidia_gpu_operator_toolkit_enabled | lower }}
+            enabled: "{{ nvidia_gpu_operator_toolkit_enabled | bool }}"
           devicePlugin:
-            enabled: {{ nvidia_gpu_operator_device_plugin_enabled | lower }}
+            enabled: "{{ nvidia_gpu_operator_device_plugin_enabled | bool }}"
           migManager:
-            enabled: {{ nvidia_gpu_operator_mig_enabled | lower }}
+            enabled: "{{ nvidia_gpu_operator_mig_enabled | bool }}"
           nodeStatusExporter:
             enabled: true
           nfd:
-            enabled: {{ nvidia_gpu_operator_nfd_enabled | lower }}
+            enabled: "{{ nvidia_gpu_operator_nfd_enabled | bool }}"
           dcgmExporter:
-            enabled: {{ nvidia_gpu_operator_dcgm_exporter_enabled | lower }}
+            enabled: "{{ nvidia_gpu_operator_dcgm_exporter_enabled | bool }}"
             config:
               name: dcgm-metrics-config
             serviceMonitor:
               enabled: false
-        dest: /tmp/gpu-operator-values.yaml
-        mode: "0644"
-
-    - name: "nvidia_gpu_operator | nvidia | Deploy GPU Operator via Helm"
-      ansible.builtin.command:
-        cmd: >-
-          helm upgrade --install {{ nvidia_gpu_operator_release_name }}
-          {{ nvidia_gpu_operator_chart }}
-          --namespace {{ nvidia_gpu_operator_namespace }}
-          --version {{ nvidia_gpu_operator_version }}
-          -f /tmp/gpu-operator-values.yaml
-          --wait
-          --timeout {{ nvidia_gpu_operator_wait_timeout }}
       register: _gpu_helm_install
-      changed_when: "'has been upgraded' in _gpu_helm_install.stdout or 'STATUS: deployed' in _gpu_helm_install.stdout"
+      until: _gpu_helm_install is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
-    - name: "nvidia_gpu_operator | nvidia | Wait for NFD worker DaemonSet"
-      ansible.builtin.command:
-        cmd: >-
-          kubectl rollout status
-          daemonset/gpu-operator-node-feature-discovery-worker
-          -n {{ nvidia_gpu_operator_namespace }}
-          --timeout=300s
-      register: _gpu_nfd_rollout
-      changed_when: false
-      failed_when: _gpu_nfd_rollout.rc != 0
+    - name: "nvidia_gpu_operator | nvidia | Wait for the bundled NFD workers"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: gpu-operator-node-feature-discovery-worker
+        namespace: "{{ nvidia_gpu_operator_namespace }}"
+      register: _gpu_nfd_ds
+      until:
+        - _gpu_nfd_ds.resources | default([]) | length > 0
+        - (_gpu_nfd_ds.resources[0].status.numberReady | default(0)) == (_gpu_nfd_ds.resources[0].status.desiredNumberScheduled | default(0))
+      retries: 30
+      delay: 10
       ignore_errors: true
       when: nvidia_gpu_operator_nfd_enabled | bool
 
