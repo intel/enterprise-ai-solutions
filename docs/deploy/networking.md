@@ -606,7 +606,7 @@ metallb_ip_range: "10.1.1.1/32"  # Not .240-.250
 
 ✅ **IPVS mode for kube-proxy** (instead of iptables)
 ```yaml
-# Already default in Kubespray 2.32
+# Already default in Kubespray 2.31
 ipvs:
   strictARP: true
 ```

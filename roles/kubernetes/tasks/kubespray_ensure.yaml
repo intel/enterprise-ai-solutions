@@ -9,13 +9,6 @@
 
 # ─── Clone & Pin Kubespray ───────────────────────────────────────────────────
 
-# A short or uppercase SHA would skip the refspec below and fail the shallow clone.
-- name: "kubernetes | kubespray | Validate kubespray_version"
-  ansible.builtin.assert:
-    that: kubespray_version is not match('^[0-9a-fA-F]{7,40}$') or kubespray_version is match('^[0-9a-f]{40}$')
-    fail_msg: "kubespray_version '{{ kubespray_version }}' looks like a commit; pin the full 40-character lowercase SHA, or a tag or branch."
-    quiet: true
-
 - name: "kubernetes | kubespray | Check if kubespray is already cloned"
   ansible.builtin.stat:
     path: "{{ kubespray_dir }}/.git"
@@ -26,8 +19,6 @@
     repo: "{{ kubespray_repo }}"
     dest: "{{ kubespray_dir }}"
     version: "{{ kubespray_version }}"
-    # A commit pin is fetched by SHA; a shallow clone holds only the old ref.
-    refspec: "{{ kubespray_version if kubespray_version is match('^[0-9a-f]{40}$') else omit }}"
     depth: 1
     force: true
   when: not _kubespray_exists.stat.exists
@@ -37,8 +28,6 @@
     repo: "{{ kubespray_repo }}"
     dest: "{{ kubespray_dir }}"
     version: "{{ kubespray_version }}"
-    # A commit pin is fetched by SHA; a shallow clone holds only the old ref.
-    refspec: "{{ kubespray_version if kubespray_version is match('^[0-9a-f]{40}$') else omit }}"
     force: true
   when: _kubespray_exists.stat.exists
 

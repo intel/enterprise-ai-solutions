@@ -305,7 +305,7 @@ no_proxy: "localhost,127.0.0.1,10.233.0.0/18,10.233.64.0/18,.svc,.cluster.local,
 > export NO_PROXY="$no_proxy"
 > ```
 >
-> Also list the API server address itself (the `server:` in your kubeconfig, e.g. the control-plane node IP). Since Kubespray 2.32 the kubeconfig on control-plane nodes points at the node IP rather than `127.0.0.1`, and some clients (Python `httpx`, for example) ignore CIDR entries such as `10.0.0.0/8` in `no_proxy`.
+> Also list the API server address itself (the `server:` in your kubeconfig, e.g. the control-plane node IP). Since Kubespray 2.31 the kubeconfig on control-plane nodes points at the node IP rather than `127.0.0.1`, and some clients (Python `httpx`, for example) ignore CIDR entries such as `10.0.0.0/8` in `no_proxy`.
 
 ---
 

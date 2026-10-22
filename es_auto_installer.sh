@@ -49,7 +49,7 @@ readonly SOLUTIONS_BASE=".solutions.yaml"
 readonly SOLUTIONS_SCHEMA=2
 
 readonly YQ_VERSION="v4.53.2"
-readonly KUBECTL_VERSION="v1.36.5"
+readonly KUBECTL_VERSION="v1.35.4"
 readonly HELM_VERSION="v3.20.2"
 
 # Valid CLI actions.

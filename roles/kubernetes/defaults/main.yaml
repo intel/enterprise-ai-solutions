@@ -15,16 +15,14 @@ existing_kubernetes: ""
 kubernetes_skip_if_exists: true
 
 # --- Kubernetes Version (one place to change) ---
-kubernetes_version: "1.36.5"
+kubernetes_version: "1.35.4"
 
 # Minimum K8s minor version required by the stack
 # (sidecar containers, Gateway API, KServe v0.17+, Inference Extension)
 kubernetes_minimum_minor_version: 29
 
 # --- Kubespray ---
-# release-2.32 head (the upcoming v2.32.1): v2.32.0 fails on ansible-core 2.19
-# (kubespray#13557, #13583) and lacks 1.36.5. Switch to the v2.32.1 tag when it lands.
-kubespray_version: "1beca518d6bff72f278579afc637aaab1e345410"
+kubespray_version: "v2.31.0"
 kubespray_repo: "https://github.com/kubernetes-sigs/kubespray.git"
 # Repo-local path — keeps the host footprint inside the project tree.
 # The installer overrides this at runtime via -e kubespray_dir=<SCRIPT_DIR>/.kubespray
