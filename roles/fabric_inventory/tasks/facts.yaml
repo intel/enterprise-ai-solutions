@@ -1,0 +1,75 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# fabric_inventory | facts
+# =============================================================================
+# Exports the rack-scale facts that later roles read (topology, fabric MTU,
+# GPU vendor/model, Ceph networks) and adds the fabric CIDRs to no_proxy.
+# Preflight includes this for every action, so validate, teardown and --only
+# runs see the same values as a full install. Missing or invalid profile: no
+# facts here; install and validate of fabric_inventory report the problem.
+# =============================================================================
+
+- name: "fabric_inventory | facts | Check rack-profile.yaml exists"
+  ansible.builtin.stat:
+    path: "{{ rack_profile_path }}"
+  register: _rack_facts_profile
+
+- name: "fabric_inventory | facts | Load rack-profile.yaml"
+  when: _rack_facts_profile.stat.exists
+  block:
+    - name: "fabric_inventory | facts | Read rack-profile.yaml"
+      ansible.builtin.include_vars:
+        file: "{{ rack_profile_path }}"
+        name: _rack_profile_raw
+
+    - name: "fabric_inventory | facts | Validate rack-profile.yaml"
+      ansible.builtin.set_fact:
+        _rack_facts_valid: "{{ (_rack_profile_raw | rack_profile_validate).valid }}"
+
+    - name: "fabric_inventory | facts | Export"
+      when: _rack_facts_valid | bool
+      block:
+        - name: "fabric_inventory | facts | Parse rack-profile.yaml"
+          ansible.builtin.set_fact:
+            _rack_parsed: "{{ _rack_profile_raw | rack_profile_parse }}"
+
+        - name: "fabric_inventory | facts | Export rack-scale facts"
+          ansible.builtin.set_fact:
+            rack_scale_topology: "{{ _rack_parsed.summary.topology }}"
+            rack_scale_calico_mode: "{{ _rack_parsed.summary.calico_mode }}"
+            rack_scale_fabric_mtu: "{{ _rack_parsed.summary.fabric_mtu }}"
+            rack_scale_gpu_vendor: "{{ _rack_parsed.summary.gpu_vendor }}"
+            rack_scale_gpu_model: "{{ _rack_parsed.summary.gpu_model }}"
+            rack_scale_gpu_form: "{{ _rack_parsed.summary.gpu_form }}"
+            rack_scale_site: "{{ _rack_parsed.summary.site }}"
+            rook_ceph_public_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_public_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
+            rook_ceph_cluster_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_cluster_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
+
+        # Behind a corporate proxy, fabric subnet CIDRs must be in no_proxy or
+        # kubespray and pods can't reach fabric IPs.  The parser computes fabric
+        # supernets; we append them to the operator's no_proxy if it's set.
+
+        - name: "fabric_inventory | facts | Read current no_proxy"
+          ansible.builtin.set_fact:
+            _current_no_proxy: "{{ no_proxy | default('') }}"
+
+        - name: "fabric_inventory | facts | Extract fabric CIDRs from fabric vars"
+          ansible.builtin.set_fact:
+            _fabric_cidrs: "{{ _rack_parsed.fabric_yml | regex_findall('- ([0-9./]+)') }}"
+
+        - name: "fabric_inventory | facts | Append fabric CIDRs to no_proxy"
+          ansible.builtin.set_fact:
+            no_proxy: "{{ (_current_no_proxy.split(',') | map('trim') | select | list + _fabric_cidrs) | unique | join(',') }}"
+          when:
+            - _current_no_proxy | length > 0
+            - _fabric_cidrs | length > 0
+
+        - name: "fabric_inventory | facts | Log no_proxy update"
+          ansible.builtin.debug:
+            msg: "Appended {{ _fabric_cidrs | length }} fabric CIDR(s) to no_proxy: {{ _fabric_cidrs | join(', ') }}"
+          when:
+            - _current_no_proxy | length > 0
+            - _fabric_cidrs | length > 0
