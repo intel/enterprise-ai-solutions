@@ -123,19 +123,17 @@ components:
     enabled: true
     depends_on: []
 
-  # Skipped on OpenShift for now: its main consumer is the observability stack
-  # (Loki/Tempo buckets), which on OpenShift is the cluster's own monitoring and
-  # logging, and its UIDs and namespace still need OpenShift support.
   - name: seaweedfs
     layer: platform
-    enabled: "{{ (object_store_backend | default('seaweedfs')) == 'seaweedfs' and not (cluster_distribution | default('kubernetes') == 'openshift') }}"
+    enabled: "{{ (object_store_backend | default('seaweedfs')) == 'seaweedfs' }}"
     depends_on: [object_store]
 
-  # Skipped on OpenShift for now: metrics and logs belong to the cluster's own
-  # monitoring (openshift-monitoring, user-workload monitoring).
+  # On OpenShift: instances of the operators the admin installed from OperatorHub
+  # (Loki, Logging, Tempo, OpenTelemetry, Grafana), metrics from user-workload
+  # monitoring. See roles/observability/tasks/openshift.yaml.
   - name: observability
     layer: platform
-    enabled: "{{ observability_enabled | default(true) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    enabled: "{{ observability_enabled | default(true) | bool }}"
     depends_on: [cert_manager, metallb, seaweedfs]
 
   - name: velero

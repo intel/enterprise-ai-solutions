@@ -1,3 +1,7 @@
 ---
 - name: "observability | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
+  ansible.builtin.include_tasks:
+    file: >-
+      {{ 'openshift.yaml' if cluster_distribution | default('kubernetes') == 'openshift' and component_action == 'install'
+         else 'openshift_validate.yaml' if cluster_distribution | default('kubernetes') == 'openshift' and component_action == 'validate'
+         else component_action ~ '.yaml' }}
