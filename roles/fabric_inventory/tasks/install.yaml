@@ -282,6 +282,7 @@
   ansible.builtin.set_fact:
     rack_scale_topology: "{{ _rack_parsed.summary.topology }}"
     rack_scale_calico_mode: "{{ _rack_parsed.summary.calico_mode }}"
+    rack_scale_fabric_mtu: "{{ _rack_parsed.summary.fabric_mtu }}"
     rack_scale_gpu_vendor: "{{ _rack_parsed.summary.gpu_vendor }}"
     rack_scale_gpu_model: "{{ _rack_parsed.summary.gpu_model }}"
     rack_scale_gpu_form: "{{ _rack_parsed.summary.gpu_form }}"

@@ -1239,6 +1239,7 @@ def _build_summary(ctx):
         "site": ctx["site_name"],
         "topology": ctx["topology"],
         "calico_mode": ctx["calico_mode"],
+        "fabric_mtu": ctx["fabric_mtu"],
         "node_count": len(all_nodes),
         "gpu_vendor": gpu_vendor,
         "gpu_model": gpu_model,

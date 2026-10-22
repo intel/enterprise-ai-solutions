@@ -10,8 +10,14 @@
 # Checks per topology:
 #   Star:  hub ip_forward, rp_filter, iptables FORWARD, persistence
 #   Clos:  BIRD daemon, ECMP hash policy, BGP Established, bird routes
-#   Both:  jumbo MTU (8950-byte ping), NIC MTU & speed, spoke-to-spoke ping,
-#          fabric IP reachability from deploy node
+#   L2:    Calico node-to-node mesh Established (only with calico_mode: bgp)
+#   All:   declared fabric NICs (up, carrier, MTU, address), don't-fragment
+#          ping at the fabric MTU, spoke-to-spoke ping, fabric IP reachability
+#          from the deploy node
+#
+# The NICs come from rack-profile.yaml (node_fabric_nics on each host) and the
+# MTU from network.mtu (rack_scale_fabric_mtu), so a 1500-byte fabric is
+# checked at 1500, not at a hard-coded 9000.
 
 # ─── Skip fabric checks when topology=none ─────────────────────────────────
 # No fabric to validate — jump straight to node labels.
@@ -76,9 +82,16 @@
       set -euo pipefail
       HN=$(hostname -s)
       ERRORS=0
+      {% set topo = rack_scale_topology | default('star') %}
+      {% set fabric_mtu = rack_scale_fabric_mtu | int %}
+      {% set peer_hosts = groups.get('k8s_cluster', []) | difference([item]) %}
+
+      # grep -c prints the count (0 included) and exits 1 when nothing matches;
+      # "|| true" keeps that from aborting the script.  "|| echo 0" would print
+      # a second 0 and turn every failed check into a pass.
 
       # --- Star topology: hub checks ---
-      {% if rack_scale_topology | default('star') == 'star' %}
+      {% if topo == 'star' %}
       {% if 'fabric_routers' in groups and item in groups.get('fabric_routers', []) %}
       IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "0")
       if [ "$IP_FWD" != "1" ]; then
@@ -96,7 +109,7 @@
         echo "OK: rp_filter=2 on hub $HN"
       fi
 
-      FWD_RULES=$(iptables -S FORWARD 2>/dev/null | grep -c ACCEPT || echo "0")
+      FWD_RULES=$(iptables -S FORWARD 2>/dev/null | grep -c ACCEPT || true)
       if [ "$FWD_RULES" -eq 0 ]; then
         echo "FAIL: no iptables FORWARD ACCEPT rules on hub $HN"
         ERRORS=$((ERRORS+1))
@@ -104,7 +117,7 @@
         echo "OK: $FWD_RULES iptables FORWARD ACCEPT rules on hub $HN"
       fi
 
-      PERSIST=$(iptables-save 2>/dev/null | grep -c 'FORWARD.*ACCEPT' || echo "0")
+      PERSIST=$(iptables-save 2>/dev/null | grep -c 'FORWARD.*ACCEPT' || true)
       if [ "$PERSIST" -eq 0 ]; then
         echo "FAIL: iptables rules not persisted on hub $HN"
         ERRORS=$((ERRORS+1))
@@ -115,7 +128,7 @@
       {% endif %}
 
       # --- Clos topology checks ---
-      {% if rack_scale_topology | default('star') == 'clos' %}
+      {% if topo == 'clos' %}
       BIRD=$(systemctl is-active bird 2>/dev/null || echo "inactive")
       if [ "$BIRD" != "active" ]; then
         echo "FAIL: BIRD daemon $BIRD on $HN"
@@ -132,7 +145,7 @@
         echo "OK: ECMP hash policy=1 on $HN"
       fi
 
-      BIRD_ROUTES=$(ip route show proto bird 2>/dev/null | grep -cv 'blackhole' || echo "0")
+      BIRD_ROUTES=$(ip route show proto bird 2>/dev/null | grep -cv 'blackhole' || true)
       if [ "$BIRD_ROUTES" -eq 0 ]; then
         echo "FAIL: no BIRD routes on $HN"
         ERRORS=$((ERRORS+1))
@@ -141,46 +154,87 @@
       fi
       {% endif %}
 
-      # --- Jumbo MTU test (both topologies) ---
-      {% set mtu_target_group = 'fabric_routers' if (rack_scale_topology | default('star')) == 'star' else 'all' %}
-      {% set mtu_candidates = groups.get(mtu_target_group, groups.get('all', [])) %}
-      {% if mtu_candidates | length > 0 %}
-      {% set mtu_peer = mtu_candidates | first %}
-      MTU_IP="{{ hostvars[mtu_peer].access_ip | default('') }}"
-      if [ "$HN" = "{{ hostvars[mtu_peer].node_hostname | default(mtu_peer) }}" ]; then
-        {% set alt_peers = groups.get('all', []) | difference([mtu_peer]) %}
-        {% if alt_peers | length > 0 %}
-        MTU_IP="{{ hostvars[alt_peers | first].access_ip | default('') }}"
-        {% else %}
-        MTU_IP=""
-        {% endif %}
-      fi
-      if [ -n "$MTU_IP" ]; then
-        if ping -M do -s {{ rack_scale_validate_mtu_size }} -c 2 -W 5 "$MTU_IP" >/dev/null 2>&1; then
-          echo "OK: jumbo frame ({{ rack_scale_validate_mtu_size }}B) to $MTU_IP from $HN"
+      # --- L2 with calico_mode: bgp — node-to-node mesh over the fabric ---
+      {% if topo == 'l2' and (rack_scale_calico_mode | default('')) == 'bgp' %}
+      if command -v calicoctl >/dev/null 2>&1; then
+        MESH_EST=$(calicoctl node status 2>/dev/null | grep 'node-to-node mesh' | grep -c 'Established' || true)
+        if [ "$MESH_EST" -eq {{ peer_hosts | length }} ]; then
+          echo "OK: BGP node mesh Established on $HN ($MESH_EST/{{ peer_hosts | length }})"
         else
-          echo "FAIL: jumbo frame ({{ rack_scale_validate_mtu_size }}B) to $MTU_IP from $HN — check switch/NIC MTU >= 9000"
+          echo "FAIL: BGP node mesh on $HN: $MESH_EST/{{ peer_hosts | length }} Established — check TCP 179 between fabric addresses"
+          ERRORS=$((ERRORS+1))
+        fi
+      else
+        # calicoctl not on this node: Calico's BIRD still installs the routes
+        # it learns over the mesh with proto bird.
+        MESH_ROUTES=$(ip route show proto bird 2>/dev/null | grep -cv 'blackhole' || true)
+        if [ "$MESH_ROUTES" -gt 0 ]; then
+          echo "OK: $MESH_ROUTES routes learned over the BGP node mesh on $HN (calicoctl not found)"
+        else
+          echo "FAIL: no routes learned over the BGP node mesh on $HN — check TCP 179 between fabric addresses"
           ERRORS=$((ERRORS+1))
         fi
       fi
       {% endif %}
 
-      # --- NIC MTU & speed ---
-      MTU_BAD=""
+      # --- Don't-fragment ping at the fabric MTU (skipped at 1500 or less) ---
+      # Star: spokes ping the hub, the hub pings a spoke.  Otherwise any peer.
+      {% if fabric_mtu > 1500 and peer_hosts | length > 0 %}
+      {% set routers = groups.get('fabric_routers', []) | difference([item]) %}
+      {% set mtu_peer = routers | first if (topo == 'star' and routers | length > 0) else peer_hosts | first %}
+      MTU_IP="{{ hostvars[mtu_peer].access_ip | default('') }}"
+      if [ -n "$MTU_IP" ]; then
+        if ping -M do -s {{ rack_scale_validate_mtu_size }} -c 2 -W 5 "$MTU_IP" >/dev/null 2>&1; then
+          echo "OK: MTU {{ fabric_mtu }} don't-fragment ping ({{ rack_scale_validate_mtu_size }}B) to $MTU_IP from $HN"
+        else
+          echo "FAIL: MTU {{ fabric_mtu }} don't-fragment ping ({{ rack_scale_validate_mtu_size }}B) to $MTU_IP from $HN — check switch and NIC MTU"
+          ERRORS=$((ERRORS+1))
+        fi
+      fi
+      {% endif %}
+
+      # --- Fabric NICs: present, up, carrier, MTU, address ---
+      {% set fabric_nics = hostvars[item].node_fabric_nics | default([]) %}
+      NIC_BAD=""
+      {% if fabric_nics | length > 0 %}
+      {% for fn in fabric_nics %}
+      DEV="{{ fn.nic }}"
+      if [ ! -e "/sys/class/net/$DEV" ]; then
+        NIC_BAD="${NIC_BAD}${DEV}:missing "
+      else
+        STATE=$(cat "/sys/class/net/$DEV/operstate" 2>/dev/null || echo "?")
+        CARRIER=$(cat "/sys/class/net/$DEV/carrier" 2>/dev/null || echo "0")
+        MTU=$(cat "/sys/class/net/$DEV/mtu" 2>/dev/null || echo "?")
+        if [ "$STATE" != "up" ] || [ "$CARRIER" != "1" ]; then
+          NIC_BAD="${NIC_BAD}${DEV}:state=${STATE},carrier=${CARRIER} "
+        fi
+        if [ "$MTU" != "{{ fabric_mtu }}" ]; then
+          NIC_BAD="${NIC_BAD}${DEV}:mtu=${MTU}(want {{ fabric_mtu }}) "
+        fi
+        ADDRS=" $(ip -o -4 addr show dev "$DEV" 2>/dev/null || true) "
+        case "$ADDRS" in
+          *" {{ fn.fabric_ip }}/"*) ;;
+          *) NIC_BAD="${NIC_BAD}${DEV}:no {{ fn.fabric_ip }} " ;;
+        esac
+      fi
+      {% endfor %}
+      {% else %}
+      # No fabric NICs declared for this node: check every up, non-management NIC.
       for DEV in $(ip -o link show up | awk -F': ' '{print $2}' | grep -v 'lo\|cali\|vxlan\|tunl\|docker\|br-\|veth'); do
         MTU=$(cat /sys/class/net/$DEV/mtu 2>/dev/null || echo "?")
         SPEED=$(cat /sys/class/net/$DEV/speed 2>/dev/null || echo "?")
         [ "$SPEED" = "-1" ] && SPEED="virtual"
-        IS_MGMT=$(ip route show default | grep -c "$DEV" || echo "0")
-        if [ "$MTU" != "9000" ] && [ "$SPEED" != "virtual" ] && [ "$SPEED" != "?" ] && [ "$IS_MGMT" = "0" ]; then
-          MTU_BAD="${MTU_BAD}${DEV}:mtu=${MTU} "
+        IS_MGMT=$(ip route show default | grep -c "dev $DEV " || true)
+        if [ "$MTU" != "{{ fabric_mtu }}" ] && [ "$SPEED" != "virtual" ] && [ "$SPEED" != "?" ] && [ "$IS_MGMT" -eq 0 ]; then
+          NIC_BAD="${NIC_BAD}${DEV}:mtu=${MTU}(want {{ fabric_mtu }}) "
         fi
       done
-      if [ -n "$MTU_BAD" ]; then
-        echo "FAIL: fabric NIC MTU != 9000 on $HN: $MTU_BAD"
+      {% endif %}
+      if [ -n "$NIC_BAD" ]; then
+        echo "FAIL: fabric NICs on $HN: $NIC_BAD"
         ERRORS=$((ERRORS+1))
       else
-        echo "OK: all fabric NIC MTU=9000 on $HN"
+        echo "OK: fabric NICs up with MTU {{ fabric_mtu }} on $HN"
       fi
 
       # --- Spoke-to-spoke ping ---
