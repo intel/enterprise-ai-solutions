@@ -143,7 +143,6 @@ def generate_node_balloon_types(pkg_node):
         for node in pkg_node[pkg]:
             node_balloon_types.append(f"""
             |- name: pkg{pkg}node{node}
-            |  pinMemory: true
             |  preferCloseToDevices:
             |  - /sys/devices/system/node/node{node}
             """)
