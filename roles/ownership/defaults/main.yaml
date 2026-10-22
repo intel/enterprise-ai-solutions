@@ -1,0 +1,57 @@
+---
+# =============================================================================
+# Ownership Role Defaults
+# =============================================================================
+# Labels every object a component creates, so teardown can delete exactly those.
+# site.yaml and run_component.yaml call it around every component of every layer;
+# no other role needs to know about it.
+# =============================================================================
+
+ownership_enabled: true
+
+# Label keys: <prefix>/env, <prefix>/layer, <prefix>/component. Teardown matches on
+# env + component, so two envs on one cluster never remove each other's objects.
+ownership_label_prefix: "ai-solutions.intel.com"
+
+# UIDs of the objects already on the cluster, rewritten after every component, and
+# the component that runs now (cleared once it is labelled).
+ownership_state_file: "{{ tmp_dir | default(playbook_dir ~ '/../env/local/logs/tmp') }}/ownership-uids.json"
+
+# Field managers of the installer's own tools. An object that appeared during a
+# component is only labelled if one of these wrote it, so objects an operator
+# creates in parallel are left alone.
+ownership_managers:
+  - helm                         # kubernetes.core.helm (chart objects)
+  - Helm                         # Helm release secrets
+  - OpenAPI-Generator            # kubernetes.core.k8s
+  - kubectl
+  - kubectl-client-side-apply
+  - kubectl-create
+  - oc
+  - model-manager
+  - ai-solutions-envoy-gateway   # envoy_gateway: server-side apply of its CRDs (envoy_gateway_crds_field_manager)
+  - erag-app-apisix              # erag app_apisix: server-side apply of its CRDs (apisix_crds_field_manager)
+  - cert-manager-certificates-issuing  # the Secret of a Certificate the component created
+
+# Never listed: high-churn objects that always have an owner, and APIs that are
+# slow or unsafe to list.
+ownership_skip_resources:
+  - events
+  - events.events.k8s.io
+  - pods
+  - replicasets.apps
+  - controllerrevisions.apps
+  - endpoints
+  - endpointslices.discovery.k8s.io
+  - leases.coordination.k8s.io
+  - packagemanifests.packages.operators.coreos.com
+
+# Objects that may already be there when a component adds labels to them (a
+# Namespace it does not own, a Node). The label pass records what it added on the
+# object; teardown puts the old values back.
+ownership_restore_resources:
+  - namespaces
+  - nodes
+
+# Seconds teardown waits for each delete phase (finalizers, namespace deletion).
+ownership_delete_timeout: 600
