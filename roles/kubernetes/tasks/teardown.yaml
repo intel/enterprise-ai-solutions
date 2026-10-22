@@ -146,7 +146,8 @@
   changed_when: "'added' in _hostname_fix.stdout"
 
 # ─── Remove Kata Containers leftovers from the nodes ───────────────────
-# Only once the cluster is down; best-effort, a failed node is reported.
+# Only with Kata enabled and once the cluster is down (shims and microVMs can outlive
+# kubespray reset); best-effort, a failed node is reported.
 
 - name: "kubernetes | teardown | Compute cluster node list"
   ansible.builtin.set_fact:
@@ -156,7 +157,9 @@
          | unique }}
 
 - name: "kubernetes | teardown | Remove Kata Containers leftovers from the nodes"
-  when: _cluster_alive.rc != 0
+  when:
+    - kata_containers_enabled | default(false) | bool
+    - _cluster_alive.rc != 0
   block:
     - name: "kubernetes | teardown | Stop orphaned Kata shims and microVMs"
       ansible.builtin.shell:
