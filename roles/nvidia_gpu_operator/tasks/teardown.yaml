@@ -35,3 +35,17 @@
         kind: Namespace
         state: absent
       failed_when: false
+
+    # helm uninstall leaves the chart's CRDs behind. The NFD CRDs it also
+    # ships belong to node_feature_discovery unless the bundled NFD was used.
+    - name: "nvidia_gpu_operator | teardown | nvidia | Delete CRDs"
+      kubernetes.core.k8s:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        state: absent
+      loop: >-
+        {{ ['clusterpolicies.nvidia.com', 'nvidiadrivers.nvidia.com']
+           + (['nodefeatures.nfd.k8s-sigs.io', 'nodefeaturerules.nfd.k8s-sigs.io', 'nodefeaturegroups.nfd.k8s-sigs.io']
+              if nvidia_gpu_operator_nfd_enabled | bool else []) }}
+      failed_when: false
