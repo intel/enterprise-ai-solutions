@@ -123,12 +123,13 @@ components:
     enabled: "{{ velero_enabled | default(false) | bool }}"
     depends_on: []
 
-  # Kubernetes web UI; people sign in through Keycloak (platform realm).
+  # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on
+  # OpenShift, whose console covers it.
   # teardown both: its own teardown also resets the API server trust on the nodes.
   - name: headlamp
     layer: platform
     teardown: both
-    enabled: "{{ headlamp_enabled | default(false) | bool }}"
+    enabled: "{{ headlamp_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [cert_manager, gateway, keycloak]
 
   # --- Inference ---
