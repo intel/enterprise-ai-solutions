@@ -43,19 +43,73 @@
   when: not item.stat.exists
 
 # Preflight, before anything is written: the fabric step configures NICs only
-# through netplan, with one renderer for the whole cluster. A node without
-# netplan (e.g. RHEL), or whose fabric NICs are owned by a different renderer,
-# used to fail later with a misleading "address not present" error.
+# through netplan. A node without netplan (e.g. RHEL), or with a second
+# configuration for a fabric NIC, used to fail later with a misleading
+# "address not present" error.
+#
+# NetworkManager running next to networkd is fine: for renderer networkd,
+# netplan also tells NetworkManager to leave the fabric NICs alone, so
+# NetworkManager can keep the node's other NICs. What conflicts is a saved
+# NetworkManager profile that names a fabric NIC: a 90-NM-*.yaml (where nmcli
+# saves profiles on Ubuntu 24.04) or a keyfile. Check the saved configuration,
+# not NetworkManager's device state: NetworkManager also takes idle NICs that
+# nothing configures, and when it is disabled it only runs after a netplan
+# apply, so its device state changes between runs.
 - name: "fabric_netplan | Probe netplan and NetworkManager on each node"
+  vars:
+    _fabric_nics: >-
+      {{ (lookup('file', rack_scale_netplan_dir ~ '/' ~ (hostvars[item].node_hostname | default(item)) ~ '.yaml') | from_yaml).network.ethernets
+         | default({}) | list }}
   ansible.builtin.shell: |
-    set -o pipefail
-    command -v netplan >/dev/null 2>&1 && echo "netplan=yes" || echo "netplan=no"
-    systemctl is-active --quiet NetworkManager 2>/dev/null && echo "nm=active" || echo "nm=inactive"
-    if command -v nmcli >/dev/null 2>&1; then
-      nmcli -t -f DEVICE,STATE device status 2>/dev/null | sed 's/^/nmdev=/' || true
-    fi
+    command -v netplan >/dev/null 2>&1 || { echo "netplan=no"; exit 0; }
+    echo "netplan=yes"
+    echo "nm_enabled=$(systemctl is-enabled NetworkManager 2>/dev/null || true)"
+    python3 -I - {{ _fabric_nics | map('quote') | join(' ') }} <<'PY'
+    import configparser, fnmatch, glob, os, sys, yaml
+    nics = sys.argv[1:]
+    macs = {}
+    for n in nics:
+        try:
+            macs[n] = open('/sys/class/net/%s/address' % n).read().strip().lower()
+        except OSError:
+            pass
+    def claimed(name, mac):
+        mac = (mac or '').lower()
+        return [n for n in nics
+                if (name and fnmatch.fnmatchcase(n, name)) or (mac and macs.get(n) == mac)]
+    # netplan definitions rendered by NetworkManager, other than the fabric file
+    for f in sorted(glob.glob('/lib/netplan/*.yaml') + glob.glob('/etc/netplan/*.yaml')
+                    + glob.glob('/run/netplan/*.yaml')):
+        if os.path.basename(f) in ('{{ rack_scale_netplan_dest | basename }}', '60-fabric.yaml'):
+            continue
+        try:
+            net = (yaml.safe_load(open(f)) or {}).get('network') or {}
+        except Exception:
+            continue
+        eths = net.get('ethernets') or {}
+        for dev, d in eths.items():
+            if not isinstance(d, dict):
+                continue
+            if (d.get('renderer') or eths.get('renderer') or net.get('renderer')) != 'NetworkManager':
+                continue
+            m = d.get('match') or {}
+            for n in claimed(m.get('name') if m else dev, m.get('macaddress')):
+                print("nmprof=%s in %s (profile '%s')" % (n, f, (d.get('networkmanager') or {}).get('name', dev)))
+    # NetworkManager keyfiles
+    for f in sorted(glob.glob('/etc/NetworkManager/system-connections/*')):
+        c = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            c.read(f)
+        except Exception:
+            continue
+        for n in claimed(c.get('connection', 'interface-name', fallback=None),
+                         c.get('ethernet', 'mac-address', fallback=None)):
+            name = c.get('connection', 'id', fallback=os.path.basename(f))
+            print("nmprof=%s in %s (profile '%s')" % (n, f, name))
+    PY
   args:
     executable: /bin/bash
+  become: true
   delegate_to: "{{ item }}"
   loop: "{{ _fabric_all_nodes }}"
   loop_control:
@@ -77,47 +131,40 @@
   loop_control:
     label: "{{ item.item }}"
 
-# nmcli -t prints DEVICE:STATE. "unmanaged" and "connected (externally)" mean
-# another renderer owns the device; any other state means NetworkManager does.
-- name: "fabric_netplan | Fail if NetworkManager owns a fabric NIC but the renderer is networkd"
+- name: "fabric_netplan | Fail if a saved NetworkManager profile configures a fabric NIC"
   vars:
-    _spec: "{{ lookup('file', rack_scale_netplan_dir ~ '/' ~ (hostvars[item.item].node_hostname | default(item.item)) ~ '.yaml') | from_yaml }}"
-    _nm_nics: >-
-      {{ item.stdout_lines | select('match', '^nmdev=') | map('regex_replace', '^nmdev=', '')
-         | reject('match', '^[^:]*:(unmanaged|connected \(externally\))$')
-         | map('regex_replace', ':.*$', '')
-         | select('in', (_spec.network.ethernets | default({})) | list) | list }}
+    # "<nic> in <file> (profile '<name>')"
+    _nm_profiles: "{{ item.stdout_lines | select('match', '^nmprof=') | map('regex_replace', '^nmprof=', '') | list }}"
   ansible.builtin.fail:
     msg: >-
       On {{ item.item }} ({{ hostvars[item.item].node_hostname | default(item.item) }})
-      NetworkManager manages fabric NIC(s) {{ _nm_nics | join(', ') }}, but
-      network.netplan_renderer in rack-profile.yaml is 'networkd'. The renderer
-      applies to the whole cluster and must match the renderer that manages the
-      fabric NICs on every node. Set netplan_renderer: NetworkManager only if
-      every node uses NetworkManager for its fabric NICs; a cluster with mixed
-      renderers is not supported.
-  when:
-    - (_spec.network.renderer | default('networkd')) == 'networkd'
-    - "'nm=active' in item.stdout_lines"
-    - _nm_nics | length > 0
+      a saved NetworkManager profile configures a fabric NIC:
+      {{ _nm_profiles | join('; ') }}. This step writes the fabric NIC
+      configuration itself ({{ rack_scale_netplan_dest }}), and two
+      configurations for one NIC conflict. Delete the profile (nmcli connection
+      delete '<profile>', or remove the file if NetworkManager is not running)
+      and re-run. NetworkManager can keep managing the node's other NICs.
+  when: _nm_profiles | length > 0
   loop: "{{ _netplan_probe.results }}"
   loop_control:
     label: "{{ item.item }}"
 
-- name: "fabric_netplan | Fail if the renderer is NetworkManager but it is not running"
+# A disabled NetworkManager still runs after a netplan apply, but not after a
+# reboot, so the fabric would come up now and be gone after the next boot.
+- name: "fabric_netplan | Fail if the renderer is NetworkManager but it is not enabled"
   vars:
     _spec: "{{ lookup('file', rack_scale_netplan_dir ~ '/' ~ (hostvars[item.item].node_hostname | default(item.item)) ~ '.yaml') | from_yaml }}"
   ansible.builtin.fail:
     msg: >-
       network.netplan_renderer in rack-profile.yaml is 'NetworkManager', but
-      NetworkManager is not running on {{ item.item }}
-      ({{ hostvars[item.item].node_hostname | default(item.item) }}). The renderer
-      applies to the whole cluster and must match every node. Use 'networkd' if
-      the nodes use systemd-networkd; a cluster with mixed renderers is not
-      supported.
+      NetworkManager is not enabled on {{ item.item }}
+      ({{ hostvars[item.item].node_hostname | default(item.item) }}), so the
+      fabric NICs would not come up after a reboot. Enable it (systemctl enable
+      NetworkManager), or use 'networkd', which works whether or not
+      NetworkManager runs for the node's other NICs.
   when:
     - (_spec.network.renderer | default('networkd')) == 'NetworkManager'
-    - "'nm=active' not in item.stdout_lines"
+    - "'nm_enabled=enabled' not in item.stdout_lines"
   loop: "{{ _netplan_probe.results }}"
   loop_control:
     label: "{{ item.item }}"

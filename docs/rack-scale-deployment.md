@@ -54,9 +54,13 @@ failed rack-scale install.
   configuration, an old `/etc/netplan/99-fabric.yaml` with its fabric
   addresses, and Ceph signatures on the storage disks. Re-image it, or clean
   that state first.
-- **One renderer for the fabric NICs:** `network.netplan_renderer` applies to
-  every node. With the default `networkd`, NetworkManager must not manage any
-  fabric NIC; the fabric step checks this and stops early.
+- **Fabric NICs configured only by the fabric step:** `network.netplan_renderer`
+  sets the renderer for the fabric NICs on every node. Keep the default
+  `networkd`: it works whether or not NetworkManager runs for a node's other
+  NICs, because netplan then tells NetworkManager to leave the fabric NICs
+  alone. No saved NetworkManager profile may configure a fabric NIC; the
+  fabric step stops early and names the profile if one does. Use
+  `NetworkManager` only if it is enabled on every node.
 - **Storage disks:** the disks listed for Ceph must be empty, not mounted, and
   not the OS disk. NVMe device names can change across reboots, so check
   `lsblk` on each node right before deploying.
@@ -130,7 +134,7 @@ network:
   service_cidr: 10.233.0.0/18
   mtu: 9000                  # jumbo frames — must match switch and NIC config
   fabric_prefix: 30          # /30 for star point-to-point, /16 for clos
-  netplan_renderer: networkd # networkd | NetworkManager
+  netplan_renderer: networkd # or NetworkManager — only if it is enabled on every node
   control_plane_on_fabric: true  # bind kubelet + etcd to fabric IP (recommended)
 ```
 
