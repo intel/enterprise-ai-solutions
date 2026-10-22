@@ -32,13 +32,40 @@ Four topologies are supported from the same `rack-profile.yaml` schema:
 
 ## Prerequisites
 
-- All [standard ai-solutions prerequisites](GETTING_STARTED_RAG_DEV.md#prerequisites)
+- All [standard ai-solutions prerequisites](quickstart/prerequisites.md)
+- **Ubuntu 22.04 or 24.04 LTS on every node:** the fabric is configured through
+  netplan, so RHEL and Rocky Linux nodes are not supported for rack-scale, even
+  though the base installer supports them. The fabric step stops before writing
+  anything if a node has no netplan.
 - **Hardware:** 100G NICs on all nodes (check with `ip link show`)
   - Star: direct cables between hub and each node
   - Clos: cables to ToR leaf switches
 - **Network plan:** fabric IP addresses, subnet layout, cable map
 - **Storage (optional):** raw NVMe devices for Ceph OSDs (not the OS disk)
 - **GPU (optional):** nodes with NVIDIA GPUs (Intel GPU support follows with the generic GPU enablement, planner epic B2)
+
+### Node readiness
+
+Check every node before deploying. Reused nodes are the most common cause of a
+failed rack-scale install.
+
+- **Clean nodes:** start from a fresh OS install. A node that was part of
+  another cluster can carry kubelet and etcd state, `/etc/kubernetes`, CNI
+  configuration, an old `/etc/netplan/99-fabric.yaml` with its fabric
+  addresses, and Ceph signatures on the storage disks. Re-image it, or clean
+  that state first.
+- **One renderer for the fabric NICs:** `network.netplan_renderer` applies to
+  every node. With the default `networkd`, NetworkManager must not manage any
+  fabric NIC; the fabric step checks this and stops early.
+- **Storage disks:** the disks listed for Ceph must be empty, not mounted, and
+  not the OS disk. NVMe device names can change across reboots, so check
+  `lsblk` on each node right before deploying.
+- **Healthy package state:** no half-installed or failed packages, for example
+  DKMS modules that do not build against the running kernel.
+- **GPU nodes:** the GPU operator installs the NVIDIA driver
+  (`nvidia_gpu_operator_driver_enabled: true`) or uses a driver already
+  installed on the host, which it detects. On HGX systems with a host driver,
+  NVIDIA Fabric Manager must also be installed and running on the host.
 
 ---
 
@@ -295,17 +322,35 @@ but limited to a single switch domain.
 
 | Mode | Backend | Encapsulation | MTU | Use when |
 |------|---------|--------------|-----|----------|
-| `vxlan` | VXLAN | Always | fabric MTU - 50 | Simple, works everywhere |
-| `bgp` | bird | None (native) | full fabric MTU | Maximum throughput — nodes exchange pod routes directly over L2 |
+| `bgp` (recommended) | bird | None (native) | full fabric MTU | Default for L2 — nodes exchange pod routes directly over the segment |
+| `vxlan` | VXLAN | Always | fabric MTU - 50 | The switch drops traffic from IPs it did not assign (e.g. IP source guard), or you otherwise need an overlay |
 
-With `calico_mode: bgp` on L2, Calico uses **node-to-node mesh** (all nodes peer with each other) instead of the Clos model (per-node ToR peering). No `leafs:` block needed.
+With `calico_mode: bgp` on L2, Calico uses **node-to-node mesh** (all nodes peer with each other) instead of the Clos model (per-node ToR peering). BGP runs only between the nodes — the switch is never a peer, so no `BGPPeer` CRDs are generated and `ecmp_nodes` is empty. The mesh is one session per node pair, which is fine at rack scale; past roughly 100 nodes, move to Clos with ToR peering. No `leafs:` block needed.
+
+```
+   ┌────────────── L2 fabric switch (one VLAN, MTU 9000) ──────────────┐
+   └─────────┬─────────────────────┬─────────────────────┬─────────────┘
+             │                     │                     │
+     master1 ens786f0np0   master2 ens786f0np0   worker1 ens786f0np0
+       10.201.1.1/16          10.201.1.2/16          10.201.1.3/16
+
+  routes:   none — 10.201.0.0/16 is on-link on every node
+  pod CIDR: 10.244.x.0/24 via 10.201.1.x (learned from the Calico node mesh)
+```
+
+> [!Note]
+> **One fabric NIC per node on the segment.** Two NICs on the same node in the
+> same subnet give the kernel two connected routes to one prefix, and the
+> parser rejects the profile as ambiguous. The generated netplan configures
+> plain `ethernets:` only — host bonds are not generated, so L2 has no
+> multi-uplink redundancy today. If you need dual uplinks, use Clos.
 
 **Key fields:**
 
 ```yaml
 network:
   topology: l2
-  calico_mode: vxlan       # or bgp for native routing
+  calico_mode: bgp         # or vxlan when the switch needs an overlay
   fabric_prefix: 16
   mtu: 9000
   control_plane_on_fabric: true
