@@ -129,9 +129,11 @@ components:
     enabled: "{{ observability_enabled | default(true) | bool }}"
     depends_on: [cert_manager, metallb, seaweedfs]
 
+  # depends_on orders, it does not gate: a disabled observability component
+  # does not disable this one, so it is gated on observability_enabled too.
   - name: gpu_observability
     layer: platform
-    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) }}"
     depends_on: [observability]
 
   - name: velero
