@@ -20,7 +20,7 @@
     secure_logs: false
     helm_timeout: "600s"
     helm_wait: true
-    helm_retries: 5               # chart downloads through corporate proxies fail intermittently
+    helm_retries: 3
   environment:
     http_proxy: "{{ http_proxy | default('') }}"
     https_proxy: "{{ https_proxy | default('') }}"
