@@ -66,8 +66,8 @@
 # ── OpenShift: settings the platform decides ─────────────────────────────────
 # One global_config.yaml serves both platforms. global_config.yaml is passed as
 # extra vars, which set_fact cannot override, so the components that the cluster
-# provides are gated off in components.yaml (istio and observability among them,
-# whatever istio_enabled and observability_enabled say), roles pick their
+# provides are gated off in components.yaml (istio among them, whatever
+# istio_enabled says; observability uses the cluster's operators), roles pick their
 # vars/<cluster_distribution>.yaml, and storage is mapped in storage/tasks/resolve.yaml.
 # istio_enabled stays true by default on both: on OpenShift it only labels namespaces
 # for the cluster's Service Mesh 3, which the warning below points out.

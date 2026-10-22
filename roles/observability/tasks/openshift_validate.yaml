@@ -1,0 +1,56 @@
+---
+# =============================================================================
+# Observability — Validate on OpenShift (instances from tasks/openshift.yaml)
+# =============================================================================
+
+- name: "observability | openshift | Check the instances"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ observability_namespace }}"
+  register: _obs_os_instances
+  loop:
+    - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki, condition: Ready}
+    - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready}
+    - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo, condition: Ready}
+    - {api_version: apps/v1, kind: Deployment, name: opentelemetry-collector, condition: Available}
+    - {api_version: apps/v1, kind: Deployment, name: "{{ observability_openshift_grafana_name }}-deployment", condition: Available}
+  loop_control:
+    label: "{{ item.kind }} {{ item.name }}"
+
+- name: "observability | openshift | Assert the instances are ready"
+  ansible.builtin.assert:
+    that:
+      - item.resources | length > 0
+      - >-
+        ((item.resources | first).status | default({})).conditions | default([])
+        | selectattr('type', 'equalto', item.item.condition) | selectattr('status', 'equalto', 'True') | list | length > 0
+    fail_msg: "{{ item.item.kind }} {{ observability_namespace }}/{{ item.item.name }} is not {{ item.item.condition }}"
+    success_msg: "{{ item.item.kind }} {{ item.item.name }} {{ item.item.condition }}"
+  loop: "{{ _obs_os_instances.results }}"
+  loop_control:
+    label: "{{ item.item.kind }} {{ item.item.name }}"
+
+- name: "observability | openshift | Check the Grafana datasources"
+  kubernetes.core.k8s_info:
+    api_version: grafana.integreatly.org/v1beta1
+    kind: GrafanaDatasource
+    namespace: "{{ observability_namespace }}"
+  register: _obs_os_datasources
+
+- name: "observability | openshift | Assert the datasources are synced to Grafana"
+  ansible.builtin.assert:
+    that: _obs_os_synced | sort == ['loki', 'prometheus', 'tempo']
+    fail_msg: "Datasources synced to Grafana: {{ _obs_os_synced | join(', ') or 'none' }}; expected loki, prometheus, tempo"
+    success_msg: "Datasources synced: {{ _obs_os_synced | join(', ') }}"
+  vars:
+    _obs_os_synced: >-
+      {%- set names = [] -%}
+      {%- for ds in _obs_os_datasources.resources -%}
+        {%- if (ds.status | default({})).conditions | default([])
+               | selectattr('type', 'equalto', 'DatasourceSynchronized') | selectattr('status', 'equalto', 'True') | list -%}
+          {%- set _ = names.append(ds.metadata.name) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ names }}
