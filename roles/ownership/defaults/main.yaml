@@ -46,5 +46,12 @@ ownership_skip_resources:
   - leases.coordination.k8s.io
   - packagemanifests.packages.operators.coreos.com
 
+# Objects that may already be there when a component adds labels to them (a
+# Namespace it does not own, a Node). The label pass records what it added on the
+# object; teardown puts the old values back.
+ownership_restore_resources:
+  - namespaces
+  - nodes
+
 # Seconds teardown waits for each delete phase (finalizers, namespace deletion).
 ownership_delete_timeout: 600
