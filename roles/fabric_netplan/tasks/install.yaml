@@ -42,6 +42,86 @@
     label: "{{ item.item }}"
   when: not item.stat.exists
 
+# Preflight, before anything is written: the fabric step configures NICs only
+# through netplan, with one renderer for the whole cluster. A node without
+# netplan (e.g. RHEL), or whose fabric NICs are owned by a different renderer,
+# used to fail later with a misleading "address not present" error.
+- name: "fabric_netplan | Probe netplan and NetworkManager on each node"
+  ansible.builtin.shell: |
+    set -o pipefail
+    command -v netplan >/dev/null 2>&1 && echo "netplan=yes" || echo "netplan=no"
+    systemctl is-active --quiet NetworkManager 2>/dev/null && echo "nm=active" || echo "nm=inactive"
+    if command -v nmcli >/dev/null 2>&1; then
+      nmcli -t -f DEVICE,STATE device status 2>/dev/null | sed 's/^/nmdev=/' || true
+    fi
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ item }}"
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _netplan_probe
+  changed_when: false
+  check_mode: false
+
+- name: "fabric_netplan | Fail if netplan is not installed on a node"
+  ansible.builtin.fail:
+    msg: >-
+      netplan is not installed on {{ item.item }}
+      ({{ hostvars[item.item].node_hostname | default(item.item) }}).
+      The rack-scale fabric step configures NICs only through netplan, so this
+      node is not supported. Use Ubuntu 22.04 or 24.04 LTS on every node; see
+      docs/rack-scale-deployment.md (Prerequisites).
+  when: "'netplan=yes' not in item.stdout_lines"
+  loop: "{{ _netplan_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# nmcli -t prints DEVICE:STATE. "unmanaged" and "connected (externally)" mean
+# another renderer owns the device; any other state means NetworkManager does.
+- name: "fabric_netplan | Fail if NetworkManager owns a fabric NIC but the renderer is networkd"
+  vars:
+    _spec: "{{ lookup('file', rack_scale_netplan_dir ~ '/' ~ (hostvars[item.item].node_hostname | default(item.item)) ~ '.yaml') | from_yaml }}"
+    _nm_nics: >-
+      {{ item.stdout_lines | select('match', '^nmdev=') | map('regex_replace', '^nmdev=', '')
+         | reject('match', '^[^:]*:(unmanaged|connected \(externally\))$')
+         | map('regex_replace', ':.*$', '')
+         | select('in', (_spec.network.ethernets | default({})) | list) | list }}
+  ansible.builtin.fail:
+    msg: >-
+      On {{ item.item }} ({{ hostvars[item.item].node_hostname | default(item.item) }})
+      NetworkManager manages fabric NIC(s) {{ _nm_nics | join(', ') }}, but
+      network.netplan_renderer in rack-profile.yaml is 'networkd'. The renderer
+      applies to the whole cluster and must match the renderer that manages the
+      fabric NICs on every node. Set netplan_renderer: NetworkManager only if
+      every node uses NetworkManager for its fabric NICs; a cluster with mixed
+      renderers is not supported.
+  when:
+    - (_spec.network.renderer | default('networkd')) == 'networkd'
+    - "'nm=active' in item.stdout_lines"
+    - _nm_nics | length > 0
+  loop: "{{ _netplan_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "fabric_netplan | Fail if the renderer is NetworkManager but it is not running"
+  vars:
+    _spec: "{{ lookup('file', rack_scale_netplan_dir ~ '/' ~ (hostvars[item.item].node_hostname | default(item.item)) ~ '.yaml') | from_yaml }}"
+  ansible.builtin.fail:
+    msg: >-
+      network.netplan_renderer in rack-profile.yaml is 'NetworkManager', but
+      NetworkManager is not running on {{ item.item }}
+      ({{ hostvars[item.item].node_hostname | default(item.item) }}). The renderer
+      applies to the whole cluster and must match every node. Use 'networkd' if
+      the nodes use systemd-networkd; a cluster with mixed renderers is not
+      supported.
+  when:
+    - (_spec.network.renderer | default('networkd')) == 'NetworkManager'
+    - "'nm=active' not in item.stdout_lines"
+  loop: "{{ _netplan_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: "fabric_netplan | Deploy netplan to each node"
   ansible.builtin.copy:
     content: "{{ lookup('file', rack_scale_netplan_dir ~ '/' ~ hostvars[item].node_hostname ~ '.yaml') }}"
