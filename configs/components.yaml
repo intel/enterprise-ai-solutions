@@ -69,11 +69,21 @@ components:
   # Cannot gate on rack_scale_gpu_vendor here because it's a runtime fact set by
   # fabric_inventory, but the resolver evaluates enabled at preflight (before any role runs).
   # Planned (B2): detect vendors from NFD labels, drop the rack_scale gate, move to the
-  # platform layer after nfd, and set nvidia_gpu_operator_nfd_enabled: false.
-  - name: nvidia_gpu_operator
+  # platform layer after NFD.
+  #
+  # One NFD on rack-scale clusters with NVIDIA GPU nodes, ahead of the GPU operator so
+  # the operator does not bring its own. The inference layer's nfd component finds this
+  # release and skips; without NVIDIA GPUs the role no-ops and the inference layer
+  # installs NFD as before.
+  - name: node_feature_discovery
     layer: infrastructure
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [fabric_validate]
+
+  - name: nvidia_gpu_operator
+    layer: infrastructure
+    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    depends_on: [fabric_validate, node_feature_discovery]
 
   - name: storage
     layer: infrastructure

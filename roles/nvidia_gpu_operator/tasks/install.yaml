@@ -61,6 +61,26 @@
         kind: Namespace
         state: present
 
+    - name: "nvidia_gpu_operator | nvidia | Check for the shared NFD"
+      kubernetes.core.helm_info:
+        name: node-feature-discovery
+        release_namespace: "{{ nfd_namespace | default('node-feature-discovery') }}"
+      register: _gpu_shared_nfd
+      failed_when: false
+      when: not (nvidia_gpu_operator_nfd_enabled | bool)
+
+    - name: "nvidia_gpu_operator | nvidia | Fail if the operator would have no NFD"
+      ansible.builtin.fail:
+        msg: >-
+          The GPU operator's own NFD is off (nvidia_gpu_operator_nfd_enabled: false)
+          and no NFD release was found in namespace
+          '{{ nfd_namespace | default('node-feature-discovery') }}'. Without NFD the
+          operator never finds the GPU nodes. Run the node_feature_discovery
+          component first, or set nvidia_gpu_operator_nfd_enabled: true.
+      when:
+        - not (nvidia_gpu_operator_nfd_enabled | bool)
+        - _gpu_shared_nfd.status is not defined or _gpu_shared_nfd.status is none
+
     - name: "nvidia_gpu_operator | nvidia | Copy DCGM metrics CSV"
       ansible.builtin.copy:
         src: dcgm-metrics.csv

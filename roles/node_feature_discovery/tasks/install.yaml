@@ -1,0 +1,118 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Node Feature Discovery — Install
+# =============================================================================
+# Only on rack-scale clusters with NVIDIA GPU nodes (rack_scale_gpu_vendor ==
+# nvidia). Everywhere else the inference layer installs NFD itself, as before.
+# =============================================================================
+
+- name: "node_feature_discovery | Skip — no NVIDIA GPU nodes"
+  ansible.builtin.debug:
+    msg: "No NVIDIA accelerator in rack-profile.yaml — NFD is left to the inference layer."
+  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
+
+- name: "node_feature_discovery | End role (no NVIDIA GPU)"
+  ansible.builtin.meta: end_role
+  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
+
+- name: "node_feature_discovery | Install"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    # The inference layer's nfd role looks for exactly this release name in
+    # this namespace and skips its own install when it finds it.
+    - name: "node_feature_discovery | Check for existing Helm release"
+      kubernetes.core.helm_info:
+        name: node-feature-discovery
+        release_namespace: "{{ node_feature_discovery_namespace }}"
+      register: _nfd_release
+      failed_when: false
+
+    - name: "node_feature_discovery | Already installed — skipping"
+      ansible.builtin.debug:
+        msg: "NFD already deployed in {{ node_feature_discovery_namespace }} — skipping install."
+      when: _nfd_release.status is defined and _nfd_release.status is not none
+
+    - name: "node_feature_discovery | Deploy"
+      when: _nfd_release.status is not defined or _nfd_release.status is none
+      block:
+        - name: "node_feature_discovery | Add Helm repo"
+          kubernetes.core.helm_repository:
+            name: "{{ node_feature_discovery_helm_repo_name }}"
+            repo_url: "{{ node_feature_discovery_helm_repo }}"
+          register: _nfd_repo
+          until: _nfd_repo is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        # The NFD worker mounts hostPath (/sys, /usr/src) and uses hostNetwork,
+        # so its namespace needs the privileged Pod Security level. Labelled
+        # before the install so the worker pods are admitted.
+        - name: "node_feature_discovery | Label namespace — PSS"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ node_feature_discovery_namespace }}"
+                labels:
+                  pod-security.kubernetes.io/enforce: "privileged"
+                  pod-security.kubernetes.io/audit: "privileged"
+                  pod-security.kubernetes.io/warn: "privileged"
+          when: enforce_pss | default(false) | bool
+
+        # Same values as the inference layer's nfd role, so the labels the
+        # inference layer relies on (cpu-cpuid.AMXBF16, ...) are unchanged.
+        - name: "node_feature_discovery | Install via Helm"
+          kubernetes.core.helm:
+            name: node-feature-discovery
+            chart_ref: "{{ node_feature_discovery_chart }}"
+            chart_version: "{{ node_feature_discovery_version }}"
+            release_namespace: "{{ node_feature_discovery_namespace }}"
+            create_namespace: true
+            wait: true
+            timeout: "5m0s"
+            values:
+              master:
+                resources:
+                  requests:
+                    cpu: "100m"
+                    memory: "128Mi"
+                  limits:
+                    cpu: "500m"
+                    memory: "256Mi"
+              worker:
+                resources:
+                  requests:
+                    cpu: "50m"
+                    memory: "64Mi"
+                  limits:
+                    cpu: "200m"
+                    memory: "128Mi"
+          register: _nfd_install
+          until: _nfd_install is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+    # The GPU operator schedules its operands from the PCI labels the workers
+    # publish, so they must be running on every node before it is installed.
+    - name: "node_feature_discovery | Wait for worker DaemonSet ready"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: node-feature-discovery-worker
+        namespace: "{{ node_feature_discovery_namespace }}"
+      register: _nfd_ds
+      until:
+        - _nfd_ds.resources | default([]) | length > 0
+        - (_nfd_ds.resources[0].status.numberReady | default(0)) == (_nfd_ds.resources[0].status.desiredNumberScheduled | default(0))
+      retries: 30
+      delay: 10
+
+    - name: "node_feature_discovery | ━━━ DONE ━━━"
+      ansible.builtin.debug:
+        msg: "NFD {{ node_feature_discovery_version }} running in '{{ node_feature_discovery_namespace }}' — the GPU operator and the inference layer share it."

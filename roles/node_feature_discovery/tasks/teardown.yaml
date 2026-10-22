@@ -1,0 +1,37 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Node Feature Discovery — Teardown
+# =============================================================================
+# Only where install ran (NVIDIA GPU nodes): on other clusters the release in
+# this namespace belongs to the inference layer, which removes it itself.
+
+- name: "node_feature_discovery | teardown | End role (no NVIDIA GPU)"
+  ansible.builtin.meta: end_role
+  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
+
+- name: "node_feature_discovery | teardown"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "node_feature_discovery | teardown | Remove Helm release"
+      kubernetes.core.helm:
+        name: node-feature-discovery
+        release_namespace: "{{ node_feature_discovery_namespace }}"
+        state: absent
+        wait: true
+      failed_when: false
+
+    - name: "node_feature_discovery | teardown | Remove namespace"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ node_feature_discovery_namespace }}"
+      failed_when: false
+
+    - name: "node_feature_discovery | teardown | Complete"
+      ansible.builtin.debug:
+        msg: "NFD removed from namespace '{{ node_feature_discovery_namespace }}'."

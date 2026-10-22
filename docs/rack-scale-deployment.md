@@ -415,7 +415,8 @@ racks:
 
 **What happens automatically:**
 - Parser detects `accelerator:` → sets `rack_scale_gpu_vendor=nvidia`
-- `nvidia_gpu_operator` role installs the NVIDIA GPU operator (NVIDIA only; other vendors log a warning and get no stack from this role)
+- `node_feature_discovery` installs the cluster's one NFD (release `node-feature-discovery` in namespace `node-feature-discovery`); the inference layer finds it and skips its own NFD
+- `nvidia_gpu_operator` role installs the NVIDIA GPU operator without the chart's bundled NFD (NVIDIA only; other vendors log a warning and get no stack from this role)
 - Node labels applied: `gpu-vendor=nvidia`, `gpu-model=b300`, `gpu-form=hgx`, `gpu-count=8`
 - Inference scheduling and the GPU operator use these labels
 
@@ -496,6 +497,11 @@ fabric_sysctl and fabric_bgp are no-ops (no hub, no ToR peers).
 fabric_inventory → kubernetes → fabric_validate (labels only) → storage
 ```
 fabric_netplan, fabric_sysctl, fabric_bgp all skip. No fabric network — rack-profile used for inventory and GPU labels only.
+
+**With NVIDIA GPU nodes** (any topology), after fabric_validate:
+```
+fabric_validate → node_feature_discovery → nvidia_gpu_operator → storage
+```
 
 **Default (rack_scale_enabled=false):**
 ```
