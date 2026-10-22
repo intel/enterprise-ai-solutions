@@ -257,76 +257,10 @@
 #              Node Exporter (DaemonSet), kube-state-metrics, Grafana
 # =============================================================================
 
-- name: "observability | Grafana sign-in client"
-  when: observability_grafana_sso | bool
-  block:
-    - name: "observability | Keycloak client for Grafana"
-      ansible.builtin.include_role:
-        name: keycloak
-        tasks_from: oidc_client.yaml
-      vars:
-        keycloak_client:
-          id: "{{ observability_grafana_oidc_client_id }}"
-          redirect_uris: ["{{ observability_grafana_url }}/login/generic_oauth", "{{ observability_grafana_url }}/oauth2/callback"]
-          post_logout_uris: ["{{ observability_grafana_url }}/login"]
-
-    - name: "observability | Grafana client secret"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: grafana-sso
-            namespace: "{{ observability_namespace }}"
-          type: Opaque
-          stringData:
-            client-secret: "{{ keycloak_client_secret }}"
-      no_log: true
-
 - name: "observability | Install kube-prometheus-stack"
   when: _obs_prom_release.status is not defined or _obs_prom_release.status is none
   block:
     - name: "observability | Deploy kube-prometheus-stack"
-      vars:
-        _ini:
-          # Serves under its path in path mode; the gateway passes it through.
-          server:
-            root_url: "{{ observability_grafana_url }}/"
-            serve_from_sub_path: "{{ _obs_grafana_path_mode | bool }}"
-          # Served only over HTTPS through the gateway.
-          security:
-            cookie_secure: true
-          plugins:
-            plugin_admin_enabled: true
-          auth:
-            login_maximum_lifetime_duration: 3h              # default 30d -> 3h
-            login_maximum_inactive_lifetime_duration: 30m    # default 7d -> 30m
-            token_rotation_interval_minutes: 10m             # default 10m
-        # Browser goes to Keycloak's public URL; Grafana's own calls stay in-cluster.
-        _oidc: "{{ keycloak_client_issuer | default('') }}/protocol/openid-connect"
-        _oidc_internal: "{{ keycloak_client_issuer_internal | default('') }}/protocol/openid-connect"
-        _ini_sso:
-          auth:
-            # The gateway clears its cookies and ends the Keycloak session.
-            signout_redirect_url: "{{ observability_grafana_url }}/oauth2/logout"
-          auth.generic_oauth:
-            enabled: true
-            name: Keycloak
-            auto_login: true
-            allow_sign_up: true
-            client_id: "{{ observability_grafana_oidc_client_id }}"
-            scopes: openid profile email
-            use_pkce: true
-            use_refresh_token: true
-            auth_url: "{{ _oidc }}/auth"
-            token_url: "{{ _oidc_internal }}/token"
-            api_url: "{{ _oidc_internal }}/userinfo"
-            login_attribute_path: preferred_username
-            name_attribute_path: name
-            # Re-evaluated at every login, so leaving the group removes admin.
-            role_attribute_path: >-
-              contains(groups[*], '{{ keycloak_client_admin_group | default('') }}') && 'Admin' || 'Viewer'
       kubernetes.core.helm:
         name: kube-prometheus-stack
         chart_ref: prometheus-community/kube-prometheus-stack
@@ -372,11 +306,20 @@
             # right ownership on the volume, so the pre-chown is redundant.
             initChownData:
               enabled: false
-            grafana.ini: "{{ _ini | combine(_ini_sso if observability_grafana_sso | bool else {}, recursive=true) }}"
-            # Client secret from its Secret, never in the Helm values.
-            envValueFrom: >-
-              {{ {'GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET': {'secretKeyRef': {'name': 'grafana-sso', 'key': 'client-secret'}}}
-                 if observability_grafana_sso | bool else {} }}
+            grafana.ini:
+              # Serves under its path in path mode; the gateway passes it through.
+              server:
+                root_url: "{{ observability_grafana_url }}/"
+                serve_from_sub_path: "{{ _obs_grafana_path_mode | bool }}"
+              # Served only over HTTPS through the gateway.
+              security:
+                cookie_secure: true
+              plugins:
+                plugin_admin_enabled: true
+              auth:
+                login_maximum_lifetime_duration: 3h              # default 30d -> 3h
+                login_maximum_inactive_lifetime_duration: 30m    # default 7d -> 30m
+                token_rotation_interval_minutes: 10m             # default 10m
             plugins:
               - grafana-metricsdrilldown-app
               - grafana-lokiexplore-app
@@ -744,8 +687,8 @@
 # 6. Grafana HTTPRoute (expose via Envoy Gateway)
 # =============================================================================
 
-# grafana.ini is applied on a fresh install only; after a routing_mode or
-# sign-in change Grafana keeps its old settings until the release is reinstalled.
+# grafana.ini is applied on a fresh install only; after a routing_mode change
+# Grafana keeps advertising its old URL until the release is reinstalled.
 - name: "observability | Read Grafana's live root_url"
   kubernetes.core.k8s_info:
     kind: ConfigMap
@@ -753,104 +696,23 @@
     namespace: "{{ observability_namespace }}"
   register: _obs_grafana_cm
 
-- name: "observability | Grafana settings are out of date"
+- name: "observability | Grafana URL does not match routing_mode"
   vars:
     _ini: "{{ (_obs_grafana_cm.resources | first | default({})).data | default({}) }}"
   ansible.builtin.debug:
     msg: >-
-      Grafana still runs with older settings (expected root_url {{ observability_grafana_url }}/,
-      Keycloak sign-in {{ 'on' if observability_grafana_sso | bool else 'off' }}). Reinstall it:
+      Grafana still serves for a different routing_mode (expected root_url
+      {{ observability_grafana_url }}/). Reinstall it:
       teardown observability, then install observability.
   when:
     - _ini['grafana.ini'] is defined
     - (observability_grafana_url ~ '/') not in _ini['grafana.ini']
-      or (observability_grafana_sso | bool) != ('[auth.generic_oauth]' in _ini['grafana.ini'])
-      or (observability_grafana_sso | bool and (observability_grafana_url ~ '/oauth2/logout') not in _ini['grafana.ini'])
 
 - name: "observability | Publish Grafana"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: publish.yaml
+  ansible.builtin.include_tasks: grafana_route.yaml
   vars:
-    gateway_publish_name: grafana
-    gateway_publish_namespace: "{{ observability_namespace }}"
-    gateway_publish_host: "{{ observability_grafana_hostname }}"
-    gateway_publish_path: "{{ observability_grafana_path }}"
-    gateway_publish_portal: {title: "Grafana", description: "Metrics, logs and traces dashboards"}
-  when: observability_gateway_publish | bool
-
-- name: "observability | Expose Grafana via gateway HTTPRoute"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: HTTPRoute
-      metadata:
-        name: grafana
-        namespace: "{{ observability_namespace }}"
-      spec:
-        parentRefs:
-          # Its own HTTPS listener or the apex (path mode); never plaintext :80.
-          - "{{ gateway_publish.parent_ref }}"
-        hostnames:
-          - "{{ gateway_publish.host }}"
-        rules:
-          - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
-            filters:
-              # HSTS: only ever reach Grafana over HTTPS on a compliant browser,
-              # so a later plaintext attempt is refused before the admin
-              # credential leaves the browser. Only honored over HTTPS, so it is
-              # set here on the :443 route, not the :80 redirect.
-              - type: ResponseHeaderModifier
-                responseHeaderModifier:
-                  set:
-                    - name: Strict-Transport-Security
-                      value: "max-age=31536000; includeSubDomains"
-            backendRefs:
-              - name: kube-prometheus-stack-grafana
-                port: 80
-  when: observability_gateway_publish | bool
-
-# With Keycloak sign-in nobody reaches Grafana without a realm session; without
-# it Grafana's own login is the only gate. One policy per route: the other is
-# removed first.
-- name: "observability | Remove the other Grafana gateway policy"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: "{{ 'route_auth_exempt.yaml' if observability_grafana_sso | bool else 'route_sso.yaml' }}"
-  vars:
-    gateway_route_name: grafana
-    gateway_route_namespace: "{{ observability_namespace }}"
-    gateway_route_policy_name: "{{ 'grafana-no-auth' if observability_grafana_sso | bool else 'grafana-sso' }}"
-    gateway_route_state: absent
-  when: observability_gateway_publish | bool
-
-- name: "observability | Sign in to Grafana at the gateway"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: route_sso.yaml
-  vars:
-    gateway_route_name: grafana
-    gateway_route_namespace: "{{ observability_namespace }}"
-    gateway_route_policy_name: grafana-sso
-    gateway_sso:
-      issuer: "{{ keycloak_client_issuer }}"
-      issuer_internal: "{{ keycloak_client_issuer_internal }}"
-      client_id: "{{ observability_grafana_oidc_client_id }}"
-      client_secret_name: grafana-sso
-      redirect_url: "{{ observability_grafana_url }}/oauth2/callback"
-      allowed_groups: "{{ observability_grafana_allowed_groups }}"
-  when: observability_gateway_publish | bool and observability_grafana_sso | bool
-
-- name: "observability | Bypass gateway auth for Grafana (Keycloak sign-in off)"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: route_auth_exempt.yaml
-  vars:
-    gateway_route_name: grafana
-    gateway_route_namespace: "{{ observability_namespace }}"
-    gateway_route_policy_name: grafana-no-auth
-  when: observability_gateway_publish | bool and not (observability_grafana_sso | bool)
+    observability_grafana_service: kube-prometheus-stack-grafana
+    observability_grafana_service_port: 80
 
 - name: "observability | Store Grafana admin credentials as a cluster Secret"
   kubernetes.core.k8s:
