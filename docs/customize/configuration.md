@@ -412,7 +412,7 @@ where `init` seeds them (a value there wins over `config.agent-toolkit.yaml`).
 
 | Setting | Default | Description |
 |---|---|---|
-| `kata_containers_enabled` | `false` | Install Kata Containers (the `kata_containers` platform component) with the upstream kata-deploy chart |
+| `kata_containers_enabled` | `false` | Install Kata Containers (the `kata_containers` infrastructure component) with the upstream kata-deploy chart |
 | `kata_runtime` | `kata-fc` | `kata-fc` (Firecracker) \| `kata-qemu` \| `both`: which RuntimeClasses kata-deploy creates |
 | `kubernetes_registry_enabled` | `false` | Kubespray's in-cluster image registry (`kube-system`, ClusterIP, port 5000). `config.agent-toolkit.yaml` turns it on; it applies only when Kubespray provisions the cluster, so run `init agent-toolkit` before the first install |
 

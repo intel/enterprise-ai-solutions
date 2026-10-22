@@ -80,6 +80,12 @@ components:
     enabled: true
     depends_on: [kubernetes]
 
+  # Prepares the nodes over SSH, so it runs with the host-level layer.
+  - name: kata_containers
+    layer: infrastructure
+    enabled: "{{ kata_containers_enabled | default(false) | bool }}"
+    depends_on: [kubernetes]
+
   # --- Platform ---
   - name: cert_manager
     layer: platform
@@ -137,11 +143,6 @@ components:
   - name: velero
     layer: platform
     enabled: "{{ velero_enabled | default(false) | bool }}"
-    depends_on: []
-
-  - name: kata_containers
-    layer: platform
-    enabled: "{{ kata_containers_enabled | default(false) | bool }}"
     depends_on: []
 
   # --- Inference ---

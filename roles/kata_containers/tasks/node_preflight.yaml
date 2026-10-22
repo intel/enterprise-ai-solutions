@@ -1,4 +1,6 @@
 ---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 # =============================================================================
 # Kata Containers — Node preflight (one node: kata_node)
 # =============================================================================
@@ -151,6 +153,7 @@
       ansible.builtin.blockinfile:
         path: /etc/containerd/config.toml
         marker: "# {mark} kata devmapper snapshotter (managed)"
+        backup: true
         block: |
           [plugins."io.containerd.snapshotter.v1.devmapper"]
             root_path = "/var/lib/containerd/devmapper"
@@ -165,6 +168,7 @@
         path: /etc/containerd/config.toml
         regexp: '^(\s*)discard_unpacked_layers\s*=\s*true'
         replace: '\g<1>discard_unpacked_layers = false'
+        backup: true
       register: kata_discard_cfg
 
     - name: "kata_containers | {{ kata_node }} | Restart containerd to load the devmapper snapshotter"
