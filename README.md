@@ -35,7 +35,7 @@ The stack installs in four ordered layers, in the order they are deployed:
 | 2 | **Platform** | Istio ambient mesh, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
 | 3 | **Inference** | Envoy AI Gateway, KServe, vLLM / OpenVINO™ Model Server — exposes the model endpoint on top of which services like RAG and agents can be built | [enterprise-inference](https://github.com/intel/enterprise-inference) | [Deploy a Model](docs/deploy/deploy_models.md) |
 | 4 | **Intel® AI for Enterprise RAG** *(opt-in)* | Vector database, document ingestion (EDP), RAG pipeline orchestration (GMC), MCP gateway, chat history, web UI — requires `init erag` and `install erag` | [enterprise-rag](https://github.com/intel/enterprise-rag) | [Getting Started with RAG](docs/quickstart/getting_started_rag.md) |
-| 4 | **Intel® Agent Toolkit** *(opt-in)* | Agent Sandbox (optional Kata microVMs), OpenShell, Redis Stack, pgvector, KubeRay, LiteLLM virtual keys, guardrail and hybrid router — requires `init agent-toolkit` and `install agent-toolkit` | [enterprise-agent-toolkit](https://github.com/intel/enterprise-agent-toolkit) | [Agent Toolkit Quickstart](https://github.com/intel/enterprise-agent-toolkit/blob/main/docs/getting-started/quickstart.md) |
+| 4 | **Intel® Agent Toolkit** *(opt-in)* | Agent Sandbox (optional Kata microVMs), OpenShell, Redis Stack, pgvector, KubeRay, LiteLLM virtual keys, guardrail and hybrid router — requires `init agent-toolkit` and `install agent-toolkit` | [enterprise-agent-toolkit](https://github.com/intel/enterprise-agent-toolkit) | [Getting Started with the Agent Toolkit](docs/quickstart/getting_started_agent_toolkit.md) |
 
 **Request flow:** a request enters through the Envoy AI Gateway, is authenticated against Keycloak (or a LiteLLM virtual key), and is routed to the matching model-serving backend. Every layer's health and latency is visible in the built-in Grafana / Prometheus / Loki / Tempo stack.
 
@@ -60,7 +60,7 @@ One node, defaults, and roughly 20 minutes from bare metal to a working stack. E
 |---|---|---|
 | An OpenAI-compatible LLM endpoint to build on | `inference` | [Deploy a Model](docs/deploy/deploy_models.md) |
 | A complete RAG application: document ingestion, vector search, chat UI | `erag` | [Getting Started with RAG](docs/quickstart/getting_started_rag.md) |
-| Agent sandboxes, memory stores, and a governed LLM gateway for agents | `agent-toolkit` | [Agent Toolkit Quickstart](https://github.com/intel/enterprise-agent-toolkit/blob/main/docs/getting-started/quickstart.md) |
+| Agent sandboxes, memory stores, and a governed LLM gateway for agents | `agent-toolkit` | [Getting Started with the Agent Toolkit](docs/quickstart/getting_started_agent_toolkit.md) |
 | To connect your own app, agent, or framework to the endpoint | `inference` | [Integration Guide](docs/customize/integration.md) |
 
 ### Step 2 - Install
