@@ -3,8 +3,8 @@
 #
 # GPU health alerting rules, written for this project on top of the metrics
 # exported by the NVIDIA DCGM exporter.
-# Applied by playbooks/deploy-observability.yml only when the rack profile has
-# NVIDIA GPU nodes (rack_scale_gpu_vendor == "nvidia").
+# Applied by the gpu_observability role only when the rack profile has NVIDIA
+# GPU nodes (rack_scale_gpu_vendor == "nvidia").
 #
 # The `release: observability` label is REQUIRED — the kube-prometheus-stack
 # Prometheus is configured with ruleSelector matchLabels {release: observability},
@@ -22,23 +22,22 @@ spec:
   groups:
     - name: gpu.rules
       rules:
-        # GPU framebuffer memory sustained above 90% risks CUDA OOM and
-        # allocator thrash, which throttles inference throughput.
+        # Framebuffer nearly exhausted risks CUDA OOM. Not a used/total ratio:
+        # vLLM reserves --gpu-memory-utilization (default 0.9) of it at startup
+        # for KV cache, so a healthy serving GPU sits above 90% all the time.
+        # DCGM reports FB_FREE in MiB; 2048 = 2 GiB.
         - alert: GPUMemoryHigh
-          expr: >-
-            DCGM_FI_DEV_FB_USED
-              / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)
-              > 0.90
+          expr: DCGM_FI_DEV_FB_FREE < 2048
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "GPU {{ $labels.gpu }} on {{ $labels.Hostname }} memory > 90%"
+            summary: "GPU {{ $labels.gpu }} on {{ $labels.Hostname }} has < 2 GiB memory free"
             description: >-
               GPU {{ $labels.gpu }} ({{ $labels.modelName }}) on host
-              {{ $labels.Hostname }} has used
-              {{ $value | humanizePercentage }} of framebuffer memory for over
-              5 minutes. Serving pod: {{ $labels.namespace }}/{{ $labels.pod }}.
+              {{ $labels.Hostname }} has had {{ $value }} MiB of framebuffer
+              memory free for over 5 minutes. Serving pod:
+              {{ $labels.namespace }}/{{ $labels.pod }}.
 
         # Sustained high die temperature indicates thermal throttling, which
         # silently reduces clocks and inference throughput on the B300.

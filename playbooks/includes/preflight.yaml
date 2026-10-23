@@ -100,6 +100,16 @@
   loop_control:
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
 
+# ── Rack scale: profile facts (every action) ─────────────────────────────────
+# The GPU, NFD and fabric_validate roles gate on these facts in validate and
+# teardown as well, and a --only run never reaches fabric_inventory.
+
+- name: "Preflight - Rack scale: load rack-profile facts"
+  ansible.builtin.include_role:
+    name: fabric_inventory
+    tasks_from: facts.yaml
+  when: rack_scale_enabled | default(false) | bool
+
 # ── Connectivity check (install only) ────────────────────────────────────────
 
 - name: "Preflight - Proxy: fail fast if proxy set without no_proxy"
