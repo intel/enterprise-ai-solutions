@@ -9,7 +9,7 @@
 #
 # Checks per topology:
 #   Star:  hub ip_forward, rp_filter, iptables FORWARD, persistence
-#   Clos:  BIRD daemon, ECMP hash policy, BGP Established, bird routes
+#   Clos:  BIRD running, ECMP hash policy (ECMP nodes), BGP Established, bird routes
 #   L2:    Calico node-to-node mesh Established (only with calico_mode: bgp)
 #   All:   declared fabric NICs (up, carrier, MTU, address), don't-fragment
 #          ping at the fabric MTU, spoke-to-spoke ping, fabric IP reachability
@@ -129,14 +129,17 @@
 
       # --- Clos topology checks ---
       {% if topo == 'clos' %}
-      BIRD=$(systemctl is-active bird 2>/dev/null || echo "inactive")
-      if [ "$BIRD" != "active" ]; then
-        echo "FAIL: BIRD daemon $BIRD on $HN"
-        ERRORS=$((ERRORS+1))
+      # BIRD runs inside the calico-node container (under runsv), not as a
+      # systemd unit, so look for the process.
+      if pgrep -x bird >/dev/null 2>&1; then
+        echo "OK: BIRD running on $HN"
       else
-        echo "OK: BIRD daemon active on $HN"
+        echo "FAIL: BIRD not running on $HN"
+        ERRORS=$((ERRORS+1))
       fi
 
+      {% if item in groups.get('ecmp_nodes', []) %}
+      # fabric_sysctl sets the multipath hash only on the multi-homed nodes.
       ECMP=$(sysctl -n net.ipv4.fib_multipath_hash_policy 2>/dev/null || echo "0")
       if [ "$ECMP" != "1" ]; then
         echo "FAIL: fib_multipath_hash_policy=$ECMP on $HN (expected 1)"
@@ -144,6 +147,7 @@
       else
         echo "OK: ECMP hash policy=1 on $HN"
       fi
+      {% endif %}
 
       BIRD_ROUTES=$(ip route show proto bird 2>/dev/null | grep -cv 'blackhole' || true)
       if [ "$BIRD_ROUTES" -eq 0 ]; then
