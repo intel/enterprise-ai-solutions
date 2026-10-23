@@ -71,8 +71,36 @@ if [[ ! -d "$ENV_DIR" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${ENV_DIR}/config.inference.yaml" ]]; then
-    echo "[WARNING] No config.inference.yaml in env/${ES_ENV}/ — auth_type will default to jwt." >&2
+# Last auth_type (else legacy auth_provider) set in the installer's order: each
+# config.<layer>.yaml as .solutions.yaml lists them, then global_config.yaml.
+resolve_auth_type() {
+    command -v yq &>/dev/null || return 0
+    local -a files=() v
+    local cfg f auth_type="" auth_provider=""
+    while IFS= read -r cfg; do
+        [[ -n "$cfg" ]] && files+=("${ENV_DIR}/${cfg}")
+    done < <(yq -r '.layers[].config // ""' "${ENV_DIR}/.solutions.yaml" 2>/dev/null)
+    files+=("${ENV_DIR}/global_config.yaml")
+    for f in "${files[@]}"; do
+        [[ -f "$f" ]] || continue
+        mapfile -t v < <(yq -r '.auth_type // "", .auth_provider // ""' "$f" 2>/dev/null)
+        [[ -n "${v[0]:-}" ]] && auth_type="${v[0]}"
+        [[ -n "${v[1]:-}" ]] && auth_provider="${v[1]}"
+    done
+    printf '%s' "${auth_type:-$auth_provider}"
+}
+
+# model-manager itself reads auth_type from global_config.yaml and config.inference.yaml only.
+# Other values, a "{{ ... }}" expression included, are left to it.
+if [[ -z "${MM_LITELLM_ENABLED:-}" ]]; then
+    case "$(resolve_auth_type)" in
+        litellm_vkey|litellm) export MM_LITELLM_ENABLED=true ;;
+        jwt|keycloak)         export MM_LITELLM_ENABLED=false ;;
+    esac
+fi
+
+if [[ ! -f "${ENV_DIR}/config.inference.yaml" && -z "${MM_LITELLM_ENABLED:-}" ]]; then
+    echo "[WARNING] No config.inference.yaml in env/${ES_ENV}/ and no auth_type in its other configs — auth_type will default to jwt." >&2
     echo "          If you intend to use litellm_vkey, run: ./es_auto_installer.sh init inference --env ${ES_ENV}" >&2
 fi
 
