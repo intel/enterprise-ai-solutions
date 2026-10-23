@@ -402,13 +402,13 @@ network:
 
 # Nodes — mgmt_ip only, NO fabric_nics:
 master1:
-  hostname: minfra01
-  mgmt_ip: 172.18.168.1
+  hostname: node-cp1
+  mgmt_ip: 10.0.0.10
   roles: [kube_control_plane, etcd]
 
-gnr04:
-  hostname: m6980m05
-  mgmt_ip: 172.18.158.17
+worker1:
+  hostname: node-gpu1
+  mgmt_ip: 10.0.0.30
   profile: gpu-b300-hgx       # GPU operator auto-enables
   roles: [kube_node]
 ```
