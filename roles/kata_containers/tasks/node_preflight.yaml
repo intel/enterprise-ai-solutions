@@ -31,7 +31,9 @@
     _kata_cpu_flags: "{{ ((_kata_cpu_flags_raw.stdout | default('')).split(':', 1) | last).split() }}"
 
 - name: "kata_containers | {{ kata_node }} | Load KVM kernel modules when /dev/kvm is absent"
-  ansible.builtin.command: "modprobe {{ item }}"
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
   become: true
   delegate_to: "{{ kata_node }}"
   loop: "{{ ['kvm'] + _kvm_vendor_module }}"
@@ -39,7 +41,6 @@
     _kvm_vendor_module: "{{ ['kvm_intel'] if 'vmx' in _kata_cpu_flags else [] }}"
   when: not kvm_device.stat.exists
   failed_when: false
-  changed_when: false
 
 - name: "kata_containers | {{ kata_node }} | Re-check /dev/kvm after loading modules"
   ansible.builtin.stat:
@@ -54,9 +55,10 @@
   delegate_to: "{{ kata_node }}"
   block:
     - name: "kata_containers | {{ kata_node }} | Load vhost_vsock kernel module"
-      ansible.builtin.command: modprobe vhost_vsock
+      community.general.modprobe:
+        name: vhost_vsock
+        state: present
       failed_when: false
-      changed_when: false
 
     - name: "kata_containers | {{ kata_node }} | Persist vhost_vsock across reboots"
       ansible.builtin.copy:
@@ -78,6 +80,12 @@
   become: true
   delegate_to: "{{ kata_node }}"
   block:
+    # Registered results carry over from the previous node in the loop
+    - name: "kata_containers | {{ kata_node }} | Start with no containerd config edits recorded"
+      ansible.builtin.set_fact:
+        kata_devmapper_cfg: {}
+        kata_discard_cfg: {}
+
     - name: "kata_containers | {{ kata_node }} | Ensure dmsetup is installed"
       ansible.builtin.shell: |
         command -v dmsetup >/dev/null 2>&1 && { echo present; exit 0; }
@@ -177,13 +185,41 @@
         state: restarted
       when: (kata_devmapper_cfg is changed) or (kata_discard_cfg is changed)
 
+    - name: "kata_containers | {{ kata_node }} | Check containerd is running with the edited config"
+      ansible.builtin.systemd:
+        name: containerd
+      register: _kata_containerd_state
+      until: _kata_containerd_state.status.ActiveState | default('') == 'active'
+      retries: 6
+      delay: 5
+      when: (kata_devmapper_cfg is changed) or (kata_discard_cfg is changed)
+
   rescue:
+    # The first backup of this run is the config as it was before our edits
+    - name: "kata_containers | {{ kata_node }} | Restore the containerd config from before the Kata edits"
+      ansible.builtin.copy:
+        src: "{{ _kata_toml_backup }}"
+        dest: /etc/containerd/config.toml
+        remote_src: true
+        mode: preserve
+      vars:
+        _kata_toml_backup: "{{ kata_devmapper_cfg.backup_file | default(kata_discard_cfg.backup_file | default('', true), true) }}"
+      register: _kata_toml_restored
+      when: _kata_toml_backup | length > 0
+
+    - name: "kata_containers | {{ kata_node }} | Restart containerd with the restored config"
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+      when: _kata_toml_restored is not skipped
+
     - name: "kata_containers | {{ kata_node }} | Devmapper setup failed — kata-fc unavailable on this node"
       ansible.builtin.debug:
         msg: >-
           WARNING: containerd devmapper setup failed on {{ kata_node }}
           ({{ ansible_failed_result.msg | default('see task output above') }}).
-          The node is excluded from kata-fc; kata-qemu is unaffected.
+          {{ 'The containerd config was restored from ' ~ (_kata_toml_restored.src | default('its backup')) ~ '. ' if _kata_toml_restored is not skipped else '' }}The node
+          is excluded from kata-fc; kata-qemu is unaffected.
 
 - name: "kata_containers | {{ kata_node }} | Check containerd devmapper snapshotter status"
   ansible.builtin.shell: |
