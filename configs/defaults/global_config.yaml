@@ -9,7 +9,6 @@
 # =============================================================================
 
 # --- Kubernetes ---
-kubernetes_skip_if_exists: true           # false = force reinstall over existing cluster
 kubernetes_cluster_name: "cluster.local"
 kubernetes_kube_proxy_mode: "nftables"    # nftables | iptables | ipvs
 # existing_kubernetes: ""                 # BYO cluster: set to absolute path of your kubeconfig.

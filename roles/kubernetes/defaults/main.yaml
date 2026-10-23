@@ -10,10 +10,6 @@
 # Leave empty for managed install (Kubespray provisions the cluster).
 existing_kubernetes: ""
 
-# --- Cluster Detection ---
-# If true, skips install when an existing cluster is detected
-kubernetes_skip_if_exists: true
-
 # --- Kubernetes Version (one place to change) ---
 kubernetes_version: "1.34.3"
 
