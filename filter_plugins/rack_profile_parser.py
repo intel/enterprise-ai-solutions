@@ -1111,6 +1111,7 @@ def _gen_netplan_files(ctx):
             elif c["topology"] == "l2":
                 routes = []
             else:
+                routes = []
                 if gateway and gateway != "TBD":
                     for other_leaf in c["leafs"]:
                         if (other_leaf["name"] != leaf_name
