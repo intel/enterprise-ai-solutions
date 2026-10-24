@@ -152,7 +152,7 @@ List all available layers and components, including which are opt-in.
 | `--upgrade` | (init only) Move already-cloned ext/ repos onto the revs the manifests pin now. Refuses on local changes; never rewrites your configs. |
 | `--only` | Skip dependency auto-inclusion — run the named target alone |
 | `--skip <names>` | Comma-separated layers or components to leave out of the plan (e.g., `--skip erag` to tear down the cluster without uninstalling erag first) |
-| `--force` | Skip the confirmation prompt (required in CI, where there is no terminal to answer it) |
+| `--force` | Skip the confirmation prompts: teardown, and Docker removal on a fresh cluster install (see [Prerequisites](../quickstart/prerequisites.md#existing-container-runtimes)). Required in CI, where there is no terminal to answer them |
 | `-- <ansible-flags>` | Pass remaining args directly to `ansible-playbook` (e.g. `-- -vvv`, `-- --check`, `-- -e key=value`) |
 
 ---
