@@ -57,12 +57,16 @@
         state: absent
       failed_when: false
 
+    # On OpenShift the operator, its CRDs and the namespace come from the
+    # customer's RHBK Subscription (OperatorHub): only the CR and the gateway
+    # objects above are ours.
     - name: "keycloak | Delete Keycloak Operator"
       kubernetes.core.k8s:
         src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/kubernetes.yml"
         namespace: "{{ keycloak_namespace }}"
         state: absent
       failed_when: false
+      when: cluster_distribution | default('kubernetes') != 'openshift'
 
     - name: "keycloak | Delete Keycloak CRDs"
       kubernetes.core.k8s:
@@ -74,6 +78,7 @@
         - keycloaks.k8s.keycloak.org
         - keycloakrealmimports.k8s.keycloak.org
       failed_when: false
+      when: cluster_distribution | default('kubernetes') != 'openshift'
 
     - name: "keycloak | Delete namespace"
       kubernetes.core.k8s:
@@ -81,3 +86,4 @@
         name: "{{ keycloak_namespace }}"
         state: absent
       failed_when: false
+      when: cluster_distribution | default('kubernetes') != 'openshift'

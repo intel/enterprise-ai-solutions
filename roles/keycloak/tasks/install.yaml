@@ -1,13 +1,15 @@
 ---
 # =============================================================================
 # Keycloak — Install (Operator-based, no OLM)
+# On OpenShift the operator is Red Hat build of Keycloak from the marketplace
+# (OLM); this role only creates the Keycloak instance and its route.
 # =============================================================================
 
 - name: "keycloak | Check for existing operator deployment"
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: Deployment
-    name: keycloak-operator
+    name: "{{ keycloak_operator_deployment }}"
     namespace: "{{ keycloak_namespace }}"
   register: _kc_existing
   failed_when: false
@@ -38,6 +40,19 @@
     namespace: "{{ keycloak_namespace }}"
   register: _kc_admin_secret_existing
   failed_when: false
+
+- name: "keycloak | OpenShift: require marketplace Keycloak operator"
+  ansible.builtin.assert:
+    that:
+      - _kc_existing.resources | default([]) | length > 0
+    fail_msg: >-
+      Red Hat build of Keycloak operator (Deployment {{ keycloak_operator_deployment }})
+      not found in namespace {{ keycloak_namespace }}. On OpenShift install it from
+      OperatorHub (package rhbk-operator) with an OperatorGroup targeting
+      {{ keycloak_namespace }} before running the installer; see docs/deploy/openshift.md.
+    success_msg: "Keycloak operator provided by the cluster (OLM) — skipping CRD and operator install."
+    quiet: true
+  when: cluster_distribution | default('kubernetes') == 'openshift'
 
 - name: "keycloak | Already installed — skipping"
   ansible.builtin.debug:
@@ -110,6 +125,7 @@
       loop:
         - keycloaks.k8s.keycloak.org-v1.yml
         - keycloakrealmimports.k8s.keycloak.org-v1.yml
+      when: not (cluster_distribution | default('kubernetes') == 'openshift')
 
     # ── Operator ──────────────────────────────────────────────────────────────────
 
@@ -118,12 +134,13 @@
         src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/kubernetes.yml"
         namespace: "{{ keycloak_namespace }}"
         state: present
+      when: not (cluster_distribution | default('kubernetes') == 'openshift')
 
     - name: "keycloak | Wait for operator rollout"
       kubernetes.core.k8s_info:
         api_version: apps/v1
         kind: Deployment
-        name: keycloak-operator
+        name: "{{ keycloak_operator_deployment }}"
         namespace: "{{ keycloak_namespace }}"
       register: _kc_operator_deploy
       until:

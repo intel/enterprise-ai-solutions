@@ -3,7 +3,8 @@
 # PostgreSQL — Install (CloudNativePG Operator)
 # =============================================================================
 # Design:
-#   1. Install CNPG operator via Helm (idempotent)
+#   1. Install CNPG operator via Helm (idempotent); on OpenShift, require the
+#      marketplace (OLM) operator instead and never install a second one
 #   2. Create credential Secrets ONCE (check-then-create, never overwrite)
 #   3. Create SQL init Secrets with CREATE USER statements (referenced by cluster)
 #   4. Deploy CNPG Cluster — postInitSQLRefs runs CREATE USER from Secret
@@ -13,15 +14,40 @@
 
 # ── CNPG Operator ─────────────────────────────────────────────────────────────
 
+# On OpenShift the operator comes from the marketplace (OLM) and owns the CRDs;
+# a Helm install next to it would fight over them.
+- name: "postgresql | OpenShift: check for marketplace CNPG operator"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: clusters.postgresql.cnpg.io
+  register: _cnpg_crd
+  when: cluster_distribution | default('kubernetes') == 'openshift'
+
+- name: "postgresql | OpenShift: require marketplace CNPG operator"
+  ansible.builtin.assert:
+    that:
+      - _cnpg_crd.resources | default([]) | length > 0
+    fail_msg: >-
+      CloudNativePG is not installed. On OpenShift install it from OperatorHub
+      (package cloudnative-pg, certified-operators) before running the installer;
+      see docs/deploy/openshift.md.
+    success_msg: "CNPG operator provided by the cluster (OLM) — skipping Helm install."
+    quiet: true
+  when: cluster_distribution | default('kubernetes') == 'openshift'
+
 - name: "postgresql | Check for existing CNPG Helm release"
   kubernetes.core.helm_info:
     name: cnpg
     release_namespace: "{{ cnpg_namespace }}"
   register: _cnpg_release
   failed_when: false
+  when: not (cluster_distribution | default('kubernetes') == 'openshift')
 
 - name: "postgresql | Install CNPG operator via Helm"
-  when: _cnpg_release.status is not defined or _cnpg_release.status is none
+  when:
+    - not (cluster_distribution | default('kubernetes') == 'openshift')
+    - _cnpg_release.status is not defined or _cnpg_release.status is none
   block:
     - name: "postgresql | Add CNPG Helm repo"
       kubernetes.core.helm_repository:

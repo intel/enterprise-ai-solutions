@@ -12,6 +12,43 @@
 - name: "envoy_gateway | Install or upgrade"
   when: gateway_platform.controller_action in ['install', 'upgrade']
   block:
+    # OpenShift: the chart (controller, certgen hook) and the proxy pods Envoy
+    # Gateway generates all pin runAsUser/runAsGroup 65532, which the default
+    # restricted-v2 SCC rejects. nonroot-v2 admits any non-root UID with the same
+    # restrictions otherwise. Bound before Helm so the pre-install certgen hook is
+    # admitted; only in the namespace of the controller this role manages.
+    # Granted to the namespace's service-account group, not named accounts:
+    # Envoy Gateway names the proxy service accounts itself (one per Gateway, with
+    # a hash), so they cannot be listed up front.
+    - name: "envoy_gateway | OpenShift: create namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ envoy_gateway_namespace }}"
+      when: cluster_distribution | default('kubernetes') == 'openshift'
+
+    - name: "envoy_gateway | OpenShift: grant nonroot-v2 SCC to the namespace's service accounts"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: envoy-gateway-scc-nonroot-v2
+            namespace: "{{ envoy_gateway_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: system:openshift:scc:nonroot-v2
+          subjects:
+            - apiGroup: rbac.authorization.k8s.io
+              kind: Group
+              name: "system:serviceaccounts:{{ envoy_gateway_namespace }}"
+      when: cluster_distribution | default('kubernetes') == 'openshift'
+
     - name: "envoy_gateway | {{ gateway_platform.controller_action | capitalize }} Envoy Gateway via Helm (OCI)"
       kubernetes.core.helm:
         name: "{{ envoy_gateway_release_name }}"
@@ -156,7 +193,27 @@
 # operators can remove the taint; the label is the stable Kubernetes
 # control-plane marker. Toleration is kept for the case where the taint
 # is still in place.
-- name: "envoy_gateway | Create EnvoyProxy config (DaemonSet on control-plane nodes)"
+#
+# OpenShift: no LoadBalancer (MetalLB is skipped). The OpenShift router already
+# owns :80/:443 on the nodes and forwards to Envoy through passthrough Routes
+# (openshift_routes.yaml), so Envoy is a plain Deployment behind a ClusterIP
+# Service and any node can run it.
+- name: "envoy_gateway | Create EnvoyProxy config ({{ 'Deployment, ClusterIP' if cluster_distribution | default('kubernetes') == 'openshift' else 'DaemonSet on control-plane nodes' }})"
+  vars:
+    _eg_k8s_provider_cp_daemonset:
+      envoyDaemonSet:
+        pod:
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+    _eg_k8s_provider_openshift:
+      envoyDeployment:
+        replicas: "{{ gateway_envoy_replicas | int }}"
+      envoyService:
+        type: ClusterIP
   kubernetes.core.k8s:
     state: present
     definition:
@@ -168,15 +225,9 @@
       spec:
         provider:
           type: Kubernetes
-          kubernetes:
-            envoyDaemonSet:
-              pod:
-                nodeSelector:
-                  node-role.kubernetes.io/control-plane: ""
-                tolerations:
-                  - key: node-role.kubernetes.io/control-plane
-                    operator: Exists
-                    effect: NoSchedule
+          kubernetes: >-
+            {{ _eg_k8s_provider_openshift if cluster_distribution | default('kubernetes') == 'openshift'
+               else _eg_k8s_provider_cp_daemonset }}
 
 - name: "envoy_gateway | Create GatewayClass"
   kubernetes.core.k8s:

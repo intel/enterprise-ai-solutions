@@ -39,6 +39,11 @@ Environment variables:
 
   INDENT        optional, number of spaces to indent each output line.
 
+  TP1_MATCH_LABEL  optional, "key=value" pod label. Pods carrying it are put in
+                the -tp1 balloon even without a balloon annotation; an annotation
+                still wins. Used where the workload controller cannot annotate
+                pods (RHOAI's v1alpha1 LLMInferenceService on OpenShift).
+
 Examples:
 
   # Generate balloon types to run -tp1 and -tp2 vLLMs on two-socket SNC3 system.
@@ -55,6 +60,9 @@ import sys
 
 # balloon_name is the base name for -tp1, -tp2 and -tp4 balloon types.
 balloon_name = os.getenv("BALLOON_NAME", "vllm-balloon")
+
+# tp1_match_label is an optional "key=value" pod label selecting -tp1 pods.
+tp1_match_label = os.getenv("TP1_MATCH_LABEL", "")
 
 # vllm_balloon_type_common are common attributes to be included in all
 # -tp1, -tp2 and -tp4 balloons. "|" denotes the indentation level of
@@ -188,6 +196,14 @@ def generate_vllm_balloon_types(pkg_node, max_tp):
         for pkg, node in optimize_gnr3tile(pkg_node):
             tp1_balloon_types.append(f"""
             |  - balloonType: pkg{pkg}node{node}
+            """)
+        if tp1_match_label:
+            key, _, value = tp1_match_label.partition("=")
+            tp1_balloon_types.append(f"""
+            |  matchExpressions:
+            |  - key: pod/labels/{key}
+            |    operator: In
+            |    values: ["{value}"]
             """)
 
 

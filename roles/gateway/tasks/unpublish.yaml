@@ -18,3 +18,13 @@
     gateway_listenerset_listeners: [{name: "{{ gateway_publish_name }}", hostname: "{{ gateway_publish_host }}"}]
     gateway_apex_namespace: "{{ gateway_publish_namespace }}"
     gateway_apex_path: "{{ _gp_path }}"
+
+- name: "gateway | unpublish | OpenShift: remove the Route for {{ gateway_publish_host }}"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: openshift_routes.yaml
+  vars:
+    _openshift_route_hosts: "{{ [gateway_publish_host] | reject('in', gateway_openshift_route_exclude) | list }}"
+    _openshift_route_state: absent
+  when:
+    - _gw_openshift | bool
