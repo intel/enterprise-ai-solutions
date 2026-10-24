@@ -129,6 +129,7 @@ The Quick Start gets you running with single-node defaults. From here you can ta
 | Trident + ONTAP | [NetApp ONTAP and Trident](docs/deploy/netapp_ontap.md) |
 | Workload placement (multi-node) | [Node Topology](docs/customize/node_topology.md) |
 | NUMA-aware CPU pinning | [NRI CPU Balloons](docs/customize/nri_cpu_balloons.md) |
+| Add or remove nodes from a running cluster | [Node Scaling](docs/customize/node_scaling.md) |
 
 ---
 

@@ -23,6 +23,22 @@
       loop_control:
         label: "{{ item.hostname | default('MISSING') }}"
 
+    # Catches a typo'd copy-paste entry (same ip or hostname reused across two
+    # nodes) before it reaches Kubespray, where it would show up as a much
+    # less obvious failure (or worse, silently join the wrong host twice).
+    - name: "kubernetes | nodes → inventory | Validate no duplicate hostname/ip"
+      vars:
+        _all_nodes: "{{ nodes_control_plane + (nodes_workers | default([])) }}"
+      ansible.builtin.assert:
+        that:
+          - (_all_nodes | map(attribute='hostname') | list | length) == (_all_nodes | map(attribute='hostname') | unique | list | length)
+          - (_all_nodes | map(attribute='ip') | list | length) == (_all_nodes | map(attribute='ip') | unique | list | length)
+        fail_msg: >-
+          Duplicate hostname or ip across nodes_control_plane/nodes_workers in nodes.yaml:
+          {{ _all_nodes | map(attribute='hostname') | list }} /
+          {{ _all_nodes | map(attribute='ip') | list }}
+          — each node must have a unique hostname and ip.
+
     - name: "kubernetes | nodes → inventory | Set template vars"
       ansible.builtin.set_fact:
         _nodes_control_plane: "{{ nodes_control_plane }}"
