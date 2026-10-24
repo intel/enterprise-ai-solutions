@@ -28,9 +28,12 @@
 
 - name: "storage | resolve | detect multi-node"
   ansible.builtin.set_fact:
+    # The inventory for a cluster ai-solutions builds; the cluster's own Nodes for a
+    # BYO one, whose inventory is just localhost (cluster_node_count, preflight_platform.yaml).
     _storage_is_multinode: >-
       {{ (nodes_workers | default([]) | length) > 0
-         or (groups['all'] | default([]) | length) > 1 }}
+         or (groups['all'] | default([]) | length) > 1
+         or (cluster_node_count | default(0) | int) > 1 }}
 
 # ─── ONTAP / NetApp Trident ─────────────────────────────────────────────
 
