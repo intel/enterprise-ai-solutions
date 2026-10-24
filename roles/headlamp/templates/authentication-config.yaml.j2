@@ -1,0 +1,29 @@
+# Owned by the headlamp role (the kubernetes role seeds it empty); reloaded live by the API server.
+apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+{% if not __headlamp_trust | default(true) | bool %}
+jwt: []
+{% else %}
+jwt:
+  - issuer:
+      url: "{{ __headlamp_issuer_url }}"
+      audiences:
+        - "{{ headlamp_oidc_client_id }}"
+{% if __headlamp_ca_pem | length > 0 %}
+      certificateAuthority: |
+        {{ __headlamp_ca_pem | trim | indent(8) }}
+{% endif %}
+    claimValidationRules:
+      - expression: "has(claims.preferred_username) && claims.preferred_username != ''"
+        message: "preferred_username is required"
+    claimMappings:
+      username:
+        claim: preferred_username
+        prefix: "{{ headlamp_oidc_prefix }}"
+      groups:
+        claim: groups
+        prefix: "{{ headlamp_oidc_prefix }}"
+    userValidationRules:
+      - expression: "!user.username.startsWith('system:')"
+        message: "username must not use the reserved system: prefix"
+{% endif %}

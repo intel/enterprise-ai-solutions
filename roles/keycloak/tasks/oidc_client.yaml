@@ -1,0 +1,141 @@
+---
+# =============================================================================
+# Keycloak — one OIDC client in the platform realm, converged on every run
+# =============================================================================
+#   keycloak_client:
+#     id               clientId
+#     redirect_uris    allowed callbacks                    (default [])
+#     post_logout_uris allowed post-logout returns          (default [])
+#     pkce             require PKCE S256                    (default true)
+#     standard_flow    browser login                        (default true)
+#     service_account  client-credentials identity          (default false)
+#     token_lifespan   access/ID token seconds (realm default if unset)
+#     groups_claim     add the groups claim                 (default true)
+#     audiences        extra client IDs added to the token audience (default [])
+# Sets keycloak_client_secret (no_log), generated once and kept in Secret
+# <realm>-<id>-client beside Keycloak so reinstalls never rotate it, plus
+# keycloak_client_issuer (as browsers see it), keycloak_client_issuer_internal
+# (in-cluster, for token and userinfo calls) and keycloak_client_admin_group.
+
+- name: "keycloak | client {{ keycloak_client.id }} | Read its secret"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ keycloak_platform_realm }}-{{ keycloak_client.id }}-client"
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_client_secret
+  no_log: true
+
+- name: "keycloak | client {{ keycloak_client.id }} | Create its secret (once)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ keycloak_platform_realm }}-{{ keycloak_client.id }}-client"
+        namespace: "{{ keycloak_namespace }}"
+      type: Opaque
+      stringData:
+        value: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}"
+  register: _kc_client_secret_new
+  when: _kc_client_secret.resources | length == 0
+  no_log: true
+
+- name: "keycloak | client {{ keycloak_client.id }} | Secret value"
+  ansible.builtin.set_fact:
+    keycloak_client_secret: >-
+      {{ ((_kc_client_secret.resources | first).data.value if _kc_client_secret.resources | length > 0
+          else _kc_client_secret_new.result.data.value) | b64decode }}
+  no_log: true
+
+- name: "keycloak | client {{ keycloak_client.id }} | Realm facts"
+  ansible.builtin.set_fact:
+    keycloak_client_issuer: "{{ keycloak_platform_issuer_url }}"
+    keycloak_client_issuer_internal: "{{ keycloak_platform_issuer_internal }}"
+    keycloak_client_admin_group: "{{ keycloak_platform_admin_group }}"
+
+# The desired client, hashed into an attribute: a run writes only when it differs.
+- name: "keycloak | client {{ keycloak_client.id }} | Converge"
+  vars:
+    _c: "{{ keycloak_client }}"
+    _attrs: >-
+      {{ ({'pkce.code.challenge.method': 'S256'} if _c.pkce | default(true) | bool else {})
+         | combine({'post.logout.redirect.uris': _c.post_logout_uris | join('##')} if _c.post_logout_uris | default([]) else {})
+         | combine({'access.token.lifespan': _c.token_lifespan | string} if _c.token_lifespan is defined else {}) }}
+    _mappers: >-
+      {{ [{'name': 'groups', 'protocol': 'openid-connect', 'protocolMapper': 'oidc-group-membership-mapper',
+           'config': {'claim.name': 'groups', 'full.path': 'false', 'id.token.claim': 'true',
+                      'access.token.claim': 'true', 'userinfo.token.claim': 'true'}}]
+         if _c.groups_claim | default(true) | bool else [] }}
+    _audience_mappers: >-
+      {%- set out = [] -%}
+      {%- for a in _c.audiences | default([]) -%}
+      {%- set _ = out.append({'name': 'audience-' ~ a, 'protocol': 'openid-connect', 'protocolMapper': 'oidc-audience-mapper',
+                              'config': {'included.client.audience': a, 'access.token.claim': 'true', 'id.token.claim': 'false'}}) -%}
+      {%- endfor -%}
+      {{ out }}
+    _rep:
+      clientId: "{{ _c.id }}"
+      enabled: true
+      protocol: openid-connect
+      publicClient: false
+      secret: "{{ keycloak_client_secret }}"
+      standardFlowEnabled: "{{ _c.standard_flow | default(true) | bool }}"
+      implicitFlowEnabled: false
+      directAccessGrantsEnabled: false
+      serviceAccountsEnabled: "{{ _c.service_account | default(false) | bool }}"
+      redirectUris: "{{ _c.redirect_uris | default([]) }}"
+      webOrigins: []
+    _all_mappers: "{{ _mappers + _audience_mappers }}"
+    _hash: "{{ (_rep | combine({'attributes': _attrs, 'protocolMappers': _all_mappers}) | to_json) | hash('sha256') }}"
+    _with_hash: "{{ _rep | combine({'attributes': _attrs | combine({'enterprise-ai.config-hash': _hash})}) }}"
+    _r: "{{ keycloak_platform_realm }}"
+  block:
+    - name: "keycloak | client {{ keycloak_client.id }} | Look it up"
+      ansible.builtin.include_tasks: kcadm.yaml
+      vars:
+        _kc_args: [get, clients, -r, "{{ _r }}", -q, "clientId={{ _c.id }}", --fields, "id,attributes(enterprise-ai.config-hash)"]
+
+    - name: "keycloak | client {{ keycloak_client.id }} | What Keycloak has"
+      ansible.builtin.set_fact:
+        _kc_found: "{{ _kc_kcadm.stdout | from_json | first | default({}) }}"
+        _kc_missing: []
+
+    - name: "keycloak | client {{ keycloak_client.id }} | Create"
+      ansible.builtin.include_tasks: kcadm.yaml
+      vars:
+        _kc_args: [create, clients, -r, "{{ _r }}", -b, "{{ _with_hash | combine({'protocolMappers': _all_mappers}) | to_json }}"]
+        _kc_write: true
+      when: _kc_found.id is not defined
+
+    - name: "keycloak | client {{ keycloak_client.id }} | Update"
+      when:
+        - _kc_found.id is defined
+        - (_kc_found.attributes | default({}))['enterprise-ai.config-hash'] | default('') != _hash
+      block:
+        - name: "keycloak | client {{ keycloak_client.id }} | Update settings"
+          ansible.builtin.include_tasks: kcadm.yaml
+          vars:
+            _kc_args: [update, "clients/{{ _kc_found.id }}", -r, "{{ _r }}", --merge, -b, "{{ _with_hash | to_json }}"]
+            _kc_write: true
+
+        - name: "keycloak | client {{ keycloak_client.id }} | Read its mappers"
+          ansible.builtin.include_tasks: kcadm.yaml
+          vars:
+            _kc_args: [get, "clients/{{ _kc_found.id }}/protocol-mappers/models", -r, "{{ _r }}", --fields, name]
+
+        # A loop is evaluated before its when, so it reads a fact set only here.
+        - name: "keycloak | client {{ keycloak_client.id }} | Mappers it lacks"
+          ansible.builtin.set_fact:
+            _kc_missing: "{{ _all_mappers | rejectattr('name', 'in', _kc_kcadm.stdout | from_json | map(attribute='name') | list) | list }}"
+
+        - name: "keycloak | client {{ keycloak_client.id }} | Add missing mappers"
+          ansible.builtin.include_tasks: kcadm.yaml
+          vars:
+            _kc_args: [create, "clients/{{ _kc_found.id }}/protocol-mappers/models", -r, "{{ _r }}", -b, "{{ _kc_mapper | to_json }}"]
+            _kc_write: true
+          loop: "{{ _kc_missing }}"
+          loop_control:
+            loop_var: _kc_mapper
+            label: "{{ _kc_mapper.name }}"

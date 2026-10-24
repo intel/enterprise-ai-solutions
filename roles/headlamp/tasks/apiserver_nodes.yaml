@@ -1,0 +1,58 @@
+---
+# Control-plane nodes of a cluster this installer manages (never BYO).
+#   __headlamp_trust  true: trust the platform realm  false: trust nothing (teardown)
+
+- name: "headlamp | apiserver | Check the authentication config is in use"
+  ansible.builtin.stat:
+    path: "{{ __headlamp_authn_file }}"
+  become: true
+  delegate_to: "{{ item }}"
+  loop: "{{ __headlamp_cp_hosts }}"
+  register: __headlamp_authn_stat
+
+- name: "headlamp | apiserver | Cluster built without --authentication-config"
+  ansible.builtin.debug:
+    msg: >-
+      NOTICE: {{ __headlamp_authn_stat.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}
+      has no {{ __headlamp_authn_file }} (cluster built before kubernetes_apiserver_authn_enabled);
+      Kubernetes calls from Headlamp return 401 until the cluster is rebuilt, or use headlamp_auth_mode: gateway.
+  when:
+    - __headlamp_trust | bool
+    - __headlamp_authn_stat.results | rejectattr('stat.exists') | list | length > 0
+
+# A file the API server cannot parse is kept out of use while it runs, but stops
+# it from starting at the next restart; check the rendered file first.
+- name: "headlamp | apiserver | Check the authentication config"
+  vars:
+    _authn: "{{ lookup('ansible.builtin.template', 'authentication-config.yaml.j2') | from_yaml }}"
+  ansible.builtin.assert:
+    that:
+      - _authn.kind == 'AuthenticationConfiguration'
+      - _authn.jwt | length == (1 if __headlamp_trust | bool else 0)
+    fail_msg: "authentication-config.yaml.j2 did not render a valid AuthenticationConfiguration."
+    quiet: true
+
+# template writes atomically; the directory mount lets the API server see it.
+- name: "headlamp | apiserver | {{ 'Trust the platform realm' if __headlamp_trust | bool else 'Trust no issuer' }}"
+  ansible.builtin.template:
+    src: authentication-config.yaml.j2
+    dest: "{{ __headlamp_authn_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  delegate_to: "{{ item.item }}"
+  loop: "{{ __headlamp_authn_stat.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# The API server runs on the host network and fetches the issuer's keys by name.
+- name: "headlamp | apiserver | Map the issuer host to the gateway"
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} enterprise-ai headlamp issuer"
+    block: "{{ __headlamp_gateway_ip | default('') }} {{ __headlamp_issuer_host }}"
+    state: "{{ 'present' if __headlamp_trust | bool and headlamp_pin_issuer_host | bool else 'absent' }}"
+  become: true
+  delegate_to: "{{ item }}"
+  loop: "{{ __headlamp_cp_hosts }}"

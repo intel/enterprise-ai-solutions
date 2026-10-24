@@ -1,0 +1,81 @@
+name: Headlamp plugin
+
+# Actions are pinned to full commit SHAs (the trailing `# vX.Y.Z` is the tag
+# that SHA corresponded to) and every tool to an exact version.
+#
+# The role ships a prebuilt bundle (roles/headlamp/files/plugins/enterprise-ai)
+# so installs need no Node.js. This job rebuilds it from source and fails if the
+# committed bundle differs, so the shipped file always matches reviewed code.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - 'release-[0-9]+\.[0-9]+'
+    paths:
+      - 'plugins/headlamp/**'
+      - 'roles/headlamp/files/plugins/**'
+      - '.github/workflows/headlamp-plugin.yml'
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and compare the bundle
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: plugins/headlamp/enterprise-ai
+    steps:
+      - name: Harden the runner (audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.21.1'
+          cache: npm
+          cache-dependency-path: plugins/headlamp/enterprise-ai/package-lock.json
+
+      # Lockfile only, and no install scripts: dependencies cannot run code here.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Type-check, lint and unit tests
+        run: |
+          npm run tsc
+          npm run lint
+          npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Compare with the shipped bundle
+        run: |
+          shipped=../../../roles/headlamp/files/plugins/enterprise-ai
+          cmp dist/main.js "$shipped/main.js"
+          cmp package.json "$shipped/package.json"
+
+      - name: Upload the fresh build (on mismatch)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: headlamp-plugin-bundle
+          path: |
+            plugins/headlamp/enterprise-ai/dist/main.js
+            plugins/headlamp/enterprise-ai/package.json
+          retention-days: 7

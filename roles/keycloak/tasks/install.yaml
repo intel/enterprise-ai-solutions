@@ -216,6 +216,7 @@
     gateway_publish_namespace: "{{ keycloak_namespace }}"
     gateway_publish_host: "{{ keycloak_hostname }}"
     gateway_publish_path: "{{ keycloak_path }}"
+    gateway_publish_portal: {title: "Keycloak", description: "Identity and access management", path: "/admin/master/console/"}
   when: keycloak_gateway_publish | bool
 
 - name: "keycloak | Create HTTPRoute for gateway"
@@ -259,3 +260,7 @@
     gateway_route_namespace: "{{ keycloak_namespace }}"
     gateway_route_policy_name: keycloak-no-auth
   when: keycloak_gateway_publish | bool
+
+# ── Platform SSO realm (people sign in here for every platform UI) ───────────
+- name: "keycloak | Platform SSO realm"
+  ansible.builtin.include_tasks: platform_realm.yaml

@@ -1,0 +1,78 @@
+---
+# =============================================================================
+# Keycloak — platform SSO realm (people sign in here for every platform UI)
+# =============================================================================
+# A realm import only ever creates the realm; settings that may change later
+# (session timeouts) are converged with kcadm calls on every run.
+
+- name: "keycloak | platform realm | Bootstrap admin password (once)"
+  when: keycloak_platform_bootstrap_admin | bool
+  block:
+    - name: "keycloak | platform realm | Read bootstrap admin password"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ keycloak_platform_realm }}-bootstrap-admin"
+        namespace: "{{ keycloak_namespace }}"
+      register: _kc_bootstrap
+      no_log: true
+
+    - name: "keycloak | platform realm | Create bootstrap admin password"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ keycloak_platform_realm }}-bootstrap-admin"
+            namespace: "{{ keycloak_namespace }}"
+          type: Opaque
+          stringData:
+            value: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}"
+      when: _kc_bootstrap.resources | length == 0
+      no_log: true
+
+- name: "keycloak | platform realm | Read the realm import"
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: KeycloakRealmImport
+    name: "{{ keycloak_platform_realm }}-realm"
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_platform_import
+
+- name: "keycloak | platform realm | Import the realm"
+  kubernetes.core.k8s:
+    state: present
+    template: platform-realm.yaml.j2
+  when: _kc_platform_import.resources | length == 0
+
+# Done only: HasErrors is set on a failed attempt while the Job still retries.
+- name: "keycloak | platform realm | Wait for the import"
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: KeycloakRealmImport
+    name: "{{ keycloak_platform_realm }}-realm"
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_platform_import
+  until: >-
+    (_kc_platform_import.resources | first | default({})).status.conditions | default([])
+    | selectattr('type', 'eq', 'Done') | selectattr('status', 'eq', 'True') | list | length > 0
+  retries: 60
+  delay: 5
+
+- name: "keycloak | platform realm | Read session timeouts"
+  ansible.builtin.include_tasks: kcadm.yaml
+  vars:
+    _kc_args: [get, "realms/{{ keycloak_platform_realm }}", --fields, "ssoSessionIdleTimeout,ssoSessionMaxLifespan"]
+
+- name: "keycloak | platform realm | Set session timeouts"
+  ansible.builtin.include_tasks: kcadm.yaml
+  vars:
+    _want:
+      ssoSessionIdleTimeout: "{{ keycloak_platform_session_idle_timeout | int }}"
+      ssoSessionMaxLifespan: "{{ keycloak_platform_session_max_lifespan | int }}"
+    _kc_args: [update, "realms/{{ keycloak_platform_realm }}", -b, "{{ _want | to_json }}"]
+    _kc_write: true
+  when: >-
+    (_kc_kcadm.stdout | from_json).ssoSessionIdleTimeout | default(0) | int != keycloak_platform_session_idle_timeout | int
+    or (_kc_kcadm.stdout | from_json).ssoSessionMaxLifespan | default(0) | int != keycloak_platform_session_max_lifespan | int

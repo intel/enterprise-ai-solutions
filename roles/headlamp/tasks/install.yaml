@@ -1,0 +1,293 @@
+---
+# =============================================================================
+# Headlamp — Install
+# =============================================================================
+
+- name: "headlamp | Settings"
+  ansible.builtin.assert:
+    that:
+      - headlamp_auth_mode in ['apiserver', 'gateway']
+      - headlamp_token_lifespan | int < keycloak_platform_session_idle_timeout | int
+    fail_msg: >-
+      headlamp_auth_mode must be apiserver or gateway (got '{{ headlamp_auth_mode }}'), and
+      headlamp_token_lifespan ({{ headlamp_token_lifespan }}) must be shorter than
+      keycloak_platform_session_idle_timeout ({{ keycloak_platform_session_idle_timeout }}): tokens are refreshed at
+      expiry, and Keycloak ends a session idle for longer than its timeout.
+    quiet: true
+
+- name: "headlamp | Namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ headlamp_namespace }}"
+        labels: >-
+          {{ ({'istio.io/dataplane-mode': 'ambient'} if istio_enabled | default(false) | bool else {})
+             | combine({'pod-security.kubernetes.io/enforce': 'restricted',
+                        'pod-security.kubernetes.io/audit': 'restricted',
+                        'pod-security.kubernetes.io/warn': 'restricted'}
+                       if enforce_pss | default(false) | bool else {}) }}
+
+# ── CA that signs Keycloak's certificate, and the gateway address ────────────
+# The address backs name lookups where the platform hostnames are not in DNS.
+
+- name: "headlamp | Gateway CA and address"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: client_trust.yaml
+
+- name: "headlamp | Use them"
+  ansible.builtin.set_fact:
+    __headlamp_ca_pem: "{{ gateway_trust.ca_pem }}"
+    __headlamp_gateway_ip: "{{ gateway_trust.address }}"
+
+# ── Keycloak clients in the platform realm (owned by the keycloak role) ──────
+
+# Machine-only identity for validate: proves the API server accepts realm tokens.
+# No groups, so no Kubernetes access: never bind RBAC to its service account.
+- name: "headlamp | Keycloak client (machine-only, for validate)"
+  ansible.builtin.include_role:
+    name: keycloak
+    tasks_from: oidc_client.yaml
+  vars:
+    keycloak_client:
+      id: "{{ __headlamp_check_client_id }}"
+      standard_flow: false
+      service_account: true
+      pkce: false
+      groups_claim: false
+      audiences: ["{{ headlamp_oidc_client_id }}"]
+
+- name: "headlamp | Keycloak client"
+  ansible.builtin.include_role:
+    name: keycloak
+    tasks_from: oidc_client.yaml
+  vars:
+    keycloak_client:
+      id: "{{ headlamp_oidc_client_id }}"
+      redirect_uris: "{{ __headlamp_redirect_uris }}"
+      # After logout: Headlamp's login page for cluster "main" (base64url), or the UI root.
+      post_logout_uris: ["{{ headlamp_url }}/encoded-clusters/bWFpbg/login", "{{ headlamp_url }}/"]
+      token_lifespan: "{{ headlamp_token_lifespan | int }}"
+
+# ── Client settings for whichever side runs the login ────────────────────────
+
+# apiserver mode: Headlamp's OIDC settings (envFrom). gateway mode: the client
+# secret Envoy reads (key client-secret). Only the current mode's Secret exists.
+- name: "headlamp | Login settings"
+  kubernetes.core.k8s:
+    state: "{{ item.state }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ headlamp_namespace }}"
+      type: Opaque
+      stringData: "{{ item.data }}"
+  loop:
+    - name: headlamp-oidc
+      state: "{{ 'present' if __headlamp_apiserver_mode | bool else 'absent' }}"
+      data:
+        OIDC_CLIENT_ID: "{{ headlamp_oidc_client_id }}"
+        OIDC_CLIENT_SECRET: "{{ keycloak_client_secret }}"
+        OIDC_ISSUER_URL: "{{ __headlamp_issuer_url }}"
+        OIDC_SCOPES: "profile,email"
+        OIDC_CALLBACK_URL: "{{ headlamp_url }}/oidc-callback"
+        OIDC_USE_PKCE: "true"
+    - name: headlamp-sso
+      state: "{{ 'absent' if __headlamp_apiserver_mode | bool else 'present' }}"
+      data:
+        client-secret: "{{ keycloak_client_secret }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.state }})"
+  no_log: true
+
+- name: "headlamp | OIDC CA"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if __headlamp_apiserver_mode | bool and __headlamp_ca_pem | length > 0 else 'absent' }}"
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: headlamp-oidc-ca
+        namespace: "{{ headlamp_namespace }}"
+      data:
+        ca.crt: "{{ __headlamp_ca_pem }}"
+
+# ── apiserver mode: the Keycloak admin group is cluster-admin ────────────────
+
+- name: "headlamp | Bind the admin group"
+  kubernetes.core.k8s:
+    state: "{{ 'present' if __headlamp_apiserver_mode | bool else 'absent' }}"
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "headlamp-{{ keycloak_platform_admin_group }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+        - apiGroup: rbac.authorization.k8s.io
+          kind: Group
+          name: "{{ headlamp_oidc_prefix }}{{ keycloak_platform_admin_group }}"
+
+- name: "headlamp | API server trusts Keycloak"
+  ansible.builtin.include_tasks: apiserver.yaml
+  when: __headlamp_apiserver_mode | bool
+
+# ── Publish on its own subdomain (the chart creates the HTTPRoute) ──────────
+
+- name: "headlamp | Publish the host"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: publish.yaml
+  vars:
+    gateway_publish_name: headlamp
+    gateway_publish_namespace: "{{ headlamp_namespace }}"
+    gateway_publish_host: "{{ headlamp_hostname }}"
+    gateway_publish_mode: subdomain
+  when: headlamp_gateway_publish | bool
+
+# Path mode: <base>/headlamp points browsers at the UI's own host.
+- name: "headlamp | Path-mode redirect"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: path_redirect.yaml
+  vars:
+    gateway_redirect_name: headlamp-redirect
+    gateway_redirect_namespace: "{{ headlamp_namespace }}"
+    gateway_redirect_path: "{{ headlamp_path }}"
+    gateway_redirect_url: "{{ headlamp_url }}/"
+    gateway_redirect_state: "{{ 'present' if headlamp_gateway_publish | bool else 'absent' }}"
+
+# ── Platform pages (plugin bundle, loaded from a ConfigMap) ──────────────────
+
+- name: "headlamp | Plugin bundle"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "headlamp-plugin-{{ __headlamp_plugin_name }}"
+        namespace: "{{ headlamp_namespace }}"
+      data:
+        main.js: "{{ lookup('ansible.builtin.file', 'plugins/' ~ __headlamp_plugin_name ~ '/main.js', rstrip=false) }}"
+        package.json: "{{ lookup('ansible.builtin.file', 'plugins/' ~ __headlamp_plugin_name ~ '/package.json', rstrip=false) }}"
+
+# A changed bundle rolls the pod: Headlamp reads plugins at start.
+- name: "headlamp | Plugin checksum"
+  ansible.builtin.set_fact:
+    __headlamp_plugin_checksum: >-
+      {{ (lookup('ansible.builtin.file', 'plugins/' ~ __headlamp_plugin_name ~ '/main.js', rstrip=false)
+          ~ lookup('ansible.builtin.file', 'plugins/' ~ __headlamp_plugin_name ~ '/package.json', rstrip=false)) | hash('sha256') }}
+
+# gateway mode: the shared account's 'view' lacks KServe's LLMInferenceService,
+# which the Models page shows. Read on that one resource, for this account only.
+- name: "headlamp | Models page read access (gateway mode)"
+  kubernetes.core.k8s:
+    state: "{{ 'absent' if __headlamp_apiserver_mode | bool else 'present' }}"
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata: {name: headlamp-pages-read}
+      rules:
+        - apiGroups: [serving.kserve.io]
+          resources: [llminferenceservices]
+          verbs: [get, list, watch]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata: {name: headlamp-pages-read}
+      roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: headlamp-pages-read}
+      subjects: [{kind: ServiceAccount, name: headlamp, namespace: "{{ headlamp_namespace }}"}]
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+
+# Only the gateway reaches Headlamp: in gateway mode it acts as its shared
+# account for any caller, so a direct in-cluster call must be refused.
+- name: "headlamp | Only the gateway reaches Headlamp"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: backend_ingress.yaml
+  vars:
+    gateway_backend_namespace: "{{ headlamp_namespace }}"
+    gateway_backend_selector: {app.kubernetes.io/name: headlamp, app.kubernetes.io/instance: headlamp}
+    gateway_backend_ports: [4466]
+    gateway_backend_policy_name: headlamp-gateway-only
+
+- name: "headlamp | Install Headlamp"
+  kubernetes.core.helm:
+    name: headlamp
+    chart_ref: headlamp
+    chart_repo_url: "{{ headlamp_chart_repo }}"
+    chart_version: "{{ headlamp_chart_version }}"
+    release_namespace: "{{ headlamp_namespace }}"
+    values: "{{ lookup('ansible.builtin.template', 'values.yaml.j2') | from_yaml }}"
+    wait: "{{ helm_wait | default(true) }}"
+    timeout: "{{ helm_timeout | default('600s') }}"
+  register: __headlamp_helm
+  until: __headlamp_helm is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
+
+# ── Who checks sign-in at the gateway ────────────────────────────────────────
+# apiserver mode: Headlamp runs its own login, so the route is exempt from the
+# gateway JWT check. gateway mode: Envoy runs the login and admits only the
+# admin group. One policy per route: the other mode's is removed first.
+
+- name: "headlamp | Remove the other mode's gateway policy"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: "{{ 'route_sso.yaml' if __headlamp_apiserver_mode | bool else 'route_auth_exempt.yaml' }}"
+  vars:
+    gateway_route_name: headlamp
+    gateway_route_namespace: "{{ headlamp_namespace }}"
+    gateway_route_policy_name: "{{ 'headlamp-sso' if __headlamp_apiserver_mode | bool else 'headlamp-no-auth' }}"
+    gateway_route_state: absent
+  when: headlamp_gateway_publish | bool
+
+- name: "headlamp | Exempt the route from gateway auth"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: headlamp
+    gateway_route_namespace: "{{ headlamp_namespace }}"
+    gateway_route_policy_name: headlamp-no-auth
+  when: headlamp_gateway_publish | bool and __headlamp_apiserver_mode | bool
+
+- name: "headlamp | Sign in at the gateway"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_sso.yaml
+  vars:
+    gateway_route_name: headlamp
+    gateway_route_namespace: "{{ headlamp_namespace }}"
+    gateway_route_policy_name: headlamp-sso
+    gateway_sso:
+      issuer: "{{ __headlamp_issuer_url }}"
+      issuer_internal: "{{ __headlamp_issuer_internal }}"
+      client_id: "{{ headlamp_oidc_client_id }}"
+      client_secret_name: headlamp-sso
+      redirect_url: "{{ headlamp_url }}/oauth2/callback"
+      allowed_groups: ["{{ keycloak_platform_admin_group }}"]
+  when: headlamp_gateway_publish | bool and not (__headlamp_apiserver_mode | bool)
+
+- name: "headlamp — install complete"
+  ansible.builtin.debug:
+    msg: >-
+      Headlamp {{ headlamp_image_tag }} at {{ headlamp_url ~ ('/oidc?cluster=main' if __headlamp_apiserver_mode | bool else '') }}
+      ({{ headlamp_auth_mode }} mode):
+      {{ ('members of Keycloak group ' ~ keycloak_platform_admin_group ~ ' (realm ' ~ keycloak_platform_realm ~ ') are cluster admins.')
+         if __headlamp_apiserver_mode | bool
+         else ('only Keycloak group ' ~ keycloak_platform_admin_group ~ ' is admitted; everyone shares ServiceAccount role '
+               ~ headlamp_gateway_cluster_role ~ ', with no per-person RBAC or audit.') }}
+      {{ ('Bootstrap admin: ' ~ keycloak_platform_bootstrap_admin_user ~ ', temporary password in Secret '
+          ~ keycloak_namespace ~ '/' ~ keycloak_platform_realm ~ '-bootstrap-admin.')
+         if keycloak_platform_bootstrap_admin | bool else '' }}

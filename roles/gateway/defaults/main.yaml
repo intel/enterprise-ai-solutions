@@ -97,6 +97,9 @@ gateway_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
 gateway_apex_label_key: "gateway.enterprise-ai/allow-apex-routes"
 gateway_apex_label_value: "true"
 gateway_path_grants_configmap: "gateway-path-grants"
+# UIs published with gateway_publish_portal (title, description, path) are listed
+# here, one key per service; Headlamp's Dashboards page reads it.
+gateway_portal_configmap: "platform-portal"
 # Path mode: the bare domain redirects here ('' = no landing page, 404).
 gateway_landing_path: ""
 

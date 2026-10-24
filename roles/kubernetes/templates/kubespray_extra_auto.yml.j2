@@ -54,3 +54,13 @@ local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
+{% if kubernetes_apiserver_authn_enabled | bool %}
+# Directory mount, so atomic file replacement reaches the container.
+kube_kubeadm_apiserver_extra_args:
+  authentication-config: "{{ kubernetes_apiserver_authn_dir }}/authentication-config.yaml"
+apiserver_extra_volumes:
+  - name: authentication-config
+    hostPath: "{{ kubernetes_apiserver_authn_dir }}"
+    mountPath: "{{ kubernetes_apiserver_authn_dir }}"
+    readOnly: true
+{% endif %}
