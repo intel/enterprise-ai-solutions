@@ -1,7 +1,12 @@
 ---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
 # =============================================================================
 # Fabric Netplan — Teardown
 # =============================================================================
+# Runs after the kubespray reset (es_auto_installer.sh): the node IPs live on
+# the fabric, and the reset needs them.
 
 - name: "fabric_netplan | teardown | Compute cluster node list"
   ansible.builtin.set_fact:
@@ -9,6 +14,33 @@
       {{ (groups['kube_control_plane'] | default([]))
          | union(groups['kube_node'] | default([]))
          | unique }}
+
+# netplan apply leaves an address in place once its definition is gone, so read
+# what 99-fabric.yaml assigned before removing it.
+- name: "fabric_netplan | teardown | Read fabric netplan on each node"
+  ansible.builtin.slurp:
+    src: "{{ rack_scale_netplan_dest }}"
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _netplan_current
+  failed_when: false
+
+- name: "fabric_netplan | teardown | Collect fabric addresses"
+  ansible.builtin.set_fact:
+    _fabric_addresses: >-
+      {%- set out = [] -%}
+      {%- for r in _netplan_current.results if r.content is defined -%}
+      {%- set eths = ((r.content | b64decode | from_yaml).network | default({})).ethernets | default({}) -%}
+      {%- for nic, cfg in eths.items() -%}
+      {%- for addr in cfg.addresses | default([]) -%}
+      {%- set _ = out.append({'node': r.item, 'nic': nic, 'addr': addr}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
 
 - name: "fabric_netplan | teardown | Remove 99-fabric.yaml from all nodes"
   ansible.builtin.file:
@@ -39,3 +71,16 @@
   loop_control:
     label: "{{ item.item }}"
   changed_when: true
+
+# Only the addresses the fabric file assigned: other addresses on the NIC stay.
+# rc 2 means the address is already gone.
+- name: "fabric_netplan | teardown | Remove fabric addresses still on the NICs"
+  ansible.builtin.command: "ip addr del {{ item.addr }} dev {{ item.nic }}"
+  delegate_to: "{{ item.node }}"
+  become: true
+  loop: "{{ _fabric_addresses }}"
+  loop_control:
+    label: "{{ item.node }}: {{ item.addr }} on {{ item.nic }}"
+  register: _addr_removed
+  changed_when: _addr_removed.rc == 0
+  failed_when: _addr_removed.rc not in [0, 2]
