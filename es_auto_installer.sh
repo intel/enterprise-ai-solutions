@@ -925,21 +925,69 @@ _init_reconcile_pins() {
     done
 }
 
-# _init_seed_defaults <env_dir> <name> — copy configs/defaults/*.yaml into the env,
-# never over an existing file.
+# _init_seed_defaults <env_dir> <name> [<manifest>] — copy configs/defaults/*.yaml into the env,
+# never over an existing file. A new global_config.yaml also gets the manifest's global_config: keys.
 _init_seed_defaults() {
-    local env_dir="$1" name="$2"
-    local f base
+    local env_dir="$1" name="$2" mf="${3:-}"
+    local f base rows
+    rows=$(_init_layer_globals "$mf")
     for f in "$DEFAULTS_DIR"/*.yaml; do
         [[ -e "$f" ]] || continue
         base=$(basename "$f")
         if [[ -f "$env_dir/$base" ]]; then
             warn "  exists, skipping: $base"
+            [[ "$base" != "global_config.yaml" || -z "$rows" ]] || _init_globals_drift "$env_dir/$base" "$rows" "$mf"
+        elif [[ "$base" == "global_config.yaml" && -n "$rows" ]]; then
+            _init_apply_globals "$f" "$rows" > "$env_dir/$base.tmp" \
+                || { rm -f "$env_dir/$base.tmp"; err "Could not seed ${base} with the global_config: keys of ${mf##*/}."; }
+            mv "$env_dir/$base.tmp" "$env_dir/$base"
+            info "  created: ${name}/${base}  ($(cut -f1 <<< "$rows" | paste -sd ' ') from ${mf##*/})"
         else
             cp "$f" "$env_dir/$base"
             info "  created: ${name}/${base}"
         fi
     done
+}
+
+# _init_layer_globals <manifest> — the manifest's optional top-level global_config: map, one
+# "key<TAB>value" row per key, the value as a YAML scalar.
+_init_layer_globals() {
+    [[ -n "${1:-}" ]] || return 0
+    yq -e '((.global_config // {}) | tag == "!!map")
+           and ([(.global_config // {})[] | select(tag == "!!map" or tag == "!!seq")] | length == 0)' \
+        "$1" >/dev/null 2>&1 \
+        || err "${1##*/}: global_config must map top-level global_config.yaml keys to plain values."
+    yq -r '.global_config // {} | to_entries[] | .key + "\t" + (.value | to_json(0))' "$1"
+}
+
+# _init_apply_globals <file> <rows> — <file> with each row's key set on its top-level line,
+# keeping the trailing comment in its column, or appended when the file lacks it.
+_init_apply_globals() {
+    ROWS="$2" awk '
+        function set(line, s,   c, pad) {
+            if (!match(line, /[ \t]+#/)) return s
+            c = RSTART + RLENGTH - 1; pad = c - 1 - length(s)
+            return s sprintf("%" (pad > 1 ? pad : 1) "s", "") substr(line, c)
+        }
+        BEGIN {
+            n = split(ENVIRON["ROWS"], r, "\n")
+            for (i = 1; i <= n; i++) { t = index(r[i], "\t"); k[i] = substr(r[i], 1, t - 1) ":"; v[i] = substr(r[i], t + 1) }
+        }
+        { for (i = 1; i <= n; i++) if (!done[i] && index($0, k[i]) == 1) { $0 = set($0, k[i] " " v[i]); done[i] = 1 }
+          print }
+        END { for (i = 1; i <= n; i++) if (!done[i]) print k[i] " " v[i] }
+    ' "$1"
+}
+
+# _init_globals_drift <global_config> <rows> <manifest> — report the rows an existing
+# global_config.yaml holds differently. The file is never changed.
+_init_globals_drift() {
+    local key val drift=""
+    while IFS=$'\t' read -r key val; do
+        [[ "$(K="$key" yq -o=json -I=0 '.[strenv(K)]' "$1" 2>/dev/null)" == "$val" ]] \
+            || drift+="${drift:+ }${key}"
+    done <<< "$2"
+    [[ -z "$drift" ]] || info "    kept as is: ${3##*/} sets ${drift} only in a new global_config.yaml."
 }
 
 # _init_warn_cross_env <name> <layer> <dest> <rev> — another env in this checkout
@@ -1124,7 +1172,7 @@ init() {
 
     _init_reconcile_pins "$sol" "$mf" "$layer" "$upgrade"
     ensure_repos "$layer" --clone
-    _init_seed_defaults "$ENV_DIR" "$name"
+    _init_seed_defaults "$ENV_DIR" "$name" "$mf"
 
     # The record is built aside and moved into place once seeding has finished. One left
     # behind by a run that failed halfway is worse than none: it would satisfy the load

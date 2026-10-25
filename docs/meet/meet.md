@@ -84,9 +84,9 @@ Prometheus, Grafana, Loki, Tempo, OpenTelemetry, and Langfuse provide infrastruc
 |---|---|---|
 | **Inference** | Model serving, routing, authentication, OpenAI-compatible endpoints | `init inference` + `install inference` (pulls infrastructure + platform automatically) |
 | **Intel® AI for Enterprise RAG** | Document ingestion, vector search, grounded chat, chat history, UI | `init erag` + `install erag` (pulls infrastructure + platform + inference) |
-| **Agentic AI** | Agent orchestration, tool calling, sandboxed execution, multi-agent workflows | Planned |
+| **Intel® Agent Toolkit** | Agent memory (Redis Stack, pgvector), sandboxed code execution (Agent Sandbox, optionally in Kata microVMs, and OpenShell), an optional agent realm in Keycloak (with `auth_provider: keycloak`, or `keycloak_enabled: true` in LiteLLM mode), optional KubeRay | `init agent-toolkit` + `install agent-toolkit` (pulls infrastructure + platform + inference) |
 
-Each layer builds on the one below it. Deploy what you need today and add layers as your use case evolves. **Intel AI for Enterprise RAG is opt-in** — installing `inference` does not bring it; you must initialize and install it explicitly.
+Each layer builds on the one below it. Deploy what you need today and add layers as your use case evolves. **Intel AI for Enterprise RAG and the Intel® Agent Toolkit are opt-in** — installing `inference` brings neither; you must initialize and install them explicitly.
 
 ### Which repository do I start from?
 
@@ -99,11 +99,12 @@ github.com/intel/enterprise-ai-solutions      <- start here; run all commands fr
   |-- env/<name>/               your configuration, kubeconfig, credentials, and logs
   `-- ext/                      cloned automatically by `init`
         |-- enterprise.ai-inference    model serving: KServe, vLLM, OpenVINO Model Server
-        `-- enterprise.ai-erag         Intel AI for Enterprise RAG: pipelines, ingestion, UI
+        |-- enterprise.ai-erag         Intel AI for Enterprise RAG: pipelines, ingestion, UI
+        `-- enterprise.agent-toolkit   Intel Agent Toolkit: agent memory, sandboxes
 ```
 
 > [!IMPORTANT]
-> Do not clone the inference or RAG repositories yourself to deploy them. They are pulled in as pinned dependencies, and every command in this documentation runs from the root of this repository.
+> Do not clone the inference, RAG or agent toolkit repositories yourself to deploy them. They are pulled in as pinned dependencies, and every command in this documentation runs from the root of this repository.
 
 ---
 

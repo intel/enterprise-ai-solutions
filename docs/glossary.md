@@ -42,9 +42,9 @@ Terms used across this documentation, in alphabetical order.
 
 **Langfuse.** LLM observability (traces, prompts, token usage), deployed with the `litellm` auth provider.
 
-**Layer.** A group of components installed as a unit, in dependency order: `infrastructure`, `platform`, `inference`, and the opt-in `erag`. Installing a layer pulls in the layers it depends on.
+**Layer.** A group of components installed as a unit, in dependency order: `infrastructure`, `platform`, `inference`, and the opt-in `erag` and `agent-toolkit`. Installing a layer pulls in the layers it depends on.
 
-**LiteLLM.** An OpenAI-compatible proxy that issues virtual API keys with per-key budgets. Deployed when `auth_provider: litellm`, in which case Keycloak is not deployed.
+**LiteLLM.** An OpenAI-compatible proxy that issues virtual API keys with per-key budgets. Deployed when `auth_provider: litellm`, in which case Keycloak is not deployed unless `keycloak_enabled: true`.
 
 **MetalLB.** The load balancer that hands out external IP addresses on bare metal, where no cloud load balancer exists.
 
