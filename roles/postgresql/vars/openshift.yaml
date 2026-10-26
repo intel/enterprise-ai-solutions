@@ -1,0 +1,3 @@
+---
+# No PSS labels: OpenShift syncs them from the SCCs.
+_postgresql_pss_labels: false

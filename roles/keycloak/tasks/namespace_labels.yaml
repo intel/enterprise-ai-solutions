@@ -27,4 +27,4 @@
           pod-security.kubernetes.io/enforce: "baseline"
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
-  when: enforce_pss | default(false) | bool
+  when: _keycloak_pss_labels | bool

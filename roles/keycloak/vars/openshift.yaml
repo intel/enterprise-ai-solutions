@@ -1,3 +1,5 @@
 ---
 # Red Hat build of Keycloak, installed by the admin from OperatorHub (OLM).
 _keycloak_operator_deployment: rhbk-operator
+# No PSS labels: OpenShift syncs them from the SCCs, and the keycloak namespace is the admin's.
+_keycloak_pss_labels: false

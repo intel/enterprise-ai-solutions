@@ -62,7 +62,7 @@
   when:
     - gateway_create
     - gateway_namespace != gateway_platform.controller_namespace
-    - enforce_pss | default(false) | bool
+    - _gateway_pss_labels | bool
 
 # ── TLS serving certificate ───────────────────────────────────────────────────
 

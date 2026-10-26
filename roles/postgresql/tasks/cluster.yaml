@@ -59,7 +59,7 @@
           pod-security.kubernetes.io/enforce: "restricted"
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
-  when: enforce_pss | default(false) | bool
+  when: _postgresql_pss_labels | bool
 
 # ── Credential Secrets — created ONCE, never overwritten ─────────────────────
 
@@ -302,7 +302,7 @@
           pod-security.kubernetes.io/enforce: "restricted"
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
-  when: enforce_pss | default(false) | bool
+  when: _postgresql_pss_labels | bool
   loop: "{{ __postgresql_effective_databases }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"

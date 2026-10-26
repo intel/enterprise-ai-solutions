@@ -10,3 +10,5 @@ _envoy_gateway_grant_nonroot_scc: false
 _envoy_gateway_gateway_api_crds_platform_owned: false
 # The Gateway's LoadBalancer serves the hosts itself.
 _envoy_gateway_openshift_routes: false
+# Stamp the PSS labels when enforce_pss is set.
+_envoy_gateway_pss_labels: "{{ enforce_pss | default(false) | bool }}"

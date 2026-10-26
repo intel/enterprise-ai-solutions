@@ -1,3 +1,5 @@
 ---
 # Upstream Keycloak operator, installed by this role (install.yaml).
 _keycloak_operator_deployment: keycloak-operator
+# Stamp the PSS labels when enforce_pss is set.
+_keycloak_pss_labels: "{{ enforce_pss | default(false) | bool }}"

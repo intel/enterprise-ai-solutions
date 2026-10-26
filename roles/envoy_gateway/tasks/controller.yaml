@@ -175,7 +175,7 @@
           pod-security.kubernetes.io/warn: "restricted"
   when:
     - gateway_platform.controller_managed | bool
-    - enforce_pss | default(false) | bool
+    - _envoy_gateway_pss_labels | bool
 
 # ── Proxy settings and GatewayClass ───────────────────────────────────────────
 
