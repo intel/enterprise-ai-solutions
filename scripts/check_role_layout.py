@@ -43,6 +43,10 @@ NOT_COMPONENTS = {
     "ownership": "helper role, included by playbooks/includes/run_component.yaml",
 }
 
+# Components not moved to the layout yet: rack-scale fabric setup on bare
+# metal, before Kubernetes; never on OpenShift and without a test bed here.
+NOT_MIGRATED = {"fabric_bgp", "fabric_inventory", "fabric_netplan", "fabric_sysctl", "fabric_validate"}
+
 # Library roles: no main.yaml, entered with tasks_from. Their callers pass
 # vars_from: "{{ cluster_distribution }}.yaml" when they have platform vars
 # (roles/gateway for the envoy_gateway provider hooks).
@@ -142,7 +146,7 @@ def main():
 
     errors = []
     for role in sorted(p for p in ROLES.iterdir() if p.is_dir()):
-        if role.name in NOT_COMPONENTS:
+        if role.name in NOT_COMPONENTS or role.name in NOT_MIGRATED:
             continue
         if role.name in LIBRARIES:
             if (role / "tasks" / "main.yaml").exists():

@@ -253,7 +253,8 @@ is published once: Helm tasks pass `post_renderer: "{{ helm_post_renderer | defa
 (empty on Kubernetes), and `gateway` `publish.yaml` creates the OpenShift Routes.
 Library roles, entered with `tasks_from`, have no dispatcher: their caller passes
 `vars_from: "{{ cluster_distribution }}.yaml"`. `scripts/check_role_layout.py` checks this repo's
-roles against these rules (`--fix` rewrites every `tasks/main.yaml`).
+roles against these rules (`--fix` rewrites every `tasks/main.yaml`). The rack-scale `fabric_*`
+roles are not moved to this layout yet and are skipped.
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /
 `ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. Variables
