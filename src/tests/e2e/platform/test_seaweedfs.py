@@ -8,7 +8,7 @@ import kr8s
 import pytest
 
 pytestmark = pytest.mark.not_on_openshift(
-    reason="SeaweedFS is not installed on OpenShift: its consumer, observability, is not"
+    reason="SeaweedFS is not installed on OpenShift: its main consumer, observability, is not installed there either"
 )
 
 
