@@ -1,5 +1,0 @@
----
-# Same steps as on Kubernetes. On a BYO cluster the role only checks the
-# kubeconfig, as on Kubernetes.
-- name: "kubernetes | OpenShift: validate"
-  ansible.builtin.include_tasks: validate.yaml

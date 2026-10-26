@@ -1,5 +1,0 @@
----
-# Same steps as on Kubernetes. The admin's StorageClass, checked the same way as
-# on Kubernetes.
-- name: "custom_storage | OpenShift: install"
-  ansible.builtin.include_tasks: install.yaml

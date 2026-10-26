@@ -1,6 +1,0 @@
----
-- name: "nfs_storage | OpenShift: not used"
-  ansible.builtin.fail:
-    msg: >-
-      nfs_storage is not supported on OpenShift: use the cluster's StorageClass
-      (storage_backend: custom, or the default class).

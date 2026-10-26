@@ -1,5 +1,0 @@
----
-# Same steps as on Kubernetes. resolve.yaml maps storage_backend to the
-# cluster's StorageClass; the backend role runs as on Kubernetes.
-- name: "storage | OpenShift: install"
-  ansible.builtin.include_tasks: install.yaml

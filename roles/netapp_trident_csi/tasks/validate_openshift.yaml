@@ -1,6 +1,0 @@
----
-- name: "netapp_trident_csi | OpenShift: not used"
-  ansible.builtin.fail:
-    msg: >-
-      netapp_trident_csi is not supported on OpenShift: use the cluster's StorageClass
-      (storage_backend: custom, or the default class).

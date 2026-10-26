@@ -236,7 +236,7 @@ roles/<name>/
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
 | `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
-| `tasks/*_openshift.yaml` | yes | Used on OpenShift instead of the files above. Same steps as on Kubernetes: include the Kubernetes file. Not used on OpenShift: `install` and `validate` fail with the reason, `teardown` is a `debug` no-op, so a layer teardown passes. |
+| `tasks/*_openshift.yaml` | yes, except infrastructure roles | Used on OpenShift instead of the files above. Same steps as on Kubernetes: include the Kubernetes file. Not used on OpenShift: `install` and `validate` fail with the reason, `teardown` is a `debug` no-op, so a layer teardown passes. |
 | `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
@@ -251,6 +251,13 @@ is published once: `gateway` `publish.yaml` creates the OpenShift Routes.
 Library roles, entered with `tasks_from`, have no dispatcher: their caller passes
 `vars_from: "{{ cluster_distribution }}.yaml"`. The rack-scale `fabric_*` roles are not moved
 to this layout yet.
+
+**Infrastructure is Kubernetes only.** The infrastructure layer sets up Kubernetes: `kubernetes`
+(Kubespray), `storage` and its backends (`custom_storage`, `nfs_storage`, `rook_ceph_storage`,
+`netapp_trident_csi`). The installer never provisions OpenShift: the cluster is BYO and the admin
+provides its storage, so `components.yaml` skips `kubernetes` and `storage` there and these roles
+have no `*_openshift.yaml` files. `storage/tasks/resolve.yaml` still runs in preflight on both
+platforms, and on OpenShift maps the storage selector to the cluster's default StorageClass.
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /
 `ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. Variables

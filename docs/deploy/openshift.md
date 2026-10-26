@@ -145,6 +145,8 @@ Preflight detects the platform before it resolves the components to install, so 
 
 Only a cluster you bring (`existing_kubernetes` set) is probed. A cluster the installer builds with Kubespray is upstream Kubernetes. Preflight stops if the cluster in `existing_kubernetes` cannot be reached.
 
+The installer does not install OpenShift: set `existing_kubernetes` to the cluster's kubeconfig. On OpenShift the infrastructure layer (`kubernetes`, `storage`) is skipped, because the cluster and its default StorageClass (step 1) are the admin's.
+
 A cluster is OpenShift when it serves `config.openshift.io/v1` **and** has the `ClusterVersion` object `version`. The API group alone is not enough, because OKD and MicroShift serve parts of it as well.
 
 | Fact | Value |

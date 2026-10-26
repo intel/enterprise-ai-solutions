@@ -1,4 +1,0 @@
----
-- name: "nfs_storage | OpenShift: teardown is a no-op"
-  ansible.builtin.debug:
-    msg: "nfs_storage is not installed on OpenShift; nothing to tear down."

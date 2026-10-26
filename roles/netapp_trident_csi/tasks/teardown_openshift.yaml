@@ -1,4 +1,0 @@
----
-- name: "netapp_trident_csi | OpenShift: teardown is a no-op"
-  ansible.builtin.debug:
-    msg: "netapp_trident_csi is not installed on OpenShift; nothing to tear down."
