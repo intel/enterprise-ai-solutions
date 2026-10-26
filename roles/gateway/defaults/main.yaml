@@ -6,7 +6,9 @@
 # these hooks (run with this role's defaults in scope):
 #   detect, controller, controller_validate, controller_remove,
 #   policies, policies_remove, route_auth_exempt, route_rate_limit
-# and, on OpenShift (cluster_distribution), openshift_routes.
+# and openshift_routes, for the hosts when detect records openshift_routes.
+# Each hook runs with the provider's vars/<cluster_distribution>.yaml (vars_from),
+# so a provider has vars/kubernetes.yaml and vars/openshift.yaml.
 # See roles/envoy_gateway for the reference implementation.
 gateway_provider: "envoy"
 # Provider of the recorded platform, so later runs keep the one installed.
@@ -36,7 +38,6 @@ gateway_openshift_route_hosts: >-
 gateway_openshift_extra_route_hosts: []
 gateway_openshift_route_exclude:
   - "{{ inference_hostname | default('inference.' ~ base_domain_name) }}"
-_gw_openshift: "{{ cluster_distribution | default('kubernetes') == 'openshift' }}"
 
 # Default request timeout for routes attached to the gateway.
 # Envoy's built-in default is 15s which is too aggressive for LLM responses

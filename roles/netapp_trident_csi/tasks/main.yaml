@@ -1,9 +1,24 @@
-# Copyright (C) 2026 Intel Corporation
+# Copyright (C) 2024-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 ---
-# =============================================================================
-# NetApp Trident CSI - Main Dispatcher
-# =============================================================================
+# Canonical dispatcher, the same in every component role but for the name.
+# Written by scripts/check_role_layout.py --fix; change it there, not here.
+#   vars/<cluster_distribution>.yaml   values that differ by platform, if any
+#   tasks/install_openshift.yaml       opts the role into its own OpenShift
+#                                      install, validate and teardown files
+- name: "netapp_trident_csi | dispatch | Assert supported action"
+  ansible.builtin.assert:
+    that: component_action | default('') in ['install', 'teardown', 'validate']
+    fail_msg: "netapp_trident_csi: unsupported component_action='{{ component_action | default('') }}'"
+    quiet: true
 
-- name: "netapp_trident_csi | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
+- name: "netapp_trident_csi | dispatch | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
+  when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
+
+- name: "netapp_trident_csi | dispatch | Include {{ component_action }}"
+  vars:
+    _variant: >-
+      {{ '_openshift' if cluster_distribution == 'openshift'
+         and (role_path ~ '/tasks/install_openshift.yaml') is file else '' }}
+  ansible.builtin.include_tasks: "{{ component_action }}{{ _variant }}.yaml"

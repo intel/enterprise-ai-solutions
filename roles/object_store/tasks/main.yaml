@@ -1,31 +1,24 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
-# =============================================================================
-# object_store — Interface role (no deployment tasks)
-#
-# This role is a pure interface definition. The active backend role
-# (seaweedfs, rustfs, …) handles all deployment and sets
-# object_store_endpoint as an Ansible fact at the end of its install.
-#
-# HOW TO ADD A NEW BACKEND (e.g. rustfs):
-# ────────────────────────────────────────
-# 1. Create roles/rustfs/ following the same structure as roles/seaweedfs/
-# 2. In roles/rustfs/tasks/install.yaml, at the end set:
-#      - ansible.builtin.set_fact:
-#          object_store_endpoint: "http://rustfs.{{ rustfs_namespace }}.svc.cluster.local:{{ rustfs_port }}"
-# 3. Read object_store_consumers to create users/buckets (copy the pattern
-#    from seaweedfs/tasks/install.yaml — the consumer list is backend-agnostic)
-# 4. In configs/components.yaml, add:
-#      - name: rustfs
-#        layer: platform
-#        enabled: "{{ (object_store_backend | default('seaweedfs')) == 'rustfs' }}"
-#        depends_on: []
-# 5. In global_config.yaml, set: object_store_backend: "rustfs"
-#
-# 6. Add rustfs to observability's depends_on in configs/components.yaml.
-#
-# Consumer roles (Loki, Tempo) read the <backend>-credentials Secret.
-# =============================================================================
+# Canonical dispatcher, the same in every component role but for the name.
+# Written by scripts/check_role_layout.py --fix; change it there, not here.
+#   vars/<cluster_distribution>.yaml   values that differ by platform, if any
+#   tasks/install_openshift.yaml       opts the role into its own OpenShift
+#                                      install, validate and teardown files
+- name: "object_store | dispatch | Assert supported action"
+  ansible.builtin.assert:
+    that: component_action | default('') in ['install', 'teardown', 'validate']
+    fail_msg: "object_store: unsupported component_action='{{ component_action | default('') }}'"
+    quiet: true
 
-- name: "object_store | Interface role — no tasks"
-  ansible.builtin.debug:
-    msg: "object_store is an interface role. Active backend: {{ object_store_backend | default('seaweedfs') }}"
+- name: "object_store | dispatch | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
+  when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
+
+- name: "object_store | dispatch | Include {{ component_action }}"
+  vars:
+    _variant: >-
+      {{ '_openshift' if cluster_distribution == 'openshift'
+         and (role_path ~ '/tasks/install_openshift.yaml') is file else '' }}
+  ansible.builtin.include_tasks: "{{ component_action }}{{ _variant }}.yaml"

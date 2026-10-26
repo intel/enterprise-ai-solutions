@@ -1,0 +1,3 @@
+---
+# Red Hat build of Keycloak, installed by the admin from OperatorHub (OLM).
+_keycloak_operator_deployment: rhbk-operator

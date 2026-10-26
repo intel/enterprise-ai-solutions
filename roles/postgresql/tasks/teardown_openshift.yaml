@@ -1,0 +1,12 @@
+---
+# =============================================================================
+# PostgreSQL — Teardown on OpenShift
+# The CNPG operator belongs to the admin's Subscription (OperatorHub) and stays.
+# =============================================================================
+
+- name: "postgresql | Remove the database cluster"
+  ansible.builtin.include_tasks: cluster_remove.yaml
+
+- name: "postgresql | Teardown complete"
+  ansible.builtin.debug:
+    msg: "PostgreSQL (CNPG) Cluster removed; the marketplace CNPG operator stays."

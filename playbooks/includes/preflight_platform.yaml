@@ -19,9 +19,13 @@
 #   cluster_kubernetes_minor      int, 0 when not probed
 #   cluster_apis                  served group/versions, [] when not probed
 #   cluster_default_storageclass  name of the default StorageClass, '' if none, not probed or unreadable
+#   helm_post_renderer            OpenShift: scripts/openshift_post_renderer.py, which drops
+#                                 the fixed UID/GID restricted-v2 rejects; '' on Kubernetes.
+#                                 Helm tasks pass post_renderer: "{{ helm_post_renderer | default(omit, true) }}"
 #
-# One global_config.yaml serves both platforms: roles branch on
-# cluster_distribution instead of the operator setting OpenShift-specific values.
+# One global_config.yaml serves both platforms: a role's dispatcher picks its
+# vars/<cluster_distribution>.yaml and *_openshift.yaml files from it, instead of
+# the operator setting OpenShift-specific values (scripts/check_role_layout.py).
 # Set cluster_distribution in global_config.yaml to skip detection.
 # =============================================================================
 
@@ -120,6 +124,9 @@
     cluster_kubernetes_minor: "{{ cluster_kubernetes_minor | default(0) | int }}"
     cluster_apis: "{{ cluster_apis | default([]) }}"
     cluster_default_storageclass: "{{ cluster_default_storageclass | default('') }}"
+    helm_post_renderer: >-
+      {{ (playbook_dir ~ '/../scripts/openshift_post_renderer.py') | realpath
+         if cluster_distribution == 'openshift' else '' }}
 
 - name: "Preflight - Show platform"
   ansible.builtin.debug:

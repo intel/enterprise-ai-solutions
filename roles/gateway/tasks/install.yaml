@@ -9,6 +9,7 @@
   ansible.builtin.include_role:
     name: "{{ gateway_provider }}_gateway"
     tasks_from: detect.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
 
 - name: "gateway | Provider facts"
   ansible.builtin.include_tasks: provider_facts.yaml
@@ -17,6 +18,7 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: controller.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
 
 # ── Gateway namespace ─────────────────────────────────────────────────────────
 
@@ -108,11 +110,12 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: openshift_routes.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
   vars:
     _openshift_route_hosts: "{{ gateway_openshift_route_hosts | reject('in', gateway_openshift_route_exclude) | list }}"
   when:
     - gateway_create
-    - _gw_openshift | bool
+    - gateway_platform.openshift_routes | default(false) | bool
 
 # ── Plaintext HTTP:80 → HTTPS redirect ───────────────────────────────────────
 # The HTTP:80 listener exists so browsers hitting http:// still land on the
@@ -191,6 +194,7 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: policies.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
 
 # Gateway API resolves overlapping listener hostnames by specificity, so the
 # moment 'https-s3' claims s3.<base_domain> exactly, the '*.<base_domain>'

@@ -48,7 +48,7 @@ _eg_proxy_config_namespace: >-
      else gateway_namespace }}
 
 # ── OpenShift ────────────────────────────────────────────────────────────────
-# On OpenShift (cluster_distribution, detected in preflight) Envoy runs as a
+# On OpenShift (vars/openshift.yaml) Envoy runs as a
 # Deployment behind a ClusterIP Service, and the OpenShift router forwards each
 # published hostname to it through a TLS passthrough Route (openshift_routes.yaml,
 # called by roles/gateway), so Envoy keeps terminating TLS.

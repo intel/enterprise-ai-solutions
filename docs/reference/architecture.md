@@ -286,17 +286,14 @@ These patterns are what let Intel® AI for Enterprise Solutions stay modular —
 
 ### Action Dispatch
 
-Every role's `tasks/main.yaml` uses a single pattern:
-
-```yaml
-- name: "component | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
-```
-
+Every component role's `tasks/main.yaml` is the same dispatcher ([Roles](adding_solutions.md#4-roles)).
 The `component_action` variable is passed as an extra-var from the CLI to `playbooks/site.yaml`:
 - `install` → tasks/install.yaml
 - `teardown` → tasks/teardown.yaml
 - `validate` → tasks/validate.yaml
+
+On OpenShift the dispatcher first loads `vars/openshift.yaml`, if the role has one, and runs
+`<action>_openshift.yaml` instead when the role has `tasks/install_openshift.yaml`.
 
 This means adding a new action (e.g., `upgrade`) only requires adding CLI support and a new `tasks/upgrade.yaml` in each role.
 
@@ -544,7 +541,7 @@ A file-level map of this repository and the external inference repo it composes 
 |------|---------|
 | `defaults/main.yaml` | Kubernetes version, Kubespray version/repo, networking CIDRs, CNI (`calico`), container runtime, kubeconfig path, proxy settings. **Version set per environment in `global_config.yaml`.** |
 | `files/generate_reserved_cpus.sh` | CPU pinning script. Delegated to first control-plane node for accurate NUMA detection. |
-| `tasks/main.yaml` | Dispatches to `{{ component_action }}.yaml` |
+| `tasks/main.yaml` | The canonical dispatcher: runs `{{ component_action }}.yaml` |
 | `tasks/install.yaml` | Smart entry point: detects existing cluster (kubectl + kubeconfig), checks `existing_kubernetes` (BYO path), skips if cluster exists and version OK, otherwise runs precheck → install_kubespray (prep) → (installer runs cluster.yml) → post_install |
 | `tasks/precheck.yaml` | System prerequisites: OS check (Linux), swap disable, kernel modules (`br_netfilter`, `overlay`), sysctl (`ip_forward`, `bridge-nf-call-iptables`), required packages (`curl`, `tar`, `git`, `python3-pip`, `python3-venv`, `sshpass`) |
 | `tasks/install_kubespray.yaml` | **Prep phase only** (3-phase split): Clones Kubespray to `.kubespray/`, creates Python venv, reads inventory from `env/<name>/inventory/hosts.yaml`, applies `kubespray_user_overrides` or `kubespray_full_config_file`, then exits. Installer runs `cluster.yml` directly for live output. |

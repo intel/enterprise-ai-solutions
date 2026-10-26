@@ -1,0 +1,15 @@
+---
+# Loaded by roles/gateway for every provider hook (vars_from), as a component
+# role's dispatcher loads its own.
+
+# No LoadBalancer (MetalLB is skipped): the OpenShift router owns :80/:443 and
+# forwards to a plain Deployment behind a ClusterIP Service.
+_envoy_gateway_proxy_shape: clusterip_deployment
+# restricted-v2 rejects the chart's and the proxies' fixed UID 65532.
+_envoy_gateway_grant_nonroot_scc: true
+# The Ingress Operator owns the Gateway API CRDs: an admission policy lets no
+# other client create, update or delete them.
+_envoy_gateway_gateway_api_crds_platform_owned: true
+# Each host the Gateway serves needs a TLS passthrough Route from the router
+# (openshift_routes.yaml).
+_envoy_gateway_openshift_routes: true

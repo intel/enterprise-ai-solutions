@@ -14,6 +14,7 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: policies_remove.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
 
 # Explicitly: the gateway namespace may outlive this (an existing controller's).
 - name: "gateway | Delete the platform's own routes"
@@ -56,12 +57,13 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: openshift_routes.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
   vars:
     _openshift_route_hosts: "{{ gateway_openshift_route_hosts | reject('in', gateway_openshift_route_exclude) | list }}"
     _openshift_route_state: absent
   when:
     - gateway_create
-    - _gw_openshift | bool
+    - gateway_platform.openshift_routes | default(false) | bool
 
 - name: "gateway | Delete Gateway resource"
   kubernetes.core.k8s:
@@ -138,6 +140,7 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: controller_remove.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
 
 - name: "gateway | Delete the platform record"
   kubernetes.core.k8s:

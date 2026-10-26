@@ -270,12 +270,12 @@
 # exits meanwhile ("failed to synchronize plugin"), and from then on the plugin gets
 # no container events, so new pods are never placed in a balloon. Restarting the
 # plugin once its node policy exists lets it start on that policy with one sync.
-- name: "nri_cpu_balloons | OpenShift: restart the plugin on its node policy"
+- name: "nri_cpu_balloons | Restart the plugin on its node policy"
   when:
-    - cluster_distribution | default('kubernetes') == 'openshift'
+    - _nri_cpu_balloons_restart_on_node_policy | bool
     - _nri_node_policies is changed
   block:
-    - name: "nri_cpu_balloons | OpenShift: roll the plugin DaemonSet"
+    - name: "nri_cpu_balloons | Roll the plugin DaemonSet"
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
@@ -289,7 +289,7 @@
                 annotations:
                   kubectl.kubernetes.io/restartedAt: "{{ now(utc=true).isoformat() }}"
 
-    - name: "nri_cpu_balloons | OpenShift: wait for the restarted plugin"
+    - name: "nri_cpu_balloons | Wait for the restarted plugin"
       kubernetes.core.k8s_info:
         api_version: apps/v1
         kind: DaemonSet

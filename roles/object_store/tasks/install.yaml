@@ -1,0 +1,4 @@
+---
+# Nothing to install: the backend role does it (interface.yaml).
+- name: "object_store | install"
+  ansible.builtin.include_tasks: interface.yaml

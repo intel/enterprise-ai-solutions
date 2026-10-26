@@ -1,0 +1,5 @@
+---
+# cert-manager comes from the cert-manager Operator: nothing to install, only
+# check that it runs.
+- name: "cert_manager | OpenShift: check the cert-manager operator"
+  ansible.builtin.include_tasks: validate_openshift.yaml

@@ -5,8 +5,6 @@
 
 keycloak_version: "26.6.0"
 keycloak_namespace: "keycloak"
-# Upstream operator (installed by this role) vs Red Hat build of Keycloak (OLM, OpenShift)
-keycloak_operator_deployment: "{{ 'rhbk-operator' if cluster_distribution | default('kubernetes') == 'openshift' else 'keycloak-operator' }}"
 keycloak_wait_timeout: "300s"
 
 # Publish Keycloak on the platform gateway.

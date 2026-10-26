@@ -3,45 +3,8 @@
 # PostgreSQL — Teardown (CloudNativePG)
 # =============================================================================
 
-- name: "postgresql | Delete CNPG Cluster"
-  kubernetes.core.k8s:
-    api_version: postgresql.cnpg.io/v1
-    kind: Cluster
-    name: "{{ postgresql_cluster_name }}"
-    namespace: "{{ postgresql_namespace }}"
-    state: absent
-  failed_when: false
-
-- name: "postgresql | Delete per-database secrets"
-  kubernetes.core.k8s:
-    api_version: v1
-    kind: Secret
-    name: "postgresql-{{ item.name }}-secret"
-    namespace: "{{ postgresql_namespace }}"
-    state: absent
-  loop: "{{ postgresql_databases }}"
-  loop_control:
-    label: "{{ item.name }}"
-  failed_when: false
-
-- name: "postgresql | Delete consumer namespace secrets"
-  kubernetes.core.k8s:
-    api_version: v1
-    kind: Secret
-    name: "{{ item.name }}-db-secret"
-    namespace: "{{ item.target_namespace | default(item.name) }}"
-    state: absent
-  loop: "{{ postgresql_databases }}"
-  loop_control:
-    label: "{{ item.name }}"
-  failed_when: false
-
-- name: "postgresql | Delete namespace"
-  kubernetes.core.k8s:
-    kind: Namespace
-    name: "{{ postgresql_namespace }}"
-    state: absent
-  failed_when: false
+- name: "postgresql | Remove the database cluster"
+  ansible.builtin.include_tasks: cluster_remove.yaml
 
 - name: "postgresql | Uninstall CNPG operator Helm release"
   kubernetes.core.helm:

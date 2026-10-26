@@ -193,13 +193,45 @@ deterministic order. Don't rely on it; fix the cycle.
 
 ## 4. Roles
 
-One role per component, at `<subdir>/roles/<component-name>/`.
+One role per component, at `<subdir>/roles/<component-name>/`:
+
+```text
+roles/<name>/
+├── defaults/main.yaml           public settings only; no platform logic
+├── vars/                        optional, both files or neither
+│   ├── kubernetes.yaml          private _<name>_* literal values
+│   └── openshift.yaml
+├── templates/                   no cluster_distribution
+└── tasks/
+    ├── main.yaml                the dispatcher below, the same in every role
+    ├── install.yaml             required
+    ├── validate.yaml            required
+    ├── teardown.yaml            required
+    ├── install_openshift.yaml   optional; its presence opts the role in,
+    ├── validate_openshift.yaml  and then all three are required
+    ├── teardown_openshift.yaml
+    └── <helpers>.yaml           called from the files above, platform-neutral
+```
 
 ```yaml
 # roles/<name>/tasks/main.yaml - the entire dispatcher
 ---
-- name: "<name> | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
+- name: "<name> | dispatch | Assert supported action"
+  ansible.builtin.assert:
+    that: component_action | default('') in ['install', 'teardown', 'validate']
+    fail_msg: "<name>: unsupported component_action='{{ component_action | default('') }}'"
+    quiet: true
+
+- name: "<name> | dispatch | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
+  when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
+
+- name: "<name> | dispatch | Include {{ component_action }}"
+  vars:
+    _variant: >-
+      {{ '_openshift' if cluster_distribution == 'openshift'
+         and (role_path ~ '/tasks/install_openshift.yaml') is file else '' }}
+  ansible.builtin.include_tasks: "{{ component_action }}{{ _variant }}.yaml"
 ```
 
 | File | Required | Contract |
@@ -207,8 +239,21 @@ One role per component, at `<subdir>/roles/<component-name>/`.
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
 | `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
+| `tasks/*_openshift.yaml` | no | All three or none. Used on OpenShift instead of the files above. An OpenShift teardown with nothing to do is an explicit `debug` task; one that runs the same checks as on Kubernetes includes `validate.yaml`. |
+| `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
+
+**Platform differences.** `cluster_distribution` (`kubernetes` | `openshift`) is detected once,
+in preflight, and only the dispatcher reads it. A role whose OpenShift behaviour is a few
+values takes them from `vars/<platform>.yaml`. A role that does something else on OpenShift
+(checks a marketplace operator instead of installing one, keeps the operator's CRDs at
+teardown) has `*_openshift.yaml` files, with the shared steps in helpers. What every role needs
+is published once: Helm tasks pass `post_renderer: "{{ helm_post_renderer | default(omit, true) }}"`
+(empty on Kubernetes), and `gateway` `publish.yaml` creates the OpenShift Routes.
+Library roles, entered with `tasks_from`, have no dispatcher: their caller passes
+`vars_from: "{{ cluster_distribution }}.yaml"`. `scripts/check_role_layout.py` checks this repo's
+roles against these rules (`--fix` rewrites every `tasks/main.yaml`).
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /
 `ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. Variables

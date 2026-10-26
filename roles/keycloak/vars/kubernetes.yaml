@@ -1,0 +1,3 @@
+---
+# Upstream Keycloak operator, installed by this role (install.yaml).
+_keycloak_operator_deployment: keycloak-operator

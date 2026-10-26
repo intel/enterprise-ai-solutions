@@ -62,3 +62,9 @@ jobs:
           ansible-lint --nocolor
           --skip-list name,var-naming,fqcn,yaml,jinja,key-order
           roles/ playbooks/
+
+      # One dispatcher per role, platform differences only in vars/<platform>.yaml
+      # and *_openshift.yaml (docs/reference/adding_solutions.md). PyYAML comes
+      # with ansible-lint.
+      - name: Check the role layout
+        run: python3 scripts/check_role_layout.py
