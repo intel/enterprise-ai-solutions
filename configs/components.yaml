@@ -132,7 +132,7 @@ components:
 
   # On OpenShift: instances of the operators the admin installed from OperatorHub
   # (Loki, Logging, Tempo, OpenTelemetry, Grafana), metrics from user-workload
-  # monitoring. See roles/observability/tasks/openshift.yaml.
+  # monitoring. See roles/observability/tasks/install_openshift.yaml.
   - name: observability
     layer: platform
     enabled: "{{ observability_enabled | default(true) | bool }}"

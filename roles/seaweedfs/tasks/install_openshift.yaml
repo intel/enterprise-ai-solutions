@@ -1,5 +1,5 @@
 ---
-- name: "seaweedfs | OpenShift: not used"
-  ansible.builtin.fail:
-    msg: >-
-      seaweedfs is not used on OpenShift yet.
+# Same steps as on Kubernetes. The pod and container IDs come from
+# vars/openshift.yaml (none: restricted-v2 assigns them).
+- name: "seaweedfs | OpenShift: install"
+  ansible.builtin.include_tasks: install.yaml

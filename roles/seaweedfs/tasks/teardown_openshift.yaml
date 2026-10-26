@@ -1,4 +1,5 @@
 ---
-- name: "seaweedfs | OpenShift: teardown is a no-op"
-  ansible.builtin.debug:
-    msg: "seaweedfs is not installed on OpenShift; nothing to tear down."
+# Same steps as on Kubernetes. The pod and container IDs come from
+# vars/openshift.yaml (none: restricted-v2 assigns them).
+- name: "seaweedfs | OpenShift: teardown"
+  ansible.builtin.include_tasks: teardown.yaml

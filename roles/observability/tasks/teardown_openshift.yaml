@@ -1,4 +1,71 @@
 ---
-- name: "observability | OpenShift: teardown is a no-op"
+# =============================================================================
+# Observability — Teardown on OpenShift
+# Removes the instances install_openshift.yaml created; the operators, their
+# CRDs, cluster monitoring and user-workload monitoring belong to the admin and
+# stay. The instances go first, so each operator cleans up what it made.
+# =============================================================================
+
+- name: "observability | openshift | Look up the namespace"
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ observability_namespace }}"
+  register: _obs_os_ns
+
+- name: "observability | openshift | Not installed — skipping teardown"
   ansible.builtin.debug:
-    msg: "observability is not installed on OpenShift; nothing to tear down."
+    msg: "Namespace {{ observability_namespace }} not found. Nothing to tear down."
+  when: _obs_os_ns.resources | length == 0
+
+- name: "observability | openshift | Teardown"
+  when: _obs_os_ns.resources | length > 0
+  block:
+    - name: "observability | openshift | Take Grafana off the gateway"
+      ansible.builtin.include_tasks: grafana_route_remove.yaml
+
+    - name: "observability | openshift | Delete the operator instances"
+      kubernetes.core.k8s:
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ observability_namespace }}"
+        state: absent
+        wait: true
+      loop:
+        - {api_version: grafana.integreatly.org/v1beta1, kind: Grafana, name: "{{ observability_openshift_grafana_name }}"}
+        - {api_version: opentelemetry.io/v1beta1, kind: OpenTelemetryCollector, name: opentelemetry}
+        - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo}
+        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs}
+        - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki}
+      loop_control:
+        label: "{{ item.kind }} {{ item.name }}"
+      failed_when: false
+
+    # Cluster-scoped, so the namespace does not take them along.
+    - name: "observability | openshift | Delete cluster RBAC"
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: "{{ item.kind }}"
+        name: "{{ observability_namespace }}-{{ item.name }}"
+        state: absent
+      loop:
+        - {kind: ClusterRoleBinding, name: log-collector-collect-application-logs}
+        - {kind: ClusterRoleBinding, name: log-collector-logging-collector-logs-writer}
+        - {kind: ClusterRoleBinding, name: otel-collector}
+        - {kind: ClusterRole, name: otel-collector}
+        - {kind: ClusterRoleBinding, name: grafana-application-logs-view}
+        - {kind: ClusterRoleBinding, name: grafana-cluster-monitoring-view}
+        - {kind: ClusterRole, name: application-logs-view}
+        - {kind: ClusterRoleBinding, name: grafana-dashboards}
+        - {kind: ClusterRole, name: grafana-dashboards}
+      loop_control:
+        label: "{{ item.kind }} {{ observability_namespace }}-{{ item.name }}"
+      failed_when: false
+
+    - name: "observability | openshift | Delete namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ observability_namespace }}"
+        state: absent
+        wait: true
+      failed_when: false
