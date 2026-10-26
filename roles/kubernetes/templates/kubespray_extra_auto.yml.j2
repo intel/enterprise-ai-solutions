@@ -58,6 +58,12 @@ local_path_provisioner_enabled: true
 local_path_provisioner_storage_class: "local-path"
 local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
+{% elif _resolved_storage_backend == 'nfs' %}
+# Node-local class, not the default, for scratch volumes that NFS makes slow (OpenShell sandbox workspaces)
+local_path_provisioner_enabled: true
+local_path_provisioner_storage_class: "local-path"
+local_path_provisioner_is_default_storageclass: "false"
+local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
 # The precheck raises these on this host only; Kubespray sets them on every node
