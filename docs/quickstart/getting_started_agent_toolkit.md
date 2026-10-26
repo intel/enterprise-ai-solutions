@@ -31,7 +31,8 @@ vim env/local/global_config.yaml          # set base_domain_name, proxy if neede
 > Use a separate `enterprise-ai-solutions` checkout for agent-toolkit environments. A checkout holds one inference revision under `ext/`, and the toolkit's differs from the one the `erag` and `inference` manifests pin.
 
 > [!Note]
-> `init agent-toolkit` seeds `auth_provider: "litellm"` into a new `env/<name>/global_config.yaml`. Keycloak is optional, as in the classic toolkit: set `keycloak_enabled: true` in `config.agent-toolkit.yaml` to deploy it with the agent-toolkit realm in LiteLLM mode.
+> `init agent-toolkit` seeds `auth_provider: "litellm"` into a new `env/<name>/global_config.yaml`. Keycloak is optional in this mode: set `keycloak_enabled: true` in `config.agent-toolkit.yaml` to deploy it with the agent-toolkit realm.
+> With `auth_provider: "keycloak"` (JWT access to the AI gateway, no LiteLLM), these features are not available: LiteLLM virtual keys and budgets, the content-safety guardrail, the `hybrid-router` and `vllm-sr/auto` models, Langfuse tracing, and the OpenShell GenAI Gateway provider. Everything else is deployed as in LiteLLM mode.
 > `init agent-toolkit` clones every repo in `configs/repos/repos.agent-toolkit.yaml` (inference first, then the agent toolkit) and seeds a `config.<layer>.yaml` per layer.
 > `install agent-toolkit` auto-pulls its dependencies (infrastructure → platform → inference); `--only` runs the target alone.
 
