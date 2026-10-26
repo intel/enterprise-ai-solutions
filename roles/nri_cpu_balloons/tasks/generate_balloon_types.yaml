@@ -97,20 +97,34 @@
                     memory: 32Mi
             restartPolicy: Always
 
-- name: "nri_cpu_balloons | advanced | Wait for probe pods Running"
+# Wait for the DaemonSet itself to report every scheduled pod Ready, not just
+# "at least one". A freshly-added node has a cold image cache (busybox pull
+# takes a few extra seconds), so checking for a single Running pod races: it
+# is satisfied by whichever node already had the image cached, and the new
+# node's probe pod gets silently excluded from topology discovery below —
+# which then skips its per-node BalloonsPolicy CR entirely.
+- name: "nri_cpu_balloons | advanced | Wait for topology-probe DaemonSet full readiness"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: node-topology-optimizer
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _optimizer_ds
+  until: >
+    (_optimizer_ds.resources | default([]) | length) > 0
+    and (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+    and (_optimizer_ds.resources[0].status.numberReady | default(0) | int)
+        == (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int)
+  retries: 30
+  delay: 5
+
+- name: "nri_cpu_balloons | advanced | Get probe pods"
   kubernetes.core.k8s_info:
     kind: Pod
     namespace: "{{ nri_cpu_balloons.namespace }}"
     label_selectors:
       - app=node-topology-optimizer
   register: _optimizer_pods
-  until: >
-    (_optimizer_pods.resources | default([]) | length) > 0
-    and (_optimizer_pods.resources
-         | selectattr('status.phase', 'equalto', 'Running')
-         | list | length) > 0
-  retries: 30
-  delay: 5
 
 - name: "nri_cpu_balloons | advanced | Filter Running probe pods (one per node)"
   ansible.builtin.set_fact:
