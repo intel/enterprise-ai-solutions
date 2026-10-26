@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 ---
 # Canonical dispatcher, the same in every component role but for the name.
-# Written by scripts/check_role_layout.py --fix; change it there, not here.
+# Keep it identical across roles (docs/reference/adding_solutions.md).
 #   vars/<cluster_distribution>.yaml   values that differ by platform, if any
 #   tasks/install_openshift.yaml       opts the role into its own OpenShift
 #                                      install, validate and teardown files
