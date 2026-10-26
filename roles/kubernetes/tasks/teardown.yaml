@@ -296,6 +296,27 @@
           with dmsetup ls, and for the containerd-devmapper unit.
       when: _incomplete | length > 0
 
+# kube-proxy in nftables mode keeps its tables after the reset, with DNAT rules for the old service IPs
+- name: "kubernetes | teardown | Remove the kube-proxy nftables tables"
+  when: _cluster_alive.rc != 0
+  ansible.builtin.shell:
+    cmd: |
+      command -v nft >/dev/null 2>&1 || exit 0
+      for fam in ip ip6; do
+        nft list table "$fam" kube-proxy >/dev/null 2>&1 || continue
+        nft delete table "$fam" kube-proxy && echo "removed $fam kube-proxy"
+      done
+    executable: /bin/bash
+  become: true
+  delegate_to: "{{ item }}"
+  loop: "{{ _k8s_inventory_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _kp_nft
+  changed_when: "'removed' in _kp_nft.stdout"
+  failed_when: false
+  ignore_unreachable: true
+
 # Kubespray reset.yml already removes ~/.kube, /etc/kubernetes, and the
 # {{ bin_dir }}/{kubectl,helm} binaries on every node. We do NOT reinstall
 # host tooling here — teardown must not mutate the host beyond removing the

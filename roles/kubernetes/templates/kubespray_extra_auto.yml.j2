@@ -60,3 +60,7 @@ local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
+# The precheck raises these on this host only; Kubespray sets them on every node
+additional_sysctl:
+  - { name: fs.inotify.max_user_instances, value: 8192 }
+  - { name: fs.inotify.max_user_watches, value: 1048576 }
