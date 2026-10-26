@@ -35,6 +35,7 @@ vim env/local/global_config.yaml          # set base_domain_name, proxy if neede
 > With `auth_provider: "keycloak"` (JWT access to the AI gateway, no LiteLLM), these features are not available: LiteLLM virtual keys and budgets, the content-safety guardrail, the `hybrid-router` and `vllm-sr/auto` models, Langfuse tracing, and the OpenShell GenAI Gateway provider. Everything else is deployed as in LiteLLM mode.
 > `init agent-toolkit` clones every repo in `configs/repos/repos.agent-toolkit.yaml` (inference first, then the agent toolkit) and seeds a `config.<layer>.yaml` per layer.
 > `install agent-toolkit` auto-pulls its dependencies (infrastructure → platform → inference); `--only` runs the target alone.
+> `install` first runs the toolkit's node readiness check (time sync, disk, swap, DNS, Hugging Face token and more) and writes `env/<name>/logs/health-report-latest.html`. It only reports; turn it off with `node_preflight_enabled: false` in `env/<name>/config.agent-toolkit.yaml`.
 
 After install, add the gateway IP to `/etc/hosts` and call the LiteLLM gateway:
 

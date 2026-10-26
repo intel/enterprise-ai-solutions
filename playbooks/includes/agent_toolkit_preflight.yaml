@@ -1,0 +1,84 @@
+---
+# =============================================================================
+# Agent Toolkit node readiness — runs the toolkit's playbooks/preflight-check.yml
+# =============================================================================
+# Report only: a failed check or run never stops the install; the run is capped at
+# node_preflight_timeout seconds (default 300).
+# Off: node_preflight_enabled: false in env/<env>/config.agent-toolkit.yaml
+# =============================================================================
+
+- name: "Preflight - Toolkit nodes: locate the checks"
+  ansible.builtin.stat:
+    path: "{{ agent_toolkit_preflight_playbook | default(playbook_dir ~ '/../ext/enterprise.agent-toolkit/playbooks/preflight-check.yml') }}"
+  register: _tk_preflight_pb
+
+- name: "Preflight - Toolkit nodes"
+  when: _tk_preflight_pb.stat.exists | default(false)
+  block:
+    - name: "Preflight - Toolkit nodes: check for an existing cluster"
+      ansible.builtin.stat:
+        path: "{{ kubernetes_kubeconfig | default((env_dir | default(playbook_dir ~ '/../env/local')) ~ '/kubeconfig.yaml') }}"
+      register: _tk_preflight_kcfg
+
+    # Before the first cluster build the inventory is rendered from nodes.yaml later in this run
+    - name: "Preflight - Toolkit nodes: render the inventory from nodes.yaml"
+      ansible.builtin.include_role:
+        name: kubernetes
+        tasks_from: generate_hosts_from_nodes.yaml
+      when:
+        - not (_tk_preflight_kcfg.stat.exists | default(false))
+        - (nodes_control_plane | default([]) | length) > 0
+
+    - name: "Preflight - Toolkit nodes: run the checks on every host (report only)"
+      ansible.builtin.command:
+        argv:
+          - timeout
+          - "-k"
+          - "10"
+          - "{{ node_preflight_timeout | default(300) }}"
+          - "{{ ansible_playbook_python | dirname }}/ansible-playbook"
+          - "-i"
+          - "{{ kubespray_custom_inventory | default(ansible_inventory_sources | first, true) }}"
+          - "{{ _tk_preflight_pb.stat.path }}"
+          - "-e"
+          - "preflight_report_dir={{ log_dir }}"
+        chdir: "{{ playbook_dir }}/.."
+      environment:
+        ANSIBLE_FORCE_COLOR: "false"
+      register: _tk_preflight_run
+      changed_when: false
+      failed_when: false
+
+    - name: "Preflight - Toolkit nodes: save the run output"
+      ansible.builtin.copy:
+        content: "{{ _tk_preflight_run.stdout | default('') }}\n{{ _tk_preflight_run.stderr | default('') }}\n"
+        dest: "{{ log_dir }}/preflight-check.log"
+        mode: "0644"
+
+    - name: "Preflight - Toolkit nodes: render the report"
+      ansible.builtin.command:
+        argv:
+          - bash
+          - "{{ _tk_preflight_pb.stat.path | dirname }}/preflight/report-renderer.sh"
+          - "{{ log_dir }}/health-report-latest.json"
+      register: _tk_preflight_report
+      changed_when: false
+      failed_when: false
+      when: _tk_preflight_run.rc == 0
+
+    - name: "Preflight - Toolkit nodes: report"
+      ansible.builtin.debug:
+        msg: "{{ _tk_preflight_report.stdout_lines + ['Report: ' ~ log_dir ~ '/health-report-latest.html'] }}"
+      when: _tk_preflight_run.rc == 0
+
+    - name: "Preflight - Toolkit nodes: run did not complete, the install continues"
+      ansible.builtin.debug:
+        msg: "{{ (['Stopped after ' ~ (node_preflight_timeout | default(300)) ~ ' s'] if _tk_preflight_run.rc in [124, 137] else [])
+                + (_tk_preflight_run.stdout_lines | default([]))[-15:] + ['Output: ' ~ log_dir ~ '/preflight-check.log',
+                'Re-run: .venv/bin/ansible-playbook -i env/<env>/inventory/hosts.yaml ext/enterprise.agent-toolkit/playbooks/preflight-check.yml --ask-become-pass'] }}"
+      when: _tk_preflight_run.rc != 0
+
+  rescue:
+    - name: "Preflight - Toolkit nodes: check failed to start, the install continues"
+      ansible.builtin.debug:
+        msg: "{{ ansible_failed_result.msg | default('unknown error') }}"
