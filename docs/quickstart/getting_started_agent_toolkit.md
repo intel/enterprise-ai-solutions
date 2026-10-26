@@ -31,7 +31,7 @@ vim env/local/global_config.yaml          # set base_domain_name, proxy if neede
 > Use a separate `enterprise-ai-solutions` checkout for agent-toolkit environments. A checkout holds one inference revision under `ext/`, and the toolkit's differs from the one the `erag` and `inference` manifests pin.
 
 > [!Note]
-> `init agent-toolkit` seeds `auth_provider: "litellm"` into a new `env/<name>/global_config.yaml`. Keycloak is optional in this mode: set `keycloak_enabled: true` in `config.agent-toolkit.yaml` to deploy it with the agent-toolkit realm.
+> `init agent-toolkit` seeds `auth_provider: "litellm"` into a new `env/<name>/global_config.yaml`.
 > With `auth_provider: "keycloak"` (JWT access to the AI gateway, no LiteLLM), these features are not available: LiteLLM virtual keys and budgets, the content-safety guardrail, the `hybrid-router` and `vllm-sr/auto` models, Langfuse tracing, and the OpenShell GenAI Gateway provider. Everything else is deployed as in LiteLLM mode.
 > `init agent-toolkit` clones every repo in `configs/repos/repos.agent-toolkit.yaml` (inference first, then the agent toolkit) and seeds a `config.<layer>.yaml` per layer.
 > `install agent-toolkit` auto-pulls its dependencies (infrastructure → platform → inference); `--only` runs the target alone.
@@ -67,6 +67,8 @@ curl -sk --noproxy '*' --resolve "litellm.$DOMAIN:443:$GATEWAY_IP" \
 | vLLM Semantic Router | off | `vllm_sr_enabled` in `config.inference.yaml` |
 
 Switches without a file named live in `env/<name>/config.agent-toolkit.yaml`.
+
+Turn Kata on before the first install. Enabling it on a running stack restarts containerd and the CPU-pinning plugin, which moves running models to other CPUs; they fail their next request until restarted. In that case, restart them after the install: `kubectl delete pod -n llm-inference --all`.
 
 The toolkit's services run in the Istio ambient mesh with strict mTLS. To call LiteLLM, Redis, pgvector or Ray from a namespace of your own, label it `istio.io/dataplane-mode=ambient`, and for LiteLLM also add it to `litellm_allowed_namespaces`. Kata sandbox pods stay outside the mesh (a microVM cannot join it); only the sandbox router reaches them. Component details are in the [Intel® Agent Toolkit repository](https://github.com/intel/enterprise-agent-toolkit).
 
