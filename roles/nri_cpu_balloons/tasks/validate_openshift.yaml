@@ -1,0 +1,5 @@
+---
+# Same steps as on Kubernetes. The OpenShift values (SCC, workload match label,
+# plugin restart) come from vars/openshift.yaml.
+- name: "nri_cpu_balloons | OpenShift: validate"
+  ansible.builtin.include_tasks: validate.yaml

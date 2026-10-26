@@ -4,8 +4,9 @@
 # Canonical dispatcher, the same in every component role but for the name.
 # Keep it identical across roles (docs/reference/adding_solutions.md).
 #   vars/<cluster_distribution>.yaml   values that differ by platform, if any
-#   tasks/install_openshift.yaml       opts the role into its own OpenShift
-#                                      install, validate and teardown files
+#   tasks/<action>_openshift.yaml      what the role does on OpenShift: its own
+#                                      steps, an include of <action>.yaml, or a
+#                                      fail when it is not used there
 - name: "nri_cpu_balloons | dispatch | Assert supported action"
   ansible.builtin.assert:
     that: component_action | default('') in ['install', 'teardown', 'validate']
@@ -17,8 +18,5 @@
   when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
 
 - name: "nri_cpu_balloons | dispatch | Include {{ component_action }}"
-  vars:
-    _variant: >-
-      {{ '_openshift' if cluster_distribution == 'openshift'
-         and (role_path ~ '/tasks/install_openshift.yaml') is file else '' }}
-  ansible.builtin.include_tasks: "{{ component_action }}{{ _variant }}.yaml"
+  ansible.builtin.include_tasks:
+    file: "{{ component_action }}{{ '_openshift' if cluster_distribution == 'openshift' else '' }}.yaml"

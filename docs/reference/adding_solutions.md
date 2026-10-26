@@ -204,12 +204,12 @@ roles/<name>/
 ├── templates/                   no cluster_distribution
 └── tasks/
     ├── main.yaml                the dispatcher below, the same in every role
-    ├── install.yaml             required
+    ├── install.yaml             required: Kubernetes
     ├── validate.yaml            required
     ├── teardown.yaml            required
-    ├── install_openshift.yaml   optional; its presence opts the role in,
-    ├── validate_openshift.yaml  and then all three are required
-    ├── teardown_openshift.yaml
+    ├── install_openshift.yaml   required: OpenShift; own steps, an include of
+    ├── validate_openshift.yaml  the Kubernetes file, or a fail when the role
+    ├── teardown_openshift.yaml  is not used there
     └── <helpers>.yaml           called from the files above, platform-neutral
 ```
 
@@ -227,11 +227,8 @@ roles/<name>/
   when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
 
 - name: "<name> | dispatch | Include {{ component_action }}"
-  vars:
-    _variant: >-
-      {{ '_openshift' if cluster_distribution == 'openshift'
-         and (role_path ~ '/tasks/install_openshift.yaml') is file else '' }}
-  ansible.builtin.include_tasks: "{{ component_action }}{{ _variant }}.yaml"
+  ansible.builtin.include_tasks:
+    file: "{{ component_action }}{{ '_openshift' if cluster_distribution == 'openshift' else '' }}.yaml"
 ```
 
 | File | Required | Contract |
@@ -239,16 +236,17 @@ roles/<name>/
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
 | `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
-| `tasks/*_openshift.yaml` | no | All three or none. Used on OpenShift instead of the files above. An OpenShift teardown with nothing to do is an explicit `debug` task; one that runs the same checks as on Kubernetes includes `validate.yaml`. |
+| `tasks/*_openshift.yaml` | yes | Used on OpenShift instead of the files above. Same steps as on Kubernetes: include the Kubernetes file. Not used on OpenShift: `install` and `validate` fail with the reason, `teardown` is a `debug` no-op, so a layer teardown passes. |
 | `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
 
 **Platform differences.** `cluster_distribution` (`kubernetes` | `openshift`) is detected once,
 in preflight, and only the dispatcher reads it. A role whose OpenShift behaviour is a few
-values takes them from `vars/<platform>.yaml`. A role that does something else on OpenShift
-(checks a marketplace operator instead of installing one, keeps the operator's CRDs at
-teardown) has `*_openshift.yaml` files, with the shared steps in helpers. What every role needs
+values takes them from `vars/<platform>.yaml`, and its `*_openshift.yaml` files include the
+Kubernetes ones. A role that does something else on OpenShift (checks a marketplace operator
+instead of installing one, keeps the operator's CRDs at teardown) has its own steps there,
+with the shared ones in helpers. What every role needs
 is published once: `gateway` `publish.yaml` creates the OpenShift Routes.
 Library roles, entered with `tasks_from`, have no dispatcher: their caller passes
 `vars_from: "{{ cluster_distribution }}.yaml"`. The rack-scale `fabric_*` roles are not moved

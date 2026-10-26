@@ -1,0 +1,5 @@
+---
+# Same steps as on Kubernetes. The admin's StorageClass, checked the same way as
+# on Kubernetes.
+- name: "custom_storage | OpenShift: validate"
+  ansible.builtin.include_tasks: validate.yaml

@@ -1,0 +1,4 @@
+---
+- name: "istio | OpenShift: teardown is a no-op"
+  ansible.builtin.debug:
+    msg: "istio is not installed on OpenShift; nothing to tear down."

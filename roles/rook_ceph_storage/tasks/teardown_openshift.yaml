@@ -1,0 +1,4 @@
+---
+- name: "rook_ceph_storage | OpenShift: teardown is a no-op"
+  ansible.builtin.debug:
+    msg: "rook_ceph_storage is not installed on OpenShift; nothing to tear down."

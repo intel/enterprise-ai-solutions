@@ -1,0 +1,4 @@
+---
+- name: "velero | OpenShift: teardown is a no-op"
+  ansible.builtin.debug:
+    msg: "velero is not installed on OpenShift; nothing to tear down."

@@ -293,7 +293,7 @@ The `component_action` variable is passed as an extra-var from the CLI to `playb
 - `validate` → tasks/validate.yaml
 
 On OpenShift the dispatcher first loads `vars/openshift.yaml`, if the role has one, and runs
-`<action>_openshift.yaml` instead when the role has `tasks/install_openshift.yaml`.
+`<action>_openshift.yaml` instead; every component role has those three files.
 
 This means adding a new action (e.g., `upgrade`) only requires adding CLI support and a new `tasks/upgrade.yaml` in each role.
 

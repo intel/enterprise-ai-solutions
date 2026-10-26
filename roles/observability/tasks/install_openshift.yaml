@@ -1,0 +1,6 @@
+---
+- name: "observability | OpenShift: not used"
+  ansible.builtin.fail:
+    msg: >-
+      observability is not used on OpenShift: metrics come from the cluster's
+      monitoring.

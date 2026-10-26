@@ -1,0 +1,5 @@
+---
+# Same steps as on Kubernetes. The provider hooks load vars/openshift.yaml, and
+# publish creates Routes from the recorded platform.
+- name: "gateway | OpenShift: install"
+  ansible.builtin.include_tasks: install.yaml

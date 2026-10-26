@@ -1,0 +1,5 @@
+---
+# Same steps as on Kubernetes. The backend-agnostic interface, the same on both
+# platforms.
+- name: "object_store | OpenShift: install"
+  ansible.builtin.include_tasks: install.yaml

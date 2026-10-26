@@ -1,0 +1,5 @@
+---
+# Same steps as on Kubernetes. On a BYO cluster the role only checks the
+# kubeconfig, as on Kubernetes.
+- name: "kubernetes | OpenShift: install"
+  ansible.builtin.include_tasks: install.yaml
