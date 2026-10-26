@@ -9,7 +9,6 @@
 # =============================================================================
 
 # --- Kubernetes ---
-kubernetes_skip_if_exists: true           # false = force reinstall over existing cluster
 kubernetes_cluster_name: "cluster.local"
 kubernetes_kube_proxy_mode: "nftables"    # nftables | iptables | ipvs
 # existing_kubernetes: ""                 # BYO cluster: set to absolute path of your kubeconfig.
@@ -66,12 +65,8 @@ routing_mode: "subdomain"                 # subdomain | path
 # gateway_tls_ca_file: "/path/to/ca.pem"     # optional: private CA, stored as ca.crt
 
 # --- Components ---
-# Both default to "not OpenShift": there the mesh is Service Mesh 3 and metrics
-# belong to the cluster's monitoring. true/false overrides on Kubernetes; on
-# OpenShift both components are always skipped (istio_enabled: true only labels
-# namespaces for ambient mode).
-istio_enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
-observability_enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
+istio_enabled: true
+observability_enabled: true
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 
 # --- Authentication ---
@@ -97,11 +92,9 @@ rack_scale_enabled: false
 node_topology_enabled: true
 
 # --- Pod Security Standards (PSS) ---
-# Stamps pod-security.kubernetes.io/{enforce,audit,warn} on every namespace a role uses;
+# Stamps pod-security.kubernetes.io/{enforce,audit,warn} on every installer-created namespace;
 # each role picks its own profile (privileged / baseline / restricted).
-# Off on OpenShift: the platform syncs these labels from the SCCs, and some of the
-# namespaces (keycloak) belong to the customer.
-enforce_pss: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
+enforce_pss: true
 
 # --- CPU Policy ---
 # NRI balloons is the only supported CPU policy for production deployments.

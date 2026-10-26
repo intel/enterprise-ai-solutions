@@ -75,7 +75,8 @@
     msg: >-
       WARNING: istio_enabled is true on OpenShift. The installer does not deploy
       Istio here, but roles still label their namespaces for ambient mode, which
-      enrolls them in the cluster's Service Mesh 3. Unset it to keep the default.
+      enrolls them in the cluster's Service Mesh 3. Set istio_enabled: false in
+      env/<env>/global_config.yaml to keep them out.
   when:
     - cluster_distribution == 'openshift'
     - istio_enabled | default(false) | bool

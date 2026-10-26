@@ -141,7 +141,12 @@ OpenShift AI owns the KServe CRDs and controller. On OpenShift the installer nev
 
 ## Platform detection
 
-Preflight detects the platform before it resolves the components to install, so the same `global_config.yaml` works on Kubernetes and OpenShift. There is no OpenShift-specific setting.
+Preflight detects the platform before it resolves the components to install. Components that OpenShift does not need (`istio`, `metallb`) are skipped there whatever `global_config.yaml` says. Two defaults in `configs/defaults/global_config.yaml` are for Kubernetes. Set them in `env/<env>/global_config.yaml` of an OpenShift env:
+
+```yaml
+istio_enabled: false   # true makes roles label their namespaces for ambient mode, which enrolls them in Service Mesh 3
+enforce_pss: false     # OpenShift syncs the pod-security labels from the SCCs; keycloak's namespace is the admin's
+```
 
 Only a cluster you bring (`existing_kubernetes` set) is probed. A cluster the installer builds with Kubespray is upstream Kubernetes. Preflight stops if the cluster in `existing_kubernetes` cannot be reached.
 
