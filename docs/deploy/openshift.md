@@ -245,7 +245,6 @@ What changes on OpenShift without any setting:
 | Area | Kubernetes | OpenShift |
 |---|---|---|
 | `istio`, `metallb` | installed | skipped: Service Mesh 3 and the router provide them |
-| `istio_enabled` | default `true` | default `false` (the seeded value is an expression on `cluster_distribution`; an explicit `true`/`false` still wins) |
 | `seaweedfs` | installed with UID/GID 1000 | installed without fixed UIDs, so `restricted-v2` assigns them |
 | `observability` | kube-prometheus-stack, Loki, Tempo, OpenTelemetry Collector and Prometheus Adapter from Helm | checks the operators (steps 13–17) and user-workload monitoring (step 12), then creates their instances in `monitoring`; see [Observability on OpenShift](#observability-on-openshift) |
 | Storage (`storage_backend: local-path`) | local-path provisioner | the cluster's default StorageClass (step 1), as `custom`, assumed RWO. Set `storage_custom_rwx: true` for an RWX class (ODF CephFS, Trident) |
@@ -255,7 +254,7 @@ What changes on OpenShift without any setting:
 | `gateway` (Envoy) | Envoy as a DaemonSet on the control plane, behind a `LoadBalancer` | Envoy as a Deployment behind a `ClusterIP` Service; the OpenShift router forwards each hostname the Gateway serves (the apex host, and each service's host as it publishes) to it through a TLS passthrough `Route`, so Envoy still terminates TLS. Add hosts published outside the installer with `gateway_openshift_extra_route_hosts`. Its namespace's service accounts get the `nonroot-v2` SCC for the chart's fixed UID. Only the Envoy Gateway CRDs are applied: the Gateway API CRDs belong to the Ingress Operator, which rejects changes to them. The Ingress Operator's CRDs have no `ListenerSet` (OCP 4.22: v1.4.1), so services share the wildcard listener (`shared` attach mode) |
 | `nri_cpu_balloons` | NRI balloons | NRI balloons, with `openshift.grant-scc: true`; pods of OpenShift AI's `LLMInferenceService` land in `vllm-balloon-tp1` by their `kserve.io/component: workload` label |
 
-`global_config.yaml` is loaded as extra vars, which `set_fact` cannot override. That is why the platform-dependent defaults are expressions in the file itself, not facts that preflight sets. An env seeded before this change has a literal `istio_enabled: true`. On OpenShift `istio` is still skipped, but `istio_enabled: true` makes roles label their namespaces for ambient mode, so preflight warns about it. Replace the line with the one from `configs/defaults/global_config.yaml`. An env seeded with `observability_enabled` as an expression on `cluster_distribution` skips observability on OpenShift; set it to `true`.
+The defaults in `configs/defaults/global_config.yaml` are for Kubernetes. In `env/ocp/global_config.yaml` set `istio_enabled: false` (see [Platform detection](#platform-detection)). With `istio_enabled: true`, `istio` is still skipped, but roles label their namespaces for ambient mode, so preflight warns about it. An env seeded with `observability_enabled` as an expression on `cluster_distribution` skips observability on OpenShift; set it to `true`.
 
 Then:
 
