@@ -55,20 +55,9 @@
         dest: "{{ log_dir }}/preflight-check.log"
         mode: "0644"
 
-    - name: "Preflight - Toolkit nodes: render the report"
-      ansible.builtin.command:
-        argv:
-          - bash
-          - "{{ _tk_preflight_pb.stat.path | dirname }}/preflight/report-renderer.sh"
-          - "{{ log_dir }}/health-report-latest.json"
-      register: _tk_preflight_report
-      changed_when: false
-      failed_when: false
-      when: _tk_preflight_run.rc == 0
-
     - name: "Preflight - Toolkit nodes: report"
       ansible.builtin.debug:
-        msg: "{{ _tk_preflight_report.stdout_lines + ['Report: ' ~ log_dir ~ '/health-report-latest.html'] }}"
+        msg: "{{ (lookup('ansible.builtin.file', log_dir ~ '/health-report-latest.txt', errors='ignore') | default('', true)).splitlines() + ['Report: ' ~ log_dir ~ '/health-report-latest.html'] }}"
       when: _tk_preflight_run.rc == 0
 
     - name: "Preflight - Toolkit nodes: run did not complete, the install continues"

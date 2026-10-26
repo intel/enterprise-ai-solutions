@@ -153,6 +153,20 @@
       {{ ([kata_fc_runtime_class] if kata_enable_fc else [])
          + ([kata_qemu_runtime_class] if kata_enable_qemu else []) }}
 
+# Firecracker needs devmapper on the node itself: label only nodes that can run every enabled shim
+- name: "kata_containers | Select the nodes to label"
+  ansible.builtin.set_fact:
+    kata_label_hosts: "{{ (kata_kvm_hosts | intersect(kata_devmapper_hosts)) if kata_enable_fc else kata_kvm_hosts }}"
+
+- name: "kata_containers | Warn about KVM nodes left out (devmapper not ok, Firecracker on)"
+  ansible.builtin.debug:
+    msg: >-
+      Not labelled for Kata: {{ kata_kvm_hosts | difference(kata_label_hosts) | join(', ') }}.
+      Firecracker needs containerd's devmapper snapshotter on the node, and it is not ok there
+      (see the node preflight results); Kata pods are not scheduled on these nodes.
+      Fix the thin-pool and re-run, or set kata_runtime: kata-qemu.
+  when: kata_kvm_hosts | difference(kata_label_hosts) | length > 0
+
 - name: "kata_containers | Get node list from Kubernetes cluster"
   kubernetes.core.k8s_info:
     kind: Node
@@ -170,9 +184,27 @@
   loop_control:
     label: "{{ item.metadata.name }}"
   when: >
-    item.metadata.name in kata_kvm_hosts or
-    (item.metadata.labels['kubernetes.io/hostname'] | default('')) in kata_kvm_hosts or
-    (k8s_nodes.resources | length == 1 and kata_kvm_hosts | length > 0)
+    item.metadata.name in kata_label_hosts or
+    (item.metadata.labels['kubernetes.io/hostname'] | default('')) in kata_label_hosts or
+    (k8s_nodes.resources | length == 1 and kata_label_hosts | length > 0)
+
+# A node labelled on an earlier run whose devmapper is no longer ok must not keep the label
+- name: "kata_containers | Remove the kata label from nodes that no longer qualify"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels: "{{ { kata_node_label_key: none } }}"
+  loop: "{{ k8s_nodes.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: >
+    kata_node_label_key in (item.metadata.labels | default({})) and not (
+    item.metadata.name in kata_label_hosts or
+    (item.metadata.labels['kubernetes.io/hostname'] | default('')) in kata_label_hosts or
+    (k8s_nodes.resources | length == 1 and kata_label_hosts | length > 0))
 
 # helm upgrade --install cannot recover a failed first release
 - name: "kata_containers | Check for an existing kata-deploy release"
@@ -237,7 +269,7 @@
       - "  Namespace     : {{ kata_namespace }}"
       - "  Shims         : {{ ((['fc'] if kata_enable_fc else []) + (['qemu'] if kata_enable_qemu else [])) | join(', ') }}"
       - "  RuntimeClasses: {{ kata_expected_runtime_classes | join(', ') }}"
-      - "  Kata nodes    : {{ kata_kvm_hosts | join(', ') }} (label {{ kata_node_label_key }}={{ kata_node_label_value }})"
+      - "  Kata nodes    : {{ kata_label_hosts | join(', ') }} (label {{ kata_node_label_key }}={{ kata_node_label_value }})"
       - "  Sandbox template + warm pool: applied by agent_sandbox (agent-toolkit layer)"
       - "  Verify        : kubectl get runtimeclass; kubectl get nodes -l {{ kata_node_label_key }}={{ kata_node_label_value }}"
       - "============================================================"

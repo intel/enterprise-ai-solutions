@@ -215,7 +215,7 @@
         cmd: |
           set -o pipefail
           command -v dmsetup >/dev/null 2>&1 || exit 0
-          for dev in $(dmsetup ls 2>/dev/null | awk '$1 ~ /thinpool-snap/ {print $1}'); do
+          for dev in $(dmsetup ls 2>/dev/null | awk '$1 ~ /^containerd-thinpool-snap-/ {print $1}'); do
             if dmsetup remove "$dev" 2>/dev/null; then
               echo "removed $dev"
             else
