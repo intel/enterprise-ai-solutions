@@ -189,13 +189,50 @@
   failed_when: false
   changed_when: false
 
+# The containerd config version decides the CRI plugin ID used by the annotation drop-in.
+- name: "kata_containers | {{ kata_node }} | Read containerd config version"
+  ansible.builtin.command: grep -m1 -oP '^version\s*=\s*\K[0-9]+' /etc/containerd/config.toml
+  become: true
+  delegate_to: "{{ kata_node }}"
+  register: containerd_config_version
+  failed_when: false
+  changed_when: false
+
+- name: "kata_containers | {{ kata_node }} | Check whether kvm_intel has TDX enabled"
+  ansible.builtin.slurp:
+    src: /sys/module/kvm_intel/parameters/tdx
+  register: kvm_tdx_param
+  delegate_to: "{{ kata_node }}"
+  failed_when: false
+  when: kata_confidential_runtime | default('') == 'kata-qemu-tdx'
+
+# Kata's QEMU needs the upstream KVM TDX VM type (5, Linux >= 6.16); older TDX backports report tdx=Y without it.
+- name: "kata_containers | {{ kata_node }} | Check KVM offers the TDX VM type"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import fcntl, os; print(fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE03, 235) >> 5 & 1)"
+  become: true
+  delegate_to: "{{ kata_node }}"
+  register: kvm_tdx_vm_type
+  failed_when: false
+  changed_when: false
+  when: (kvm_tdx_param.content | default('') | b64decode | trim) == 'Y'
+
 - name: "kata_containers | {{ kata_node }} | Record node capabilities"
   ansible.builtin.set_fact:
     _kata_node_results: >-
       {{ _kata_node_results | default({}) | combine({kata_node: {
            'kvm_ok': (kvm_device.stat.exists or (kvm_device_retry.stat.exists | default(false))) | bool,
-           'devmapper_ok': ((devmapper_check.stdout | default('0') | trim) == '1') | bool }}) }}
+           'devmapper_ok': ((devmapper_check.stdout | default('0') | trim) == '1') | bool,
+           'containerd_config_version': containerd_config_version.stdout | default('') | trim,
+           'tdx_enabled': ((kvm_tdx_param.content | default('') | b64decode | trim) == 'Y') | bool,
+           'tdx_ok': ((kvm_tdx_vm_type.stdout | default('') | trim) == '1') | bool }}) }}
 
 - name: "kata_containers | {{ kata_node }} | Display node preflight result"
   ansible.builtin.debug:
-    msg: "{{ kata_node }}: kvm={{ _kata_node_results[kata_node].kvm_ok }} devmapper={{ _kata_node_results[kata_node].devmapper_ok }}"
+    msg: >-
+      {{ kata_node }}: kvm={{ _kata_node_results[kata_node].kvm_ok }}
+      devmapper={{ _kata_node_results[kata_node].devmapper_ok }}
+      tdx={{ _kata_node_results[kata_node].tdx_ok }}
