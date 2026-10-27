@@ -1255,13 +1255,15 @@ run_kubespray() {
     # ANSIBLE_HOST_KEY_CHECKING=False disables SSH host-key verification for the
     # cluster play — fine for localhost/lab, but revisit once real remote nodes
     # are in the inventory.
+    # --flush-cache: kubespray caches facts in /tmp per host name for a day, so a name reused for
+    # another machine (another env, or an edited inventory) would get the old node's IP.
     (cd "$ks_dir" && \
      unset ANSIBLE_ROLES_PATH KUBECONFIG K8S_AUTH_KUBECONFIG && \
      ANSIBLE_CONFIG="$ks_dir/ansible.cfg" \
      ANSIBLE_FORCE_COLOR=true \
      ANSIBLE_HOST_KEY_CHECKING=False \
      PATH="$ks_dir/venv/bin:$PATH" \
-        "$ks_dir/venv/bin/ansible-playbook" -i "$inv" \
+        "$ks_dir/venv/bin/ansible-playbook" -i "$inv" --flush-cache \
         --become --become-user=root "${ks_become_flag[@]}" "${verbose[@]}" \
         "$pb" "${extra[@]+"${extra[@]}"}" 2>&1) | tee -a "$LOG" \
         || err "Kubespray failed. Log: $LOG"
@@ -1536,6 +1538,9 @@ main() {
         fi
         run site "${vars[@]}" -e "target=kubernetes" -e "_kubespray_prep_only=true" -e "_include_deps=false" "${EXTRA_VARS[@]}"
         run_kubespray teardown
+        # reset.yml deletes kubectl/helm from bin_dir; on multi-node that is /usr/local/bin, where
+        # configure installed them on this host when it is a cluster node: put them back
+        _install_kubectl; _install_helm
         run site "${vars[@]}" -e "target=kubernetes" -e "component_action=teardown" -e "_include_deps=false" "${EXTRA_VARS[@]}"
         [[ -f "${ENV_DIR}/kubeconfig.yaml" ]] && { rm -f "${ENV_DIR}/kubeconfig.yaml"; ok "Removed kubeconfig"; }
     else
