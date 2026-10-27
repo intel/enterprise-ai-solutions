@@ -1,0 +1,6 @@
+---
+tdx_attestation_enabled: true
+# Empty targets every node; set Kubernetes node labels here to restrict TDX workloads.
+tdx_node_selector: {}
+
+kbs_address: ""
