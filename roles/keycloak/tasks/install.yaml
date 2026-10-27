@@ -203,7 +203,44 @@
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('template', 'keycloak.yaml.j2') | from_yaml }}"
+  register: _kc_reconcile
   when: _kc_cr_existing.resources | default([]) | length > 0
+
+# A changed CR restarts Keycloak; the realm steps below need it serving again.
+- name: "keycloak | Wait for the operator to apply the change"
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: Keycloak
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_cr_live
+  vars:
+    _cr: "{{ _kc_cr_live.resources | default([]) | first | default({}) }}"
+    _ready: "{{ _cr.status.conditions | default([]) | selectattr('type', 'eq', 'Ready') | first | default({}) }}"
+  until:
+    - _ready.status | default('') == 'True'
+    - _ready.observedGeneration | default(-1) == _cr.metadata.generation | default(-2)
+  retries: 30
+  delay: 10
+  when: _kc_reconcile is changed
+
+- name: "keycloak | Wait for the restarted Keycloak"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_sts_live
+  vars:
+    _sts: "{{ _kc_sts_live.resources | default([]) | first | default({}) }}"
+    _s: "{{ _sts.status | default({}) }}"
+  until:
+    - _s.observedGeneration | default(-1) == _sts.metadata.generation | default(-2)
+    - _s.updateRevision | default('') == _s.currentRevision | default('-')
+    - (_s.readyReplicas | default(0) | int) >= (keycloak_instances | int)
+  retries: 30
+  delay: 10
+  when: _kc_reconcile is changed
 
 # ── HTTPRoute (expose via gateway) — runs even on re-install ──────────────────
 
