@@ -14,7 +14,9 @@
     wait: "{{ helm_wait }}"
     timeout: "{{ helm_timeout }}"
   failed_when: false
+  # The marketplace operator belongs to the admin's Subscription and stays.
+  when: not _postgresql_from_olm | bool
 
 - name: "postgresql | Teardown complete"
   ansible.builtin.debug:
-    msg: "PostgreSQL (CNPG) resources removed."
+    msg: "PostgreSQL (CNPG) resources removed{{ '; the marketplace CNPG operator stays' if _postgresql_from_olm | bool else '' }}."

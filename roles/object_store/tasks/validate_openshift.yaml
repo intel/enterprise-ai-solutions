@@ -1,5 +1,0 @@
----
-# Same steps as on Kubernetes. The backend-agnostic interface, the same on both
-# platforms.
-- name: "object_store | OpenShift: validate"
-  ansible.builtin.include_tasks: validate.yaml

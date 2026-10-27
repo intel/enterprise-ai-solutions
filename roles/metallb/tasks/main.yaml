@@ -3,10 +3,8 @@
 ---
 # Canonical dispatcher, the same in every component role but for the name.
 # Keep it identical across roles (docs/reference/adding_solutions.md).
-#   vars/<cluster_distribution>.yaml   values that differ by platform, if any
-#   tasks/<action>_openshift.yaml      what the role does on OpenShift: its own
-#                                      steps, an include of <action>.yaml, or a
-#                                      fail when it is not used there
+#   vars/<cluster_distribution>.yaml   values that differ by platform, if any;
+#                                      the tasks are the same on both
 - name: "metallb | dispatch | Assert supported action"
   ansible.builtin.assert:
     that: component_action | default('') in ['install', 'teardown', 'validate']
@@ -19,4 +17,4 @@
 
 - name: "metallb | dispatch | Include {{ component_action }}"
   ansible.builtin.include_tasks:
-    file: "{{ component_action }}{{ '_openshift' if cluster_distribution == 'openshift' else '' }}.yaml"
+    file: "{{ component_action }}.yaml"

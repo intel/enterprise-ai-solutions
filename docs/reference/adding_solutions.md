@@ -204,13 +204,10 @@ roles/<name>/
 ├── templates/                   no cluster_distribution
 └── tasks/
     ├── main.yaml                the dispatcher below, the same in every role
-    ├── install.yaml             required: Kubernetes
+    ├── install.yaml             required; the same on both platforms
     ├── validate.yaml            required
     ├── teardown.yaml            required
-    ├── install_openshift.yaml   required: OpenShift; own steps, an include of
-    ├── validate_openshift.yaml  the Kubernetes file, or a fail when the role
-    ├── teardown_openshift.yaml  is not used there
-    └── <helpers>.yaml           called from the files above, platform-neutral
+    └── <helpers>.yaml           called from the files above
 ```
 
 ```yaml
@@ -228,7 +225,7 @@ roles/<name>/
 
 - name: "<name> | dispatch | Include {{ component_action }}"
   ansible.builtin.include_tasks:
-    file: "{{ component_action }}{{ '_openshift' if cluster_distribution == 'openshift' else '' }}.yaml"
+    file: "{{ component_action }}.yaml"
 ```
 
 | File | Required | Contract |
@@ -236,17 +233,17 @@ roles/<name>/
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
 | `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
-| `tasks/*_openshift.yaml` | yes, except infrastructure roles | Used on OpenShift instead of the files above. Same steps as on Kubernetes: include the Kubernetes file. Not used on OpenShift: `install` and `validate` fail with the reason, `teardown` is a `debug` no-op, so a layer teardown passes. |
 | `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
 
 **Platform differences.** `cluster_distribution` (`kubernetes` | `openshift`) is detected once,
-in preflight, and only the dispatcher reads it. A role whose OpenShift behaviour is a few
-values takes them from `vars/<platform>.yaml`, and its `*_openshift.yaml` files include the
-Kubernetes ones. A role that does something else on OpenShift (checks a marketplace operator
-instead of installing one, keeps the operator's CRDs at teardown) has its own steps there,
-with the shared ones in helpers. What every role needs
+in preflight, and only the dispatcher and `components.yaml` read it. The tasks are the same on
+both platforms: whatever differs is a value in `vars/<platform>.yaml`. A role that uses the
+cluster's operator on OpenShift instead of installing one (cert-manager, CNPG, Keycloak) has a
+boolean `_<name>_from_olm` there: `true` checks the marketplace operator and skips its install,
+and teardown leaves it and its CRDs. A component not used on OpenShift (`istio`, `metallb`,
+`velero`) is gated off in `components.yaml` and its role has no OpenShift steps. What every role needs
 is published once: `gateway` `publish.yaml` creates the OpenShift Routes.
 Library roles, entered with `tasks_from`, have no dispatcher: their caller passes
 `vars_from: "{{ cluster_distribution }}.yaml"`. The rack-scale `fabric_*` roles are not moved
@@ -256,7 +253,7 @@ to this layout yet.
 (Kubespray), `storage` and its backends (`custom_storage`, `nfs_storage`, `rook_ceph_storage`,
 `netapp_trident_csi`). The installer never provisions OpenShift: the cluster is BYO and the admin
 provides its storage, so `components.yaml` skips `kubernetes` and `storage` there and these roles
-have no `*_openshift.yaml` files. `storage/tasks/resolve.yaml` still runs in preflight on both
+have no `vars/openshift.yaml`. `storage/tasks/resolve.yaml` still runs in preflight on both
 platforms, and on OpenShift maps the storage selector to the cluster's default StorageClass.
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /

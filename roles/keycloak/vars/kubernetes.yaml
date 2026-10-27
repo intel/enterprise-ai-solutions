@@ -3,3 +3,5 @@
 _keycloak_operator_deployment: keycloak-operator
 # Stamp the PSS labels when enforce_pss is set.
 _keycloak_pss_labels: "{{ enforce_pss | default(false) | bool }}"
+# The role installs the upstream operator and its CRDs.
+_keycloak_from_olm: false

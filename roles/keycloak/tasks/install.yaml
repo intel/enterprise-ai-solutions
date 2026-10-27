@@ -1,10 +1,27 @@
 ---
 # =============================================================================
-# Keycloak — Install (Operator-based, no OLM)
+# Keycloak — Install (Operator-based)
 # =============================================================================
+# The role installs the upstream operator and its CRDs. With _keycloak_from_olm
+# (OpenShift) the operator is Red Hat build of Keycloak from the marketplace
+# (OLM), in keycloak_namespace, and the role only creates the instance and its
+# route.
 
 - name: "keycloak | Probe the deployment"
   ansible.builtin.include_tasks: probe.yaml
+
+- name: "keycloak | Require the marketplace Keycloak operator"
+  ansible.builtin.assert:
+    that:
+      - _kc_existing.resources | default([]) | length > 0
+    fail_msg: >-
+      Red Hat build of Keycloak operator (Deployment {{ _keycloak_operator_deployment }})
+      not found in namespace {{ keycloak_namespace }}. On OpenShift install it from
+      OperatorHub (package rhbk-operator) with an OperatorGroup targeting
+      {{ keycloak_namespace }} before running the installer; see docs/deploy/openshift.md.
+    success_msg: "Keycloak operator provided by the cluster (OLM) — skipping CRD and operator install."
+    quiet: true
+  when: _keycloak_from_olm | bool
 
 - name: "keycloak | Namespace labels"
   ansible.builtin.include_tasks: namespace_labels.yaml
@@ -12,32 +29,35 @@
 - name: "keycloak | Install"
   when: not _kc_installed | bool
   block:
-    - name: "keycloak | Create namespace"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ keycloak_namespace }}"
+    - name: "keycloak | Operator and CRDs"
+      when: not _keycloak_from_olm | bool
+      block:
+        - name: "keycloak | Create namespace"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ keycloak_namespace }}"
 
-    # ── CRDs ──────────────────────────────────────────────────────────────────────
+        # ── CRDs ──────────────────────────────────────────────────────────────────────
 
-    - name: "keycloak | Install Keycloak CRDs"
-      kubernetes.core.k8s:
-        src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/{{ item }}"
-        state: present
-      loop:
-        - keycloaks.k8s.keycloak.org-v1.yml
-        - keycloakrealmimports.k8s.keycloak.org-v1.yml
+        - name: "keycloak | Install Keycloak CRDs"
+          kubernetes.core.k8s:
+            src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/{{ item }}"
+            state: present
+          loop:
+            - keycloaks.k8s.keycloak.org-v1.yml
+            - keycloakrealmimports.k8s.keycloak.org-v1.yml
 
-    # ── Operator ──────────────────────────────────────────────────────────────────
+        # ── Operator ──────────────────────────────────────────────────────────────────
 
-    - name: "keycloak | Deploy Keycloak Operator"
-      kubernetes.core.k8s:
-        src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/kubernetes.yml"
-        namespace: "{{ keycloak_namespace }}"
-        state: present
+        - name: "keycloak | Deploy Keycloak Operator"
+          kubernetes.core.k8s:
+            src: "{{ keycloak_k8s_resources_base }}/{{ keycloak_version }}/kubernetes/kubernetes.yml"
+            namespace: "{{ keycloak_namespace }}"
+            state: present
 
     - name: "keycloak | Create the instance"
       ansible.builtin.include_tasks: instance.yaml

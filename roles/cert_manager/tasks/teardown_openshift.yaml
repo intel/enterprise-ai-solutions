@@ -1,4 +1,0 @@
----
-- name: "cert_manager | OpenShift: teardown is a no-op"
-  ansible.builtin.debug:
-    msg: "cert-manager belongs to the cert-manager Operator on this cluster; nothing to tear down."

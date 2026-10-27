@@ -1,4 +1,0 @@
----
-- name: "metallb | OpenShift: teardown is a no-op"
-  ansible.builtin.debug:
-    msg: "metallb is not installed on OpenShift; nothing to tear down."

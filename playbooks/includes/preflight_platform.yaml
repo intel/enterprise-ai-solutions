@@ -21,7 +21,7 @@
 #   cluster_default_storageclass  name of the default StorageClass, '' if none, not probed or unreadable
 #
 # One global_config.yaml serves both platforms: a role's dispatcher picks its
-# vars/<cluster_distribution>.yaml and *_openshift.yaml files from it, instead of
+# vars/<cluster_distribution>.yaml from it, instead of
 # the operator setting OpenShift-specific values (docs/reference/adding_solutions.md).
 # Set cluster_distribution in global_config.yaml to skip detection.
 # =============================================================================

@@ -1,3 +1,5 @@
 ---
 # Stamp the PSS labels when enforce_pss is set.
 _postgresql_pss_labels: "{{ enforce_pss | default(false) | bool }}"
+# CNPG operator from its Helm chart, installed by this role.
+_postgresql_from_olm: false

@@ -1,3 +1,5 @@
 ---
 # No PSS labels: OpenShift syncs them from the SCCs.
 _postgresql_pss_labels: false
+# CNPG operator installed by the admin from OperatorHub (OLM): the role checks it.
+_postgresql_from_olm: true

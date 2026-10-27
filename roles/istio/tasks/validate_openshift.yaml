@@ -1,6 +1,0 @@
----
-- name: "istio | OpenShift: not used"
-  ansible.builtin.fail:
-    msg: >-
-      istio is not used on OpenShift: the mesh there is OpenShift Service Mesh, which
-      the admin installs.

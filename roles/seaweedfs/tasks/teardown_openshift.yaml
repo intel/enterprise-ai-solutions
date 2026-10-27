@@ -1,4 +1,0 @@
----
-- name: "seaweedfs | OpenShift: teardown is a no-op"
-  ansible.builtin.debug:
-    msg: "seaweedfs is not installed on OpenShift; nothing to tear down."

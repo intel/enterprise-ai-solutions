@@ -130,7 +130,7 @@ components:
 
   - name: velero
     layer: platform
-    enabled: "{{ velero_enabled | default(false) | bool }}"
+    enabled: "{{ velero_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: []
 
   # --- Inference ---

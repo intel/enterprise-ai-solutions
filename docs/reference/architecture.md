@@ -292,8 +292,8 @@ The `component_action` variable is passed as an extra-var from the CLI to `playb
 - `teardown` → tasks/teardown.yaml
 - `validate` → tasks/validate.yaml
 
-On OpenShift the dispatcher first loads `vars/openshift.yaml`, if the role has one, and runs
-`<action>_openshift.yaml` instead; every component role has those three files.
+The dispatcher first loads `vars/<cluster_distribution>.yaml`, if the role has one; the task
+files are the same on Kubernetes and OpenShift and take what differs from those values.
 
 This means adding a new action (e.g., `upgrade`) only requires adding CLI support and a new `tasks/upgrade.yaml` in each role.
 

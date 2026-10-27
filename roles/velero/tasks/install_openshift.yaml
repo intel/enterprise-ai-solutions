@@ -1,5 +1,0 @@
----
-- name: "velero | OpenShift: not used"
-  ansible.builtin.fail:
-    msg: >-
-      velero is not supported on OpenShift yet.

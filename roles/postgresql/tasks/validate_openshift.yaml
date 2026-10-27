@@ -1,4 +1,0 @@
----
-# The same checks as on K8s: validate.yaml reads only the Cluster, not the operator.
-- name: "postgresql | OpenShift: validate"
-  ansible.builtin.include_tasks: validate.yaml

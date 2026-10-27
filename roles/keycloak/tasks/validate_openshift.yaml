@@ -1,4 +1,0 @@
----
-# The same checks as on K8s: vars/openshift.yaml names the RHBK operator.
-- name: "keycloak | OpenShift: validate"
-  ansible.builtin.include_tasks: validate.yaml

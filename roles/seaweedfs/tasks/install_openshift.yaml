@@ -1,5 +1,0 @@
----
-- name: "seaweedfs | OpenShift: not used"
-  ansible.builtin.fail:
-    msg: >-
-      seaweedfs is not used on OpenShift yet.

@@ -3,95 +3,120 @@
 # PostgreSQL — Install (CloudNativePG Operator)
 # =============================================================================
 # Design:
-#   1. Install CNPG operator via Helm (idempotent); on OpenShift
-#      install_openshift.yaml requires the marketplace (OLM) operator instead
+#   1. Install CNPG operator via Helm (idempotent); with _postgresql_from_olm
+#      (OpenShift) require the marketplace (OLM) operator instead: it owns the
+#      CRDs, and a Helm install next to it would fight over them
 #   2. Create credential Secrets ONCE (check-then-create, never overwrite)
 #   3. Create SQL init Secrets with CREATE USER statements (referenced by cluster)
 #   4. Deploy CNPG Cluster — postInitSQLRefs runs CREATE USER from Secret
 #   5. Use CNPG Database CRD to create additional databases (no exec needed)
 #   6. Reconcile: copy secrets to consumer namespaces
-# Steps 2-6 are cluster.yaml, the same on OpenShift.
+# Steps 2-6 are cluster.yaml.
 # =============================================================================
 
 # ── CNPG Operator ─────────────────────────────────────────────────────────────
 
-- name: "postgresql | Check for existing CNPG Helm release"
-  kubernetes.core.helm_info:
-    name: cnpg
-    release_namespace: "{{ cnpg_namespace }}"
-  register: _cnpg_release
-  failed_when: false
-
-- name: "postgresql | Install CNPG operator via Helm"
-  when: _cnpg_release.status is not defined or _cnpg_release.status is none
+- name: "postgresql | Check for the marketplace CNPG operator"
+  when: _postgresql_from_olm | bool
   block:
-    - name: "postgresql | Add CNPG Helm repo"
-      kubernetes.core.helm_repository:
-        name: cnpg
-        repo_url: "{{ cnpg_helm_repo }}"
-      register: helm_repo_add_result
-      until: helm_repo_add_result is succeeded
-      retries: "{{ helm_retries }}"
-      delay: 15
-
-    - name: "postgresql | Label cnpg-system namespace — Istio"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ cnpg_namespace }}"
-            labels:
-              istio.io/dataplane-mode: "ambient"
-      when: istio_enabled | default(false) | bool
-
-    - name: "postgresql | Label cnpg-system namespace — PSS"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ cnpg_namespace }}"
-            labels:
-              pod-security.kubernetes.io/enforce: "restricted"
-              pod-security.kubernetes.io/audit: "restricted"
-              pod-security.kubernetes.io/warn: "restricted"
-      when: _postgresql_pss_labels | bool
-
-    - name: "postgresql | Install CNPG operator"
-      kubernetes.core.helm:
-        name: cnpg
-        chart_ref: cnpg/cloudnative-pg
-        release_namespace: "{{ cnpg_namespace }}"
-        create_namespace: true
-        chart_version: "{{ cnpg_version }}"
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
-      register: helm_install_result
-      until: helm_install_result is succeeded
-      retries: "{{ helm_retries }}"
-      delay: 15
-
-    - name: "postgresql | Wait for CNPG operator readiness"
+    - name: "postgresql | Look up the CNPG CRD"
       kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: Deployment
-        namespace: "{{ cnpg_namespace }}"
-        label_selectors:
-          - app.kubernetes.io/name=cloudnative-pg
-      register: _cnpg_deploy
-      until:
-        - _cnpg_deploy.resources | length > 0
-        - _cnpg_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
-      retries: 30
-      delay: 5
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: clusters.postgresql.cnpg.io
+      register: _cnpg_crd
 
-- name: "postgresql | CNPG operator already installed"
-  ansible.builtin.debug:
-    msg: "CNPG operator already deployed in {{ cnpg_namespace }} — skipping."
-  when: _cnpg_release.status is defined and _cnpg_release.status is not none
+    - name: "postgresql | Require the marketplace CNPG operator"
+      ansible.builtin.assert:
+        that:
+          - _cnpg_crd.resources | default([]) | length > 0
+        fail_msg: >-
+          CloudNativePG is not installed. On OpenShift install it from OperatorHub
+          (package cloudnative-pg, certified-operators) before running the installer;
+          see docs/deploy/openshift.md.
+        success_msg: "CNPG operator provided by the cluster (OLM) — skipping Helm install."
+        quiet: true
+
+- name: "postgresql | CNPG operator via Helm"
+  when: not _postgresql_from_olm | bool
+  block:
+    - name: "postgresql | Check for existing CNPG Helm release"
+      kubernetes.core.helm_info:
+        name: cnpg
+        release_namespace: "{{ cnpg_namespace }}"
+      register: _cnpg_release
+      failed_when: false
+
+    - name: "postgresql | Install CNPG operator via Helm"
+      when: _cnpg_release.status is not defined or _cnpg_release.status is none
+      block:
+        - name: "postgresql | Add CNPG Helm repo"
+          kubernetes.core.helm_repository:
+            name: cnpg
+            repo_url: "{{ cnpg_helm_repo }}"
+          register: helm_repo_add_result
+          until: helm_repo_add_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "postgresql | Label cnpg-system namespace — Istio"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ cnpg_namespace }}"
+                labels:
+                  istio.io/dataplane-mode: "ambient"
+          when: istio_enabled | default(false) | bool
+
+        - name: "postgresql | Label cnpg-system namespace — PSS"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ cnpg_namespace }}"
+                labels:
+                  pod-security.kubernetes.io/enforce: "restricted"
+                  pod-security.kubernetes.io/audit: "restricted"
+                  pod-security.kubernetes.io/warn: "restricted"
+          when: _postgresql_pss_labels | bool
+
+        - name: "postgresql | Install CNPG operator"
+          kubernetes.core.helm:
+            name: cnpg
+            chart_ref: cnpg/cloudnative-pg
+            release_namespace: "{{ cnpg_namespace }}"
+            create_namespace: true
+            chart_version: "{{ cnpg_version }}"
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+          register: helm_install_result
+          until: helm_install_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "postgresql | Wait for CNPG operator readiness"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            namespace: "{{ cnpg_namespace }}"
+            label_selectors:
+              - app.kubernetes.io/name=cloudnative-pg
+          register: _cnpg_deploy
+          until:
+            - _cnpg_deploy.resources | length > 0
+            - _cnpg_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+          retries: 30
+          delay: 5
+
+    - name: "postgresql | CNPG operator already installed"
+      ansible.builtin.debug:
+        msg: "CNPG operator already deployed in {{ cnpg_namespace }} — skipping."
+      when: _cnpg_release.status is defined and _cnpg_release.status is not none
 
 - name: "postgresql | Database cluster"
   ansible.builtin.include_tasks: cluster.yaml

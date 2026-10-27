@@ -1,5 +1,0 @@
----
-# Same steps as on Kubernetes. The provider hooks load vars/openshift.yaml, and
-# publish creates Routes from the recorded platform.
-- name: "gateway | OpenShift: teardown"
-  ansible.builtin.include_tasks: teardown.yaml

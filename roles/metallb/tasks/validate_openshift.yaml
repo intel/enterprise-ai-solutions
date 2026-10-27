@@ -1,6 +1,0 @@
----
-- name: "metallb | OpenShift: not used"
-  ansible.builtin.fail:
-    msg: >-
-      metallb is not used on OpenShift: load balancing and ingress come with the
-      cluster.

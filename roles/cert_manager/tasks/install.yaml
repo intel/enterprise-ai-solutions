@@ -1,171 +1,197 @@
 ---
 # =============================================================================
-# cert-manager — Install via Helm
+# cert-manager — Install via Helm, or check the cluster's operator
 # =============================================================================
+# With _certmanager_from_olm (OpenShift) the cert-manager Operator runs
+# cert-manager in certmanager_namespace and owns its CRDs. A Helm release next
+# to it would fight over the same CRDs and webhooks, so install only checks it.
 
-- name: "cert_manager | Check for existing Helm release"
-  kubernetes.core.helm_info:
-    name: cert-manager
-    release_namespace: "{{ certmanager_namespace }}"
-  register: _certmanager_release
-  failed_when: false
-
-- name: "cert_manager | Already installed — skipping"
-  ansible.builtin.debug:
-    msg: "cert-manager release already deployed in {{ certmanager_namespace }} — skipping install."
-  when: _certmanager_release.status is defined and _certmanager_release.status is not none
-
-- name: "cert_manager | Install"
-  when: _certmanager_release.status is not defined or _certmanager_release.status is none
+- name: "cert_manager | Check the cluster's operator"
+  when: _certmanager_from_olm | bool
   block:
-    - name: "cert_manager | Add jetstack Helm repo"
-      kubernetes.core.helm_repository:
-        name: jetstack
-        repo_url: "{{ certmanager_helm_repo }}"
-      register: helm_repo_add_result
-      until: helm_repo_add_result is succeeded
-      retries: "{{ helm_retries }}"
-      delay: 15
-
-    - name: "cert_manager | Update Helm repos"
-      ansible.builtin.command: helm repo update jetstack
-      changed_when: false
-
-    - name: "cert_manager | Check for Gateway API CRDs"
-      kubernetes.core.k8s_info:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-        name: gateways.gateway.networking.k8s.io
-      register: _gateway_crd
-      failed_when: false
-
-    - name: "cert_manager | Label namespace — Istio"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ certmanager_namespace }}"
-            labels:
-              istio.io/dataplane-mode: "ambient"
-      when: istio_enabled | default(false) | bool
-
-    - name: "cert_manager | Label namespace — PSS"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: "{{ certmanager_namespace }}"
-            labels:
-              pod-security.kubernetes.io/enforce: "restricted"
-              pod-security.kubernetes.io/audit: "restricted"
-              pod-security.kubernetes.io/warn: "restricted"
-      when: enforce_pss | default(false) | bool
-
-    - name: "cert_manager | Install cert-manager"
-      kubernetes.core.helm:
-        name: cert-manager
-        chart_ref: jetstack/cert-manager
-        release_namespace: "{{ certmanager_namespace }}"
-        create_namespace: true
-        chart_version: "v{{ certmanager_version }}"
-        set_values:
-          - value: crds.enabled=true
-          - value: "config.enableGatewayAPI={{ (_gateway_crd.resources | default([]) | length > 0) | lower }}"
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
-        values:
-          affinity: "{{ _platform_affinity | default({}) }}"
-          webhook:
-            affinity: "{{ _platform_affinity | default({}) }}"
-          cainjector:
-            affinity: "{{ _platform_affinity | default({}) }}"
-      register: helm_install_result
-      until: helm_install_result is succeeded
-      retries: "{{ helm_retries }}"
-      delay: 15
-
-    - name: "cert_manager | Wait for webhook"
+    - name: "cert_manager | Look up the operator's webhook"
       kubernetes.core.k8s_info:
         api_version: apps/v1
         kind: Deployment
         name: cert-manager-webhook
         namespace: "{{ certmanager_namespace }}"
-      register: _cm_webhook
-      until:
-        - (_cm_webhook.resources | default([])) | length > 0
-        - (_cm_webhook.resources | default([]))[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
-      retries: 60
-      delay: 5
+      register: _cm_olm_webhook
 
-    - name: "cert_manager | Pause for webhook readiness"
-      ansible.builtin.pause:
-        seconds: 10
+    - name: "cert_manager | Require the cert-manager operator"
+      ansible.builtin.assert:
+        that: (_cm_olm_webhook.resources | first | default({})).status.readyReplicas | default(0) | int >= 1
+        fail_msg: |-
+          cert-manager is not running in namespace {{ certmanager_namespace }}. Install the cert-manager
+          Operator for Red Hat OpenShift (package openshift-cert-manager-operator) from
+          OperatorHub before running the installer (docs/deploy/openshift.md, step 2).
+        success_msg: "cert-manager provided by the cluster (OLM) — skipping Helm install."
 
-# ServiceMonitors require Prometheus Operator CRDs which are installed by the
-# observability role (runs after cert-manager). Skip silently if not yet present.
-- name: "cert_manager | Check if Prometheus Operator CRDs are available"
-  kubernetes.core.k8s_info:
-    api_version: apiextensions.k8s.io/v1
-    kind: CustomResourceDefinition
-    name: servicemonitors.monitoring.coreos.com
-  register: _cm_sm_crd
-  failed_when: false
-
-- name: "cert_manager | Create ServiceMonitor for cert-manager controller"
-  when: (_cm_sm_crd.resources | default([])) | length > 0
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
-      metadata:
+- name: "cert_manager | Install via Helm"
+  when: not _certmanager_from_olm | bool
+  block:
+    - name: "cert_manager | Check for existing Helm release"
+      kubernetes.core.helm_info:
         name: cert-manager
-        namespace: "{{ certmanager_namespace }}"
-        labels:
-          app: cert-manager
-      spec:
-        selector:
-          matchLabels:
-            app.kubernetes.io/name: cert-manager
-            app.kubernetes.io/component: controller
-        namespaceSelector:
-          matchNames:
-            - "{{ certmanager_namespace }}"
-        endpoints:
-          - port: tcp-prometheus-servicemonitor
-            path: /metrics
-            interval: 30s
+        release_namespace: "{{ certmanager_namespace }}"
+      register: _certmanager_release
+      failed_when: false
 
-- name: "cert_manager | Create ServiceMonitor for cert-manager cainjector"
-  when: (_cm_sm_crd.resources | default([])) | length > 0
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: monitoring.coreos.com/v1
-      kind: ServiceMonitor
-      metadata:
-        name: cert-manager-cainjector
-        namespace: "{{ certmanager_namespace }}"
-        labels:
-          app: cert-manager
-      spec:
-        selector:
-          matchLabels:
-            app.kubernetes.io/name: cainjector
-            app.kubernetes.io/component: cainjector
-        namespaceSelector:
-          matchNames:
-            - "{{ certmanager_namespace }}"
-        endpoints:
-          - port: http-metrics
-            path: /metrics
-            interval: 30s
+    - name: "cert_manager | Already installed — skipping"
+      ansible.builtin.debug:
+        msg: "cert-manager release already deployed in {{ certmanager_namespace }} — skipping install."
+      when: _certmanager_release.status is defined and _certmanager_release.status is not none
 
-- name: "cert_manager | ServiceMonitor skipped (Prometheus Operator not yet installed)"
-  when: (_cm_sm_crd.resources | default([])) | length == 0
-  ansible.builtin.debug:
-    msg: "Prometheus Operator CRDs not found — cert-manager ServiceMonitors will be created by the observability role."
+    - name: "cert_manager | Install"
+      when: _certmanager_release.status is not defined or _certmanager_release.status is none
+      block:
+        - name: "cert_manager | Add jetstack Helm repo"
+          kubernetes.core.helm_repository:
+            name: jetstack
+            repo_url: "{{ certmanager_helm_repo }}"
+          register: helm_repo_add_result
+          until: helm_repo_add_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "cert_manager | Update Helm repos"
+          ansible.builtin.command: helm repo update jetstack
+          changed_when: false
+
+        - name: "cert_manager | Check for Gateway API CRDs"
+          kubernetes.core.k8s_info:
+            api_version: apiextensions.k8s.io/v1
+            kind: CustomResourceDefinition
+            name: gateways.gateway.networking.k8s.io
+          register: _gateway_crd
+          failed_when: false
+
+        - name: "cert_manager | Label namespace — Istio"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ certmanager_namespace }}"
+                labels:
+                  istio.io/dataplane-mode: "ambient"
+          when: istio_enabled | default(false) | bool
+
+        - name: "cert_manager | Label namespace — PSS"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ certmanager_namespace }}"
+                labels:
+                  pod-security.kubernetes.io/enforce: "restricted"
+                  pod-security.kubernetes.io/audit: "restricted"
+                  pod-security.kubernetes.io/warn: "restricted"
+          when: enforce_pss | default(false) | bool
+
+        - name: "cert_manager | Install cert-manager"
+          kubernetes.core.helm:
+            name: cert-manager
+            chart_ref: jetstack/cert-manager
+            release_namespace: "{{ certmanager_namespace }}"
+            create_namespace: true
+            chart_version: "v{{ certmanager_version }}"
+            set_values:
+              - value: crds.enabled=true
+              - value: "config.enableGatewayAPI={{ (_gateway_crd.resources | default([]) | length > 0) | lower }}"
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+            values:
+              affinity: "{{ _platform_affinity | default({}) }}"
+              webhook:
+                affinity: "{{ _platform_affinity | default({}) }}"
+              cainjector:
+                affinity: "{{ _platform_affinity | default({}) }}"
+          register: helm_install_result
+          until: helm_install_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "cert_manager | Wait for webhook"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: Deployment
+            name: cert-manager-webhook
+            namespace: "{{ certmanager_namespace }}"
+          register: _cm_webhook
+          until:
+            - (_cm_webhook.resources | default([])) | length > 0
+            - (_cm_webhook.resources | default([]))[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+          retries: 60
+          delay: 5
+
+        - name: "cert_manager | Pause for webhook readiness"
+          ansible.builtin.pause:
+            seconds: 10
+
+    # ServiceMonitors require Prometheus Operator CRDs which are installed by the
+    # observability role (runs after cert-manager). Skip silently if not yet present.
+    - name: "cert_manager | Check if Prometheus Operator CRDs are available"
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: servicemonitors.monitoring.coreos.com
+      register: _cm_sm_crd
+      failed_when: false
+
+    - name: "cert_manager | Create ServiceMonitor for cert-manager controller"
+      when: (_cm_sm_crd.resources | default([])) | length > 0
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: cert-manager
+            namespace: "{{ certmanager_namespace }}"
+            labels:
+              app: cert-manager
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: cert-manager
+                app.kubernetes.io/component: controller
+            namespaceSelector:
+              matchNames:
+                - "{{ certmanager_namespace }}"
+            endpoints:
+              - port: tcp-prometheus-servicemonitor
+                path: /metrics
+                interval: 30s
+
+    - name: "cert_manager | Create ServiceMonitor for cert-manager cainjector"
+      when: (_cm_sm_crd.resources | default([])) | length > 0
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: cert-manager-cainjector
+            namespace: "{{ certmanager_namespace }}"
+            labels:
+              app: cert-manager
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: cainjector
+                app.kubernetes.io/component: cainjector
+            namespaceSelector:
+              matchNames:
+                - "{{ certmanager_namespace }}"
+            endpoints:
+              - port: http-metrics
+                path: /metrics
+                interval: 30s
+
+    - name: "cert_manager | ServiceMonitor skipped (Prometheus Operator not yet installed)"
+      when: (_cm_sm_crd.resources | default([])) | length == 0
+      ansible.builtin.debug:
+        msg: "Prometheus Operator CRDs not found — cert-manager ServiceMonitors will be created by the observability role."
