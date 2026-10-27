@@ -1,0 +1,6 @@
+# Managed by the kata_containers role: replaces kata-deploy's permissive pod_annotations (GHSA-37rf-pj8c-g5g3).
+{% for rc in kata_expected_runtime_classes %}
+[plugins."{{ kata_cri_plugin_id }}".containerd.runtimes.{{ rc }}]
+pod_annotations = {{ kata_pod_annotations[rc] | default([]) | to_json }}
+
+{% endfor %}

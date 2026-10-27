@@ -18,6 +18,17 @@ kata_version: "4.2.0"  # https://github.com/kata-containers/kata-containers kata
 # kata-qemu-coco-dev runs the same CoCo flow in a normal VM, for testing without TDX hardware.
 kata_confidential_runtime: ""
 
+# Pod annotations containerd forwards to each Kata runtime. kata-deploy <= 4.2.0 forwards every
+# io.katacontainers.* annotation, letting pod authors override the Kata config (GHSA-37rf-pj8c-g5g3).
+# Only what our workloads need is allowed; extend a list only when a workload requires it.
+kata_pod_annotations:
+  kata-fc: []
+  kata-qemu: []
+  kata-qemu-coco-dev: &kata_confidential_pod_annotations
+    - io.katacontainers.config.hypervisor.cc_init_data
+    - io.katacontainers.config.runtime.create_container_timeout
+  kata-qemu-tdx: *kata_confidential_pod_annotations
+
 # Kata Containers configuration (microVM runtime for Agent Sandbox)
 kata_namespace: "kube-system"
 kata_release_name: "kata-deploy"

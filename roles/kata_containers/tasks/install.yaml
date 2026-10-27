@@ -127,6 +127,36 @@
          + ([kata_qemu_runtime_class] if kata_enable_qemu else [])
          + ([kata_confidential_runtime] if kata_enable_confidential else []) }}
 
+- name: "kata_containers | Collect containerd config versions of Kata nodes"
+  ansible.builtin.set_fact:
+    _kata_containerd_versions: >-
+      {{ _kata_node_results | dict2items | selectattr('key', 'in', kata_kvm_hosts)
+         | map(attribute='value.containerd_config_version') | unique | list }}
+
+- name: "kata_containers | Check Kata nodes share one containerd config version"
+  ansible.builtin.assert:
+    that: _kata_containerd_versions | length == 1
+    fail_msg: >-
+      Kata nodes use different containerd config versions ({{ _kata_containerd_versions | join(', ') }});
+      the pod-annotation drop-in needs one CRI plugin ID for all of them.
+    quiet: true
+
+- name: "kata_containers | Resolve containerd CRI plugin ID for the pod-annotation drop-in"
+  ansible.builtin.set_fact:
+    kata_cri_plugin_id: >-
+      {{ {'3': 'io.containerd.cri.v1.runtime', '2': 'io.containerd.grpc.v1.cri'}.get(_kata_containerd_versions | first | string, 'cri') }}
+
+- name: "kata_containers | Create pod-annotation drop-in file"
+  ansible.builtin.tempfile:
+    suffix: .toml
+  register: _kata_dropin
+
+- name: "kata_containers | Render pod-annotation drop-in"
+  ansible.builtin.template:
+    src: containerd-pod-annotations.toml.j2
+    dest: "{{ _kata_dropin.path }}"
+    mode: "0600"
+
 # ========================================================================
 # Task Group 2: Label the nodes kata-deploy is allowed to install on
 # ========================================================================
@@ -181,6 +211,7 @@
     --version {{ kata_version }}
     --namespace {{ kata_namespace }}
     -f {{ role_path }}/files/values.yaml
+    --set-file containerd.userDropIn={{ _kata_dropin.path }}
     --set-string nodeSelector.{{ kata_node_label_key }}={{ kata_node_label_value }}
     --set shims.fc.enabled={{ 'true' if kata_enable_fc else 'false' }}
     --set shims.qemu.enabled={{ 'true' if kata_enable_qemu else 'false' }}
@@ -195,6 +226,11 @@
     --set-string shims.{{ kata_confidential_shim }}.agent.noProxy="{{ no_proxy | default('') | replace(',', '\,') }}"
     {% endif %}
     {% endif %}
+
+- name: "kata_containers | Remove pod-annotation drop-in file"
+  ansible.builtin.file:
+    path: "{{ _kata_dropin.path }}"
+    state: absent
 
 # kata-deploy restarts containerd on each node as it installs, so give the
 # rollout a wide window.

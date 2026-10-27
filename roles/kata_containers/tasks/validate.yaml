@@ -67,3 +67,19 @@
     - kata_confidential_runtime | default('') == 'kata-qemu-tdx'
     - "'tdx.intel.com/keys' not in (_val_tdx_nodes.resources | default([])
         | map(attribute='status.allocatable', default={}) | map('list') | flatten)"
+
+# GHSA-37rf-pj8c-g5g3: no Kata runtime may forward every io.katacontainers.* pod annotation.
+- name: "kata_containers | validate | Check containerd does not forward all Kata pod annotations"
+  ansible.builtin.shell: |
+    set -o pipefail
+    export PATH="${PATH}:/usr/local/bin:/usr/bin{{ (':' ~ kubespray_dir ~ '/bin') if kubespray_dir is defined else '' }}"
+    command -v containerd >/dev/null 2>&1 || { echo missing; exit 0; }
+    containerd config dump | grep -c 'io\.katacontainers\.\*' || true
+  args:
+    executable: /bin/bash
+  become: true
+  delegate_to: "{{ item }}"
+  loop: "{{ (groups['kube_control_plane'] | default([])) | union(groups['kube_node'] | default([])) | unique }}"
+  register: _val_kata_pod_annotations
+  changed_when: false
+  failed_when: (_val_kata_pod_annotations.stdout | trim) != '0'
