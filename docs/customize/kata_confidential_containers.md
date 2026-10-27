@@ -92,6 +92,27 @@ What the role does:
   is scheduled only on `ei-tdx-eligible` nodes.
 - Passes `https_proxy` / `no_proxy` to the guest agent, which pulls images inside the VM.
 - Raises the kubelet `runtimeRequestTimeout` to 30 minutes (VM boot plus image pull).
+- Restricts the pod annotations containerd forwards to each Kata runtime (see below).
+
+### Pod annotations
+
+kata-deploy up to 4.2.0 tells containerd to forward every `io.katacontainers.*` pod annotation to the runtime,
+so a pod author can override most of the Kata configuration and, with untrusted users, gain root on Kata nodes
+([GHSA-37rf-pj8c-g5g3](https://github.com/kata-containers/kata-containers/security/advisories/GHSA-37rf-pj8c-g5g3)).
+The role replaces that list per runtime with `kata_pod_annotations`:
+
+| RuntimeClass | Forwarded annotations |
+|---|---|
+| `kata-fc`, `kata-qemu` | none |
+| `kata-qemu-coco-dev`, `kata-qemu-tdx` | `io.katacontainers.config.hypervisor.cc_init_data`, `io.katacontainers.config.runtime.create_container_timeout` |
+
+Extend a list only when a workload needs another annotation. `validate` fails if any node still forwards
+all Kata annotations.
+
+### Version
+
+`kata_version` follows the kata-deploy release that the Confidential Containers chart pins (4.2.0 = CoCo 0.23.0).
+Only every other Kata release becomes a CoCo baseline; the next one is 4.4.0.
 
 ## 4. Verify
 
@@ -125,6 +146,11 @@ spec:
 - **Per-pod cost:** each `kata-qemu-tdx` pod reserves 2 GiB and 1 CPU on top of its requests (RuntimeClass overhead).
 - **TD count:** limited by the TDX key IDs set by the BIOS key split. kata-deploy accounts them as
   `tdx.intel.com/keys` only when Node Feature Discovery runs at install time; re-run the install after NFD is deployed.
+- **Storage:** `emptyDir` volumes are encrypted block devices inside the guest (`emptydir_mode = "block-encrypted"`
+  for the confidential runtimes): safe scratch space, lost when the pod stops. Volumes the host mounts — PVCs
+  (NFS, NFS CSI, local-path), hostPath — are not shared into the guest: the pod sees an empty in-memory folder and
+  nothing reaches the volume. Persistent confidential storage (CSI block volumes opened inside the guest) is
+  still in progress upstream.
 - **Images** must come from a registry, with `imagePullPolicy: Always`.
 - **No `kubectl port-forward`** into Kata pods (kata-containers issue #1693).
 - **Attestation** (proving a pod runs in a real TD before releasing secrets) is not set up by this component yet.
@@ -138,3 +164,5 @@ spec:
 | Warns "no node can run TDX guests" | TDX not enabled in BIOS, or `kvm_intel.tdx=1` missing from the kernel command line |
 | `kata-qemu-tdx` pod stuck in `ContainerCreating`, containerd log `vm-type TDX not supported by KVM` | Host kernel too old (section 2) |
 | Validate warns "no TDX-eligible node advertises tdx.intel.com/keys" | NFD was not running when kata-deploy was installed; re-run the install |
+| Validate fails "Check containerd does not forward all Kata pod annotations" | The annotation drop-in was not applied; re-run the install and check `containerd config dump` on the node |
+| Data written to a PVC from a confidential pod is missing on the volume | Host-mounted volumes are not shared into the guest; use `emptyDir` for scratch data |
