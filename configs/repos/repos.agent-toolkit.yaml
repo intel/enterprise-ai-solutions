@@ -13,8 +13,7 @@ repos:
   - layer: "inference"
     url: "https://github.com/intel/enterprise-inference"
     dest: "enterprise.ai-inference"
-    # Dev: inference PR #49 branch; pin the release-1.1 merge SHA before merge.
-    rev: "feat/agentic-toolkit-migration"
+    rev: "release-1.1" # pin 170eb3abb1956de0787727f21e356aef2b13ff24 (#49) for release
     deployment_subdir: ""
     config_dir: ""
     default_flavour: ""
@@ -23,8 +22,7 @@ repos:
   - layer: "agent-toolkit"
     url: "https://github.com/intel/enterprise-agent-toolkit"
     dest: "enterprise.agent-toolkit"
-    # Dev: toolkit PR #19 branch; pin the release-2.0.0 merge SHA before merge.
-    rev: "agentic-toolkit-migration"
+    rev: "release-2.0.0" # pin 036b66234801e9bd950afd90830821859780d668 (#19) for release
     deployment_subdir: ""
     config_dir: ""
     default_flavour: ""
