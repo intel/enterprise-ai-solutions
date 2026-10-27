@@ -15,12 +15,14 @@ headlamp_resources:
   requests: {cpu: 100m, memory: 128Mi}
   limits: {cpu: 500m, memory: 512Mi}
 
-# Own subdomain in every routing mode: OIDC refresh is skipped under a base URL
-# (headlamp#7513) and a separate origin isolates the UI's session cookies.
 headlamp_hostname: "headlamp.{{ base_domain_name | default('inference-example.com') }}"
-headlamp_url: "https://{{ headlamp_hostname }}"
-# Path mode: <base><headlamp_path> redirects to headlamp_url (nothing served there).
+# Path mode serves Headlamp at <base><headlamp_path>, on the base host's origin.
+# Headlamp skips OIDC refresh under a base URL (headlamp#7513), so people sign in
+# again when headlamp_token_lifespan runs out.
 headlamp_path: "/headlamp"
+headlamp_url: >-
+  {{ 'https://' ~ base_domain_name ~ headlamp_path if (routing_mode | default('subdomain')) == 'path'
+     else 'https://' ~ headlamp_hostname }}
 
 # apiserver: Headlamp signs people in and passes their own token to the API
 #   server, which trusts Keycloak; RBAC and audit are per person. Needs the

@@ -28,17 +28,6 @@
   loop_control:
     label: "{{ item.policy }}"
 
-- name: "headlamp | Remove the path-mode redirect"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: path_redirect.yaml
-  vars:
-    gateway_redirect_name: headlamp-redirect
-    gateway_redirect_namespace: "{{ headlamp_namespace }}"
-    gateway_redirect_path: "{{ headlamp_path }}"
-    gateway_redirect_url: "{{ headlamp_url }}/"
-    gateway_redirect_state: absent
-
 - name: "headlamp | Unpublish the host"
   ansible.builtin.include_role:
     name: gateway
@@ -47,7 +36,7 @@
     gateway_publish_name: headlamp
     gateway_publish_namespace: "{{ headlamp_namespace }}"
     gateway_publish_host: "{{ headlamp_hostname }}"
-    gateway_publish_mode: subdomain
+    gateway_publish_path: "{{ headlamp_path }}"
 
 # Cluster-scoped, so not removed with the namespace.
 - name: "headlamp | Remove cluster-wide RBAC"

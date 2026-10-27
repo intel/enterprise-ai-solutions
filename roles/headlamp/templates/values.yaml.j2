@@ -4,6 +4,7 @@ replicaCount: 1                       # login state and refresh tokens are in-pr
 config:
   inCluster: true
   sessionTTL: {{ headlamp_session_ttl }}
+  baseURL: "{{ headlamp_path if (routing_mode | default('subdomain')) == 'path' else '' }}"
   enableHelm: false
   staticPlugins:
     enabled: false                    # no bundled plugins (e.g. Prometheus) beyond what we ship
@@ -61,7 +62,7 @@ httpRoute:
   parentRefs: [{{ gateway_publish.parent_ref | to_json }}]
   hostnames: ["{{ gateway_publish.host }}"]
   rules:
-    - matches: [{path: {type: PathPrefix, value: /}}]
+    - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
       filters:
         - type: ResponseHeaderModifier
           responseHeaderModifier:

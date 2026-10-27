@@ -74,12 +74,12 @@
 # ── Through the gateway, as a browser sees it ────────────────────────────────
 # Skipped, with a notice, when the Headlamp host does not resolve here.
 
-- name: "headlamp | validate | Resolve {{ headlamp_hostname }} and {{ __headlamp_issuer_host }}"
+- name: "headlamp | validate | Resolve {{ __headlamp_host }} and {{ __headlamp_issuer_host }}"
   ansible.builtin.getent:
     database: ahostsv4
     key: "{{ item }}"
     fail_key: false
-  loop: ["{{ headlamp_hostname }}", "{{ __headlamp_issuer_host }}"]
+  loop: ["{{ __headlamp_host }}", "{{ __headlamp_issuer_host }}"]
   register: __headlamp_val_dns
 
 - name: "headlamp | validate | Hosts that resolve"
@@ -92,7 +92,7 @@
 - name: "headlamp | validate | Hosts not in DNS"
   ansible.builtin.debug:
     msg: >-
-      NOTICE: {{ headlamp_hostname }} or {{ __headlamp_issuer_host }} does not resolve here, so the
+      NOTICE: {{ __headlamp_host }} or {{ __headlamp_issuer_host }} does not resolve here, so the
       Headlamp sign-in and token checks were skipped. Add them to DNS (a *.{{ base_domain_name }}
       record covers every app host).
   when: not __headlamp_val_resolves | bool

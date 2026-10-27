@@ -55,7 +55,9 @@ gateway_request_timeout: "600s"           # Envoy default is 15s — too short f
 # --- Routing ---
 # subdomain: each service on its own host (keycloak.<base>, grafana.<base>, ...)
 # path:      one host, each service under its path (<base>/keycloak, ...);
-#            Langfuse stays on its own subdomain
+#            Langfuse and the vLLM-SR dashboard stay on their own subdomains.
+#            The services then share one browser origin (cookies, storage):
+#            choose subdomain where the apps must be isolated from each other.
 routing_mode: "subdomain"                 # subdomain | path
 # gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects
 

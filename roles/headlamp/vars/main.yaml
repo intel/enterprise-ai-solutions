@@ -1,5 +1,6 @@
 ---
 # Internal (not an override surface).
+__headlamp_host: "{{ headlamp_url | urlsplit('hostname') }}"
 __headlamp_issuer_url: "{{ keycloak_platform_issuer_url }}"
 __headlamp_issuer_host: "{{ __headlamp_issuer_url | urlsplit('hostname') }}"
 __headlamp_issuer_internal: "{{ keycloak_platform_issuer_internal }}"

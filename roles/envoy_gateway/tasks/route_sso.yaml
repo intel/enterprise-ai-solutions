@@ -29,7 +29,8 @@
           clientSecret:
             name: "{{ _s.client_secret_name | default('') }}"
           redirectURL: "{{ _s.redirect_url | default('') }}"
-          logoutPath: /oauth2/logout
+          # Next to the callback, so it stays on the route under a path.
+          logoutPath: "{{ (_s.redirect_url | default('') | urlsplit('path')) | regex_replace('/callback$', '/logout') }}"
           refreshToken: true
           cookieNames:
             idToken: "{{ _id_cookie }}"

@@ -140,7 +140,7 @@
   ansible.builtin.include_tasks: apiserver.yaml
   when: __headlamp_apiserver_mode | bool
 
-# ── Publish on its own subdomain (the chart creates the HTTPRoute) ──────────
+# ── Publish its host or path (the chart creates the HTTPRoute) ──────────────
 
 - name: "headlamp | Publish the host"
   ansible.builtin.include_role:
@@ -150,20 +150,8 @@
     gateway_publish_name: headlamp
     gateway_publish_namespace: "{{ headlamp_namespace }}"
     gateway_publish_host: "{{ headlamp_hostname }}"
-    gateway_publish_mode: subdomain
+    gateway_publish_path: "{{ headlamp_path }}"
   when: headlamp_gateway_publish | bool
-
-# Path mode: <base>/headlamp points browsers at the UI's own host.
-- name: "headlamp | Path-mode redirect"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: path_redirect.yaml
-  vars:
-    gateway_redirect_name: headlamp-redirect
-    gateway_redirect_namespace: "{{ headlamp_namespace }}"
-    gateway_redirect_path: "{{ headlamp_path }}"
-    gateway_redirect_url: "{{ headlamp_url }}/"
-    gateway_redirect_state: "{{ 'present' if headlamp_gateway_publish | bool else 'absent' }}"
 
 # ── Platform pages (plugin bundle, loaded from a ConfigMap) ──────────────────
 
