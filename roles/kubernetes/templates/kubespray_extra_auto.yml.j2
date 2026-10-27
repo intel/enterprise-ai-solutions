@@ -8,7 +8,13 @@ container_manager: "{{ kubernetes_container_manager }}"
 kube_pods_subnet: "{{ kubernetes_cluster_cidr }}"
 kube_service_addresses: "{{ kubernetes_service_cidr }}"
 dns_mode: "{{ kubernetes_dns_mode }}"
+# CoreDNS autoscaler: by node count, not cores (at most one CoreDNS pod per node)
+dns_cores_per_replica: 0
+dns_nodes_per_replica: 64
+dns_min_replicas: "{% raw %}{{ [2, groups['k8s_cluster'] | length] | min }}{% endraw %}"
 kube_proxy_mode: "{{ kubernetes_kube_proxy_mode }}"
+# In-cluster image registry; the agent toolkit turns it on
+registry_enabled: {{ kubernetes_registry_enabled | default(false) | bool | lower }}
 {% if not (_k8s_needs_ssh | bool) %}
 # localhost mode: keep kubespray binaries off the shared /usr/local/bin so
 # reset.yml never deletes the operator's configure-installed kubectl/helm.
@@ -52,5 +58,15 @@ local_path_provisioner_enabled: true
 local_path_provisioner_storage_class: "local-path"
 local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
+{% elif _resolved_storage_backend == 'nfs' %}
+# Node-local class, not the default, for scratch volumes that NFS makes slow (OpenShell sandbox workspaces)
+local_path_provisioner_enabled: true
+local_path_provisioner_storage_class: "local-path"
+local_path_provisioner_is_default_storageclass: "false"
+local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
+# The precheck raises these on this host only; Kubespray sets them on every node
+additional_sysctl:
+  - { name: fs.inotify.max_user_instances, value: 8192 }
+  - { name: fs.inotify.max_user_watches, value: 1048576 }

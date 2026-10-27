@@ -71,6 +71,9 @@
         - { key: "net.bridge.bridge-nf-call-iptables", value: "1" }
         - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
         - { key: "net.ipv4.ip_forward", value: "1" }
+        # inotify limits for nodes running many pods
+        - { key: "fs.inotify.max_user_instances", value: "8192" }
+        - { key: "fs.inotify.max_user_watches", value: "1048576" }
 
 - name: "kubernetes | precheck | Install required packages"
   become: true
