@@ -436,4 +436,5 @@ Example: `config.erag.yaml` sets RAG pipeline parameters like `ui_enabled`, `edp
 | See every CLI command and flag that reads this file | [CLI Reference](cli.md) |
 | Configure per-node CPU pinning (`kubernetes_cpu_policy: nri-balloons`) in depth | [NRI CPU Balloons](nri_cpu_balloons.md) |
 | Set up soft affinity for platform vs. inference workloads (`node_topology_enabled`) | [Node Topology & Workload Placement](node_topology.md) |
+| Set up TDX attestation for cluster inside virtual machine with Intel:tm: TDX | [Intel:tm: TDX Attestation]() |
 | Go from a fresh clone to a running cluster using these settings | [Deployment Guide](../deploy/install_platform.md) |

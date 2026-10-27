@@ -69,6 +69,9 @@ istio_enabled: true
 observability_enabled: true
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 
+# --- TDX ---
+tdx_enabled: false
+
 # --- Authentication ---
 # Keycloak is always deployed: people sign in through it and the gateway
 # requires its JWT unless a route authenticates itself. API client auth
@@ -153,3 +156,6 @@ seaweedfs_volume_storage_size: "10Gi"
 # gateway names its dedicated S3 listener after it, and a solution layer that
 # publishes an S3 API reads the same value, so both agree by construction.
 # gateway_s3_subdomain: "s3"
+#
+#TDX attestation service address (only used when tdx_enabled=true)
+#kbs_address: ""

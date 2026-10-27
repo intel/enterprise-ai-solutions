@@ -52,6 +52,17 @@ components:
     enabled: true
     depends_on: [fabric_sysctl]
 
+  # TDX support must be ready before the platform and solution workloads deploy.
+  - name: nri_device_injector
+    layer: infrastructure
+    enabled: "{{ tdx_enabled | default(false) | bool }}"
+    depends_on: [kubernetes]
+
+  - name: tdx
+    layer: infrastructure
+    enabled: "{{ tdx_enabled | default(false) | bool }}"
+    depends_on: [nri_device_injector]
+
   # Post-K8s fabric: BGP needs kubectl, validate needs the cluster up.
   - name: fabric_bgp
     layer: infrastructure

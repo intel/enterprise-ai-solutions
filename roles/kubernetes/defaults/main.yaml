@@ -32,7 +32,7 @@ kubespray_dir: "{{ playbook_dir }}/../.kubespray"
 kubespray_bin_dir_local: "{{ kubespray_dir }}/bin"
 
 # --- Networking ---
-kubernetes_cni: "calico"
+kubernetes_cni: "{{ 'flannel' if (tdx_enabled | default(false) | bool) else 'calico' }}"
 kubernetes_cluster_cidr: "10.233.64.0/18"
 kubernetes_service_cidr: "10.233.0.0/18"
 kubernetes_dns_mode: "coredns"

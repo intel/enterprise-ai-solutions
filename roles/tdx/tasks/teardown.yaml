@@ -1,0 +1,49 @@
+---
+- name: "tdx | Remove attestation DaemonSet"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: DaemonSet
+    name: tdx-attestation
+    namespace: tdx-system
+
+- name: "tdx | Remove support-check DaemonSet"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: DaemonSet
+    name: one-td-support-checks
+    namespace: tdx-system
+
+- name: "tdx | Remove legacy attestation pod"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: tdx-attestation
+    namespace: tdx-system
+
+- name: "tdx | Remove legacy support-check pod"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: one-td-support-checks
+    namespace: tdx-system
+
+- name: "tdx | Wait for all pods to be deleted"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: tdx-system
+  register: _tdx_remaining_pods
+  until: _tdx_remaining_pods.resources | default([]) | length == 0
+  retries: 60
+  delay: 5
+
+- name: "tdx | Remove namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: tdx-system
