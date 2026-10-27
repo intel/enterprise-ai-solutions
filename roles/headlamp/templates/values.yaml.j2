@@ -65,7 +65,12 @@ httpRoute:
       filters:
         - type: ResponseHeaderModifier
           responseHeaderModifier:
-            set: [{name: Strict-Transport-Security, value: "max-age=31536000; includeSubDomains"}]
+            set:
+              - {name: Strict-Transport-Security, value: "max-age=31536000; includeSubDomains"}
+              - {name: X-Content-Type-Options, value: nosniff}
+              - {name: Referrer-Policy, value: strict-origin-when-cross-origin}
+              # Nothing frames Headlamp.
+              - {name: X-Frame-Options, value: DENY}
       backendRefs: [{name: headlamp, port: 80}]
 {% endif %}
 # Headlamp creates its user-plugins folder under ~/.config; the root file
