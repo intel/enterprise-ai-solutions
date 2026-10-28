@@ -257,13 +257,16 @@ have no `vars/openshift.yaml`. `storage/tasks/resolve.yaml` still runs in prefli
 platforms, and on OpenShift maps the storage selector to the cluster's default StorageClass.
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /
-`ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. Variables
+`ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. The one
+sanctioned shell-out is the `model-manager` CLI (see
+[Using the platform](#7-using-the-platform-from-your-layer)). Variables
 are flat (`my_api_replicas`), never nested dicts - config files are merged by Ansible
 extra-vars precedence, so a nested dict from one file replaces the other's wholesale rather
 than merging.
 
 Roles receive `component_action` (`install` | `teardown` | `validate`) plus `env_dir`,
-`env_name` and `kubernetes_kubeconfig`.
+`env_name` and `kubernetes_kubeconfig`. Generated credentials belong in `log_dir`
+(`env/<env>/logs`).
 
 ---
 
@@ -303,9 +306,30 @@ Set `model_catalog:` to a path from your repo root and `init` seeds it to
 one. Everything else your repo ships (image lists, compatibility matrices, version files) is
 private to it; ai-solutions reads nothing else.
 
+Seeding is first-writer-wins: when an env already has a `models.yaml` (seeded by another
+layer), yours is skipped. To deploy a model from your layer, see
+[Using the platform](#7-using-the-platform-from-your-layer).
+
 ---
 
-## 7. Running it
+## 7. Using the platform from your layer
+
+Reuse what the platform runs instead of rebuilding it. The points that bite:
+
+- **Publish hosts through the core `gateway` role** (`publish.yaml`, `unpublish.yaml`), not your
+  own listeners. The gateway is **deny-by-default**: a route without its own policy needs a
+  Keycloak JWT, so a UI with its own login gets `401` until you exempt its route with
+  `route_auth_exempt.yaml`. Example: `roles/langfuse` in enterprise-inference.
+- **Call models in-cluster** at `http://ai-gateway.envoy-gateway-system.svc/v1` (OpenAI-compatible,
+  no token).
+- **Deploy a model you need** with `{{ playbook_dir }}/../model-manager deploy <model> --label
+  <owner>`, setting `ES_ENV: "{{ env_dir | basename }}"` (the wrapper otherwise prompts, and there
+  is no tty). Skip it when the model is already served, and in teardown undeploy only what
+  carries your label. Example: `deployment/roles/app_inference_models` in enterprise-rag.
+
+---
+
+## 8. Running it
 
 ```bash
 ./es_auto_installer.sh init mylayer                     # clone + seed env/local/
@@ -323,8 +347,13 @@ private to it; ai-solutions reads nothing else.
 There is no `all` target - name the topmost layer you want and its closure follows.
 
 `init` is the only command that clones; `install` treats a missing repo as fatal and tells
-you which `init` to run. Install resolves **downward** (a target needs what it depends on),
+you which `init` to run. It clones with plain `git`, so a private or internal repo needs git
+credentials on the host first (for example `gh auth setup-git`). Running `init` for your
+layer in an env already inited for another layer adds yours alongside it; nothing already
+seeded is overwritten. Install resolves **downward** (a target needs what it depends on),
 teardown resolves **upward** (a target's dependants go first) and reverses the order.
+`install mylayer` re-runs every layer below yours - idempotent, but slow; while iterating on
+a running cluster, `install my_api --only` runs just that component.
 
 Ansible flags go after `--`: `install mylayer -- --check -vvv`. Set `ES_LOG_LEVEL=debug` for
 verbose output plus `ansible -vvv`, or `trace` to add bash xtrace. Per-run logs land in
@@ -332,7 +361,14 @@ verbose output plus `ansible -vvv`, or `trace` to add bash xtrace. Per-run logs 
 
 ---
 
-## 8. Verify before opening the PR
+## 9. Verify before opening the PR
+
+> [!WARNING]
+> A new env has no `kubeconfig.yaml`, and `install` without `--only` treats that as "no
+> cluster": it runs Kubespray `cluster.yml` against the env's inventory. On a host that
+> already runs a cluster, point the new env at it first - set
+> `existing_kubernetes: /path/to/kubeconfig` in `env/dev/global_config.yaml`, or copy the
+> kubeconfig to `env/dev/kubeconfig.yaml`.
 
 ```bash
 ./es_auto_installer.sh init mylayer --env dev
@@ -351,7 +387,7 @@ order your components will run in.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause |
 |---|---|
@@ -362,6 +398,9 @@ order your components will run in.
 | `'x' is undefined` during preflight | An `enabled:` expression lacks `| default(...)`. |
 | Role not found | Component name doesn't match the role directory, or `roles/` isn't under `deployment_subdir`. |
 | A component runs too early/late | Its `depends_on` is missing, or it names a component in another layer - put the edge on the layer instead. |
+| `401` on your app's host from the gateway | The gateway is deny-by-default - exempt the route (see [Using the platform](#7-using-the-platform-from-your-layer)). |
+| `init` fails with `could not read Username for 'https://github.com'` | The repo is private or internal and the host has no git credentials. |
+| `install` on a new env starts provisioning Kubernetes | The env has no `kubeconfig.yaml` - see the warning in [Verify](#9-verify-before-opening-the-pr). |
 | A component silently never runs | Its `enabled:` rendered to something falsey. `show` and the "Skipped (disabled)" preflight line list what was dropped. |
 
 Resolution and ordering live in

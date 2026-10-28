@@ -1,0 +1,50 @@
+---
+# =============================================================================
+# GPU Observability — Validate
+# =============================================================================
+
+- name: "gpu_observability | validate | Skip for non-NVIDIA"
+  ansible.builtin.debug:
+    msg: "GPU observability validate skipped — not NVIDIA."
+  when: rack_scale_gpu_vendor | default('') != 'nvidia'
+
+- name: "gpu_observability | validate | NVIDIA"
+  when: rack_scale_gpu_vendor | default('') == 'nvidia'
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "gpu_observability | validate | Check PrometheusRule exists"
+      kubernetes.core.k8s_info:
+        api_version: monitoring.coreos.com/v1
+        kind: PrometheusRule
+        name: gpu-alerts
+        namespace: "{{ gpu_observability_namespace }}"
+      register: _gpu_prom_rule
+
+    - name: "gpu_observability | validate | Assert PrometheusRule exists"
+      ansible.builtin.assert:
+        that:
+          - _gpu_prom_rule.resources | length > 0
+        fail_msg: "PrometheusRule 'gpu-alerts' not found in {{ gpu_observability_namespace }}"
+        success_msg: "PrometheusRule 'gpu-alerts' present."
+      when: gpu_observability_alerts_enabled | bool
+
+    - name: "gpu_observability | validate | Check Grafana dashboard ConfigMap"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: grafana-dashboard-nvidia-dcgm
+        namespace: "{{ gpu_observability_namespace }}"
+      register: _gpu_dashboard_cm
+
+    - name: "gpu_observability | validate | Assert dashboard ConfigMap exists"
+      ansible.builtin.assert:
+        that:
+          - _gpu_dashboard_cm.resources | length > 0
+        fail_msg: "Grafana dashboard ConfigMap 'grafana-dashboard-nvidia-dcgm' not found"
+        success_msg: "Grafana DCGM dashboard present."
+      when: gpu_observability_grafana_dashboard_enabled | bool
+
+    - name: "gpu_observability | validate | ━━━ PASS ━━━"
+      ansible.builtin.debug:
+        msg: "GPU observability validation passed."

@@ -399,7 +399,9 @@ The `kubernetes` role uses **Kubespray** (kubernetes-sigs/kubespray) to install 
 | `kubernetes_container_manager` | `containerd` | Container runtime |
 | `existing_kubernetes` | `""` | Set to absolute path of a BYO kubeconfig to skip Kubespray entirely |
 
-**Smart detection**: If a working cluster is already available (`kubectl cluster-info` succeeds with the configured kubeconfig at `env/<name>/kubeconfig.yaml`), the install is skipped. Set `existing_kubernetes: /path/to/kubeconfig` in `global_config.yaml` to use an existing cluster.
+**Which cluster the installer acts on**: `es_auto_installer.sh` doesn't support `KUBECONFIG` (or `~/.kube/config`) for selecting the cluster. It uses only:
+- `existing_kubernetes: /path/to/kubeconfig` in `global_config.yaml`, for a cluster you bring (Kubespray is skipped)
+- `env/<name>/kubeconfig.yaml`, for the managed cluster. If `kubectl cluster-info` succeeds with it, provisioning is skipped. To reprovision, tear down `kubernetes` and install again.
 
 **Kubespray override model** (layered):
 1. Kubespray installer base defaults

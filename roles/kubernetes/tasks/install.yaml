@@ -178,15 +178,13 @@
         success_msg: "Kubernetes {{ _k8s_server_version }} OK"
 
 - name: "kubernetes | Existing cluster — skip install"
-  when:
-    - _k8s_existing.rc == 0
-    - kubernetes_skip_if_exists
+  when: _k8s_existing.rc == 0
   ansible.builtin.debug:
     msg: "Kubernetes cluster already running. Skipping."
 
 # --- Install via Kubespray ---
 - name: "kubernetes | Install via Kubespray"
-  when: _k8s_existing.rc != 0 or not kubernetes_skip_if_exists
+  when: _k8s_existing.rc != 0
   block:
 
     # ── Prerequisites ──

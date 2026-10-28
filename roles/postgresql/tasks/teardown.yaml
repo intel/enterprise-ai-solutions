@@ -17,6 +17,15 @@
   # The marketplace operator belongs to the admin's Subscription and stays.
   when: not _postgresql_from_olm | bool
 
+# The CNPG install creates cnpg_namespace (create_namespace). Deleted by name until
+# namespaces and CRDs carry ownership labels; CRDs stay until then (label_crds.yaml).
+- name: "postgresql | Delete CNPG operator namespace"
+  kubernetes.core.k8s:
+    kind: Namespace
+    name: "{{ cnpg_namespace }}"
+    state: absent
+    wait: true
+
 - name: "postgresql | Teardown complete"
   ansible.builtin.debug:
     msg: "PostgreSQL (CNPG) resources removed{{ '; the marketplace CNPG operator stays' if _postgresql_from_olm | bool else '' }}."
