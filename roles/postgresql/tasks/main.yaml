@@ -1,9 +1,9 @@
 # Copyright (C) 2024-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 ---
-# Canonical dispatcher, the same in every component role but for the name.
-# Keep it identical across roles (docs/reference/adding_solutions.md).
-#   vars/<cluster_distribution>.yaml   values that differ by platform, if any;
+# Canonical dispatcher (docs/reference/adding_solutions.md), the same in every
+# role with platform values but for the name.
+#   vars/<cluster_distribution>.yaml   values that differ by platform;
 #                                      the tasks are the same on both
 - name: "postgresql | dispatch | Assert supported action"
   ansible.builtin.assert:

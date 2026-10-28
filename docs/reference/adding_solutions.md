@@ -203,7 +203,7 @@ roles/<name>/
 │   └── openshift.yaml
 ├── templates/                   no cluster_distribution
 └── tasks/
-    ├── main.yaml                the dispatcher below, the same in every role
+    ├── main.yaml                the dispatcher below, the same in every role but for the name
     ├── install.yaml             required; the same on both platforms
     ├── validate.yaml            required
     ├── teardown.yaml            required
@@ -219,6 +219,7 @@ roles/<name>/
     fail_msg: "<name>: unsupported component_action='{{ component_action | default('') }}'"
     quiet: true
 
+# Only in a role with vars/kubernetes.yaml and vars/openshift.yaml:
 - name: "<name> | dispatch | Load {{ cluster_distribution }} values"
   ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
   when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
@@ -233,7 +234,7 @@ roles/<name>/
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
 | `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
-| `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. |
+| `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. A role without them has no `Load` step in its dispatcher. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
 
