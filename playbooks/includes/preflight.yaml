@@ -384,6 +384,13 @@
       or take them off disk    mv ext/<repo> elsewhere, so no plan can reach them.
   when: _unprovisioned | length > 0
 
+# Records, run class and upgrade checks (roles/upgrade_checks/tasks/run.yaml).
+- name: "Preflight - Upgrade checks"
+  ansible.builtin.include_role:
+    name: upgrade_checks
+    tasks_from: run.yaml
+  when: component_action in ['install', 'teardown']
+
 - name: "Preflight - Show skipped components"
   when: _disabled_components | length > 0
   ansible.builtin.debug:

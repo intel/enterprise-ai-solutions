@@ -1,0 +1,22 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Upgrade checks, in run order. Each is tasks/checks/<name>.yaml and appends
+# {layer, check, verdict, reason, resolve} to _upgrade_verdicts for every
+# layer in _check_layers; verdict is pass | advisory | blocking | baseline |
+# skipped. The runner (tasks/run.yaml) decides what refuses the run.
+upgrade_checks:
+  - version_change
+
+# Checks that judge every planned layer: version_change is what refuses a
+# downgrade or a conflict. The others judge only layers classed upgrade or downgrade.
+upgrade_checks_every_class:
+  - version_change
+
+# ConfigMap/<namespace>/<layer>-deployment-manifest
+upgrade_record_namespace: "default"
+upgrade_record_labels:
+  ai-solutions.io/layer: "{{ upgrade_record_layer | default('') }}"
+  ai-solutions.io/record: "deployment-manifest"
+
+upgrade_report_dir: "{{ env_dir }}/reports"

@@ -1,0 +1,83 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Parameters, set by the caller (playbooks/includes/run_layer.yaml):
+#   upgrade_record_layer:   layer the record describes
+#   upgrade_record_status:  in-progress | complete | halted | deleting | absent
+# Re-read before every write: a record the layer writes itself (legacy shape)
+# is never written over or deleted, and a teardown never creates one.
+- name: "upgrade_checks | Read the {{ upgrade_record_layer }} record"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ upgrade_record_layer }}-deployment-manifest"
+    namespace: "{{ upgrade_record_namespace }}"
+  register: _record_now
+
+- name: "upgrade_checks | Write the {{ upgrade_record_layer }} record"
+  vars:
+    _raw: "{{ _record_now.resources[0].data['manifest.yaml'] | from_yaml if _record_now.resources else {} }}"
+    _now: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+    _forced: "{{ _upgrade_gate.forcedChecks | default([]) | select('match', upgrade_record_layer ~ '/') | list }}"
+    _depends_on: "{{ (layers | selectattr('name', 'equalto', upgrade_record_layer) | first).depends_on | default([]) }}"
+    _commit: "{{ lookup('ansible.builtin.pipe', 'git -C ' ~ role_path ~ ' rev-parse HEAD 2>/dev/null || true') }}"
+    _changes:
+      in-progress:
+        layer: "{{ upgrade_record_layer }}"
+        targetVersion: "{{ _layer_release[upgrade_record_layer] | default(none) }}"
+        status: in-progress
+        startedAt: "{{ _now }}"
+        completedAt: null
+        failedComponent: null
+        forced: "{{ _forced | length > 0 }}"
+        forcedChecks: "{{ _forced }}"
+        dependencies: "{{ _layer_records | combine(_layers_completed | default({})) | record_dependencies(_depends_on) }}"
+        installedBy:
+          installerVersion: "{{ _installer_version }}"
+          installerCommit: "{{ _commit }}"
+      complete:
+        version: "{{ _layer_release[upgrade_record_layer] | default(none) }}"
+        targetVersion: null
+        status: complete
+        completedAt: "{{ _now }}"
+      halted:
+        status: halted
+        failedComponent: "{{ _running_component | default(none) }}"
+      deleting:
+        status: deleting
+        startedAt: "{{ _now }}"
+  when:
+    - not (_raw | layer_record_is_legacy)
+    - _raw | length > 0 or upgrade_record_status in ['in-progress', 'complete', 'halted']
+  block:
+    - name: "upgrade_checks | Delete the {{ upgrade_record_layer }} record"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ upgrade_record_layer }}-deployment-manifest"
+        namespace: "{{ upgrade_record_namespace }}"
+      when: upgrade_record_status == 'absent'
+
+    - name: "upgrade_checks | Write the {{ upgrade_record_layer }} record as {{ upgrade_record_status }}"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ upgrade_record_layer }}-deployment-manifest"
+            namespace: "{{ upgrade_record_namespace }}"
+            labels: "{{ upgrade_record_labels }}"
+          data:
+            manifest.yaml: >-
+              {{ {'version': none} | combine(_raw | lift_layer_record, _changes[upgrade_record_status])
+                 | to_nice_yaml(indent=2, sort_keys=false) }}
+      when: upgrade_record_status != 'absent'
+
+# A lower layer completed earlier in this run is newer than its record read at preflight.
+- name: "upgrade_checks | Note {{ upgrade_record_layer }} as completed in this run"
+  ansible.builtin.set_fact:
+    _layers_completed: >-
+      {{ _layers_completed | default({}) | combine({upgrade_record_layer: {'version': _layer_release[upgrade_record_layer] | default(none)}}) }}
+  when: upgrade_record_status == 'complete'
