@@ -5,11 +5,12 @@
 # =============================================================================
 # Node Feature Discovery Role Defaults
 # =============================================================================
-# One NFD for rack-scale clusters with NVIDIA GPU nodes, installed before the
+# The one NFD on rack-scale clusters, with or without GPUs, installed before the
 # GPU operator so the operator does not bring its own copy. The release name
-# (node-feature-discovery), namespace and chart match the inference layer's
-# nfd role, which skips its install when it finds this release, so the cluster
-# ends up with a single NFD. The nfd_* overrides of that role apply here too.
+# (node-feature-discovery), namespace, chart and values match the inference
+# layer's nfd role, which preflight leaves out on these clusters, so the labels
+# the inference layer relies on are unchanged. The nfd_* overrides of that role
+# apply here too.
 # =============================================================================
 
 node_feature_discovery_namespace: "{{ nfd_namespace | default('node-feature-discovery') }}"

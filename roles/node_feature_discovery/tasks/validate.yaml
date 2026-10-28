@@ -6,10 +6,6 @@
 # Node Feature Discovery — Validate
 # =============================================================================
 
-- name: "node_feature_discovery | validate | End role (no NVIDIA GPU)"
-  ansible.builtin.meta: end_role
-  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
-
 - name: "node_feature_discovery | validate"
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"

@@ -5,25 +5,14 @@
 # =============================================================================
 # Node Feature Discovery — Install
 # =============================================================================
-# Only on rack-scale clusters with NVIDIA GPU nodes (rack_scale_gpu_vendor ==
-# nvidia). Everywhere else the inference layer installs NFD itself, as before.
+# Every rack-scale cluster. A release the inference layer installed before is
+# taken over as is: same name, namespace, chart and values.
 # =============================================================================
-
-- name: "node_feature_discovery | Skip — no NVIDIA GPU nodes"
-  ansible.builtin.debug:
-    msg: "No NVIDIA accelerator in rack-profile.yaml — NFD is left to the inference layer."
-  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
-
-- name: "node_feature_discovery | End role (no NVIDIA GPU)"
-  ansible.builtin.meta: end_role
-  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
 
 - name: "node_feature_discovery | Install"
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
-    # The inference layer's nfd role looks for exactly this release name in
-    # this namespace and skips its own install when it finds it.
     - name: "node_feature_discovery | Check for existing Helm release"
       kubernetes.core.helm_info:
         name: node-feature-discovery
@@ -113,6 +102,20 @@
       retries: 30
       delay: 10
 
+    # The inference layer's nfd role used to report this; it is left out here.
+    - name: "node_feature_discovery | Find AMX nodes"
+      kubernetes.core.k8s_info:
+        kind: Node
+        label_selectors:
+          - "feature.node.kubernetes.io/cpu-cpuid.AMXBF16=true"
+      register: _nfd_amx_nodes
+
+    - name: "node_feature_discovery | AMX node summary"
+      ansible.builtin.debug:
+        msg: >-
+          NFD detected {{ _nfd_amx_nodes.resources | length }} node(s) with AMX support:
+          {{ _nfd_amx_nodes.resources | map(attribute='metadata.name') | join(', ') or 'none' }}
+
     - name: "node_feature_discovery | ━━━ DONE ━━━"
       ansible.builtin.debug:
-        msg: "NFD {{ node_feature_discovery_version }} running in '{{ node_feature_discovery_namespace }}' — the GPU operator and the inference layer share it."
+        msg: "NFD {{ node_feature_discovery_version }} running in '{{ node_feature_discovery_namespace }}' — the cluster's one NFD."

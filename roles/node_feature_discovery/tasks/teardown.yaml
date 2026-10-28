@@ -5,12 +5,9 @@
 # =============================================================================
 # Node Feature Discovery — Teardown
 # =============================================================================
-# Only where install ran (NVIDIA GPU nodes): on other clusters the release in
-# this namespace belongs to the inference layer, which removes it itself.
-
-- name: "node_feature_discovery | teardown | End role (no NVIDIA GPU)"
-  ansible.builtin.meta: end_role
-  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
+# Every rack-scale cluster: this component owns the release there, and the
+# inference layer's nfd component is left out of the plan.
+# =============================================================================
 
 - name: "node_feature_discovery | teardown"
   environment:

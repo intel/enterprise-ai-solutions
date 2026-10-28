@@ -71,13 +71,13 @@ components:
   # Planned (B2): detect vendors from NFD labels, drop the rack_scale gate, move to the
   # platform layer after NFD.
   #
-  # One NFD on rack-scale clusters with NVIDIA GPU nodes, ahead of the GPU operator so
-  # the operator does not bring its own. The inference layer's nfd component finds this
-  # release and skips; without NVIDIA GPUs the role no-ops and the inference layer
-  # installs NFD as before.
+  # The cluster's one NFD on rack-scale clusters, with or without GPUs, ahead of the GPU
+  # operator so the operator does not bring its own. Preflight leaves the inference
+  # layer's nfd component out of the plan here, for every action; nfd_enabled turns
+  # both off. Other clusters get NFD from the inference layer as before.
   - name: node_feature_discovery
     layer: infrastructure
-    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (nfd_enabled | default(true) | bool) }}"
     depends_on: [fabric_validate]
 
   - name: nvidia_gpu_operator
