@@ -47,11 +47,11 @@ components:
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [fabric_netplan]
 
-  # Infrastructure sets up Kubernetes only. On OpenShift the cluster is BYO
-  # and the admin provides its storage, so kubernetes and storage are skipped.
+  # The infrastructure layer does not read cluster_distribution. OpenShift is
+  # always BYO (existing_kubernetes), and the kubernetes role skips a BYO cluster.
   - name: kubernetes
     layer: infrastructure
-    enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
+    enabled: true
     depends_on: [fabric_sysctl]
 
   # Post-K8s fabric: BGP needs kubectl, validate needs the cluster up.
@@ -79,7 +79,7 @@ components:
 
   - name: storage
     layer: infrastructure
-    enabled: "{{ cluster_distribution | default('kubernetes') != 'openshift' }}"
+    enabled: true
     depends_on: [kubernetes]
 
   # --- Platform ---

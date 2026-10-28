@@ -114,6 +114,17 @@
         cluster_apis: "{{ (_platform_info.apis | default({})).keys() | list }}"
         cluster_default_storageclass: "{{ _default_sc | trim }}"
 
+# The installer never provisions OpenShift. The infrastructure layer leaves a
+# BYO cluster alone because of existing_kubernetes, not cluster_distribution.
+- name: "Preflight - OpenShift is a BYO cluster"
+  ansible.builtin.assert:
+    that: existing_kubernetes | default('') | trim | length > 0
+    fail_msg: >-
+      cluster_distribution is openshift but existing_kubernetes is not set. The installer
+      does not install OpenShift: set existing_kubernetes to the cluster's kubeconfig.
+    quiet: true
+  when: cluster_distribution == 'openshift'
+
 - name: "Preflight - Default the platform facts detection did not set"
   ansible.builtin.set_fact:
     cluster_distribution_version: "{{ cluster_distribution_version | default('') }}"

@@ -149,7 +149,7 @@ istio_enabled: false   # true makes roles label their namespaces for ambient mod
 
 Only a cluster you bring (`existing_kubernetes` set) is probed. A cluster the installer builds with Kubespray is upstream Kubernetes. Preflight stops if the cluster in `existing_kubernetes` cannot be reached.
 
-The installer does not install OpenShift: set `existing_kubernetes` to the cluster's kubeconfig. On OpenShift the infrastructure layer (`kubernetes`, `storage`) is skipped, because the cluster and its default StorageClass (step 1) are the admin's.
+The installer does not install OpenShift: set `existing_kubernetes` to the cluster's kubeconfig, or preflight stops. As on any BYO cluster, `kubernetes` leaves the cluster alone. `storage` uses the cluster's default StorageClass (step 1) or the class in `storage_custom_storageclass`, whose CSI driver comes from the marketplace.
 
 A cluster is OpenShift when it serves `config.openshift.io/v1` **and** has the `ClusterVersion` object `version`. The API group alone is not enough, because OKD and MicroShift serve parts of it as well.
 

@@ -250,12 +250,13 @@ Library roles, entered with `tasks_from`, have no dispatcher: their caller passe
 `vars_from: "{{ cluster_distribution }}.yaml"`. The rack-scale `fabric_*` roles are not moved
 to this layout yet.
 
-**Infrastructure is Kubernetes only.** The infrastructure layer sets up Kubernetes: `kubernetes`
-(Kubespray), `storage` and its backends (`custom_storage`, `nfs_storage`, `rook_ceph_storage`,
-`netapp_trident_csi`). The installer never provisions OpenShift: the cluster is BYO and the admin
-provides its storage, so `components.yaml` skips `kubernetes` and `storage` there and these roles
-have no `vars/openshift.yaml`. `storage/tasks/resolve.yaml` still runs in preflight on both
-platforms, and on OpenShift maps the storage selector to the cluster's default StorageClass.
+**Infrastructure does not depend on the platform.** The infrastructure layer (`kubernetes`,
+`storage` and its backends `custom_storage`, `nfs_storage`, `rook_ceph_storage`,
+`netapp_trident_csi`) has no `vars/<platform>.yaml`, and `components.yaml` does not gate it on
+`cluster_distribution`. A BYO cluster (`existing_kubernetes`) decides what it does: `kubernetes`
+skips provisioning. OpenShift is always BYO: preflight stops on OpenShift without
+`existing_kubernetes`. `storage/tasks/resolve.yaml` maps the storage selector on OpenShift to the
+cluster's default StorageClass (`custom`): the CSI driver behind it comes from the marketplace.
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /
 `ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. The one
