@@ -116,6 +116,7 @@ seaweedfs_volume_storage_size: "10Gi"
 
 # --- Keycloak ---
 # keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted
+# keycloak_platform_bootstrap_admin_mfa: true   # platform-admin must enrol OTP at first login
 
 # --- Observability ---
 # observability_grafana_admin_password: set via GRAFANA_ADMIN_PASSWORD env var

@@ -52,7 +52,9 @@ keycloak_platform_bootstrap_admin: true
 keycloak_platform_bootstrap_admin_user: "platform-admin"
 # Langfuse and LiteLLM key accounts by email, so the bootstrap admin has one.
 keycloak_platform_bootstrap_admin_email: "{{ keycloak_platform_bootstrap_admin_user }}@{{ base_domain_name | default('inference-example.com') }}"
-keycloak_platform_bootstrap_admin_mfa: true   # force OTP enrolment at first login
+# true: the bootstrap admin must enrol OTP at first login. Read when the realm is
+# first created; for an existing realm, add the OTP required action in Keycloak.
+keycloak_platform_bootstrap_admin_mfa: false
 # Signed out after this long without a token refresh, or at the max lifespan.
 keycloak_platform_session_idle_timeout: 3600  # seconds (1 h)
 keycloak_platform_session_max_lifespan: 28800 # seconds (8 h)
