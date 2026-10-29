@@ -479,7 +479,7 @@ Each `HTTPRoute` then claims the exact hostnames + paths it owns.
 
 | Workload | Hostname | Path |
 |---|---|---|
-| Keycloak | `keycloak.<base>` | `/` (entire host) |
+| Keycloak | `keycloak.<base>` | `/realms`, `/resources` (the admin console stays in-cluster) |
 | LLMs (KServe-managed) | `inference.<base>` | `/llm-inference/<model>/v1/...` (auto-created by KServe) |
 
 So the stack is already exercising **pure host routing** (Keycloak) and **host + path routing combined** (inference).
