@@ -32,6 +32,13 @@
         # Not sent on cross-site POSTs or subrequests (CSRF).
         cookieConfig:
           sameSite: Lax
+        # Only page loads go to the login page; a page's own requests (fetch,
+        # assets, WebSocket) get 401 when the session is gone, so the app sees it.
+        denyRedirect:
+          headers:
+            - name: Sec-Fetch-Mode
+              type: RegularExpression
+              value: "cors|same-origin|no-cors|websocket"
       jwt:
         providers:
           - name: sso
