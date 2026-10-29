@@ -14,7 +14,7 @@ on:
       - main
       - 'release-[0-9]+\.[0-9]+'
     paths:
-      - 'plugins/headlamp/**'
+      - 'src/plugin/headlamp/**'
       - 'roles/headlamp/files/plugins/**'
       - '.github/workflows/headlamp-plugin.yml'
     types: [opened, synchronize, reopened, ready_for_review]
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: plugins/headlamp/enterprise-ai
+        working-directory: src/plugin/headlamp
     steps:
       - name: Harden the runner (audit all outbound calls)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -49,7 +49,7 @@ jobs:
         with:
           node-version: '22.21.1'
           cache: npm
-          cache-dependency-path: plugins/headlamp/enterprise-ai/package-lock.json
+          cache-dependency-path: src/plugin/headlamp/package-lock.json
 
       # Lockfile only, and no install scripts: dependencies cannot run code here.
       - name: Install dependencies
@@ -76,6 +76,6 @@ jobs:
         with:
           name: headlamp-plugin-bundle
           path: |
-            plugins/headlamp/enterprise-ai/dist/main.js
-            plugins/headlamp/enterprise-ai/package.json
+            src/plugin/headlamp/dist/main.js
+            src/plugin/headlamp/package.json
           retention-days: 7
