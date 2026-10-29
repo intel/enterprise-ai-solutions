@@ -100,8 +100,9 @@ gateway_path_grants_configmap: "gateway-path-grants"
 # UIs published with gateway_publish_portal (title, description, path) are listed
 # here, one key per service; Headlamp's Dashboards page reads it.
 gateway_portal_configmap: "platform-portal"
-# Path mode: the bare domain redirects here ('' = no landing page, 404).
-gateway_landing_path: ""
+# Path mode: the bare domain redirects here ('' = no landing page, 404). Headlamp,
+# when on, is the platform landing page; signing out at the gateway ends here.
+gateway_landing_path: "{{ (headlamp_path | default('/headlamp')) ~ '/' if headlamp_enabled | default(false) | bool else '' }}"
 
 # Keycloak routing for the SecurityPolicy JWT provider (canonical owner: keycloak
 # role). Issuer and in-cluster JWKS URL follow where Keycloak serves.

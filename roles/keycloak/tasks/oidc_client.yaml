@@ -6,6 +6,7 @@
 #     id               clientId
 #     redirect_uris    allowed callbacks                    (default [])
 #     post_logout_uris allowed post-logout returns          (default [])
+#                      plus the host root of each /oauth2/callback (gateway logout)
 #     pkce             require PKCE S256                    (default true)
 #     standard_flow    browser login                        (default true)
 #     service_account  client-credentials identity          (default false)
@@ -59,9 +60,17 @@
 - name: "keycloak | client {{ keycloak_client.id }} | Converge"
   vars:
     _c: "{{ keycloak_client }}"
+    # The gateway's logout returns to its host root: allow it for every gateway callback.
+    _gw_roots: >-
+      {%- set out = [] -%}
+      {%- for u in _c.redirect_uris | default([]) if u.endswith('/oauth2/callback') -%}
+      {%- set _ = out.append((u | urlsplit('scheme')) ~ '://' ~ (u | urlsplit('netloc')) ~ '/') -%}
+      {%- endfor -%}
+      {{ out }}
+    _post_logout: "{{ (_c.post_logout_uris | default([]) + _gw_roots) | unique }}"
     _attrs: >-
       {{ ({'pkce.code.challenge.method': 'S256'} if _c.pkce | default(true) | bool else {})
-         | combine({'post.logout.redirect.uris': _c.post_logout_uris | join('##')} if _c.post_logout_uris | default([]) else {})
+         | combine({'post.logout.redirect.uris': _post_logout | join('##')} if _post_logout else {})
          | combine({'access.token.lifespan': _c.token_lifespan | string} if _c.token_lifespan is defined else {}) }}
     _mappers: >-
       {{ [{'name': 'groups', 'protocol': 'openid-connect', 'protocolMapper': 'oidc-group-membership-mapper',

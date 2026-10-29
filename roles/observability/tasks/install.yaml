@@ -308,9 +308,8 @@
         _oidc_internal: "{{ keycloak_client_issuer_internal | default('') }}/protocol/openid-connect"
         _ini_sso:
           auth:
-            signout_redirect_url: >-
-              {{ _oidc }}/logout?client_id={{ observability_grafana_oidc_client_id }}&post_logout_redirect_uri={{
-              (observability_grafana_url ~ '/login') | urlencode }}
+            # The gateway clears its cookies and ends the Keycloak session.
+            signout_redirect_url: "{{ observability_grafana_url }}/oauth2/logout"
           auth.generic_oauth:
             enabled: true
             name: Keycloak
@@ -766,6 +765,7 @@
     - _ini['grafana.ini'] is defined
     - (observability_grafana_url ~ '/') not in _ini['grafana.ini']
       or (observability_grafana_sso | bool) != ('[auth.generic_oauth]' in _ini['grafana.ini'])
+      or (observability_grafana_sso | bool and (observability_grafana_url ~ '/oauth2/logout') not in _ini['grafana.ini'])
 
 - name: "observability | Publish Grafana"
   ansible.builtin.include_role:

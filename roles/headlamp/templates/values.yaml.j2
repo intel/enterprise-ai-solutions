@@ -73,6 +73,14 @@ httpRoute:
           requestRedirect:
             path: {type: ReplaceFullPath, replaceFullPath: "{{ _root }}/oidc?cluster=main"}
             statusCode: 302
+    # Headlamp's sign-out ends the Keycloak session and returns here: sign out
+    # at the gateway as well, so its cookies go too.
+    - matches: [{path: {type: Exact, value: "{{ _root }}/encoded-clusters/bWFpbg/login"}}]
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path: {type: ReplaceFullPath, replaceFullPath: "{{ _root }}/oauth2/logout"}
+            statusCode: 302
 {% endif %}
     - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
       filters:
