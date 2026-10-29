@@ -257,6 +257,33 @@
   when: keycloak_gateway_publish | bool
 
 - name: "keycloak | Create HTTPRoute for gateway"
+  vars:
+    _p: "{{ gateway_publish.relative_path | regex_replace('/$', '') }}"
+    # Sign-in, account pages, tokens and keys live under /realms; their assets
+    # under /resources. The admin console is not published.
+    _kc_rule:
+      matches: >-
+        {{ [{'path': {'type': 'PathPrefix', 'value': gateway_publish.relative_path}}]
+           if keycloak_admin_public | bool else
+           [{'path': {'type': 'PathPrefix', 'value': _p ~ '/realms'}},
+            {'path': {'type': 'PathPrefix', 'value': _p ~ '/resources'}}] }}
+      filters:
+        # HSTS: tell compliant browsers to only ever reach this host over
+        # HTTPS, so a later plaintext attempt is refused client-side before
+        # any credential leaves the browser. Only honored when received over
+        # HTTPS, hence set here on the :443 route, not the :80 redirect.
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+      backendRefs:
+        - name: keycloak-service
+          port: 8080
+    # The master realm (Keycloak's own administration) is served at the
+    # port-forward only: a rule without a backend answers 500.
+    _kc_master_rule:
+      matches: [{path: {type: PathPrefix, value: "{{ _p ~ '/realms/master' }}"}}]
   kubernetes.core.k8s:
     state: present
     definition:
@@ -271,28 +298,7 @@
           - "{{ gateway_publish.parent_ref }}"
         hostnames:
           - "{{ gateway_publish.host }}"
-        rules:
-          # Sign-in, account pages, tokens and keys live under /realms; their
-          # assets under /resources. The admin console is not published.
-          - matches: >-
-              {%- set _p = gateway_publish.relative_path | regex_replace('/$', '') -%}
-              {{ [{'path': {'type': 'PathPrefix', 'value': gateway_publish.relative_path}}]
-                 if keycloak_admin_public | bool else
-                 [{'path': {'type': 'PathPrefix', 'value': _p ~ '/realms'}},
-                  {'path': {'type': 'PathPrefix', 'value': _p ~ '/resources'}}] }}
-            filters:
-              # HSTS: tell compliant browsers to only ever reach this host over
-              # HTTPS, so a later plaintext attempt is refused client-side before
-              # any credential leaves the browser. Only honored when received over
-              # HTTPS, hence set here on the :443 route, not the :80 redirect.
-              - type: ResponseHeaderModifier
-                responseHeaderModifier:
-                  set:
-                    - name: Strict-Transport-Security
-                      value: "max-age=31536000; includeSubDomains"
-            backendRefs:
-              - name: keycloak-service
-                port: 8080
+        rules: "{{ ([] if keycloak_admin_public | bool else [_kc_master_rule]) + [_kc_rule] }}"
   when: keycloak_gateway_publish | bool
 
 - name: "keycloak | Exclude Keycloak route from gateway JWT policy"
@@ -304,6 +310,10 @@
     gateway_route_namespace: "{{ keycloak_namespace }}"
     gateway_route_policy_name: keycloak-no-auth
   when: keycloak_gateway_publish | bool
+
+# ── Master realm: served at the port-forward only ────────────────────────────
+- name: "keycloak | Master realm"
+  ansible.builtin.include_tasks: master_realm.yaml
 
 # ── Platform SSO realm (people sign in here for every platform UI) ───────────
 - name: "keycloak | Platform SSO realm"

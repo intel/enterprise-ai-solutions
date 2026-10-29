@@ -378,8 +378,10 @@ kubectl get secret -n keycloak keycloak-admin-secret \
 ```
 
 The gateway publishes only Keycloak's sign-in pages and token endpoints
-(`/realms`, `/resources`), not its admin console or admin API. To administer
-Keycloak, forward its port and open `http://localhost:8080/admin/` (in path mode,
+(`/realms`, `/resources`), not its admin console, its admin API or the `master`
+realm the administrator signs in to. To administer Keycloak, forward its port
+(local port 8080: the console and the `master` realm are served at that address)
+and open `http://localhost:8080/admin/` (in path mode,
 `http://localhost:8080/keycloak/admin/`):
 
 ```bash

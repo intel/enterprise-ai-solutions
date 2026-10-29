@@ -1,0 +1,26 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Keycloak — master realm served at the port-forward address only
+# =============================================================================
+# The gateway does not route /realms/master; its front-end URL points at the
+# port-forward, so the admin console signs in there. Cleared when
+# keycloak_admin_public is true.
+
+- name: "keycloak | master realm | Wanted front-end URL"
+  ansible.builtin.set_fact:
+    _kc_master_url: "{{ '' if keycloak_admin_public | bool else keycloak_admin_local_url }}"
+
+- name: "keycloak | master realm | Read its front-end URL"
+  ansible.builtin.include_tasks: kcadm.yaml
+  vars:
+    _kc_args: [get, realms/master, --fields, "attributes(frontendUrl)"]
+
+- name: "keycloak | master realm | Set its front-end URL"
+  ansible.builtin.include_tasks: kcadm.yaml
+  vars:
+    _kc_args: [update, realms/master, -s, "attributes.frontendUrl={{ _kc_master_url }}"]
+    _kc_write: true
+  when: ((_kc_kcadm.stdout | from_json).attributes | default({})).frontendUrl | default('') != _kc_master_url
