@@ -1,0 +1,47 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# =============================================================================
+# Kata Containers — Validate
+# =============================================================================
+
+- name: "kata_containers | validate | Check whether kata-deploy is installed"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: "{{ kata_release_name }}"
+    namespace: "{{ kata_namespace }}"
+  register: _val_kata_installed
+
+- name: "kata_containers | validate | Fail when kata-deploy is not installed"
+  ansible.builtin.fail:
+    msg: >-
+      kata_containers_enabled is set but the kata-deploy DaemonSet
+      {{ kata_namespace }}/{{ kata_release_name }} does not exist. Run the
+      kata_containers install: it stops with the cause and the per-node
+      preflight results when a node prerequisite is missing.
+  when: _val_kata_installed.resources | default([]) | length == 0
+
+- name: "kata_containers | validate | Check kata-deploy DaemonSet rollout"
+  ansible.builtin.command: >-
+    kubectl -n {{ kata_namespace }} rollout status daemonset/{{ kata_release_name }}
+    --timeout=60s
+  register: _val_kata_ds
+  changed_when: false
+
+- name: "kata_containers | validate | Get RuntimeClasses"
+  kubernetes.core.k8s_info:
+    api_version: node.k8s.io/v1
+    kind: RuntimeClass
+  register: _val_kata_rc
+
+- name: "kata_containers | validate | Check a requested Kata RuntimeClass exists"
+  vars:
+    _requested: >-
+      {{ ([kata_fc_runtime_class] if kata_runtime | default('kata-fc') in ['kata-fc', 'both'] else [])
+         + ([kata_qemu_runtime_class] if kata_runtime | default('kata-fc') in ['kata-qemu', 'both'] else []) }}
+    _present: "{{ _val_kata_rc.resources | map(attribute='metadata.name') | list }}"
+  ansible.builtin.assert:
+    that: _requested | intersect(_present) | length > 0
+    fail_msg: "None of the requested Kata RuntimeClasses ({{ _requested | join(', ') }}) exist"
+    success_msg: "Kata RuntimeClasses present: {{ _requested | intersect(_present) | join(', ') }}"

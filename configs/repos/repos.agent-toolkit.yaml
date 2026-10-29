@@ -1,0 +1,24 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# =============================================================================
+# Layer manifest — agent-toolkit
+# =============================================================================
+
+repos:
+  - layer: "inference"
+    url: "https://github.com/intel/enterprise-inference"
+    dest: "enterprise.ai-inference"
+    rev: "main"
+    deployment_subdir: ""
+    config_dir: ""
+    default_flavour: ""
+    model_catalog: "model_manager/models.yaml"
+
+  - layer: "agent-toolkit"
+    url: "https://github.com/intel/enterprise-agent-toolkit"
+    dest: "enterprise.agent-toolkit"
+    rev: "agentic-toolkit-migration"
+    deployment_subdir: ""
+    config_dir: ""
+    default_flavour: ""

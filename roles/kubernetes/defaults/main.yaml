@@ -124,3 +124,4 @@ node_topology_enabled: false
 kubernetes_disable_swap: true
 kubernetes_disable_firewall: false
 kubernetes_load_kernel_modules: true
+kubernetes_registry_enabled: false
