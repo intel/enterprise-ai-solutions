@@ -148,6 +148,9 @@
           | combine({'no_proxy': no_proxy, 'NO_PROXY': no_proxy} if no_proxy | default('') | length > 0 else {})
         }}
       register: _internet_check
+      until: _internet_check.status | default(-1) in [200, 301, 302, 303, 307, 429]
+      retries: 5
+      delay: 10
       failed_when: false
       changed_when: false
 
