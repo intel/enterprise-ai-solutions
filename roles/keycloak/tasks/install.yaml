@@ -207,7 +207,7 @@
   when: _kc_cr_existing.resources | default([]) | length > 0
 
 # A changed CR restarts Keycloak; the realm steps below need it serving again.
-- name: "keycloak | Wait for the operator to apply the change"
+- name: "keycloak | Wait for the operator to apply the change"  # noqa: no-handler
   kubernetes.core.k8s_info:
     api_version: k8s.keycloak.org/v2beta1
     kind: Keycloak
@@ -224,7 +224,7 @@
   delay: 10
   when: _kc_reconcile is changed
 
-- name: "keycloak | Wait for the restarted Keycloak"
+- name: "keycloak | Wait for the restarted Keycloak"  # noqa: no-handler
   kubernetes.core.k8s_info:
     api_version: apps/v1
     kind: StatefulSet
