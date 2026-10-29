@@ -3,27 +3,8 @@
 # Headlamp — API server trusts Keycloak (apiserver mode)
 # =============================================================================
 # The kubernetes role points the API server at this file and seeds it empty;
-# its content is owned here and reloaded live by the API server.
-
-- name: "headlamp | apiserver | Render the authentication config for the cluster owner"
-  ansible.builtin.template:
-    src: authentication-config.yaml.j2
-    dest: "{{ log_dir }}/headlamp-authentication-config.yaml"
-    mode: "0600"
-  when: existing_kubernetes | default('', true) | length > 0
-
-- name: "headlamp | apiserver | BYO cluster — the owner configures the API server"
-  ansible.builtin.debug:
-    msg: >-
-      NOTICE: existing_kubernetes is set, so this installer does not change the API server.
-      For Headlamp sign-in, the cluster owner must make it trust issuer {{ __headlamp_issuer_url }}
-      (audience {{ headlamp_oidc_client_id }}; user = claim preferred_username, groups = claim groups,
-      both prefixed '{{ headlamp_oidc_prefix }}'{{ '; CA in ConfigMap ' ~ headlamp_namespace ~ '/headlamp-oidc-ca'
-      if __headlamp_ca_pem | length > 0 else '' }}). Ready-made structured config:
-      {{ log_dir }}/headlamp-authentication-config.yaml (kube-apiserver --authentication-config). On managed
-      clusters use the provider's OIDC identity-provider setting. Without this, sign-in works but every
-      Kubernetes call returns 401; headlamp_auth_mode: gateway avoids the API server change.
-  when: existing_kubernetes | default('', true) | length > 0
+# its content is owned here and reloaded live by the API server. On a BYO
+# cluster the owner configures it (checked at the start of install.yaml).
 
 - name: "headlamp | apiserver | Configure control-plane nodes"
   ansible.builtin.include_tasks: apiserver_nodes.yaml

@@ -21,6 +21,7 @@ spec:
     editUsernameAllowed: false
     groups:
       - name: "{{ keycloak_platform_admin_group }}"
+      - name: "{{ keycloak_platform_viewer_group }}"
 {% if keycloak_platform_bootstrap_admin | bool %}
     users:
       - username: "{{ keycloak_platform_bootstrap_admin_user }}"

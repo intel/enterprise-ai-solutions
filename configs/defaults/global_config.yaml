@@ -71,6 +71,7 @@ istio_enabled: true
 observability_enabled: true
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 headlamp_enabled: false                   # opt-in: Kubernetes web UI, Keycloak sign-in (platform realm)
+# headlamp_byo_apiserver_trusted: true    # BYO cluster: its API server already trusts the platform realm
 
 # --- Authentication ---
 # Keycloak is always deployed: people sign in through it and the gateway

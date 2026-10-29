@@ -47,6 +47,7 @@
     name: "{{ item.name }}"
   loop:
     - {kind: ClusterRoleBinding, name: "headlamp-{{ keycloak_platform_admin_group }}"}
+    - {kind: ClusterRoleBinding, name: "headlamp-{{ keycloak_platform_viewer_group }}"}
     - {kind: ClusterRoleBinding, name: headlamp-pages-read}
     - {kind: ClusterRole, name: headlamp-pages-read}
   loop_control:

@@ -34,9 +34,12 @@ headlamp_url: >-
 #   server cannot be configured.
 headlamp_auth_mode: "apiserver"        # apiserver | gateway
 headlamp_gateway_cluster_role: "view"  # gateway mode: what the shared account may do
-# Groups the gateway admits. Only the admin group has RBAC by default; add a
-# group here once it is bound to a role (apiserver mode).
-headlamp_allowed_groups: ["{{ keycloak_platform_admin_group }}"]
+# BYO cluster (existing_kubernetes), apiserver mode: set true once the API server
+# trusts the platform realm (the install stops before that, with the config ready).
+headlamp_byo_apiserver_trusted: false
+# Groups the gateway admits. The admin and viewer groups are bound to roles
+# (apiserver mode); add another group here once it is bound to a role.
+headlamp_allowed_groups: ["{{ keycloak_platform_admin_group }}", "{{ keycloak_platform_viewer_group }}"]
 
 # ── Keycloak (platform realm, owned by the keycloak role) ────────────────────
 headlamp_oidc_client_id: "headlamp"
@@ -60,6 +63,7 @@ keycloak_frontend_url: >-
      else 'https://' ~ keycloak_hostname }}
 keycloak_platform_realm: "platform"
 keycloak_platform_admin_group: "platform-admins"
+keycloak_platform_viewer_group: "platform-viewers"
 keycloak_platform_bootstrap_admin: true
 keycloak_platform_bootstrap_admin_user: "platform-admin"
 keycloak_platform_session_idle_timeout: 3600

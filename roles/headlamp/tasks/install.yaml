@@ -15,6 +15,44 @@
       expiry, and Keycloak ends a session idle for longer than its timeout.
     quiet: true
 
+# ── CA that signs Keycloak's certificate, and the gateway address ────────────
+# The address backs name lookups where the platform hostnames are not in DNS.
+
+- name: "headlamp | Gateway CA and address"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: client_trust.yaml
+
+- name: "headlamp | Use them"
+  ansible.builtin.set_fact:
+    __headlamp_ca_pem: "{{ gateway_trust.ca_pem }}"
+    __headlamp_gateway_ip: "{{ gateway_trust.address }}"
+
+# ── BYO cluster in apiserver mode: the owner must make the API server trust the
+# realm first. Stops before anything is created, with the config ready to apply.
+
+- name: "headlamp | BYO cluster: API server trust"
+  when: __headlamp_apiserver_mode | bool and existing_kubernetes | default('', true) | length > 0
+  block:
+    - name: "headlamp | Render the authentication config for the cluster owner"
+      ansible.builtin.template:
+        src: authentication-config.yaml.j2
+        dest: "{{ log_dir }}/headlamp-authentication-config.yaml"
+        mode: "0600"
+
+    - name: "headlamp | API server trust declared"
+      ansible.builtin.assert:
+        that: headlamp_byo_apiserver_trusted | bool
+        fail_msg: >-
+          existing_kubernetes is set, so this installer does not change the API server, and in
+          apiserver mode Headlamp needs it to trust issuer {{ __headlamp_issuer_url }} (audience
+          {{ headlamp_oidc_client_id }}; user = claim preferred_username, groups = claim groups, both
+          prefixed '{{ headlamp_oidc_prefix }}'). Apply {{ log_dir }}/headlamp-authentication-config.yaml
+          with kube-apiserver --authentication-config (or the provider's OIDC setting on managed clusters),
+          then set headlamp_byo_apiserver_trusted: true. Or set headlamp_auth_mode: gateway, which needs
+          no API server change. See docs/deploy/headlamp.md.
+        quiet: true
+
 - name: "headlamp | Namespace"
   kubernetes.core.k8s:
     state: present
@@ -29,19 +67,6 @@
                         'pod-security.kubernetes.io/audit': 'restricted',
                         'pod-security.kubernetes.io/warn': 'restricted'}
                        if enforce_pss | default(false) | bool else {}) }}
-
-# ── CA that signs Keycloak's certificate, and the gateway address ────────────
-# The address backs name lookups where the platform hostnames are not in DNS.
-
-- name: "headlamp | Gateway CA and address"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: client_trust.yaml
-
-- name: "headlamp | Use them"
-  ansible.builtin.set_fact:
-    __headlamp_ca_pem: "{{ gateway_trust.ca_pem }}"
-    __headlamp_gateway_ip: "{{ gateway_trust.address }}"
 
 # ── Keycloak clients in the platform realm (owned by the keycloak role) ──────
 
@@ -117,24 +142,29 @@
       data:
         ca.crt: "{{ __headlamp_ca_pem }}"
 
-# ── apiserver mode: the Keycloak admin group is cluster-admin ────────────────
+# ── apiserver mode: admins are cluster-admin, viewers read (view: no Secrets) ─
 
-- name: "headlamp | Bind the admin group"
+- name: "headlamp | Bind the platform groups"
   kubernetes.core.k8s:
     state: "{{ 'present' if __headlamp_apiserver_mode | bool else 'absent' }}"
     definition:
       apiVersion: rbac.authorization.k8s.io/v1
       kind: ClusterRoleBinding
       metadata:
-        name: "headlamp-{{ keycloak_platform_admin_group }}"
+        name: "headlamp-{{ item.group }}"
       roleRef:
         apiGroup: rbac.authorization.k8s.io
         kind: ClusterRole
-        name: cluster-admin
+        name: "{{ item.role }}"
       subjects:
         - apiGroup: rbac.authorization.k8s.io
           kind: Group
-          name: "{{ headlamp_oidc_prefix }}{{ keycloak_platform_admin_group }}"
+          name: "{{ headlamp_oidc_prefix }}{{ item.group }}"
+  loop:
+    - {group: "{{ keycloak_platform_admin_group }}", role: cluster-admin}
+    - {group: "{{ keycloak_platform_viewer_group }}", role: view}
+  loop_control:
+    label: "{{ item.group }} -> {{ item.role }}"
 
 - name: "headlamp | API server trusts Keycloak"
   ansible.builtin.include_tasks: apiserver.yaml
@@ -262,7 +292,8 @@
       Headlamp {{ headlamp_image_tag }} at {{ headlamp_url ~ ('/oidc?cluster=main' if __headlamp_apiserver_mode | bool else '') }}
       ({{ headlamp_auth_mode }} mode):
       the gateway admits Keycloak groups {{ headlamp_allowed_groups | join(', ') }} (realm {{ keycloak_platform_realm }});
-      {{ ('members of ' ~ keycloak_platform_admin_group ~ ' are cluster admins.')
+      {{ ('members of ' ~ keycloak_platform_admin_group ~ ' are cluster admins, of '
+          ~ keycloak_platform_viewer_group ~ ' read-only (view, no Secrets).')
          if __headlamp_apiserver_mode | bool
          else ('everyone shares ServiceAccount role ' ~ headlamp_gateway_cluster_role ~ ', with no per-person RBAC or audit.') }}
       {{ ('Bootstrap admin: ' ~ keycloak_platform_bootstrap_admin_user ~ ', temporary password in Secret '

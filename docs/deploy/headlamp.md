@@ -45,33 +45,44 @@ To make it enrol a one-time password (OTP) at first login too, set
 
 ## Who gets in
 
+Two Keycloak groups come with the `platform` realm:
+
+| Group | Headlamp (`apiserver` mode) | Grafana | LiteLLM admin UI |
+|-------|-----------------------------|---------|------------------|
+| `platform-admins` | `cluster-admin` | Admin | `proxy_admin` |
+| `platform-viewers` | `view`: read-only, no Secrets | Viewer | not admitted |
+
+Add people to a group in the Keycloak admin console (realm `platform`, Groups).
+A signed-in user in neither group gets 403 at Headlamp and the LiteLLM admin
+UI, and is a Viewer in Grafana and Langfuse.
+
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `headlamp_allowed_groups` | `[platform-admins]` | Keycloak groups the gateway admits to Headlamp; everyone else gets 403 |
+| `headlamp_allowed_groups` | `[platform-admins, platform-viewers]` | Keycloak groups the gateway admits to Headlamp; everyone else gets 403 |
 | `headlamp_auth_mode` | `apiserver` | `apiserver`: Headlamp calls Kubernetes as each person. `gateway`: one shared account for everyone |
 | `headlamp_gateway_cluster_role` | `view` | `gateway` mode: what the shared account may do |
 
 In `apiserver` mode Kubernetes sees each person as `oidc:<username>` in groups
-`oidc:<group>`. `platform-admins` is bound to `cluster-admin`; to admit another
-group, bind it to a role first, then add it to `headlamp_allowed_groups`. For
-example, read-only access for a `platform-viewers` group:
+`oidc:<group>`. To admit another group, bind it to a role first, then add it to
+`headlamp_allowed_groups`. For example, a `team-a` group that may edit one
+namespace:
 
 ```bash
-kubectl create clusterrolebinding headlamp-platform-viewers \
-  --clusterrole=view --group=oidc:platform-viewers
+kubectl -n team-a create rolebinding headlamp-team-a \
+  --clusterrole=edit --group=oidc:team-a
 ```
 
 ## Bring your own Kubernetes (BYO)
 
 With `existing_kubernetes` set, the installer does not change the API server. In
 `apiserver` mode the API server must trust the `platform` realm, or sign-in
-works but every Kubernetes call in Headlamp returns 401. Choose one:
+works but every Kubernetes call in Headlamp returns 401. So the Headlamp install
+stops early, before creating anything, until you choose one:
 
 **Option A: configure the API server (per-person access and audit).**
 
-1. Install Headlamp. The installer writes a ready-made configuration to
-   `env/<name>/logs/headlamp-authentication-config.yaml` and prints the issuer
-   it trusts.
+1. Install Headlamp. It stops with the issuer to trust and writes a ready-made
+   configuration to `env/<name>/logs/headlamp-authentication-config.yaml`.
 2. Copy that file to every control-plane node (for example to
    `/etc/kubernetes/authn/authentication-config.yaml`, mode `0600`) and start
    kube-apiserver with `--authentication-config=<that path>`. Mount the
@@ -83,12 +94,14 @@ works but every Kubernetes call in Headlamp returns 401. Choose one:
    control-plane nodes must resolve the Keycloak host (`keycloak.<base>`, or
    `<base>` in path mode) to the gateway. The file already carries the gateway
    CA when the certificate is not publicly trusted.
-5. Check: `./es_auto_installer.sh validate platform --env <name>` confirms the
+5. Set `headlamp_byo_apiserver_trusted: true` in `global_config.yaml` and
+   install Headlamp again.
+6. Check: `./es_auto_installer.sh validate platform --env <name>` confirms the
    API server accepts a realm token.
 
 On a managed cluster (EKS, AKS, GKE and others), use the provider's OIDC
 identity-provider setting with the same values: issuer from the installer's
-notice, client ID `headlamp`, username claim `preferred_username`, groups claim
+stop message, client ID `headlamp`, username claim `preferred_username`, groups claim
 `groups`, and prefix `oidc:` for both.
 
 **Option B: no API server change.** Set `headlamp_auth_mode: gateway`. Only

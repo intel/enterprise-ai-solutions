@@ -140,11 +140,12 @@
 - name: "headlamp | validate | API server accepts Keycloak tokens"
   when: __headlamp_apiserver_mode | bool
   block:
-    - name: "headlamp | validate | Admin group bound"
+    - name: "headlamp | validate | Platform groups bound"
       kubernetes.core.k8s_info:
         api_version: rbac.authorization.k8s.io/v1
         kind: ClusterRoleBinding
-        name: "headlamp-{{ keycloak_platform_admin_group }}"
+        name: "headlamp-{{ item }}"
+      loop: ["{{ keycloak_platform_admin_group }}", "{{ keycloak_platform_viewer_group }}"]
       register: __headlamp_val_crb
       failed_when: __headlamp_val_crb.resources | length == 0
 

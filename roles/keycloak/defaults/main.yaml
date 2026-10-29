@@ -46,6 +46,8 @@ keycloak_client_id: "inference-client"
 # Apps add their OIDC client with tasks_from: oidc_client.yaml.
 keycloak_platform_realm: "platform"
 keycloak_platform_admin_group: "platform-admins"
+# Read-only group: Kubernetes view in Headlamp, Viewer elsewhere.
+keycloak_platform_viewer_group: "platform-viewers"
 # Day-0 admin: generated temporary password (Secret platform-bootstrap-admin in
 # this namespace), changed at first login. Off when identities are federated in.
 keycloak_platform_bootstrap_admin: true
