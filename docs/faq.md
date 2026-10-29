@@ -30,7 +30,7 @@ No. Inference runs on Intel® Xeon® CPUs, with NUMA-aware CPU pinning and vLLM 
 
 ### Which targets can I pass to `init`?
 
-`inference` and `erag`. Those are the layers with a repository manifest. Other layers and single components are valid targets for `install`, `teardown`, and `validate`, but not for `init`.
+`inference`, `erag`, and `agent-toolkit`. Those are the layers with a repository manifest. Other layers and single components are valid targets for `install`, `teardown`, and `validate`, but not for `init`.
 
 ### How long does a full install take?
 
@@ -111,6 +111,10 @@ Yes, a Hugging Face token exported as `HF_TOKEN` before deploying. Llama, Mistra
 ### How do I call the model once it is running?
 
 Any OpenAI-compatible client, with a Bearer token. With `auth_type: jwt`, source the token helper script to get a JWT and the gateway address; with `litellm_vkey`, use a virtual key. See [Integration Guide](customize/integration.md).
+
+### I installed agent-toolkit. Which model does it serve, and where is LiteLLM?
+
+The Intel® Agent Toolkit deploys one default model on install, `qwen2-5-coder-14b`, set by `llm_services_autodeploy_models` in `env/<name>/config.agent-toolkit.yaml`; set it to `[]` to skip it, and deploy others with `./model-manager deploy <name>`. LiteLLM belongs to the inference layer and follows its settings in `env/<name>/config.inference.yaml`. With the default `auth_type: jwt`, call the model on the inference endpoint with a Keycloak JWT. For a LiteLLM endpoint on `litellm.<domain>` with the models registered in it, set `auth_type: litellm_vkey` there and re-run `install agent-toolkit`, which includes the inference layer. See [Access the model](deploy/deploy_models.md#access-the-model).
 
 ### Can I serve more than one model at a time?
 

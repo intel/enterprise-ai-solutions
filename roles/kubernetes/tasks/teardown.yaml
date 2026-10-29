@@ -5,7 +5,7 @@
 # Flow (driven by es_auto_installer.sh):
 #   Phase 1: _kubespray_prep_only=true → ensure kubespray stack → meta: end_role
 #   Phase 2: es_auto_installer.sh runs reset.yml directly (live output)
-#   Phase 3: normal run → node labels + restore kubectl/helm
+#   Phase 3: normal run → node labels + Kata leftovers on the nodes + restore kubectl/helm
 # Idempotent: cleanup tasks are no-ops when cluster is already down.
 # BYO mode: removes only labels we added — never destroys the cluster.
 # =============================================================================
@@ -144,6 +144,117 @@
     executable: /bin/bash
   register: _hostname_fix
   changed_when: "'added' in _hostname_fix.stdout"
+
+# ─── Remove Kata Containers leftovers from the nodes ───────────────────
+# Only with Kata enabled and once the cluster is down (shims and microVMs can outlive
+# kubespray reset); best-effort, a failed node is reported.
+
+- name: "kubernetes | teardown | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _k8s_inventory_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | unique }}
+
+- name: "kubernetes | teardown | Remove Kata Containers leftovers from the nodes"
+  when:
+    - kata_containers_enabled | default(false) | bool
+    - _cluster_alive.rc != 0
+  block:
+    - name: "kubernetes | teardown | Stop orphaned Kata shims and microVMs"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          # Match the executable only
+          pattern='^(/opt/kata/|[^ ]*containerd-shim-kata)'
+          pgrep -f "$pattern" >/dev/null || exit 0
+          pkill -TERM -f "$pattern" || true
+          for _ in $(seq 15); do
+            pgrep -f "$pattern" >/dev/null || break
+            sleep 1
+          done
+          pkill -KILL -f "$pattern" || true
+          echo "stopped"
+        executable: /bin/bash
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ _k8s_inventory_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _kata_purge_procs
+      changed_when: "'stopped' in _kata_purge_procs.stdout"
+      failed_when: false
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: "kubernetes | teardown | Clear Kata runtime state"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          for d in /run/vc /run/kata-containers; do
+            [ -d "$d" ] || continue
+            # Unmount leftovers (deepest first) before removing
+            findmnt -rn -o TARGET | awk -v p="$d/" 'index($0, p) == 1' | sort -r \
+              | while read -r m; do umount -l "$m" || true; done
+            [ -n "$(ls -A "$d")" ] || continue
+            rm -rf --one-file-system "${d:?}"/* || true
+            echo "cleared $d"
+          done
+        executable: /bin/bash
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ _k8s_inventory_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _kata_purge_state
+      changed_when: "'cleared' in _kata_purge_state.stdout"
+      failed_when: false
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: "kubernetes | teardown | Remove stale devmapper snapshot devices"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          command -v dmsetup >/dev/null 2>&1 || exit 0
+          for dev in $(dmsetup ls 2>/dev/null | awk '$1 ~ /thinpool-snap/ {print $1}'); do
+            if dmsetup remove "$dev" 2>/dev/null; then
+              echo "removed $dev"
+            else
+              echo "WARNING: could not remove $dev (still in use)"
+            fi
+          done
+        executable: /bin/bash
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ _k8s_inventory_nodes }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _kata_purge_dm
+      changed_when: "'removed' in _kata_purge_dm.stdout"
+      failed_when: false
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: "kubernetes | teardown | Report nodes where the Kata cleanup did not finish"
+      vars:
+        _results: >-
+          {{ (_kata_purge_procs.results | default([]))
+             + (_kata_purge_state.results | default([]))
+             + (_kata_purge_dm.results | default([])) }}
+        _incomplete: >-
+          {{ ((_results | rejectattr('rc', 'defined') | map(attribute='item') | list)
+              + (_results | selectattr('rc', 'defined') | rejectattr('rc', 'equalto', 0)
+                 | map(attribute='item') | list))
+             | unique | list }}
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: the Kata cleanup did not finish on {{ _incomplete | join(', ') }}
+          (unreachable, or a step failed; see the results above). Before reusing
+          such a node, check for leftover processes with
+          pgrep -af 'containerd-shim-kata|/opt/kata/', and for snapshot devices
+          with dmsetup ls.
+      when: _incomplete | length > 0
 
 # Kubespray reset.yml already removes ~/.kube, /etc/kubernetes, and the
 # {{ bin_dir }}/{kubectl,helm} binaries on every node. We do NOT reinstall

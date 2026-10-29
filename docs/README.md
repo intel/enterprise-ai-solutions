@@ -23,6 +23,7 @@ Check your machine meets the bar, then deploy it.
 | [Prerequisites](quickstart/prerequisites.md) | Everything needed before running the installer |
 | [Getting Started](quickstart/quickstart.md) | Three deployment paths — pick one and follow it end to end |
 | [Getting Started with RAG](quickstart/getting_started_rag.md) | Deploy Intel® AI for Enterprise RAG (vector DB, document ingestion, chat UI) on top of inference |
+| [Getting Started with the Agent Toolkit](quickstart/getting_started_agent_toolkit.md) | Deploy the Intel® Agent Toolkit (agent sandboxes, memory stores, LiteLLM gateway) on top of inference |
 
 ## Deploy
 

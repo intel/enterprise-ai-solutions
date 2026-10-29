@@ -211,6 +211,7 @@ Repositories within the AI Solutions include:
  
 - [`enterprise-inference`][ai-inference]
 - [`enterprise-rag`][ai-erag]
+- [`enterprise-agent-toolkit`][agent-toolkit]
 
 The complete list of portfolio repositories can be found in [README.md](README.md) or under [`configs/repos`](configs/repos/).
 
@@ -300,5 +301,6 @@ In such cases, credit to the original author will be preserved.
 [ai-solutions]: https://github.com/intel/enterprise-ai-solutions
 [ai-inference]: https://github.com/intel/enterprise-inference
 [ai-erag]: https://github.com/intel/enterprise-rag
+[agent-toolkit]: https://github.com/intel/enterprise-agent-toolkit
 [ai-solutions-issues]: https://github.com/intel/enterprise-ai-solutions/issues
 [ai-solutions-pulls]: https://github.com/intel/enterprise-ai-solutions/pulls
