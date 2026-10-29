@@ -12,11 +12,10 @@ spec:
     # Frontend URL — how external clients see Keycloak (HTTPS, the gateway
     # terminates TLS); tokens carry {{ keycloak_frontend_url }}/realms/<realm>.
     hostname: {{ keycloak_frontend_url }}
-{% if not keycloak_admin_public | bool %}
-    # The gateway does not publish the admin console: it is served for a
-    # port-forward to keycloak-service:8080 only.
-    admin: "{{ keycloak_admin_local_url }}"
-{% endif %}
+    # Where the admin console is served: the port-forward, unless the gateway
+    # publishes it. Always set: a re-install merges into the live CR, so a
+    # dropped field would keep its old value.
+    admin: "{{ keycloak_frontend_url if keycloak_admin_public | bool else keycloak_admin_local_url }}"
     # backchannelDynamic: requests arriving via cluster-internal DNS
     # (e.g. apisix → keycloak-service.keycloak.svc.cluster.local:8080) use the
     # Host header for backchannel URLs — so a token issued at
