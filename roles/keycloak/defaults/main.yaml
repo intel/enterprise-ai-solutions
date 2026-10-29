@@ -23,6 +23,10 @@ keycloak_path: "/keycloak"
 _keycloak_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"
 keycloak_relative_path: "{{ keycloak_path if _keycloak_path_mode | bool else '/' }}"
 keycloak_route_host: "{{ base_domain_name if _keycloak_path_mode | bool else keycloak_hostname }}"
+# The gateway serves only what browsers and API clients need (/realms, /resources).
+# The admin console and admin API stay in-cluster: kubectl -n keycloak port-forward
+# svc/keycloak-service 8080. true publishes everything, the admin API included.
+keycloak_admin_public: false
 keycloak_frontend_url: "https://{{ keycloak_route_host }}{{ keycloak_path if _keycloak_path_mode | bool else '' }}"
 keycloak_admin_user: "admin"
 keycloak_admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"

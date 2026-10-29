@@ -272,7 +272,14 @@
         hostnames:
           - "{{ gateway_publish.host }}"
         rules:
-          - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
+          # Sign-in, account pages, tokens and keys live under /realms; their
+          # assets under /resources. The admin console is not published.
+          - matches: >-
+              {%- set _p = gateway_publish.relative_path | regex_replace('/$', '') -%}
+              {{ [{'path': {'type': 'PathPrefix', 'value': gateway_publish.relative_path}}]
+                 if keycloak_admin_public | bool else
+                 [{'path': {'type': 'PathPrefix', 'value': _p ~ '/realms'}},
+                  {'path': {'type': 'PathPrefix', 'value': _p ~ '/resources'}}] }}
             filters:
               # HSTS: tell compliant browsers to only ever reach this host over
               # HTTPS, so a later plaintext attempt is refused client-side before
