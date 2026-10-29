@@ -205,11 +205,12 @@
       {{ (lookup('ansible.builtin.file', 'plugins/' ~ __headlamp_plugin_name ~ '/main.js', rstrip=false)
           ~ lookup('ansible.builtin.file', 'plugins/' ~ __headlamp_plugin_name ~ '/package.json', rstrip=false)) | hash('sha256') }}
 
-# gateway mode: the shared account's 'view' lacks KServe's LLMInferenceService,
-# which the Models page shows. Read on that one resource, for this account only.
-- name: "headlamp | Models page read access (gateway mode)"
+# 'view' lacks KServe's LLMInferenceService, which the Models page shows. Read on
+# that one resource for whoever reads through Headlamp: the shared account in
+# gateway mode, the viewer group in apiserver mode (admins are cluster-admin).
+- name: "headlamp | Models page read access"
   kubernetes.core.k8s:
-    state: "{{ 'absent' if __headlamp_apiserver_mode | bool else 'present' }}"
+    state: present
     definition: "{{ item }}"
   loop:
     - apiVersion: rbac.authorization.k8s.io/v1
@@ -223,7 +224,11 @@
       kind: ClusterRoleBinding
       metadata: {name: headlamp-pages-read}
       roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: headlamp-pages-read}
-      subjects: [{kind: ServiceAccount, name: headlamp, namespace: "{{ headlamp_namespace }}"}]
+      subjects: >-
+        {{ [{'apiGroup': 'rbac.authorization.k8s.io', 'kind': 'Group',
+             'name': headlamp_oidc_prefix ~ keycloak_platform_viewer_group}]
+           if __headlamp_apiserver_mode | bool
+           else [{'kind': 'ServiceAccount', 'name': 'headlamp', 'namespace': headlamp_namespace}] }}
   loop_control:
     label: "{{ item.kind }}/{{ item.metadata.name }}"
 
