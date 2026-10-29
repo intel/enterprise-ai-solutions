@@ -1488,7 +1488,7 @@ main() {
 
     # When the kubeconfig already exists, a plain single pass is enough: the
     # kubernetes role probes the cluster (kubectl cluster-info) and self-skips
-    # via kubernetes_skip_if_exists. Kubespray only runs to provision/destroy.
+    # when it answers. Kubespray only runs to provision/destroy.
     if [[ "$_includes_k8s" == "true" && "$ACTION" == "install" && ! -f "$KUBE_CFG" ]]; then
         run site "${vars[@]}" -e "target=kubernetes" "${EXTRA_VARS[@]}"
         run_kubespray install
