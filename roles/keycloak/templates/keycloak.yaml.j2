@@ -15,7 +15,7 @@ spec:
 {% if not keycloak_admin_public | bool %}
     # The gateway does not publish the admin console: it is served for a
     # port-forward to keycloak-service:8080 only.
-    admin: "http://localhost:8080{{ keycloak_relative_path if keycloak_relative_path != '/' else '' }}"
+    admin: "{{ keycloak_admin_local_url }}"
 {% endif %}
     # backchannelDynamic: requests arriving via cluster-internal DNS
     # (e.g. apisix → keycloak-service.keycloak.svc.cluster.local:8080) use the
