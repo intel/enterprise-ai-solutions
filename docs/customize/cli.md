@@ -26,12 +26,13 @@ One-time machine setup. Installs Python 3.11+, yq, kubectl, and helm into `/usr/
 
 ### `init <layer>`
 
-Create a new environment directory and seed it with configuration for the specified layer. The layer name (e.g., `inference`, `erag`) determines which repositories are cloned and which configs are seeded.
+Create a new environment directory and seed it with configuration for the specified layer. The layer name (e.g., `inference`, `erag`, `agent-toolkit`) determines which repositories are cloned and which configs are seeded.
 
 ```bash
 ./es_auto_installer.sh init inference                    # standard inference stack
 ./es_auto_installer.sh init erag                         # inference + Intel AI for Enterprise RAG (default chatqna flavour)
 ./es_auto_installer.sh init erag --flavour docsum        # Intel AI for Enterprise RAG with docsum pipeline preset
+./es_auto_installer.sh init agent-toolkit                # inference + Intel Agent Toolkit
 ./es_auto_installer.sh init erag --env prod              # seed env/prod/ instead of env/local/
 ./es_auto_installer.sh init inference --upgrade          # move already-cloned repos to pinned revs
 ```
@@ -40,7 +41,7 @@ Creates:
 - `env/<name>/global_config.yaml` — edit this before installing
 - `env/<name>/nodes.yaml` — node IPs and SSH credentials (edit for multi-node)
 - `env/<name>/inventory/hosts.yaml` — targets localhost by default; edit for multi-node
-- `env/<name>/config.<layer>.yaml` — layer-specific config (e.g., `config.inference.yaml`, `config.erag.yaml`)
+- `env/<name>/config.<layer>.yaml` — layer-specific config (e.g., `config.inference.yaml`, `config.erag.yaml`, `config.agent-toolkit.yaml`)
 - `env/<name>/models.yaml` — model catalog, pre-seeded from the layer's model_catalog
 - `env/<name>/.solutions.yaml` — records which layers this env was inited for
 
@@ -67,6 +68,9 @@ Deploy components. Dependencies are resolved automatically.
 # Opt-in Intel AI for Enterprise RAG layer (requires init erag first)
 ./es_auto_installer.sh install erag --env local
 
+# Opt-in Intel Agent Toolkit layer (requires init agent-toolkit first)
+./es_auto_installer.sh install agent-toolkit --env local
+
 # Override a config value at runtime (no file edit needed)
 ./es_auto_installer.sh install kserve --env local -- -e kserve_version=0.15.0
 
@@ -81,10 +85,11 @@ Deploy components. Dependencies are resolved automatically.
 
 | Target | What it covers |
 |---|---|
-| `infrastructure` | kubernetes, storage |
+| `infrastructure` | kubernetes, storage, kata_containers (opt-in, `kata_containers_enabled`) |
 | `platform` | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak, object_store, seaweedfs, observability |
 | `inference` | keycloak_config, envoy_ai_gateway, kserve, litellm, langfuse, llm_services, nri_cpu_balloons |
 | `erag` | app_inference_models, app_pre_install, app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats, app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher, app_post_install (opt-in, from ext repo) |
+| `agent-toolkit` | redis_stack, pgvector, keycloak_agent_config, agent_sandbox, openshell, kuberay (opt-in, from ext repo; openshell and kuberay are off by default) |
 | `<component>` | Any individual component name (e.g. `kserve`, `grafana`, `metallb`) |
 
 ---

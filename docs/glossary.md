@@ -42,7 +42,7 @@ Terms used across this documentation, in alphabetical order.
 
 **Langfuse.** LLM observability (traces, prompts, token usage), deployed whenever LiteLLM is, unless `langfuse_enabled: false`.
 
-**Layer.** A group of components installed as a unit, in dependency order: `infrastructure`, `platform`, `inference`, and the opt-in `erag`. Installing a layer pulls in the layers it depends on.
+**Layer.** A group of components installed as a unit, in dependency order: `infrastructure`, `platform`, `inference`, and the opt-in `erag` and `agent-toolkit`. Installing a layer pulls in the layers it depends on.
 
 **LiteLLM.** An OpenAI-compatible proxy that issues virtual API keys with per-key budgets. Always deployed with `auth_type: litellm_vkey`; optional with `jwt` (`litellm_enabled: true`).
 
