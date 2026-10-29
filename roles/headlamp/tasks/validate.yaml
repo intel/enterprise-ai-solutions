@@ -45,7 +45,7 @@
     - {api: gateway.networking.k8s.io/v1, kind: HTTPRoute, name: headlamp, accepted: true}
     - api: gateway.envoyproxy.io/v1alpha1
       kind: SecurityPolicy
-      name: "{{ 'headlamp-no-auth' if __headlamp_apiserver_mode | bool else 'headlamp-sso' }}"
+      name: headlamp-sso
       accepted: true
     - {api: networking.k8s.io/v1, kind: NetworkPolicy, name: headlamp-gateway-only, accepted: false}
   loop_control:
@@ -119,22 +119,11 @@
         mode: "0600"
       when: gateway_trust.ca_pem | length > 0
 
-    # The UI loads, and sign-in sends people to the platform realm: Headlamp's
-    # /oidc in apiserver mode, the gateway's own redirect in gateway mode.
-    - name: "headlamp | validate | UI loads"
-      ansible.builtin.uri:
-        url: "{{ headlamp_url }}/"
-        ca_path: "{{ __headlamp_val_ca.results[0].path if gateway_trust.ca_pem | length > 0 else omit }}"
-        use_proxy: false
-        timeout: 20
-        return_content: true
-      register: __headlamp_val_ui
-      failed_when: __headlamp_val_ui.status != 200 or '<title>Headlamp' not in __headlamp_val_ui.content
-      when: headlamp_gateway_publish | bool and __headlamp_apiserver_mode | bool
-
+    # Without a session the gateway sends people to the platform realm before
+    # anything reaches Headlamp, in both modes.
     - name: "headlamp | validate | Sign-in redirect"
       ansible.builtin.uri:
-        url: "{{ headlamp_url ~ ('/oidc?cluster=main' if __headlamp_apiserver_mode | bool else '/') }}"
+        url: "{{ headlamp_url }}/"
         ca_path: "{{ __headlamp_val_ca.results[0].path if gateway_trust.ca_pem | length > 0 else omit }}"
         use_proxy: false
         timeout: 20

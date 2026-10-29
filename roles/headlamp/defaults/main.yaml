@@ -24,15 +24,19 @@ headlamp_url: >-
   {{ 'https://' ~ base_domain_name ~ headlamp_path if (routing_mode | default('subdomain')) == 'path'
      else 'https://' ~ headlamp_hostname }}
 
-# apiserver: Headlamp signs people in and passes their own token to the API
-#   server, which trusts Keycloak; RBAC and audit are per person. Needs the
-#   API server configured (automatic on clusters this installer builds).
-# gateway: the gateway signs people in and admits only keycloak_platform_admin_group;
-#   Headlamp then uses ONE shared ServiceAccount (headlamp_gateway_cluster_role)
+# Both modes: the gateway signs people in and admits only headlamp_allowed_groups.
+# apiserver: Headlamp then signs them in too (same Keycloak session, no prompt)
+#   and passes their own token to the API server, which trusts Keycloak; RBAC
+#   and audit are per person. Needs the API server configured (automatic on
+#   clusters this installer builds).
+# gateway: Headlamp uses ONE shared ServiceAccount (headlamp_gateway_cluster_role)
 #   for everyone, with no per-person RBAC or audit. For clusters whose API
 #   server cannot be configured.
 headlamp_auth_mode: "apiserver"        # apiserver | gateway
 headlamp_gateway_cluster_role: "view"  # gateway mode: what the shared account may do
+# Groups the gateway admits. Only the admin group has RBAC by default; add a
+# group here once it is bound to a role (apiserver mode).
+headlamp_allowed_groups: ["{{ keycloak_platform_admin_group }}"]
 
 # ── Keycloak (platform realm, owned by the keycloak role) ────────────────────
 headlamp_oidc_client_id: "headlamp"

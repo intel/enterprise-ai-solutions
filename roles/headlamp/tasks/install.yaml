@@ -74,8 +74,8 @@
 
 # ── Client settings for whichever side runs the login ────────────────────────
 
-# apiserver mode: Headlamp's OIDC settings (envFrom). gateway mode: the client
-# secret Envoy reads (key client-secret). Only the current mode's Secret exists.
+# apiserver mode: Headlamp's OIDC settings (envFrom). Both modes: the client
+# secret Envoy reads for the gateway sign-in (key client-secret).
 - name: "headlamp | Login settings"
   kubernetes.core.k8s:
     state: "{{ item.state }}"
@@ -98,7 +98,7 @@
         OIDC_CALLBACK_URL: "{{ headlamp_url }}/oidc-callback"
         OIDC_USE_PKCE: "true"
     - name: headlamp-sso
-      state: "{{ 'absent' if __headlamp_apiserver_mode | bool else 'present' }}"
+      state: present
       data:
         client-secret: "{{ keycloak_client_secret }}"
   loop_control:
@@ -224,23 +224,11 @@
   retries: "{{ helm_retries }}"
   delay: 15
 
-# ── Who checks sign-in at the gateway ────────────────────────────────────────
-# apiserver mode: Headlamp runs its own login, so the route is exempt from the
-# gateway JWT check. gateway mode: Envoy runs the login and admits only the
-# admin group. One policy per route: the other mode's is removed first.
+# ── Sign-in at the gateway, both modes ───────────────────────────────────────
+# Only headlamp_allowed_groups reach Headlamp. In apiserver mode Headlamp's own
+# login then runs silently on the same Keycloak session for per-person RBAC.
 
-- name: "headlamp | Remove the other mode's gateway policy"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: "{{ 'route_sso.yaml' if __headlamp_apiserver_mode | bool else 'route_auth_exempt.yaml' }}"
-  vars:
-    gateway_route_name: headlamp
-    gateway_route_namespace: "{{ headlamp_namespace }}"
-    gateway_route_policy_name: "{{ 'headlamp-sso' if __headlamp_apiserver_mode | bool else 'headlamp-no-auth' }}"
-    gateway_route_state: absent
-  when: headlamp_gateway_publish | bool
-
-- name: "headlamp | Exempt the route from gateway auth"
+- name: "headlamp | Remove the earlier gateway auth exemption"
   ansible.builtin.include_role:
     name: gateway
     tasks_from: route_auth_exempt.yaml
@@ -248,7 +236,8 @@
     gateway_route_name: headlamp
     gateway_route_namespace: "{{ headlamp_namespace }}"
     gateway_route_policy_name: headlamp-no-auth
-  when: headlamp_gateway_publish | bool and __headlamp_apiserver_mode | bool
+    gateway_route_state: absent
+  when: headlamp_gateway_publish | bool
 
 - name: "headlamp | Sign in at the gateway"
   ansible.builtin.include_role:
@@ -264,18 +253,18 @@
       client_id: "{{ headlamp_oidc_client_id }}"
       client_secret_name: headlamp-sso
       redirect_url: "{{ headlamp_url }}/oauth2/callback"
-      allowed_groups: ["{{ keycloak_platform_admin_group }}"]
-  when: headlamp_gateway_publish | bool and not (__headlamp_apiserver_mode | bool)
+      allowed_groups: "{{ headlamp_allowed_groups }}"
+  when: headlamp_gateway_publish | bool
 
 - name: "headlamp — install complete"
   ansible.builtin.debug:
     msg: >-
       Headlamp {{ headlamp_image_tag }} at {{ headlamp_url ~ ('/oidc?cluster=main' if __headlamp_apiserver_mode | bool else '') }}
       ({{ headlamp_auth_mode }} mode):
-      {{ ('members of Keycloak group ' ~ keycloak_platform_admin_group ~ ' (realm ' ~ keycloak_platform_realm ~ ') are cluster admins.')
+      the gateway admits Keycloak groups {{ headlamp_allowed_groups | join(', ') }} (realm {{ keycloak_platform_realm }});
+      {{ ('members of ' ~ keycloak_platform_admin_group ~ ' are cluster admins.')
          if __headlamp_apiserver_mode | bool
-         else ('only Keycloak group ' ~ keycloak_platform_admin_group ~ ' is admitted; everyone shares ServiceAccount role '
-               ~ headlamp_gateway_cluster_role ~ ', with no per-person RBAC or audit.') }}
+         else ('everyone shares ServiceAccount role ' ~ headlamp_gateway_cluster_role ~ ', with no per-person RBAC or audit.') }}
       {{ ('Bootstrap admin: ' ~ keycloak_platform_bootstrap_admin_user ~ ', temporary password in Secret '
           ~ keycloak_namespace ~ '/' ~ keycloak_platform_realm ~ '-bootstrap-admin.')
          if keycloak_platform_bootstrap_admin | bool else '' }}
