@@ -62,6 +62,18 @@ httpRoute:
   parentRefs: [{{ gateway_publish.parent_ref | to_json }}]
   hostnames: ["{{ gateway_publish.host }}"]
   rules:
+{% if __headlamp_apiserver_mode | bool %}
+{%   set _root = gateway_publish.relative_path | regex_replace('/$', '') %}
+    # Signed in at the gateway already: the root starts Headlamp's own sign-in
+    # directly, so its sign-in page never flashes up.
+    - matches: {{ ([{'path': {'type': 'Exact', 'value': _root ~ '/'}}]
+                   + ([{'path': {'type': 'Exact', 'value': _root}}] if _root else [])) | to_json }}
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path: {type: ReplaceFullPath, replaceFullPath: "{{ _root }}/oidc?cluster=main"}
+            statusCode: 302
+{% endif %}
     - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
       filters:
         - type: ResponseHeaderModifier
