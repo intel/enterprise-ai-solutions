@@ -126,7 +126,7 @@
     dest: "{{ env_dir }}/kubespray_extra_auto.yml"
     mode: "0600"
 
-# Kubespray 2.32+ has its own --authentication-config; both at once would stop
+# Kubespray (2.31 and later) has its own --authentication-config; both at once would stop
 # the API server from starting.
 - name: "kubernetes | kubespray | One authentication config owner"
   ansible.builtin.assert:
