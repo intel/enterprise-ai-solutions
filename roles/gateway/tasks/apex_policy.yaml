@@ -1,9 +1,12 @@
 ---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
 # =============================================================================
 # Gateway — apex path admission policy, rendered from the path grants
 # =============================================================================
 # Re-run after every grant change. Skipped when the grants ConfigMap is gone
-# (gateway torn down), so a late unpublish cannot recreate the policy.
+# (the gateway teardown deletes it), so a late unpublish cannot recreate the policy.
 
 - name: "gateway | apex policy | Read path grants"
   kubernetes.core.k8s_info:
