@@ -187,6 +187,13 @@
   when: _k8s_existing.rc != 0
   block:
 
+    # ── Existing Docker (before any host change; Kubespray would remove it) ──
+    - name: "kubernetes | install | Detect running Docker"
+      ansible.builtin.include_tasks: _detect_container_runtime.yaml
+      when:
+        - kubernetes_container_manager != 'docker'
+        - not (kubernetes_docker_removal_ack | bool)
+
     # ── Prerequisites ──
     - name: "kubernetes | Prerequisites (local node)"
       ansible.builtin.include_tasks: precheck.yaml
