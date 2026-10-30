@@ -54,6 +54,9 @@ observability_grafana_sso: "{{ keycloak_enabled | default(true) | bool }}"
 observability_grafana_oidc_client_id: "grafana"
 # Groups the gateway admits; empty admits every signed-in realm user.
 observability_grafana_allowed_groups: []
+# The Helm stack only: on OpenShift the erag layer signs Grafana in
+# (grafana-sso-env, install_olm.yaml).
+_obs_grafana_sso: "{{ observability_grafana_sso | bool and not _observability_from_olm | bool }}"
 
 # ── Prometheus retention & storage ───────────────────────────────────────────
 observability_prometheus_retention: "30d"
@@ -107,3 +110,32 @@ gateway_namespace: "envoy-gateway-system"
 
 # ── Timeouts ──────────────────────────────────────────────────────────────────
 observability_wait_timeout: "600s"
+
+# ── OpenShift (install_olm.yaml) ────────────────────────────────────────────────
+# The admin installs the operators from OperatorHub; this role only creates their
+# instances in observability_namespace. Metrics come from the cluster's own
+# monitoring (user-workload monitoring must be on), queried through Thanos Querier.
+observability_openshift_required_crds:
+  - {crd: lokistacks.loki.grafana.com, operator: Loki Operator}
+  - {crd: clusterlogforwarders.observability.openshift.io, operator: Red Hat OpenShift Logging}
+  - {crd: grafanas.grafana.integreatly.org, operator: Grafana Operator}
+  - {crd: tempomonolithics.tempo.grafana.com, operator: Tempo Operator}
+  - {crd: opentelemetrycollectors.opentelemetry.io, operator: Red Hat build of OpenTelemetry}
+
+# LokiStack size: 1x.pico is the smallest supported; 1x.demo for test clusters.
+observability_openshift_loki_size: "1x.pico"
+# Empty: the cluster's default StorageClass (LokiStack and Tempo need one named).
+observability_openshift_storage_class: ""
+# Namespaces whose logs are collected; empty collects every application namespace
+# (all but openshift-*, kube-* and default), as the K8s collector does.
+observability_openshift_log_namespaces: []
+observability_openshift_tempo_wal_size: "10Gi"
+
+observability_openshift_thanos_url: "https://thanos-querier.openshift-monitoring.svc.cluster.local:9091"
+# Grafana CR name. The operator names the objects after it: <name>-service,
+# <name>-sa, <name>-deployment.
+observability_openshift_grafana_name: "grafana-platform"
+observability_openshift_grafana_storage_size: "5Gi"
+# Loads the grafana_dashboard="1" ConfigMaps from every namespace, as the Grafana
+# of kube-prometheus-stack does on K8s, and OpenShift's own Kubernetes dashboards.
+observability_openshift_sidecar_image: "quay.io/kiwigrid/k8s-sidecar:2.7.3"

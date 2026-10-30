@@ -1,0 +1,3 @@
+---
+# The Helm charts, installed by this role (install_helm.yaml).
+_observability_from_olm: false

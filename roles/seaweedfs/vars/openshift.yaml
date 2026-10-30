@@ -1,0 +1,5 @@
+---
+# restricted-v2 rejects fixed UIDs and assigns them from the namespace's range,
+# as in erag's app_edp seaweedfs values.
+_seaweedfs_pod_ids: {}
+_seaweedfs_container_ids: {}

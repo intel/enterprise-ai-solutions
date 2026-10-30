@@ -7,7 +7,7 @@ How to prepare a customer-owned OpenShift cluster with Red Hat OpenShift AI, ins
 On OpenShift the installer does not provision cluster-wide services. You install the operators from the marketplace and create their cluster-level instances. The installer then checks that everything is in place and deploys only application-scoped resources into its own namespaces.
 
 > [!WARNING]
-> **Preview: OpenShift support is not yet complete.** This guide describes the target flow. Several installer behaviours it relies on are **planned, not yet implemented**. They are marked _(planned)_ below and summarised in [Known gaps](#known-gaps). Today the installer only [detects the platform](#platform-detection); the components start using the result in follow-up changes.
+> **Preview: OpenShift support is not yet complete.** This guide describes the target flow. Several installer behaviours it relies on are **planned, not yet implemented**. They are marked _(planned)_ below and summarised in [Known gaps](#known-gaps). Today the installer [detects the platform](#platform-detection) and [checks the prerequisites](#prerequisite-check); the components start using the result in follow-up changes.
 >
 > Until the OpenShift-safe teardown lands, **never run `./es_auto_installer.sh teardown infrastructure` or `teardown platform` against an OpenShift cluster.** The current teardown roles delete CRDs by API group (for example all `gateway.networking.k8s.io`, `monitoring.coreos.com`, and `*kserve*` CRDs). On OpenShift those CRDs are owned by the cluster and by OpenShift AI.
 
@@ -17,10 +17,10 @@ On OpenShift the installer does not provision cluster-wide services. You install
 
 | Owner | Installs | Examples |
 |---|---|---|
-| **Cluster admin (you), from the marketplace** | Operators, plus the cluster-scoped singleton each one needs | LVMS + `LVMCluster`, cert-manager, Service Mesh 3 + `Istio`/`IstioCNI`/`ZTunnel`, CloudNativePG, Red Hat build of Keycloak, NFD + `NodeFeatureDiscovery`, LWS, Custom Metrics Autoscaler + `KedaController`, OpenShift AI + `DataScienceCluster` |
-| **Installer (`es_auto_installer.sh`)** | Resources scoped to the application, in namespaces it creates and labels | Enabling user-workload monitoring _(planned)_, CNPG `Cluster`, `Keycloak` instance and realm, `ServiceMonitor`/`PodMonitor`, LiteLLM, Langfuse, inference models, eRAG applications |
+| **Cluster admin (you), from the marketplace** | Operators, plus the cluster-scoped singleton each one needs | LVMS + `LVMCluster`, cert-manager, Service Mesh 3 + `Istio`/`IstioCNI`/`ZTunnel`, CloudNativePG, Red Hat build of Keycloak, NFD + `NodeFeatureDiscovery`, LWS, Custom Metrics Autoscaler + `KedaController`, OpenShift AI + `DataScienceCluster`, Loki, Logging, Tempo, OpenTelemetry and Grafana operators, user-workload monitoring |
+| **Installer (`es_auto_installer.sh`)** | Resources scoped to the application, in namespaces it creates and labels | CNPG `Cluster`, `Keycloak` instance and realm, `ServiceMonitor`/`PodMonitor`, `LokiStack`, `ClusterLogForwarder`, `TempoMonolithic`, `OpenTelemetryCollector`, `Grafana`, LiteLLM, Langfuse, inference models, eRAG applications |
 
-The rule: **the installer never installs, upgrades, or deletes an operator, a CRD, or a cluster singleton that it did not create.** The one exception is user-workload monitoring: the installer switches it on by merging `enableUserWorkload: true` into `cluster-monitoring-config`, keeps any settings already there, and never switches it off. Anything the installer creates carries an ownership label, and teardown removes only labelled objects _(planned)_.
+The rule: **the installer never installs, upgrades, or deletes an operator, a CRD, or a cluster singleton that it did not create, and never changes the cluster's configuration** (for example `cluster-monitoring-config`). Anything the installer creates carries an ownership label, and teardown removes only labelled objects _(planned)_.
 
 ---
 
@@ -43,18 +43,24 @@ To stay on the tested versions, subscribe to the channel in the table with `inst
 | 3 | Service Mesh 3 (ambient) | `servicemeshoperator3` (redhat-operators) | `stable` → 3.4.3 | | [Ambient mode](https://docs.redhat.com/en/documentation/red_hat_openshift_service_mesh/3.4/html/installing/ossm-istio-ambient-mode) | **Yes** |
 | 4 | Gateway API | built in (Ingress Operator) | — | | [Gateway API](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ingress_and_load_balancing/configuring-gateway-api) | **Yes** (nothing to install) |
 | 5 | CloudNativePG | `cloudnative-pg` (certified-operators) | `stable-v1` → 1.30.1 | | [CloudNativePG](https://cloudnative-pg.io/documentation/current/installation_upgrade/) (certified, not a Red Hat product) | **Yes** |
-| 6 | Red Hat build of Keycloak | `rhbk-operator` (redhat-operators) | `stable-v26.6` → 26.6.7-opr.1 | | [RHBK Operator installation](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.6/html/operator_guide/installation-) | When `auth_provider: keycloak` |
+| 6 | Red Hat build of Keycloak | `rhbk-operator` (redhat-operators) | `stable-v26.6` → 26.6.7-opr.1 | | [RHBK Operator installation](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.6/html/operator_guide/installation-) | When `auth_type: jwt` |
 | 7 | Custom Metrics Autoscaler | `openshift-custom-metrics-autoscaler-operator` (redhat-operators) | not installed in the test | `stable` → 2.19.0-4 | [Custom Metrics Autoscaler](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/nodes/automatically-scaling-pods-with-the-custom-metrics-autoscaler-operator) | For autoscaling _(planned)_ |
 | 8 | Node Feature Discovery | `nfd` (redhat-operators) | `stable` → 4.22.0 | | [NFD Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/specialized_hardware_and_driver_enablement/psap-node-feature-discovery-operator) | **Yes** |
 | 9 | LeaderWorkerSet | `leader-worker-set` (redhat-operators) | `stable-v1.0` → 1.0.1 | | [LeaderWorkerSet Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ai_workloads/leader-worker-set-operator) | **Yes** (llm-d serving) |
 | 10 | Red Hat Connectivity Link | `rhcl-operator` (redhat-operators) | `stable` → 1.4.3 | | [Install Connectivity Link](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.4/html/install_connectivity_link/rhcl-install-on-ocp) | **Yes** (OpenShift AI `LLMInferenceService`) |
 | 11 | OpenShift AI | `rhods-operator` (redhat-operators) | `stable-3.3` → 3.3.4 | `stable-3.x` → 3.5.1 (not tested) | [Installing OpenShift AI](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.3/html/installing_and_uninstalling_openshift_ai_self-managed/installing-and-deploying-openshift-ai_install) | **Yes** |
+| 12 | User-workload monitoring | built in (Cluster Monitoring Operator) | — | | [Configuring user workload monitoring](https://docs.redhat.com/en/documentation/monitoring_stack_for_red_hat_openshift/4.22/html/configuring_user_workload_monitoring/index) | When `observability_enabled` |
+| 13 | Loki Operator | `loki-operator` (redhat-operators) | `stable-6.6` → 6.6.1 | | [OpenShift Logging 6.6](https://docs.redhat.com/en/documentation/red_hat_openshift_logging/6.6) | When `observability_enabled` |
+| 14 | Red Hat OpenShift Logging | `cluster-logging` (redhat-operators) | `stable-6.6` → 6.6.1 | | [OpenShift Logging 6.6](https://docs.redhat.com/en/documentation/red_hat_openshift_logging/6.6) | When `observability_enabled` |
+| 15 | Tempo Operator | `tempo-product` (redhat-operators) | `stable` → 0.22.0-3 | | [Distributed tracing platform](https://docs.redhat.com/en/documentation/red_hat_openshift_distributed_tracing_platform) | When `observability_enabled` |
+| 16 | Red Hat build of OpenTelemetry | `opentelemetry-product` (redhat-operators) | `stable` → 0.158.0 | | [Red Hat build of OpenTelemetry](https://docs.redhat.com/en/documentation/red_hat_build_of_opentelemetry) | When `observability_enabled` |
+| 17 | Grafana Operator | `grafana-operator` (community-operators) | `v5` → 5.25.0 | | [Grafana Operator](https://grafana.github.io/grafana-operator/docs/) (community, not a Red Hat product) | When `observability_enabled` |
 
 ---
 
 ## Step-by-step
 
-Each step lists only what the stack needs beyond the linked guide. The order does not matter, except that the DataScienceCluster (step 11) needs LeaderWorkerSet and the `Kuadrant` instance (steps 9 and 10) first. Everything must be in place before you run the installer.
+Each step lists only what the stack needs beyond the linked guide. The order does not matter, except that the DataScienceCluster (step 11) needs LeaderWorkerSet and the `Kuadrant` instance (steps 9 and 10) first. Everything must be in place before you run the installer; its [prerequisite check](#prerequisite-check) stops with the list of what is not.
 
 ### 1. Storage: default StorageClass
 
@@ -90,7 +96,7 @@ Built into OpenShift 4.19 and later; the Ingress Operator owns the CRDs. Nothing
 
 Install `cloudnative-pg` from **certified-operators** into `openshift-operators` (all namespaces). It serves the same `postgresql.cnpg.io/v1` API the installer uses. The installer creates only its own `Cluster` in the `postgresql` namespace.
 
-### 6. Red Hat build of Keycloak (when `auth_provider: keycloak`)
+### 6. Red Hat build of Keycloak (when `auth_type: jwt`)
 
 The operator watches only its own namespace, so install it **into `keycloak`**, the namespace where the installer creates the Keycloak instance. Do **not** create a `Keycloak` CR: the installer creates the instance, its database, and the realm.
 
@@ -139,6 +145,40 @@ oc get dsc default-dsc -o jsonpath='{.status.conditions[?(@.type=="KserveLLMInfe
 
 OpenShift AI owns the KServe CRDs and controller. On OpenShift the installer never deploys upstream KServe: the `kserve` component only checks that the `DataScienceCluster` has KServe `Managed` and ready, then adds the inference Gateway. Its teardown does nothing _(planned)_.
 
+### 12. User-workload monitoring
+
+Metrics come from the cluster's own monitoring: the installer creates only `ServiceMonitor`s, and Grafana reads them through Thanos Querier. Switch on user-workload monitoring and keep its data for 30 days, as on Kubernetes (`observability_prometheus_retention`):
+
+```yaml
+# openshift-monitoring/cluster-monitoring-config, data.config.yaml
+enableUserWorkload: true
+```
+
+```yaml
+# openshift-user-workload-monitoring/user-workload-monitoring-config, data.config.yaml
+prometheus:
+  retention: 30d
+  volumeClaimTemplate:
+    spec:
+      resources:
+        requests:
+          storage: 50Gi
+```
+
+```bash
+oc get pods -n openshift-user-workload-monitoring    # prometheus-user-workload-* Running
+```
+
+Without `enableUserWorkload: true` the `observability` component stops with a message.
+
+### 13–17. Logs, traces and Grafana
+
+Install the Loki, Logging, Tempo, OpenTelemetry and Grafana operators in all namespaces, each in its own namespace as the guides describe (the Grafana Operator goes into `openshift-operators`). Do **not** create a `LokiStack`, `ClusterLogForwarder`, `TempoMonolithic`, `OpenTelemetryCollector` or `Grafana`: the installer creates its own instances in `monitoring`, and leaves any the cluster already has alone. The Logging console plugin (the Cluster Observability Operator's `UIPlugin`) is not needed.
+
+```bash
+oc get csv -A | grep -E 'loki|cluster-logging|tempo|opentelemetry|grafana'   # all Succeeded
+```
+
 ---
 
 ## Platform detection
@@ -170,7 +210,122 @@ Preflight prints the result, for example:
 Platform: openshift 4.22.17 (Kubernetes v1.35.8, 133 API group/versions)
 ```
 
-To skip detection, set `cluster_distribution` in `global_config.yaml` to `openshift` or `kubernetes`; preflight stops on any other value. `cluster_default_storageclass` is still read; the other facts fall back to the empty values above.
+To skip detection, set `cluster_distribution` in `global_config.yaml` to `openshift` or `kubernetes`; preflight stops on any other value. `cluster_default_storageclass` is still read; the other facts fall back to the empty values above. Each role's dispatcher picks its OpenShift task files and values by `cluster_distribution`, and `components.yaml` gates components on it; [Installer configuration](#installer-configuration) lists what changes.
+
+---
+
+## Installer configuration
+
+Create an environment and point it at the cluster. Use a kubeconfig whose context has `cluster-admin`.
+
+```bash
+./es_auto_installer.sh init platform --env ocp     # init inference / init erag for the layers above
+```
+
+There is no OpenShift-specific configuration: the same `global_config.yaml` works on Kubernetes and OpenShift. In `env/ocp/global_config.yaml`, set only what describes this cluster:
+
+```yaml
+existing_kubernetes: "/home/<user>/.kube/config"   # absolute path; skips all Kubespray phases
+base_domain_name: "<apps domain>"                  # e.g. erag.apps.<cluster>.<domain>
+# http_proxy / https_proxy / no_proxy if needed; no_proxy must cover the API server
+auth_provider: keycloak                            # needs step 6; litellm needs no Keycloak
+```
+
+> [!CAUTION]
+> **Set `existing_kubernetes` before you run any `install` command.** Without it the installer does not use your `oc` login. It treats the env as a cluster to build, and runs Kubespray against the env's inventory, which is `localhost` by default. That installs Kubernetes on the machine you run the installer from, and the platform layer goes into that new cluster instead of OpenShift. Check it with:
+>
+> ```bash
+> yq '.existing_kubernetes' env/ocp/global_config.yaml   # must print your kubeconfig path, not null
+> ```
+>
+> Pass `--env ocp` to every command as well. Without `--env` the installer uses `env/local`, with that env's settings and kubeconfig.
+
+What changes on OpenShift without any setting:
+
+| Area | Kubernetes | OpenShift |
+|---|---|---|
+| `istio`, `metallb` | installed | skipped: Service Mesh 3 and the router provide them |
+| `seaweedfs` | installed with UID/GID 1000 | installed without fixed UIDs, so `restricted-v2` assigns them |
+| `observability` | kube-prometheus-stack, Loki, Tempo, OpenTelemetry Collector and Prometheus Adapter from Helm | checks the operators (steps 13–17) and user-workload monitoring (step 12), then creates their instances in `monitoring`; see [Observability on OpenShift](#observability-on-openshift) |
+| Storage (`storage_backend: local-path`) | local-path provisioner | the cluster's default StorageClass (step 1), as `custom`, assumed RWO. Set `storage_custom_rwx: true` for an RWX class (ODF CephFS, Trident) |
+| `cert_manager` | installed from Helm | checks that the cert-manager Operator runs (step 2); teardown does nothing |
+| `postgresql` | CNPG operator from Helm, then the `Cluster` | checks the marketplace CNPG operator (step 5), then creates only the `Cluster` |
+| `keycloak` | upstream operator, then the instance | checks the Red Hat build of Keycloak operator (step 6), then creates only the instance and realm |
+| `gateway` (Envoy) | Envoy as a DaemonSet on the control plane, behind a `LoadBalancer` | Envoy as a Deployment behind a `ClusterIP` Service; the OpenShift router forwards each hostname the Gateway serves (the apex host, and each service's host as it publishes) to it through a TLS passthrough `Route`, so Envoy still terminates TLS. Add hosts published outside the installer with `gateway_openshift_extra_route_hosts`. Its namespace's service accounts get the `nonroot-v2` SCC for the chart's fixed UID. Only the Envoy Gateway CRDs are applied: the Gateway API CRDs belong to the Ingress Operator, which rejects changes to them. The Ingress Operator's CRDs have no `ListenerSet` (OCP 4.22: v1.4.1), so services share the wildcard listener (`shared` attach mode) |
+| `nri_cpu_balloons` | NRI balloons | NRI balloons, with `openshift.grant-scc: true`; pods of OpenShift AI's `LLMInferenceService` land in `vllm-balloon-tp1` by their `kserve.io/component: workload` label |
+
+The defaults in `configs/defaults/global_config.yaml` are for Kubernetes. In `env/ocp/global_config.yaml` set `istio_enabled: false` (see [Platform detection](#platform-detection)). With `istio_enabled: true`, `istio` is still skipped, but roles label their namespaces for ambient mode, so preflight warns about it. An env seeded with `observability_enabled` as an expression on `cluster_distribution` skips observability on OpenShift; set it to `true`.
+
+Then:
+
+```bash
+oc whoami && oc get dsc                       # sanity check: right cluster, OpenShift AI ready
+./es_auto_installer.sh install platform --env ocp
+```
+
+The inference layer (`install inference`) is described in the [inference layer on OpenShift](../../ext/enterprise.ai-inference/docs/deploy/openshift.md).
+
+**What the installer deploys on OpenShift.** Every namespace it creates gets the ownership label _(planned)_. In the platform layer it deploys:
+
+- the CNPG `Cluster` and the per-database credentials (`postgresql` namespace);
+- the `Keycloak` instance and realm (`keycloak` namespace);
+- Envoy Gateway, its Gateway and the passthrough `Route`s, in `envoy-gateway-system`;
+- SeaweedFS, the object store for logs, traces and Langfuse (`monitoring` namespace);
+- the observability instances and Grafana (`monitoring` namespace), below.
+
+### Observability on OpenShift
+
+The same Grafana as on Kubernetes, with the same datasource uids (`prometheus`, `loki`, `tempo`), so every dashboard works unchanged. Everything is in the `monitoring` namespace:
+
+| Signal | Kubernetes | OpenShift |
+|---|---|---|
+| Metrics | kube-prometheus-stack Prometheus, 30 days | user-workload monitoring (step 12), read through Thanos Querier with the `cluster-monitoring-view` role |
+| Logs | OpenTelemetry Collector DaemonSet → Loki on SeaweedFS, 30 days | `ClusterLogForwarder` `platform-logs` (application namespaces, OpenTelemetry labels such as `k8s_container_name`) → `LokiStack` `logging-loki` on SeaweedFS, 30 days (`observability_loki_retention_hours`) |
+| Traces | OpenTelemetry Collector → Tempo on SeaweedFS | `OpenTelemetryCollector` `opentelemetry` (Service `opentelemetry-collector`, same endpoint) → `TempoMonolithic` `tempo` on SeaweedFS, 30 days |
+| Grafana | kube-prometheus-stack Grafana | `Grafana` `grafana-platform` from the Grafana Operator, published on the gateway like on Kubernetes (`grafana.<base domain>`, or `<base domain>/grafana` with `routing_mode: path`) |
+| Dashboards | ConfigMaps labelled `grafana_dashboard: "1"` | the same ConfigMaps, plus OpenShift's own Kubernetes, node and networking dashboards from `openshift-config-managed`, in the **OpenShift** folder |
+
+The admin password is in the `grafana-admin-credentials` Secret, as on Kubernetes. Settings: `observability_openshift_*` in `roles/observability/defaults/main.yaml` (LokiStack size, StorageClass, namespaces to collect logs from).
+
+---
+
+## Prerequisite check
+
+On OpenShift, `install` and `validate` check the [Prerequisites](#prerequisites) before the first component runs. They check only what the plan needs:
+
+- The platform layer needs the default StorageClass, cert-manager, Service Mesh 3, Gateway API, CloudNativePG, and the Red Hat build of Keycloak when `auth_type: jwt`.
+- The inference layer adds NFD, LeaderWorkerSet, Connectivity Link and OpenShift AI.
+
+| What | Passes when |
+|---|---|
+| OpenShift | `ClusterVersion` is at least the tested 4.22 |
+| Operator | its Subscription (or OLM v1 `ClusterExtension`) has an installed CSV that is `Succeeded`, at least the tested version, and in the required namespace (`keycloak` for RHBK) |
+| APIs | the cluster serves the operator's group/versions, for example `gateway.networking.k8s.io/v1` |
+| Instances | `Istio`/`IstioCNI`/`ZTunnel` `default` Ready, a `NodeFeatureDiscovery` Available, `LeaderWorkerSetOperator` `cluster` Available, a `Kuadrant` Ready, and a `DataScienceCluster` with phase `Ready`, KServe `Managed` and `KserveLLMInferenceServiceDependencies=True` |
+| Storage | exactly one default StorageClass, or the `storage_custom_storageclass` exists when `storage_backend: custom` |
+
+Preflight prints one line per requirement, then stops with every requirement that failed, the reason, and the step to follow:
+
+```
+  ✗ cert-manager: TOO OLD
+      cert-manager-operator.v1.20.0 1.20.0 is older than the tested 1.20.1
+      an upgrade to cert-manager-operator.v1.20.1 is waiting: InstallPlan cert-manager-operator/install-kvghn is not approved; approve it: oc patch installplan install-kvghn -n cert-manager-operator --type merge -p '{"spec":{"approved":true}}'
+      see docs/deploy/openshift.md#2-cert-manager
+```
+
+With `installPlanApproval: Manual`, OLM waits for you to approve the first install and every upgrade. When a Subscription waits on an InstallPlan, the message names the plan and the command that approves it. The installer never approves it for you.
+
+A version newer than the tested one, the optional Custom Metrics Autoscaler, and anything the installer identity is not allowed to read are warnings; the run continues. Set `openshift_prereq_strict: true` to fail on untested newer versions too.
+
+The check only reads. It never installs or changes an operator. There is one exception: if the identity cannot list StorageClasses, preflight creates a 1Mi PVC with no `storageClassName` in a temporary `ai-solutions-preflight` namespace.
+
+- The cluster fills in the default class, which shows that a default exists.
+- `Bound` or `WaitForFirstConsumer` shows that the class accepts claims.
+- `ProvisioningFailed` fails the check.
+
+The namespace is deleted again whatever the result. Set `openshift_prereq_storage_probe: false` to skip the probe; the storage row is then a warning.
+
+The requirements live in `configs/openshift_prerequisites.yaml`, one entry per row of the table above. Set `openshift_prereq_check: false` in `global_config.yaml` to skip the check (not recommended).
 
 ---
 
@@ -182,7 +337,6 @@ The installer does not support all of the flow above yet. The blocking items sto
 |---|---|---|---|
 | **Teardown safety** | Teardown roles delete CRDs by API group or regex (`kserve`, `envoy_gateway`, `observability`, `cert_manager`, `istio`, `metallb`, `keycloak`) and whole namespaces | An ownership label on everything the installer creates; teardown deletes only labelled objects and never CRDs it did not create | **Yes**: do not run teardown |
 | **SCC** | Charts set fixed `runAsUser`/`fsGroup`; namespaces get only Pod Security labels, which do not grant an SCC on OpenShift | Leave UID/GID unset on OpenShift so `restricted-v2` assigns them; grant a dedicated SCC only where a component really needs one | **Yes** |
-| **User-workload monitoring** | Not configured on OpenShift; `observability` deploys kube-prometheus-stack instead | When OpenShift is detected, merge `enableUserWorkload: true` into `cluster-monitoring-config` without overwriting the customer's settings, configure `user-workload-monitoring-config` with the StorageClass, and wait for `prometheus-user-workload` | **Yes** (no metrics, no autoscaling) |
-| **Platform components** | Preflight detects OpenShift, but every component still installs as on Kubernetes | Skip what the cluster provides, check the marketplace operators from [Prerequisites](#prerequisites), and create only the instances | **Yes** |
+| **Autoscaling** | `app_hpa` (Prometheus Adapter) and the eRAG HPAs are skipped on OpenShift | HPAs on the Custom Metrics Autoscaler (KEDA) and user-workload monitoring | No |
 | **CPU pinning (NRI balloons) and tensor parallelism** | OpenShift AI cannot annotate the pods of an `LLMInferenceService`, so every model pod (`kserve.io/component=workload`) lands in the `vllm-balloon-tp1` balloon and gets the CPUs of one NUMA node. Only TP=1 models are supported | Pick the balloon by the model's TP size | No (TP>1 models run with too few CPUs) |
-| **Preflight checks** | Does not check the operators in [Prerequisites](#prerequisites) | Check them before the first component | No |
+| **NRI plugin sync** | If a CRI-O sync with the NRI plugin fails (`failed to synchronize plugin` in the CRI-O journal), the plugin gets no container events and new pods run unpinned. The installer restarts the plugin after it applies the node policy, which is when this happens; after a policy change of your own, restart it by hand: `oc delete pod -n kube-system -l app.kubernetes.io/name=nri-resource-policy-balloons` | Detect a failed sync and restart the plugin | No |

@@ -1,0 +1,155 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# OpenShift prerequisites: what the cluster admin installs from the marketplace
+# =============================================================================
+# One entry per row of the Prerequisites table in docs/deploy/openshift.md. Keep
+# the two in sync: `version` is the tested CSV from that table and the minimum
+# preflight accepts. Read by playbooks/includes/preflight_openshift.yaml and
+# evaluated by filter_plugins/openshift_prerequisites.py.
+#
+# Per entry:
+#   name, title, doc     id, label in the report, anchor in docs/deploy/openshift.md
+#   layers               needed when the plan reaches any of these layers
+#   when                 extra gate, rendered like a component's enabled:
+#   required             false → reported as a warning only
+#   package              OLM package; its Subscription (or OLM v1 ClusterExtension)
+#                        gives the installed CSV, which must be Succeeded
+#   channel              tested channel, named in the message when the package is missing
+#   version              tested version; older fails, newer warns
+#   namespace            the operator must be installed in this namespace
+#   apis                 group/versions the cluster must serve
+#   instances            objects the admin creates; each must match:
+#                          name       exact name, or omitted for "any object"
+#                          namespace  omitted for cluster-scoped or any namespace
+#                          conditions {type: status}
+#                          fields     {dotted.path: value}
+#   storage              true → the default (or custom) StorageClass check
+# =============================================================================
+
+openshift_prerequisites_doc: docs/deploy/openshift.md
+
+openshift_prerequisites_platform:
+  name: openshift
+  title: OpenShift
+  doc: "#validated-environment"
+  version: "4.22"
+
+openshift_prerequisites:
+  - name: storage
+    title: Default StorageClass
+    doc: "#1-storage-default-storageclass"
+    layers: [platform, inference]
+    storage: true
+
+  - name: cert_manager
+    title: cert-manager
+    doc: "#2-cert-manager"
+    layers: [platform]
+    when: "{{ cert_manager_enabled | default(true) | bool }}"
+    package: openshift-cert-manager-operator
+    channel: stable-v1
+    version: "1.20.1"
+    apis: [cert-manager.io/v1]
+
+  - name: service_mesh
+    title: Service Mesh 3 (ambient)
+    doc: "#3-service-mesh-3-ambient-mode"
+    # No istio_enabled gate: on OpenShift the istio component steps aside for this one.
+    layers: [platform]
+    package: servicemeshoperator3
+    channel: stable
+    version: "3.4.3"
+    apis: [sailoperator.io/v1]
+    instances:
+      - {api_version: sailoperator.io/v1, kind: Istio, name: default, conditions: {Ready: "True"}}
+      - {api_version: sailoperator.io/v1, kind: IstioCNI, name: default, conditions: {Ready: "True"}}
+      - {api_version: sailoperator.io/v1, kind: ZTunnel, name: default, conditions: {Ready: "True"}}
+
+  - name: gateway_api
+    title: Gateway API
+    doc: "#4-gateway-api"
+    layers: [platform]
+    apis: [gateway.networking.k8s.io/v1]
+
+  - name: cloudnative_pg
+    title: CloudNativePG
+    doc: "#5-cloudnativepg"
+    layers: [platform]
+    when: "{{ postgresql_enabled | default(true) | bool }}"
+    package: cloudnative-pg
+    channel: stable-v1
+    version: "1.30.1"
+    apis: [postgresql.cnpg.io/v1]
+
+  - name: keycloak
+    title: Red Hat build of Keycloak
+    doc: "#6-red-hat-build-of-keycloak-when-auth_type-jwt"
+    layers: [platform]
+    when: "{{ auth_type | default('jwt') == 'jwt' and keycloak_enabled | default(true) | bool }}"
+    package: rhbk-operator
+    channel: stable-v26.6
+    version: "26.6.7-opr.1"
+    # The operator watches only its own namespace: the one the installer creates the instance in.
+    namespace: "{{ keycloak_namespace | default('keycloak') }}"
+    apis: [k8s.keycloak.org/v2beta1]
+
+  - name: autoscaler
+    title: Custom Metrics Autoscaler
+    doc: "#7-custom-metrics-autoscaler"
+    layers: [inference]
+    required: false
+    package: openshift-custom-metrics-autoscaler-operator
+    channel: stable
+    apis: [keda.sh/v1alpha1]
+    instances:
+      - {api_version: keda.sh/v1alpha1, kind: KedaController, name: keda, namespace: openshift-keda}
+
+  - name: nfd
+    title: Node Feature Discovery
+    doc: "#8-node-feature-discovery"
+    layers: [inference]
+    when: "{{ nfd_enabled | default(true) | bool }}"
+    package: nfd
+    channel: stable
+    version: "4.22.0"
+    apis: [nfd.openshift.io/v1]
+    instances:
+      - {api_version: nfd.openshift.io/v1, kind: NodeFeatureDiscovery, conditions: {Available: "True"}}
+
+  - name: lws
+    title: LeaderWorkerSet
+    doc: "#9-leaderworkerset"
+    layers: [inference]
+    package: leader-worker-set
+    channel: stable-v1.0
+    version: "1.0.1"
+    apis: [leaderworkerset.x-k8s.io/v1]
+    instances:
+      - {api_version: operator.openshift.io/v1, kind: LeaderWorkerSetOperator, name: cluster, conditions: {Available: "True"}}
+
+  - name: connectivity_link
+    title: Red Hat Connectivity Link
+    doc: "#10-red-hat-connectivity-link"
+    layers: [inference]
+    package: rhcl-operator
+    channel: stable
+    version: "1.4.3"
+    apis: [kuadrant.io/v1beta1]
+    instances:
+      - {api_version: kuadrant.io/v1beta1, kind: Kuadrant, conditions: {Ready: "True"}}
+
+  - name: openshift_ai
+    title: OpenShift AI
+    doc: "#11-openshift-ai-and-the-datasciencecluster"
+    layers: [inference]
+    package: rhods-operator
+    channel: stable-3.3
+    version: "3.3.4"
+    apis: [datasciencecluster.opendatahub.io/v2, serving.kserve.io/v1alpha1]
+    instances:
+      - api_version: datasciencecluster.opendatahub.io/v2
+        kind: DataScienceCluster
+        fields: {status.phase: Ready, spec.components.kserve.managementState: Managed}
+        conditions: {KserveLLMInferenceServiceDependencies: "True"}

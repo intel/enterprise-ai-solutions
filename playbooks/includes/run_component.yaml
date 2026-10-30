@@ -7,9 +7,50 @@
       ┃  Layer: {{ component.layer | default('unknown') }}{{ ' ' * (66 - (component.layer | default('unknown')) | length) }}┃
       ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-- name: "Execute {{ component.name }}"
+# Teardown deletes what the ownership role labelled during install. A component
+# whose teardown also has to clean up hosts sets `teardown: both` (labels, then its
+# own role), or `teardown: role` (its own role only) in components.yaml.
+- name: "Delete what {{ component.name }} installed"
   ansible.builtin.include_role:
-    name: "{{ component.name }}"
+    name: ownership
+  vars:
+    ownership_action: teardown
+  when:
+    - component_action == 'teardown'
+    - ownership_enabled | default(true) | bool
+    - component.teardown | default('labels') in ['labels', 'both']
+
+# `always`: a component that fails halfway still gets what it created labelled.
+# Otherwise the next run would record those objects as already there, and
+# teardown would never remove them. A run that is killed never gets to `always`:
+# `begin` notes the component, and the next run's snapshot labels it first.
+- name: "Note that {{ component.name }} runs"
+  ansible.builtin.include_role:
+    name: ownership
+  vars:
+    ownership_action: begin
+  when:
+    - component_action == 'install'
+    - ownership_enabled | default(true) | bool
+
+- name: "Execute {{ component.name }}"
+  block:
+    - name: "Execute {{ component.name }}"
+      ansible.builtin.include_role:
+        name: "{{ component.name }}"
+      when: >-
+        component_action != 'teardown'
+        or not (ownership_enabled | default(true) | bool)
+        or component.teardown | default('labels') in ['role', 'both']
+  always:
+    - name: "Label what {{ component.name }} installed"
+      ansible.builtin.include_role:
+        name: ownership
+      vars:
+        ownership_action: label
+      when:
+        - component_action == 'install'
+        - ownership_enabled | default(true) | bool
 
 - name: "{{ component.name }} — {{ (_component_prep_only | default(false)) | ternary('prep complete (install continues from caller)', component_action + ' complete') }}"
   ansible.builtin.debug:

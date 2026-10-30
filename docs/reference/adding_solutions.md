@@ -150,6 +150,7 @@ components:
 | `layer` | yes | Your layer, or an existing one you're extending. |
 | `depends_on` | yes (may be `[]`) | Component names **in the same layer only**. |
 | `enabled` | no (default `true`) | `true`/`false`, or a Jinja expression rendering to one. |
+| `teardown` | no (default `labels`) | `labels`: delete what install labelled (see [Ownership labels](#ownership-labels)). `role`: run the role's `teardown.yaml` instead. `both`: delete by label, then run `teardown.yaml`, for components that also change hosts. |
 
 ### Rules that actually bite
 
@@ -232,7 +233,7 @@ roles/<name>/
 | File | Required | Contract |
 |---|---|---|
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
-| `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
+| `tasks/teardown.yaml` | yes | Runs only with `teardown: role` or `both`. Removes what labels cannot: host changes, changes other than labels to objects that existed before. Succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
 | `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. A role without them has no `Load` step in its dispatcher. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
@@ -243,7 +244,9 @@ in preflight, and only the dispatcher and `components.yaml` read it. The tasks a
 both platforms: whatever differs is a value in `vars/<platform>.yaml`. A role that uses the
 cluster's operator on OpenShift instead of installing one (cert-manager, CNPG, Keycloak) has a
 boolean `_<name>_from_olm` there: `true` checks the marketplace operator and skips its install,
-and teardown leaves it and its CRDs. A component not used on OpenShift (`istio`, `metallb`,
+and teardown leaves it and its CRDs. Where the two stacks differ throughout (`observability`:
+Helm charts, or instances of the OperatorHub operators) the shared steps stay in `install.yaml`
+and the flag picks a helper, `install_helm.yaml` or `install_olm.yaml`. A component not used on OpenShift (`istio`, `metallb`,
 `velero`) is gated off in `components.yaml` and its role has no OpenShift steps. What every role needs
 is published once: `gateway` `publish.yaml` creates the OpenShift Routes.
 Library roles, entered with `tasks_from`, have no dispatcher: their caller passes
@@ -269,6 +272,89 @@ than merging.
 Roles receive `component_action` (`install` | `teardown` | `validate`) plus `env_dir`,
 `env_name` and `kubernetes_kubeconfig`. Generated credentials belong in `log_dir`
 (`env/<env>/logs`).
+
+### Ownership labels
+
+Roles do not label anything themselves. Around every component, of every layer, the core's
+`ownership` role labels each object the component created:
+
+```
+ai-solutions.intel.com/env:       <env name>
+ai-solutions.intel.com/layer:     <layer>
+ai-solutions.intel.com/component: <component>
+```
+
+Before the first component it records the UID of every object on the cluster. While the
+component runs, a callback (`callback_plugins/ownership_record.py`) records what its own
+tasks report:
+
+- objects a `kubernetes.core.k8s` or `k8s_json_patch` task returns; with `no_log`, the
+  object named in the task's `definition`,
+- releases a `kubernetes.core.helm` task installs or upgrades, also one that failed,
+- objects a `command` or `shell` task prints the way `kubectl` does
+  (`deployment.apps/web created`, also `configured`, `unchanged`, `serverside-applied`,
+  `labeled`, `annotated`, `patched`), which covers `kubectl`, `oc` and `model-manager`, and
+  the release `helm install` / `upgrade` prints,
+- objects the component declares in `ownership_declared` (see below).
+
+After the component, also one that failed, it labels the objects these name that
+
+- were not there before, so they appeared while the component ran,
+- have no `ownerReferences` (their owner is labelled, and garbage collection removes them),
+- carry no component label yet.
+
+Nothing else is labelled: an object another user, a CronJob or an operator creates while the
+installer runs is left alone, even in the same namespace.
+
+Helm releases are labelled whole: when a task reported the release and its first release
+secret (`v1`) is new, or one of its release secrets is already labelled for the component,
+the release secrets, all objects of the release's manifest and hooks, all objects Helm
+annotates with the release (`meta.helm.sh/release-name`) and the chart's new CRDs (`crds/`)
+are labelled. A subchart's `crds/` is not kept in the release, so its CRDs need an
+`ownership_declared` entry (kube-prometheus-stack's are declared for `observability`). A release that was there before keeps its release secrets unlabelled too, so
+teardown never deletes part of a release's history and leaves the release broken.
+
+Labels a component adds to a Namespace or Node that was there before (a customer's
+namespace that joins the mesh with `istio.io/dataplane-mode`, a node placement label) are
+recorded, not labelled: the object gets the annotation
+`ai-solutions.intel.com/labels-before.<env>.<component>`, with the value each key had before
+(`null`: absent) and the value set. Only objects a task reported count; kinds are listed in
+`ownership_restore_resources`. Teardown puts the old values back for the keys that still
+hold the value set, and drops the annotation. A key someone changed since is left as it is.
+
+A run that is killed (Ctrl-C, a lost session) never gets to label the component it was in.
+The component is noted in the state file before it runs, and the next `install` or
+`teardown` labels what its records name, as that component, before it records the cluster.
+The objects that appeared while a component failed or was killed and that nothing named are
+kept aside for it: when its next run reports one of them (as `unchanged` or an update), it
+is labelled as new.
+
+Teardown first restores the recorded labels, then deletes `env=<env>,component=<component>` in this order: custom resources
+first, while their operators still run; then webhooks and APIServices; namespaced objects
+(Helm release secrets included); namespaces; cluster-scoped objects; CRDs last. It waits
+for each step. If an object is still there after `ownership_delete_timeout`, it fails and
+stops before the next step, which may hold the controller that clears the object's
+finalizer. Run teardown again once the cause is fixed. Teardown also deletes what a
+controller makes from a labelled object and leaves behind: the PVCs of a labelled
+StatefulSet's `volumeClaimTemplates`, and the Secret cert-manager writes for a labelled
+Certificate (`spec.secretName`, annotated with the certificate's name).
+
+What this means for a role:
+
+- **Create, don't adopt.** An object that existed before the component ran (a namespace
+  the customer made, a ConfigMap the role patches) is never labelled, so it is never
+  deleted. Labels added to an existing Namespace or Node are put back for you; revert any
+  other change to it in `teardown.yaml` and set `teardown: both`.
+- **Don't recreate objects with `force: true`** (replace). The new object keeps its UID but
+  loses the labels.
+- **Let the task report what it creates.** Use `kubernetes.core.k8s` or
+  `kubernetes.core.helm`, or a command that prints `kubectl`-style lines. A `kubectl`
+  command with `-o name` or `--quiet` prints nothing the callback can read.
+- **Declare what a Job creates.** An object created by a Job, a script in a pod or a
+  controller the component starts is not in any task result. In a namespace the component
+  created that is fine: it goes with the namespace. Elsewhere, add it to
+  `ownership_declared` under the component (`kind`, `namespace`, `name`, `labels`, any of
+  them); it is labelled only if it appeared while the component ran.
 
 ---
 

@@ -164,6 +164,27 @@
   ansible.builtin.include_tasks: apex.yaml
   when: gateway_create
 
+# ── Portal: one entry per published UI (publish.yaml) ────────────────────────
+# Created here, so it is the gateway's and not the first publisher's.
+- name: "gateway | Portal ConfigMap (kept across runs)"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: "{{ gateway_portal_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+  register: _gw_portal
+
+- name: "gateway | Create portal ConfigMap"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ gateway_portal_configmap }}"
+        namespace: "{{ gateway_namespace }}"
+      data: {}
+  when: _gw_portal.resources | length == 0
+
 # ── Solution listener admission (hostname grants) ────────────────────────────
 # See gateway_listeners_label_key / gateway_hostnames_annotation in defaults.
 - name: "gateway | Admit ListenerSet hosts only when granted to their namespace"
