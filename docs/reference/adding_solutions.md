@@ -310,7 +310,8 @@ Helm releases are labelled whole: when a task reported the release and its first
 secret (`v1`) is new, or one of its release secrets is already labelled for the component,
 the release secrets, all objects of the release's manifest and hooks, all objects Helm
 annotates with the release (`meta.helm.sh/release-name`) and the chart's new CRDs (`crds/`)
-are labelled. A release that was there before keeps its release secrets unlabelled too, so
+are labelled. A subchart's `crds/` is not kept in the release, so its CRDs need an
+`ownership_declared` entry (kube-prometheus-stack's are declared for `observability`). A release that was there before keeps its release secrets unlabelled too, so
 teardown never deletes part of a release's history and leaves the release broken.
 
 Labels a component adds to a Namespace or Node that was there before (a customer's

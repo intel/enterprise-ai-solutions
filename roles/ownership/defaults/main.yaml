@@ -26,6 +26,19 @@ ownership_declared:
     - {kind: Secret, name: erag-credentials}         # keycloak configurator Job (kubectl apply)
   app_edp:
     - {kind: Secret, name: keycloak-minio-secret}    # keycloak client-secret Job (kubectl apply)
+  # kube-prometheus-stack's CRDs come from its `crds` subchart, which the Helm release
+  # does not keep (only the top-level chart's crds/ can be read back). Its 85.3.3 set:
+  observability:
+    - {kind: CustomResourceDefinition, name: alertmanagerconfigs.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: alertmanagers.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: podmonitors.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: probes.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: prometheusagents.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: prometheuses.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: prometheusrules.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: scrapeconfigs.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: servicemonitors.monitoring.coreos.com}
+    - {kind: CustomResourceDefinition, name: thanosrulers.monitoring.coreos.com}
 
 # Never listed: high-churn objects that always have an owner, and APIs that are
 # slow or unsafe to list.
