@@ -25,9 +25,7 @@
   when: _gw_grants.resources | length == 0
 
 - name: "gateway | apex | Admit apex routes only within their path grants"
-  kubernetes.core.k8s:
-    state: "{{ 'present' if gateway_path_mode | bool else 'absent' }}"
-    definition: "{{ lookup('ansible.builtin.template', 'apex-path-admission-policy.yaml.j2') | from_yaml_all | select | list }}"
+  ansible.builtin.include_tasks: apex_policy.yaml
 
 # The landing redirect holds '/' only while no app does: an app that publishes
 # '/' takes it over (apex_path.yaml), and gets it back when it releases it.

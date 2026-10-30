@@ -24,6 +24,10 @@
     definition:
       data: "{{ {_gw_ap_key: None} }}"
 
+- name: "gateway | apex path | Admission policy without the grant"
+  ansible.builtin.include_tasks: apex_policy.yaml
+  when: _gw_ap_grants.resources | default([]) | length > 0
+
 # An app released '/': the landing redirect takes it back. Decided once here,
 # since the tasks below re-scope gateway_apex_namespace to the gateway's own.
 - name: "gateway | apex path | Does the landing redirect take '/' back"

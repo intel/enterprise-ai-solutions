@@ -1,17 +1,16 @@
 ---
 # Path mode: an HTTPRoute on the apex host may only match paths whose longest
-# covering grant (ConfigMap {{ gateway_path_grants_configmap }}) belongs to its
-# own namespace, so a '/' owner cannot out-rank another service's path.
-# Regex matches are refused (their reach cannot be checked).
+# covering grant belongs to its own namespace, so a '/' owner cannot out-rank
+# another service's path. Regex matches are refused (their reach cannot be checked).
+# The grants (kept in ConfigMap {{ gateway_path_grants_configmap }}) are written into
+# the policy itself: a ConfigMap param stops updating once its last binding is
+# deleted, until the API server restarts (kubernetes/kubernetes#141015).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
   name: eg-apex-path-grant
 spec:
   failurePolicy: Fail
-  paramKind:
-    apiVersion: v1
-    kind: ConfigMap
   matchConstraints:
     resourceRules:
       - apiGroups: ["gateway.networking.k8s.io"]
@@ -32,8 +31,7 @@ spec:
     # "<path> <namespace>" per grant.
     - name: owners
       expression: >-
-        has(params.data) ? params.data.map(k,
-          (k == '_root' ? '/' : '/' + k.replace('.', '/')) + ' ' + params.data[k]) : []
+        {{ _gw_apex_owners | to_json }}
     # "<type> <value>" per path match (a rule or match without a path is '/').
     - name: matches
       expression: >-
@@ -69,7 +67,3 @@ metadata:
 spec:
   policyName: eg-apex-path-grant
   validationActions: ["Deny"]
-  paramRef:
-    name: {{ gateway_path_grants_configmap | to_json }}
-    namespace: {{ gateway_namespace | to_json }}
-    parameterNotFoundAction: Deny
