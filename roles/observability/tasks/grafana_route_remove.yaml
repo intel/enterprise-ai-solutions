@@ -13,6 +13,16 @@
     gateway_route_policy_name: grafana-no-auth
     gateway_route_state: absent
 
+- name: "observability | Drop the gateway sign-in for Grafana"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_sso.yaml
+  vars:
+    gateway_route_name: grafana
+    gateway_route_namespace: "{{ observability_namespace }}"
+    gateway_route_policy_name: grafana-sso
+    gateway_route_state: absent
+
 - name: "observability | Delete Grafana HTTPRoute"
   kubernetes.core.k8s:
     api_version: gateway.networking.k8s.io/v1
