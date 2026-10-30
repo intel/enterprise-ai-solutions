@@ -102,6 +102,8 @@ gateway_path_grants_configmap: "gateway-path-grants"
 gateway_portal_configmap: "platform-portal"
 # Path mode: the bare domain redirects here ('' = no landing page, 404). Headlamp,
 # when on, is the platform landing page; signing out at the gateway ends here.
+# An app that publishes '/' (e.g. a RAG UI) takes it over, and gives it back
+# when it unpublishes.
 gateway_landing_path: "{{ (headlamp_path | default('/headlamp')) ~ '/' if headlamp_enabled | default(false) | bool else '' }}"
 
 # Keycloak routing for the SecurityPolicy JWT provider (canonical owner: keycloak

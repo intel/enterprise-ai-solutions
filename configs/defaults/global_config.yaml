@@ -59,7 +59,7 @@ gateway_request_timeout: "600s"           # Envoy default is 15s — too short f
 #            The services then share one browser origin (cookies, storage):
 #            choose subdomain where the apps must be isolated from each other.
 routing_mode: "subdomain"                 # subdomain | path
-# gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects (default: Headlamp when on)
+# gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects (default: Headlamp when on; an app publishing / takes over)
 
 # --- Custom TLS (only used when gateway_tls_mode=custom) ---
 # gateway_tls_cert_file: "/path/to/cert.pem"
