@@ -1,0 +1,95 @@
+---
+# =============================================================================
+# Keycloak — validate: an app's sign-in sends the browser to the platform realm
+# =============================================================================
+#   keycloak_sign_in:
+#     name      app name, for messages
+#     url       URL that starts sign-in (through the gateway)
+#     nextauth  NextAuth provider id: sign-in starts with a CSRF-protected POST
+#               to <url>/api/auth/signin/<id> (optional)
+# Fails unless the answer is a redirect to the realm's authorization endpoint.
+# Skipped, with a notice, when the app's host does not resolve here.
+
+- name: "keycloak | sign-in check | {{ keycloak_sign_in.name }}"
+  vars:
+    _host: "{{ keycloak_sign_in.url | urlsplit('hostname') }}"
+    _auth: "{{ keycloak_platform_issuer_url ~ '/protocol/openid-connect/auth' }}"
+  block:
+    - name: "keycloak | sign-in check | Resolve {{ _host }}"
+      ansible.builtin.getent:
+        database: ahostsv4
+        key: "{{ _host }}"
+        fail_key: false
+      register: _kc_si_dns
+
+    # getent keys the result by address, or maps the name to null when it does not resolve.
+    - name: "keycloak | sign-in check | Does {{ _host }} resolve"
+      ansible.builtin.set_fact:
+        _kc_si_resolves: "{{ _kc_si_dns.ansible_facts.getent_ahostsv4 | dict2items | selectattr('value', 'none') | list | length == 0 }}"
+
+    - name: "keycloak | sign-in check | {{ _host }} not in DNS"
+      ansible.builtin.debug:
+        msg: >-
+          NOTICE: {{ _host }} does not resolve here, so the {{ keycloak_sign_in.name }} sign-in check
+          was skipped. Add it to DNS (a *.{{ base_domain_name }} record covers every app host).
+      when: not _kc_si_resolves | bool
+
+    - name: "keycloak | sign-in check | Through the gateway"
+      when: _kc_si_resolves | bool
+      block:
+        - name: "keycloak | sign-in check | Gateway CA"
+          ansible.builtin.include_role:
+            name: gateway
+            tasks_from: client_trust.yaml
+
+        - name: "keycloak | sign-in check | CA file"
+          ansible.builtin.tempfile:
+            suffix: .crt
+          register: _kc_si_ca
+          when: gateway_trust.ca_pem | length > 0
+
+        - name: "keycloak | sign-in check | Write the CA"
+          ansible.builtin.copy:
+            content: "{{ gateway_trust.ca_pem }}"
+            dest: "{{ _kc_si_ca.path }}"
+            mode: "0600"
+          when: _kc_si_ca is not skipped
+
+        - name: "keycloak | sign-in check | NextAuth CSRF token"
+          ansible.builtin.uri:
+            url: "{{ keycloak_sign_in.url }}/api/auth/csrf"
+            ca_path: "{{ _kc_si_ca.path | default(omit) }}"
+            use_proxy: false
+            timeout: 20
+            return_content: true
+          register: _kc_si_csrf
+          when: keycloak_sign_in.nextauth | default('') | length > 0
+
+        - name: "keycloak | sign-in check | Start sign-in"
+          ansible.builtin.uri:
+            url: >-
+              {{ keycloak_sign_in.url ~ '/api/auth/signin/' ~ keycloak_sign_in.nextauth
+                 if _kc_si_csrf is not skipped else keycloak_sign_in.url }}
+            method: "{{ 'GET' if _kc_si_csrf is skipped else 'POST' }}"
+            body_format: form-urlencoded
+            body: "{{ omit if _kc_si_csrf is skipped else {'csrfToken': _kc_si_csrf.json.csrfToken, 'callbackUrl': keycloak_sign_in.url ~ '/'} }}"
+            headers: "{{ {} if _kc_si_csrf is skipped else {'Cookie': _kc_si_csrf.cookies_string} }}"
+            ca_path: "{{ _kc_si_ca.path | default(omit) }}"
+            use_proxy: false
+            timeout: 20
+            follow_redirects: none
+            status_code: [302, 303]
+          register: _kc_si
+
+        - name: "keycloak | sign-in check | {{ keycloak_sign_in.name }} OK"
+          ansible.builtin.assert:
+            that: _kc_si.location | default('') is match(_auth | regex_escape)
+            fail_msg: "{{ keycloak_sign_in.name }} sign-in went to {{ _kc_si.location | default('nowhere') }}, not {{ _auth }}."
+            success_msg: "{{ keycloak_sign_in.name }} signs people in through Keycloak realm {{ keycloak_platform_realm }}."
+
+      always:
+        - name: "keycloak | sign-in check | Remove the CA file"
+          ansible.builtin.file:
+            path: "{{ _kc_si_ca.path }}"
+            state: absent
+          when: _kc_si_ca.path is defined

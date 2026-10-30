@@ -18,13 +18,29 @@
     namespace: "{{ gateway_namespace }}"
   register: _gw_ap_grants
 
+# The landing redirect holds '/' only until an app publishes it: it steps aside.
+- name: "gateway | apex path | Landing redirect gives up '/'"
+  vars:
+    _owner: "{{ ((_gw_ap_grants.resources | first | default({})).data | default({})).get(_gw_ap_key, '') }}"
+  when:
+    - _gw_ap_key == '_root'
+    - gateway_apex_namespace != gateway_namespace
+    - _owner == gateway_namespace
+  block:
+    - name: "gateway | apex path | Remove the landing redirect"
+      ansible.builtin.include_tasks: apex_landing.yaml
+      vars:
+        gateway_landing_state: absent
+
 - name: "gateway | apex path | Refuse a path granted to another namespace"
   vars:
     _owner: "{{ ((_gw_ap_grants.resources | first | default({})).data | default({})).get(_gw_ap_key, '') }}"
+    # Only '/' held by the landing redirect may change hands (see above).
+    _landing_yields: "{{ _gw_ap_key == '_root' and _owner == gateway_namespace and gateway_apex_namespace != gateway_namespace }}"
   ansible.builtin.assert:
     that:
       - _gw_ap_grants.resources | length > 0
-      - _owner in ['', gateway_apex_namespace]
+      - _owner in ['', gateway_apex_namespace] or _landing_yields | bool
     fail_msg: >-
       {{ 'Path grants ConfigMap missing; install the gateway in path mode first.'
          if _gw_ap_grants.resources | length == 0

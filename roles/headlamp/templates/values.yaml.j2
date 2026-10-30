@@ -1,0 +1,120 @@
+image:
+  tag: "{{ headlamp_image_tag }}"
+replicaCount: 1                       # login state and refresh tokens are in-process
+config:
+  inCluster: true
+  sessionTTL: {{ headlamp_session_ttl }}
+  baseURL: "{{ headlamp_path if (routing_mode | default('subdomain')) == 'path' else '' }}"
+  enableHelm: false
+  staticPlugins:
+    enabled: false                    # no bundled plugins (e.g. Prometheus) beyond what we ship
+  oidc:
+    secret:
+      create: false                   # the chart's own (empty) Secret is never used
+{% if __headlamp_apiserver_mode | bool %}
+    # Client, issuer and the URLs below are read from this Secret (envFrom).
+    externalSecret:
+      enabled: true
+      name: headlamp-oidc
+      hasScopes: true
+    # Repeated from the Secret only because the chart adds these flags when the
+    # values are non-empty; the flag values themselves come from the Secret.
+    callbackURL: "{{ headlamp_url }}/oidc-callback"
+    usePKCE: true
+    autoLogin: true
+{% if __headlamp_ca_pem | length > 0 %}
+  extraArgs:
+    - "-oidc-ca-file=/etc/headlamp/oidc-ca/ca.crt"
+{% endif %}
+{% else %}
+  # gateway mode: the gateway signs people in; every request uses this pod's account.
+  unsafeUseServiceAccountToken: true
+{% endif %}
+clusterRoleBinding:
+  # apiserver mode: users bring their own tokens, the pod's account needs nothing.
+  create: {{ (not (__headlamp_apiserver_mode | bool)) | to_json }}
+  clusterRoleName: "{{ headlamp_gateway_cluster_role }}"
+automountServiceAccountToken: true    # in-cluster mode reads the API server CA from it
+podAnnotations:
+  checksum/plugins: "{{ __headlamp_plugin_checksum }}"
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  runAsGroup: 101
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities: {drop: [ALL]}
+  seccompProfile: {type: RuntimeDefault}
+resources: {{ headlamp_resources | to_json }}
+affinity: {{ _platform_affinity | default({}) | to_json }}
+{% if __headlamp_apiserver_mode | bool and headlamp_pin_issuer_host | bool %}
+hostAliases:
+  - ip: "{{ __headlamp_gateway_ip }}"
+    hostnames: ["{{ __headlamp_issuer_host }}"]
+{% endif %}
+{% if headlamp_gateway_publish | bool %}
+httpRoute:
+  enabled: true
+  parentRefs: [{{ gateway_publish.parent_ref | to_json }}]
+  hostnames: ["{{ gateway_publish.host }}"]
+  rules:
+{% if __headlamp_apiserver_mode | bool %}
+{%   set _root = gateway_publish.relative_path | regex_replace('/$', '') %}
+    # Signed in at the gateway already: the root starts Headlamp's own sign-in
+    # directly, so its sign-in page never flashes up.
+    - matches: {{ ([{'path': {'type': 'Exact', 'value': _root ~ '/'}}]
+                   + ([{'path': {'type': 'Exact', 'value': _root}}] if _root else [])) | to_json }}
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path: {type: ReplaceFullPath, replaceFullPath: "{{ _root }}/oidc?cluster=main"}
+            statusCode: 302
+    # Headlamp's sign-out ends the Keycloak session and returns here: sign out
+    # at the gateway as well, so its cookies go too.
+    - matches: [{path: {type: Exact, value: "{{ _root }}/encoded-clusters/bWFpbg/login"}}]
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path: {type: ReplaceFullPath, replaceFullPath: "{{ _root }}/oauth2/logout"}
+            statusCode: 302
+{% endif %}
+    - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - {name: Strict-Transport-Security, value: "max-age=31536000; includeSubDomains"}
+              - {name: X-Content-Type-Options, value: nosniff}
+              - {name: Referrer-Policy, value: strict-origin-when-cross-origin}
+              # Nothing frames Headlamp.
+              - {name: X-Frame-Options, value: DENY}
+      backendRefs: [{name: headlamp, port: 80}]
+{% endif %}
+# Headlamp creates its user-plugins folder under ~/.config; the root file
+# system is read-only, so give it a small scratch volume.
+volumes:
+  - name: headlamp-config
+    emptyDir: {sizeLimit: 16Mi}
+  - name: plugin-{{ __headlamp_plugin_name }}
+    configMap:
+      name: headlamp-plugin-{{ __headlamp_plugin_name }}
+{% if __headlamp_apiserver_mode | bool and __headlamp_ca_pem | length > 0 %}
+  - name: oidc-ca
+    configMap:
+      name: headlamp-oidc-ca
+{% endif %}
+volumeMounts:
+  - name: headlamp-config
+    mountPath: /home/headlamp/.config
+  - name: plugin-{{ __headlamp_plugin_name }}
+    mountPath: /headlamp/plugins/{{ __headlamp_plugin_name }}
+    readOnly: true
+{% if __headlamp_apiserver_mode | bool and __headlamp_ca_pem | length > 0 %}
+  - name: oidc-ca
+    mountPath: /etc/headlamp/oidc-ca
+    readOnly: true
+{% endif %}

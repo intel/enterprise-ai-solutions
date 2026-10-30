@@ -24,6 +24,32 @@
     definition:
       data: "{{ {_gw_ap_key: None} }}"
 
+# An app released '/': the landing redirect takes it back. Decided once here,
+# since the tasks below re-scope gateway_apex_namespace to the gateway's own.
+- name: "gateway | apex path | Does the landing redirect take '/' back"
+  vars:
+    _data: "{{ (_gw_ap_grants.resources | default([]) | first | default({})).data | default({}) }}"
+  ansible.builtin.set_fact:
+    _gw_ap_takeback: >-
+      {{ _gw_ap_key == '_root'
+         and gateway_apex_namespace != gateway_namespace
+         and _data.get('_root', '') == gateway_apex_namespace
+         and gateway_path_mode | bool and gateway_landing_path | length > 0 }}
+
+- name: "gateway | apex path | Landing redirect takes '/' back"
+  when: _gw_ap_takeback | bool
+  block:
+    - name: "gateway | apex path | Hold '/' for the landing redirect"
+      ansible.builtin.include_tasks: apex_path.yaml
+      vars:
+        gateway_apex_namespace: "{{ gateway_namespace }}"
+        gateway_apex_path: "/"
+
+    - name: "gateway | apex path | Landing redirect route"
+      ansible.builtin.include_tasks: apex_landing.yaml
+      vars:
+        gateway_landing_state: present
+
 # Drop the apex label once the namespace holds no grant.
 - name: "gateway | apex path | Drop the apex label of {{ gateway_apex_namespace }}"
   vars:

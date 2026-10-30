@@ -1,0 +1,70 @@
+---
+# =============================================================================
+# Headlamp — Teardown
+# =============================================================================
+# The platform realm and its credential Secrets stay with Keycloak (removed with
+# it), so a reinstall keeps working with the client secret the realm holds.
+
+- name: "headlamp | Uninstall Headlamp"
+  kubernetes.core.helm:
+    name: headlamp
+    release_namespace: "{{ headlamp_namespace }}"
+    state: absent
+    wait: true
+  failed_when: false
+
+- name: "headlamp | Remove the gateway policies (both modes)"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: "{{ item.hook }}"
+  vars:
+    gateway_route_name: headlamp
+    gateway_route_namespace: "{{ headlamp_namespace }}"
+    gateway_route_policy_name: "{{ item.policy }}"
+    gateway_route_state: absent
+  loop:
+    - {hook: route_auth_exempt.yaml, policy: headlamp-no-auth}
+    - {hook: route_sso.yaml, policy: headlamp-sso}
+  loop_control:
+    label: "{{ item.policy }}"
+
+- name: "headlamp | Unpublish the host"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: unpublish.yaml
+  vars:
+    gateway_publish_name: headlamp
+    gateway_publish_namespace: "{{ headlamp_namespace }}"
+    gateway_publish_host: "{{ headlamp_hostname }}"
+    gateway_publish_path: "{{ headlamp_path }}"
+
+# Cluster-scoped, so not removed with the namespace.
+- name: "headlamp | Remove cluster-wide RBAC"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+  loop:
+    - {kind: ClusterRoleBinding, name: "headlamp-{{ keycloak_platform_admin_group }}"}
+    - {kind: ClusterRoleBinding, name: "headlamp-{{ keycloak_platform_viewer_group }}"}
+    - {kind: ClusterRoleBinding, name: headlamp-pages-read}
+    - {kind: ClusterRole, name: headlamp-pages-read}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+
+# The file is this role's (the kubernetes role only seeds it), so reset it whole.
+- name: "headlamp | API server stops trusting the platform realm"
+  ansible.builtin.include_tasks: apiserver_nodes.yaml
+  vars:
+    __headlamp_trust: false
+  when: existing_kubernetes | default('', true) | length == 0
+
+- name: "headlamp | Delete the namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ headlamp_namespace }}"
+    wait: true
+    wait_timeout: 300

@@ -1,0 +1,79 @@
+---
+# =============================================================================
+# Gateway — path mode: send <base><path> to an app on its own host
+# =============================================================================
+# For UIs that stay on their own hostname in path mode (a path shares the
+# browser origin, and with it cookies and storage, with every other app on the
+# base host). Nothing is served under the path: a fixed redirect only.
+#   gateway_redirect_name       HTTPRoute name
+#   gateway_redirect_namespace  its namespace
+#   gateway_redirect_path       apex path, e.g. /headlamp
+#   gateway_redirect_url        target, e.g. https://headlamp.<base>/
+#   gateway_redirect_state      present (default; only acts in path mode) | absent
+
+- name: "gateway | path redirect | {{ gateway_redirect_path }}"
+  vars:
+    _on: "{{ (gateway_redirect_state | default('present')) == 'present' and (routing_mode | default('subdomain')) == 'path' }}"
+    _target: "{{ gateway_redirect_url | urlsplit }}"
+  block:
+    - name: "gateway | path redirect | Grant {{ gateway_redirect_path }} on the apex"
+      ansible.builtin.include_tasks: "{{ 'apex_path.yaml' if _on | bool else 'apex_path_remove.yaml' }}"
+      vars:
+        gateway_apex_namespace: "{{ gateway_redirect_namespace }}"
+        gateway_apex_path: "{{ gateway_redirect_path }}"
+
+    - name: "gateway | path redirect | HTTPRoute {{ gateway_redirect_name }}"
+      kubernetes.core.k8s:
+        state: "{{ 'present' if _on | bool else 'absent' }}"
+        definition:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: "{{ gateway_redirect_name }}"
+            namespace: "{{ gateway_redirect_namespace }}"
+          spec:
+            parentRefs: [{name: "{{ gateway_name }}", namespace: "{{ gateway_namespace }}", sectionName: https-apex}]
+            hostnames: ["{{ base_domain_name }}"]
+            rules:
+              - matches: [{path: {type: PathPrefix, value: "{{ gateway_redirect_path }}"}}]
+                filters:
+                  - type: RequestRedirect
+                    requestRedirect:
+                      scheme: https
+                      hostname: "{{ _target.hostname }}"
+                      path: {type: ReplaceFullPath, replaceFullPath: "{{ _target.path or '/' }}"}
+                      statusCode: 302
+
+    # A redirect needs no sign-in; the target app does its own.
+    - name: "gateway | path redirect | No gateway auth on the redirect"
+      ansible.builtin.include_tasks: route_auth_exempt.yaml
+      vars:
+        gateway_route_name: "{{ gateway_redirect_name }}"
+        gateway_route_namespace: "{{ gateway_redirect_namespace }}"
+        gateway_route_policy_name: "{{ gateway_redirect_name }}-no-auth"
+        gateway_route_state: "{{ 'present' if _on | bool else 'absent' }}"
+
+    # The controller's view of DNS, so a notice rather than a failure.
+    - name: "gateway | path redirect | Resolve {{ _target.hostname }} and {{ base_domain_name }}"
+      ansible.builtin.getent:
+        database: ahostsv4
+        key: "{{ item }}"
+        fail_key: false
+      loop: ["{{ _target.hostname }}", "{{ base_domain_name }}"]
+      register: _gw_redirect_dns
+      when: _on | bool
+
+    - name: "gateway | path redirect | {{ _target.hostname }} not in DNS like {{ base_domain_name }}"
+      vars:
+        # getent maps each address to its entries, or the name to null when it does not resolve.
+        _addrs: >-
+          {{ _gw_redirect_dns.results | map(attribute='ansible_facts.getent_ahostsv4')
+             | map('dict2items') | map('rejectattr', 'value', 'none') | map('map', attribute='key')
+             | map('sort') | list }}
+      ansible.builtin.debug:
+        msg: >-
+          NOTICE: {{ _target.hostname }} {{ 'does not resolve' if _addrs[0] | length == 0
+          else 'resolves to ' ~ _addrs[0] | join(', ') ~ ', not to ' ~ _addrs[1] | join(', ') ~ ' like ' ~ base_domain_name }}
+          here. {{ gateway_redirect_path }} sends browsers there, so add it to DNS (a *.{{ base_domain_name }}
+          record covers every app host) pointing at the gateway.
+      when: _on | bool and _addrs[0] != _addrs[1]

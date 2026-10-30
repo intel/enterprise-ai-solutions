@@ -1,0 +1,46 @@
+---
+# =============================================================================
+# Gateway — only the platform gateway's proxies may reach a backend
+# =============================================================================
+# For backends that trust the gateway to have checked the caller (e.g. a UI
+# behind route_sso): other pods in the cluster must not reach them directly.
+#   gateway_backend_namespace    backend namespace
+#   gateway_backend_selector     backend pod labels
+#   gateway_backend_ports        backend container ports
+#   gateway_backend_policy_name  NetworkPolicy name
+#   gateway_backend_state        present (default) | absent
+
+- name: "gateway | backend ingress | Platform"
+  ansible.builtin.include_tasks: platform.yaml
+
+- name: "gateway | backend ingress | Who the gateway proxies are"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: proxy_peer.yaml
+
+- name: "gateway | backend ingress | {{ gateway_backend_namespace }}/{{ gateway_backend_policy_name }}"
+  vars:
+    _mesh: "{{ istio_enabled | default(false) | bool }}"
+    _ports: >-
+      {%- set out = [] -%}
+      {%- for p in gateway_backend_ports + ([15008] if _mesh | bool else []) -%}
+      {%- set _ = out.append({'port': p | int, 'protocol': 'TCP'}) -%}
+      {%- endfor -%}
+      {{ out }}
+  kubernetes.core.k8s:
+    state: "{{ gateway_backend_state | default('present') }}"
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: "{{ gateway_backend_policy_name }}"
+        namespace: "{{ gateway_backend_namespace }}"
+      spec:
+        podSelector:
+          matchLabels: "{{ gateway_backend_selector }}"
+        policyTypes: [Ingress]
+        # Istio ambient carries mesh traffic on 15008 (HBONE) and SNATs kubelet
+        # probes to 169.254.7.127; both must stay allowed or the pod goes unready.
+        ingress: >-
+          {{ [{'from': [_gw_proxy_peer], 'ports': _ports}]
+             + ([{'from': [{'ipBlock': {'cidr': '169.254.7.127/32'}}]}] if _mesh | bool else []) }}
