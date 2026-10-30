@@ -377,6 +377,20 @@ kubectl get secret -n keycloak keycloak-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
+The gateway publishes only Keycloak's sign-in pages and token endpoints
+(`/realms`, `/resources`), not its admin console, its admin API or the `master`
+realm the administrator signs in to. To administer Keycloak, forward its port
+(local port 8080: the console and the `master` realm are served at that address)
+and open `http://localhost:8080/admin/` (in path mode,
+`http://localhost:8080/keycloak/admin/`):
+
+```bash
+kubectl -n keycloak port-forward svc/keycloak-service 8080:8080
+```
+
+Set `keycloak_admin_public: true` to publish the admin console through the
+gateway as well.
+
 To choose the passwords yourself, set them before the first install — either in
 `global_config.yaml`:
 
