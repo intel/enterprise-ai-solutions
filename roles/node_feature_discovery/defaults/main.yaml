@@ -1,0 +1,20 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Node Feature Discovery Role Defaults
+# =============================================================================
+# The one NFD on rack-scale clusters, with or without GPUs, installed before the
+# GPU operator so the operator does not bring its own copy. The release name
+# (node-feature-discovery), namespace, chart and values match the inference
+# layer's nfd role, which preflight leaves out on these clusters, so the labels
+# the inference layer relies on are unchanged. The nfd_* overrides of that role
+# apply here too.
+# =============================================================================
+
+node_feature_discovery_namespace: "{{ nfd_namespace | default('node-feature-discovery') }}"
+node_feature_discovery_helm_repo: "{{ nfd_helm_repo | default('https://kubernetes-sigs.github.io/node-feature-discovery/charts') }}"
+node_feature_discovery_helm_repo_name: "{{ nfd_helm_repo_name | default('nfd') }}"
+node_feature_discovery_chart: "{{ nfd_helm_chart | default('nfd/node-feature-discovery') }}"
+node_feature_discovery_version: "{{ nfd_version | default('0.17.1') }}"

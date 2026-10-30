@@ -1,0 +1,47 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Node Feature Discovery — Teardown
+# =============================================================================
+# Every rack-scale cluster: this component owns the release there, and the
+# inference layer's nfd component is left out of the plan.
+# =============================================================================
+
+- name: "node_feature_discovery | teardown"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "node_feature_discovery | teardown | Remove Helm release"
+      kubernetes.core.helm:
+        name: node-feature-discovery
+        release_namespace: "{{ node_feature_discovery_namespace }}"
+        state: absent
+        wait: true
+      failed_when: false
+
+    - name: "node_feature_discovery | teardown | Remove namespace"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ node_feature_discovery_namespace }}"
+      failed_when: false
+
+    # helm uninstall leaves the chart's CRDs behind.
+    - name: "node_feature_discovery | teardown | Delete CRDs"
+      kubernetes.core.k8s:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - nodefeatures.nfd.k8s-sigs.io
+        - nodefeaturerules.nfd.k8s-sigs.io
+        - nodefeaturegroups.nfd.k8s-sigs.io
+      failed_when: false
+
+    - name: "node_feature_discovery | teardown | Complete"
+      ansible.builtin.debug:
+        msg: "NFD removed from namespace '{{ node_feature_discovery_namespace }}'."

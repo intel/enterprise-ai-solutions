@@ -1,7 +1,7 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
-# Custom DCGM exporter counter set for the agentic-ai-stack.
+# Custom DCGM exporter counter set for rack-scale NVIDIA GPU nodes.
 #
 # Derived from etc/dcp-metrics-included.csv in NVIDIA dcgm-exporter
 # (https://github.com/NVIDIA/dcgm-exporter), Copyright NVIDIA Corporation,
