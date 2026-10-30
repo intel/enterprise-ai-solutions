@@ -2,6 +2,9 @@
 # only read as a diff, never checked out. Runs only when a trusted author pushes to their own
 # non-draft PR, and the agent has no shell or file-write tools, so diff content cannot run commands,
 # push, or edit files. Review only - no approval is granted.
+# Maintainer-triggered runs (ready_for_review, pushes to others' PRs) are skipped on purpose.
+# Diffs the API refuses (HTTP 406, too large) fail the run instead of being reviewed.
+# AI_SYS_BOT_GH_TOKEN posts as sys-aibot; github.token only fetches the diff.
 name: claude-review
 on:
   pull_request_target:
