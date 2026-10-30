@@ -101,16 +101,13 @@
 
 - name: "seaweedfs | Deploy SeaweedFS"
   vars:
-    # OpenShift's restricted-v2 SCC rejects fixed UIDs and assigns them from the
-    # namespace's range, as in erag's app_edp seaweedfs values.
-    _seaweedfs_openshift: "{{ cluster_distribution | default('kubernetes') == 'openshift' }}"
-    _seaweedfs_fixed_ids: "{{ {} if _seaweedfs_openshift | bool else {'runAsUser': 1000, 'runAsGroup': 1000, 'fsGroup': 1000} }}"
+    # Fixed UID/GID on K8s only (vars/<platform>.yaml).
     _pod_security_context: >-
-      {{ {'enabled': true, 'runAsNonRoot': true, 'seccompProfile': {'type': 'RuntimeDefault'}} | combine(_seaweedfs_fixed_ids) }}
+      {{ {'enabled': true, 'runAsNonRoot': true, 'seccompProfile': {'type': 'RuntimeDefault'}} | combine(_seaweedfs_pod_ids) }}
     _container_security_context: >-
       {{ {'enabled': true, 'runAsNonRoot': true, 'allowPrivilegeEscalation': false,
           'capabilities': {'drop': ['ALL']}, 'seccompProfile': {'type': 'RuntimeDefault'}}
-         | combine({} if _seaweedfs_openshift | bool else {'runAsUser': 1000}) }}
+         | combine(_seaweedfs_container_ids) }}
   kubernetes.core.helm:
     name: "{{ seaweedfs_release_name }}"
     chart_ref: seaweedfs/seaweedfs

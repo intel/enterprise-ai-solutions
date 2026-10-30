@@ -1,6 +1,6 @@
 ---
 # =============================================================================
-# Observability — Install on OpenShift
+# Observability — the OperatorHub stack (install.yaml, _observability_from_olm true)
 # The admin installs the operators from OperatorHub (observability_openshift_required_crds)
 # and turns on user-workload monitoring; this file creates only their instances,
 # all in observability_namespace:
@@ -8,119 +8,12 @@
 #   logs     ClusterLogForwarder (Logging) → LokiStack (Loki Operator) on the object store
 #   traces   OpenTelemetryCollector → TempoMonolithic on the object store
 #   UI       Grafana (Grafana Operator), the same datasource uids, dashboards and
-#            gateway route as on K8s
+#            gateway route as the Helm stack
 # =============================================================================
 
-# ── Pre-flight ────────────────────────────────────────────────────────────────
+# ── Object store keys ────────────────────────────────────────────────────────
 
-- name: "observability | openshift | Check the operators' CRDs"
-  kubernetes.core.k8s_info:
-    api_version: apiextensions.k8s.io/v1
-    kind: CustomResourceDefinition
-    name: "{{ item.crd }}"
-  loop: "{{ observability_openshift_required_crds }}"
-  loop_control:
-    label: "{{ item.operator }}"
-  register: _obs_os_crds
-
-- name: "observability | openshift | Operators are installed"
-  ansible.builtin.assert:
-    that: _obs_os_missing | length == 0
-    fail_msg: >-
-      Install from OperatorHub first: {{ _obs_os_missing | join(', ') }}.
-      See docs/deploy/openshift.md, or set observability_enabled: false.
-    quiet: true
-  vars:
-    _obs_os_missing: >-
-      {{ _obs_os_crds.results | selectattr('resources', 'equalto', []) | map(attribute='item.operator') | list }}
-
-- name: "observability | openshift | Read cluster monitoring config"
-  kubernetes.core.k8s_info:
-    kind: ConfigMap
-    name: cluster-monitoring-config
-    namespace: openshift-monitoring
-  register: _obs_os_cmc
-
-- name: "observability | openshift | User-workload monitoring is on"
-  ansible.builtin.assert:
-    that: (_obs_os_cmc_config.enableUserWorkload | default(false)) | bool
-    fail_msg: >-
-      User-workload monitoring is off, so nothing scrapes the installer's services.
-      Set enableUserWorkload: true in openshift-monitoring/cluster-monitoring-config
-      (see docs/deploy/openshift.md), or set observability_enabled: false.
-    quiet: true
-  vars:
-    _obs_os_cmc_config: >-
-      {{ ((_obs_os_cmc.resources | first | default({})).data | default({}))['config.yaml'] | default('{}') | from_yaml or {} }}
-
-# cluster_default_storageclass: set by preflight.
-- name: "observability | openshift | Pick the StorageClass"
-  ansible.builtin.set_fact:
-    _obs_os_storage_class: "{{ observability_openshift_storage_class or cluster_default_storageclass | default('') }}"
-
-- name: "observability | openshift | A StorageClass is set"
-  ansible.builtin.assert:
-    that: _obs_os_storage_class | length > 0
-    fail_msg: "The cluster has no default StorageClass: set observability_openshift_storage_class."
-    quiet: true
-
-# ── Namespace ────────────────────────────────────────────────────────────────
-
-# No PSS labels: OpenShift sets them from the SCCs the pods use.
-- name: "observability | openshift | Create namespace"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ observability_namespace }}"
-
-- name: "observability | openshift | Label namespace — Istio"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ observability_namespace }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
-  when: istio_enabled | default(false) | bool
-
-# ── Credentials ──────────────────────────────────────────────────────────────
-
-- name: "observability | openshift | Bootstrap credentials"
-  ansible.builtin.include_tasks: credentials.yaml
-
-- name: "observability | openshift | Load object_store credentials Secret"
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Secret
-    name: "{{ object_store_credentials_secret }}"
-    namespace: "{{ object_store_namespace }}"
-  register: _obs_object_store_secret
-
-- name: "observability | openshift | The object store is installed"
-  ansible.builtin.assert:
-    that: _obs_object_store_secret.resources | length > 0
-    fail_msg: >-
-      No {{ object_store_namespace }}/{{ object_store_credentials_secret }} Secret: Loki and
-      Tempo keep their data in the object store. Install the platform layer with
-      object_store_backend: seaweedfs.
-    quiet: true
-
-- name: "observability | openshift | Set object_store credentials from Secret"
-  vars:
-    _d: "{{ _obs_object_store_secret.resources[0].data }}"
-  ansible.builtin.set_fact:
-    object_store_endpoint: "{{ _d.endpoint | b64decode }}"
-    object_store_loki_access_key: "{{ _d.lokiAccessKey | b64decode }}"
-    object_store_loki_secret_key: "{{ _d.lokiSecretKey | b64decode }}"
-    object_store_tempo_access_key: "{{ _d.tempoAccessKey | b64decode }}"
-    object_store_tempo_secret_key: "{{ _d.tempoSecretKey | b64decode }}"
-
-- name: "observability | openshift | Store object store keys for Loki and Tempo"
+- name: "observability | olm | Store object store keys for Loki and Tempo"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -158,7 +51,7 @@
 #    any forwarding the admin set up untouched.
 # =============================================================================
 
-- name: "observability | openshift | LokiStack"
+- name: "observability | olm | LokiStack"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -193,7 +86,7 @@
         tenants:
           mode: openshift-logging
 
-- name: "observability | openshift | Log collector service account"
+- name: "observability | olm | Log collector service account"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -205,7 +98,7 @@
 
 # ClusterRoles from the Logging operator: read application logs on the nodes,
 # write them to a LokiStack.
-- name: "observability | openshift | Let the log collector read and write logs"
+- name: "observability | olm | Let the log collector read and write logs"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -225,7 +118,7 @@
     - collect-application-logs
     - logging-collector-logs-writer
 
-- name: "observability | openshift | ClusterLogForwarder"
+- name: "observability | olm | ClusterLogForwarder"
   vars:
     _obs_os_custom_input: "{{ observability_openshift_log_namespaces | length > 0 }}"
     _obs_os_inputs:
@@ -274,7 +167,7 @@
 #    endpoint (observability_otel_grpc_endpoint) instrumented services use on K8s.
 # =============================================================================
 
-- name: "observability | openshift | TempoMonolithic"
+- name: "observability | olm | TempoMonolithic"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -297,7 +190,7 @@
               compaction:
                 block_retention: "{{ observability_loki_retention_hours }}h"
 
-- name: "observability | openshift | OTel Collector service account"
+- name: "observability | olm | OTel Collector service account"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -308,7 +201,7 @@
         namespace: "{{ observability_namespace }}"
 
 # k8sattributes adds the pod, namespace and workload to every span.
-- name: "observability | openshift | Let the OTel Collector read pod metadata"
+- name: "observability | olm | Let the OTel Collector read pod metadata"
   kubernetes.core.k8s:
     state: present
     definition: "{{ item }}"
@@ -339,7 +232,7 @@
   loop_control:
     label: "{{ item.kind }}"
 
-- name: "observability | openshift | OpenTelemetryCollector"
+- name: "observability | olm | OpenTelemetryCollector"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -401,24 +294,9 @@
 # 3. Grafana
 # =============================================================================
 
-- name: "observability | openshift | Store Grafana admin credentials as a cluster Secret"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: grafana-admin-credentials
-        namespace: "{{ observability_namespace }}"
-      type: Opaque
-      stringData:
-        username: "{{ observability_grafana_admin_user }}"
-        password: "{{ observability_grafana_admin_password }}"
-  no_log: true
-
 # Datasources authenticate with this account's token: cluster-monitoring-view for
 # Thanos Querier, application logs for the LokiStack gateway.
-- name: "observability | openshift | Datasource service account and its token"
+- name: "observability | olm | Datasource service account and its token"
   kubernetes.core.k8s:
     state: present
     definition: "{{ item }}"
@@ -474,7 +352,7 @@
     label: "{{ item.kind }} {{ item.metadata.name }}"
 
 # The dashboard sidecars list ConfigMaps in every namespace, as on K8s.
-- name: "observability | openshift | Let the dashboard sidecars read ConfigMaps"
+- name: "observability | olm | Let the dashboard sidecars read ConfigMaps"
   kubernetes.core.k8s:
     state: present
     definition: "{{ item }}"
@@ -502,7 +380,7 @@
   loop_control:
     label: "{{ item.kind }}"
 
-- name: "observability | openshift | Dashboard provider"
+- name: "observability | olm | Dashboard provider"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -526,7 +404,7 @@
                 foldersFromFilesStructure: true
                 path: /tmp/dashboards
 
-- name: "observability | openshift | Grafana"
+- name: "observability | olm | Grafana"
   vars:
     _obs_os_admin_env:
       - name: GF_SECURITY_ADMIN_USER
@@ -630,7 +508,7 @@
                       name: grafana-dashboard-provider
                 containers: "{{ [_obs_os_grafana_container] + _obs_os_sidecar_containers }}"
 
-- name: "observability | openshift | Datasources (same uids as on K8s)"
+- name: "observability | olm | Datasources (same uids as on K8s)"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -700,7 +578,7 @@
 
 # ── Wait ─────────────────────────────────────────────────────────────────────
 
-- name: "observability | openshift | Wait for the instances"
+- name: "observability | olm | Wait for the instances"
   kubernetes.core.k8s_info:
     api_version: "{{ item.api_version }}"
     kind: "{{ item.kind }}"
@@ -724,13 +602,13 @@
 
 # ── Gateway route ────────────────────────────────────────────────────────────
 
-- name: "observability | openshift | Publish Grafana"
+- name: "observability | olm | Publish Grafana"
   ansible.builtin.include_tasks: grafana_route.yaml
   vars:
     observability_grafana_service: "{{ observability_openshift_grafana_name }}-service"
     observability_grafana_service_port: 3000
 
-- name: "observability | openshift | Install complete"
+- name: "observability | olm | Install complete"
   ansible.builtin.debug:
     msg: >-
       Observability instances deployed in namespace '{{ observability_namespace }}':

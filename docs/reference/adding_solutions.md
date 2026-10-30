@@ -244,7 +244,9 @@ in preflight, and only the dispatcher and `components.yaml` read it. The tasks a
 both platforms: whatever differs is a value in `vars/<platform>.yaml`. A role that uses the
 cluster's operator on OpenShift instead of installing one (cert-manager, CNPG, Keycloak) has a
 boolean `_<name>_from_olm` there: `true` checks the marketplace operator and skips its install,
-and teardown leaves it and its CRDs. A component not used on OpenShift (`istio`, `metallb`,
+and teardown leaves it and its CRDs. Where the two stacks differ throughout (`observability`:
+Helm charts, or instances of the OperatorHub operators) the shared steps stay in `install.yaml`
+and the flag picks a helper, `install_helm.yaml` or `install_olm.yaml`. A component not used on OpenShift (`istio`, `metallb`,
 `velero`) is gated off in `components.yaml` and its role has no OpenShift steps. What every role needs
 is published once: `gateway` `publish.yaml` creates the OpenShift Routes.
 Library roles, entered with `tasks_from`, have no dispatcher: their caller passes

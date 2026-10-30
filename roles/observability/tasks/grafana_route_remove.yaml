@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# Observability — take Grafana off the platform gateway (K8s and OpenShift)
+# =============================================================================
+
+- name: "observability | Drop the gateway auth exemption for Grafana"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: grafana
+    gateway_route_namespace: "{{ observability_namespace }}"
+    gateway_route_policy_name: grafana-no-auth
+    gateway_route_state: absent
+
+- name: "observability | Delete Grafana HTTPRoute"
+  kubernetes.core.k8s:
+    api_version: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    name: grafana
+    namespace: "{{ observability_namespace }}"
+    state: absent
+  failed_when: false
+
+- name: "observability | Unpublish Grafana"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: unpublish.yaml
+  vars:
+    gateway_publish_name: grafana
+    gateway_publish_namespace: "{{ observability_namespace }}"
+    gateway_publish_host: "{{ observability_grafana_hostname }}"
+    gateway_publish_path: "{{ observability_grafana_path }}"
