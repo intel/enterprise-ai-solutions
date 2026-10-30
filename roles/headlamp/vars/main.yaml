@@ -11,6 +11,8 @@ __headlamp_apiserver_mode: "{{ headlamp_auth_mode == 'apiserver' }}"
 # are registered so switching modes needs no change in Keycloak.
 __headlamp_redirect_uris: ["{{ headlamp_url }}/oidc-callback", "{{ headlamp_url }}/oauth2/callback"]
 __headlamp_authn_file: "{{ kubernetes_apiserver_authn_dir }}/authentication-config.yaml"
+__headlamp_apiserver_manifest: /etc/kubernetes/manifests/kube-apiserver.yaml
+__headlamp_apiserver_backup: /etc/kubernetes/kube-apiserver.yaml.headlamp-backup
 __headlamp_cp_hosts: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
 # Headlamp pages (Dashboards, Models), built from src/plugin/headlamp.
 __headlamp_plugin_name: "enterprise-ai"

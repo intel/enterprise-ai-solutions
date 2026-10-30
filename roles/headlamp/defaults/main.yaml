@@ -53,6 +53,8 @@ headlamp_oidc_prefix: "oidc:"
 # Map the Keycloak host to the gateway address on control-plane nodes and in the
 # Headlamp pod. Set false where DNS resolves the platform hostnames.
 headlamp_pin_issuer_host: true
+# Kubelet root (Kubespray default): the API server's /etc/hosts copy lives under it.
+headlamp_kubelet_dir: /var/lib/kubelet
 
 # Foreign vars (canonical owner: keycloak role).
 keycloak_namespace: "keycloak"

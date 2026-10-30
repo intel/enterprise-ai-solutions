@@ -1,0 +1,103 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Headlamp — restart kube-apiserver on one control-plane node, guarded
+# =============================================================================
+# The API server runs on the host network with a copy of /etc/hosts taken when
+# it starts, so it sees the issuer entry only after a restart. Changing an
+# annotation in its static manifest makes the kubelet restart it. The manifest
+# is backed up first and restored if the API server does not come back.
+#   __hl_node      the node (inventory host = node name)
+#   __hl_line      the /etc/hosts line the API server must see
+#   __hl_old_hash  the running API server pod's config hash
+
+- name: "headlamp | apiserver restart | {{ __hl_node }} | Back up the manifest"
+  ansible.builtin.copy:
+    src: "{{ __headlamp_apiserver_manifest }}"
+    # Outside the manifests directory: the kubelet runs every file in it.
+    dest: "{{ __headlamp_apiserver_backup }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  delegate_to: "{{ __hl_node }}"
+
+- name: "headlamp | apiserver restart | {{ __hl_node }} | Restart and wait"
+  block:
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Mark the manifest"
+      ansible.builtin.lineinfile:
+        path: "{{ __headlamp_apiserver_manifest }}"
+        regexp: '^    enterprise-ai/issuer-hosts: '
+        # Differs from any earlier value (the old pod's hash is in it), so the kubelet restarts.
+        line: '    enterprise-ai/issuer-hosts: "{{ (__hl_line ~ __hl_old_hash) | hash("sha256") | truncate(16, true, "") }}"'
+        insertafter: '^  annotations:$'
+      become: true
+      delegate_to: "{{ __hl_node }}"
+
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Read the manifest back"
+      ansible.builtin.slurp:
+        src: "{{ __headlamp_apiserver_manifest }}"
+      register: __hl_manifest
+      become: true
+      delegate_to: "{{ __hl_node }}"
+
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Still a valid Pod"
+      vars:
+        _pod: "{{ __hl_manifest.content | b64decode | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - _pod.kind == 'Pod'
+          - _pod.metadata.annotations['enterprise-ai/issuer-hosts'] is defined
+        quiet: true
+
+    # The API server is down for a moment: k8s_info fails until it is back.
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Wait for the new API server"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: kube-system
+        label_selectors: [component=kube-apiserver]
+        field_selectors: ["spec.nodeName={{ __hl_node }}"]
+      register: __hl_pod
+      until: >-
+        __hl_pod.resources | default([]) | length > 0
+        and (__hl_pod.resources | first).metadata.annotations['kubernetes.io/config.hash'] | default('') != __hl_old_hash
+        and (__hl_pod.resources | first).status.conditions | default([])
+            | selectattr('type', 'eq', 'Ready') | selectattr('status', 'eq', 'True') | list | length > 0
+      retries: 60
+      delay: 5
+      failed_when: false
+
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Read the new API server's hosts"
+      ansible.builtin.slurp:
+        src: "{{ headlamp_kubelet_dir }}/pods/{{ (__hl_pod.resources | first).metadata.annotations['kubernetes.io/config.hash'] }}/etc-hosts"
+      register: __hl_hosts_new
+      become: true
+      delegate_to: "{{ __hl_node }}"
+
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | It sees the issuer host"
+      ansible.builtin.assert:
+        that: __hl_line in (__hl_hosts_new.content | b64decode).splitlines()
+        fail_msg: "kube-apiserver on {{ __hl_node }} restarted but its /etc/hosts lacks '{{ __hl_line }}'."
+        quiet: true
+
+  rescue:
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Restore the manifest"
+      ansible.builtin.copy:
+        src: "{{ __headlamp_apiserver_backup }}"
+        dest: "{{ __headlamp_apiserver_manifest }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+      delegate_to: "{{ __hl_node }}"
+
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Failed"
+      ansible.builtin.fail:
+        msg: >-
+          kube-apiserver on {{ __hl_node }} did not come back with the issuer host after the restart;
+          its manifest was restored from {{ __headlamp_apiserver_backup }}. Check the kubelet on that
+          node, or make {{ __headlamp_issuer_host }} resolve to the gateway in DNS.
