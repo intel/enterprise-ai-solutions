@@ -6,43 +6,59 @@ Ansible module — label what a component created, and delete by those labels.
   snapshot  record the UID of every object on the cluster in state_file. When a
             run was killed while a component ran (see begin), first label what
             that component created
-  begin     note in state_file which component runs now; label clears it again
-  label     label every object created since the last snapshot (or label), then
-            record the cluster again, so the next component starts from here
+  begin     note in state_file which component runs now, and return the file the
+            ownership_record callback records the component's task results into
+  label     label what the component's tasks created, then record the cluster
+            again, so the next component starts from here
   delete    delete every object that matches selector, in dependency order
 
-An object is labelled when all of these hold:
-  - its UID is not in state_file: it appeared while the component ran
+What a component created comes from its own task results, never from what
+appeared on the cluster meanwhile: other users, CronJobs and operators keep
+writing while the installer runs. The ownership_record callback records every
+object a kubernetes.core.k8s task returned, every release a kubernetes.core.helm
+task installed, and every object kubectl/oc reported. An object is labelled when
+  - a record names it, `declared` describes it (objects the component's Jobs or
+    controllers create), or it belongs to one of the component's Helm releases
+  - its UID is not in state_file, so the component created it, not changed it;
+    or it is carried for this component (see below)
   - it has no ownerReferences: its owner is labelled, and GC removes it
-  - one of `managers` wrote it (managedFields): the installer's own tools, not
-    an operator reconciling in parallel
   - it has no `<prefix>/component` label yet: the first creator keeps it
 
-Labels the installer adds to an object that was already there (a Namespace it
-does not own gets istio.io/dataplane-mode, a Node a placement label) are recorded
-instead, in the annotation <prefix>/labels-before.<env>.<component> on that object:
-each key with the value it had before (null: absent) and the value set. Teardown
-restores the keys that still hold the value set. Only `restore_resources` are
-followed (Namespaces and Nodes by default), only keys a field manager in `managers`
-wrote, and only objects whose labels the state file holds.
+A Helm release is the component's when one of its tasks installed it and its
+first release secret (v1) is new, or one release secret already carries the
+component's labels. Then all of it is labelled: the objects of its manifest and
+hooks, the objects annotated with it (meta.helm.sh/release-name and -namespace),
+its release secrets, and the CRDs of the chart's crds/ that are new.
 
-Helm releases are labelled whole or not at all. A release is the component's when
-its first release secret (v1) is new, or one already carries the component's labels:
-then every object annotated with the release (meta.helm.sh/release-name and
--namespace) and every release secret is labelled, even one recorded before. The
-release secrets of any other release are left alone, so teardown never deletes
-the history of a release it does not remove. "All release secrets are new" is not
-enough: an operator that runs Helm itself (the OpenShift Ingress Operator's istiod)
-writes a revision every few minutes and prunes the old ones.
+A component that failed, or a run that was killed inside it, may have created
+objects no result reports. The new objects nobody claimed are carried for that
+component in state_file: they count as new for it, and only for it, until it runs
+again without a failure. Its rerun reports them (as updated) and labels them.
+
+Labels a task adds to an object that was already there (a Namespace it does not
+own gets istio.io/dataplane-mode, a Node a placement label) are recorded instead,
+in the annotation <prefix>/labels-before.<env>.<component> on that object: each key
+with the value it had before (null: absent) and the value set. Teardown restores
+the keys that still hold the value set. Only `restore_resources` are followed
+(Namespaces and Nodes by default), only objects a record names, and only objects
+whose labels the state file holds.
+
+Teardown also deletes what a labelled object creates without an owner reference:
+the PersistentVolumeClaims of a StatefulSet's volumeClaimTemplates, and the Secret
+cert-manager issues for a Certificate.
 
 Lists use metadata-only responses (PartialObjectMetadataList), so a snapshot of a
 large cluster is a few MB, not the full objects.
 """
 
+import base64
+import gzip
 import json
 import os
 import re
 import time
+
+import yaml
 
 from ansible.module_utils.basic import AnsibleModule
 
@@ -61,7 +77,9 @@ options:
   env: {type: str, description: Env name, the <prefix>/env label (label, delete)}
   layer: {type: str, description: Layer, the <prefix>/layer label (label)}
   component: {type: str, description: Component, the <prefix>/component label (label, delete)}
-  managers: {type: list, elements: str, description: Field managers that count as the installer}
+  declared:
+    type: dict
+    description: "component -> objects it creates outside its tasks: [{kind, namespace, name, labels}], any subset"
   skip_resources: {type: list, elements: str, description: "resource or resource.group never listed"}
   label_prefix: {type: str, description: Prefix of the component label}
   restore_resources: {type: list, elements: str, description: "resources whose added labels teardown restores"}
@@ -167,23 +185,47 @@ def _phase(res):
 
 
 def _read(path):
-    """(uids, pending, labels): uids None when there is no baseline yet, pending the
-    component a run was in when it stopped, or None, labels uid -> labels of the
-    objects in restore_resources."""
+    """uids: None when there is no baseline yet; pending: the component a run was in
+    when it stopped, or None; labels: uid -> labels of the objects in
+    restore_resources; carry: component -> UIDs it may still claim (see label)."""
     try:
         with open(path) as f:
             state = json.load(f)
     except (OSError, ValueError):
-        return None, None, {}
-    return state.get("uids"), state.get("pending"), state.get("labels") or {}
+        state = {}
+    return {"uids": state.get("uids"), "pending": state.get("pending"), "labels": state.get("labels") or {},
+            "carry": state.get("carry") or {}}
 
 
-def _write(path, uids, pending=None, labels=None):
+def _write(path, uids, pending=None, labels=None, carry=None):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"uids": sorted(uids) if uids is not None else None, "pending": pending,
-                   "labels": labels or {}}, f)
+                   "labels": labels or {}, "carry": {c: sorted(u) for c, u in (carry or {}).items() if u}}, f)
     os.replace(tmp, path)
+
+
+def _record_file(state_file):
+    """Where the ownership_record callback writes the task results."""
+    return os.path.splitext(state_file)[0] + "-records.jsonl"
+
+
+def _records(path, component, module):
+    """The records of component, removed from the file; the others stay."""
+    try:
+        with open(path) as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+    except (OSError, ValueError):
+        return []
+    mine = [r for r in lines if r.get("component") == component]
+    if mine and not module.check_mode:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            for r in lines:
+                if r.get("component") != component:
+                    f.write(json.dumps(r, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+    return mine
 
 
 def _restorable(objects, p):
@@ -210,22 +252,17 @@ def _patch(api, res, meta, body):
     return True
 
 
-def _record_added(api, objects, known, before, p, module):
-    """Record, on each object that was already there, the labels an installer tool
-    added or changed since the last snapshot. Returns the refs recorded."""
-    managers, prefix, key = set(p["managers"]), p["label_prefix"] + "/", _before_key(p)
+def _record_added(api, objects, known, before, reported, p, module):
+    """Record, on each object that was already there and that a task of the component
+    changed, the labels added or changed since the last snapshot. Returns the refs recorded."""
+    prefix, key = p["label_prefix"] + "/", _before_key(p)
     recorded = []
     for uid, labels in sorted(_restorable(objects, p).items(), key=lambda o: _ref(*objects[o[0]])):
         res, meta = objects[uid]
-        if uid not in known or uid not in before or prefix + "component" in labels:
-            continue  # new (labelled instead), no recorded labels, or ours: deleted whole
-        ours = set()
-        for m in meta.get("managedFields") or []:
-            if m.get("manager") in managers:
-                ours |= {f[2:] for f in ((m.get("fieldsV1") or {}).get("f:metadata") or {}).get("f:labels") or {}}
+        if uid not in known or uid not in before or uid not in reported or prefix + "component" in labels:
+            continue  # new (labelled instead), no recorded labels, not ours to change, or ours: deleted whole
         old = before[uid]
-        added = {k: [old.get(k), v] for k, v in labels.items()
-                 if k in ours and old.get(k) != v and not k.startswith(prefix)}
+        added = {k: [old.get(k), v] for k, v in labels.items() if old.get(k) != v and not k.startswith(prefix)}
         if not added:
             continue
         try:
@@ -263,74 +300,180 @@ def _restore(api, resources, p, module):
 
 
 def snapshot(api, p, module):
-    known, pending, _ = _read(p["state_file"])
-    if pending and known is not None:
+    state = _read(p["state_file"])
+    if state["pending"] and state["uids"] is not None:
         # The last run stopped inside a component, before it was labelled: label what
-        # appeared since, as that component, before it would count as already there.
-        result = label(api, dict(p, **pending), module)
+        # its tasks recorded, and carry what else appeared for its rerun.
+        pending = state["pending"]
+        result = label(api, dict(p, **pending), module, stopped=True)
         return {"changed": result["changed"], "recovered": pending, "labelled": result["labelled"],
                 "recorded": result["recorded"]}
     if not module.check_mode:
         objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
-        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p))
+        carry = {c: set(u) & objects.keys() for c, u in state["carry"].items()}
+        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry)
     return {"changed": False, "labelled": [], "recorded": []}
 
 
 def begin(p, module):
-    known, _, labels = _read(p["state_file"])
+    state = _read(p["state_file"])
     if not module.check_mode:
-        _write(p["state_file"], known, {"env": p["env"], "layer": p["layer"], "component": p["component"]}, labels)
-    return {"changed": False}
+        _write(p["state_file"], state["uids"], {"env": p["env"], "layer": p["layer"], "component": p["component"]},
+               state["labels"], state["carry"])
+    return {"changed": False, "component": p["component"], "record_file": _record_file(p["state_file"])}
 
 
-def _helm_claims(objects, known, p):
-    """(claimed, foreign): UIDs of the component's Helm releases, objects and release
-    secrets, and UIDs of the release secrets of every other release."""
+def _helm_release(api, secret):
+    """The decoded release of a Helm release secret (base64, base64, gzip, JSON)."""
+    data = _get(api, "/api/v1/namespaces/%s/secrets/%s" % (secret["namespace"], secret["name"]))
+    raw = base64.b64decode(base64.b64decode((data.get("data") or {}).get("release") or ""))
+    return json.loads(gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw)
+
+
+def _manifest_refs(text, namespace):
+    """(kind, namespace or None, name) of each object in a rendered manifest."""
+    refs = []
+    for doc in yaml.safe_load_all(text or ""):
+        if isinstance(doc, dict) and doc.get("kind") and (doc.get("metadata") or {}).get("name"):
+            refs.append((doc["kind"], doc["metadata"].get("namespace") or namespace, doc["metadata"]["name"]))
+    return refs
+
+
+def _helm_claims(api, objects, index, known, new, reported, p):
+    """(claimed, crds): UIDs of the component's Helm releases: release secrets, the objects
+    of their manifest and hooks, the objects annotated with them; and the CRDs of their
+    charts' crds/, which are only the component's when new."""
     prefix = p["label_prefix"]
-    releases, first = {}, {}
+    releases, first, latest = {}, {}, {}
     for uid, (res, meta) in objects.items():
         labels = meta.get("labels") or {}
         if res["group"] == "" and res["resource"] == "secrets" and labels.get("owner") == "helm" and labels.get("name"):
             release = (meta.get("namespace"), labels["name"])
+            if release not in reported:
+                continue
             releases.setdefault(release, []).append(uid)
-            if labels.get("version") == "1":
+            version = int(labels.get("version") or 0)
+            if version == 1:
                 first[release] = uid
-    ours, foreign = set(), set()
-    for release, uids in releases.items():
-        mine = (release in first and first[release] not in known) or any(
-            (objects[u][1].get("labels") or {}).get(prefix + "/env") == p["env"]
-            and (objects[u][1].get("labels") or {}).get(prefix + "/component") == p["component"] for u in uids)
-        (ours if mine else foreign).add(release)
-    claimed = {u for release in ours for u in releases[release]}
-    foreign = {u for release in foreign for u in releases[release]}
+            if version >= latest.get(release, (0, None))[0]:
+                latest[release] = (version, meta)
+    ours = {release for release, uids in releases.items()
+            if (release in first and new(first[release])) or any(
+                (objects[u][1].get("labels") or {}).get(prefix + "/env") == p["env"]
+                and (objects[u][1].get("labels") or {}).get(prefix + "/component") == p["component"] for u in uids)}
+    claimed, crds = {u for release in ours for u in releases[release]}, set()
+    for release in ours:
+        try:
+            rel = _helm_release(api, latest[release][1])
+        except (ApiException, ValueError, TypeError, OSError):
+            continue  # unreadable release: the annotations below still hold
+        refs = _manifest_refs(rel.get("manifest"), release[0])
+        for hook in rel.get("hooks") or []:
+            refs += _manifest_refs(hook.get("manifest"), release[0])
+        for ref in refs:
+            claimed |= index(*ref)
+        for f in (rel.get("chart") or {}).get("files") or []:
+            if (f.get("name") or "").startswith("crds/"):
+                try:
+                    text = base64.b64decode(f.get("data") or "").decode()
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                for ref in _manifest_refs(text, None):
+                    crds |= index(*ref)
     for uid, (res, meta) in objects.items():
         annotations = meta.get("annotations") or {}
         if (annotations.get("meta.helm.sh/release-namespace"), annotations.get("meta.helm.sh/release-name")) in ours:
             claimed.add(uid)
-    return claimed, foreign
+    return claimed, crds
 
 
-def label(api, p, module):
-    known, _, before = _read(p["state_file"])
+def _index(objects):
+    """find(kind, namespace, name) -> UIDs. kind is a Kind (Deployment) or, as kubectl
+    prints it, a lowercase resource with its group (deployment.apps); namespace None
+    matches any namespace, and is ignored for cluster-scoped objects."""
+    by_name = {}
+    for uid, (res, meta) in objects.items():
+        by_name.setdefault(meta["name"], []).append((uid, res, meta))
+
+    def find(kind, namespace, name):
+        kind, _, group = (kind or "").partition(".")
+        found = set()
+        for uid, res, meta in by_name.get(name, []):
+            if kind.lower() != res["kind"].lower():
+                continue
+            if group and group != res["group"]:
+                continue
+            if res["namespaced"] and namespace and meta.get("namespace") != namespace:
+                continue
+            found.add(uid)
+        return found
+    return find
+
+
+def _declared(objects, declared):
+    """UIDs of the objects `declared` describes."""
+    found = set()
+    for d in declared or []:
+        for uid, (res, meta) in objects.items():
+            if d.get("kind") and d["kind"] != res["kind"]:
+                continue
+            if d.get("namespace") and d["namespace"] != meta.get("namespace"):
+                continue
+            if d.get("name") and d["name"] != meta["name"]:
+                continue
+            labels = meta.get("labels") or {}
+            if any(labels.get(k) != str(v) for k, v in (d.get("labels") or {}).items()):
+                continue
+            found.add(uid)
+    return found
+
+
+def label(api, p, module, stopped=False):
+    state = _read(p["state_file"])
+    known, before, carry = state["uids"], state["labels"], {c: set(u) for c, u in state["carry"].items()}
     objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
+    records = _records(_record_file(p["state_file"]), p["component"], module)
     labelled, recorded = [], []
     if known is not None:  # no baseline (the cluster did not exist yet): label nothing
         prefix = p["label_prefix"]
         labels = {prefix + "/env": p["env"], prefix + "/layer": p["layer"], prefix + "/component": p["component"]}
-        known, managers, key = set(known), set(p["managers"]), prefix + "/component"
-        claimed, foreign = _helm_claims(objects, known, p)
-        for uid, (res, meta) in sorted(objects.items(), key=lambda o: _ref(*o[1])):
-            if uid in foreign or meta.get("ownerReferences") or key in (meta.get("labels") or {}):
-                continue
-            if uid not in claimed and (uid in known
-                                       or not managers & {m.get("manager") for m in meta.get("managedFields") or []}):
+        known, key = set(known), prefix + "/component"
+        mine = carry.get(p["component"], set())
+
+        def new(uid):
+            return uid not in known or uid in mine
+
+        find = _index(objects)
+        reported, releases = set(), set()
+        for r in records:
+            if r["type"] == "object":
+                reported |= {r["uid"]} & objects.keys()
+            elif r["type"] == "named":
+                reported |= find(r["kind"], r.get("namespace"), r["name"])
+            elif r["type"] == "cli":
+                reported |= find(r["resource"], r.get("namespace"), r["name"])
+            elif r["type"] == "release":
+                releases.add((r["namespace"], r["name"]))
+        helm, crds = _helm_claims(api, objects, find, known, new, releases, p)
+        declared = _declared(objects, (p["declared"] or {}).get(p["component"]))
+        claimed = helm | {u for u in reported | crds | declared if new(u)}
+        for uid in sorted(claimed, key=lambda u: _ref(*objects[u])):
+            res, meta = objects[uid]
+            if meta.get("ownerReferences") or key in (meta.get("labels") or {}):
                 continue
             if module.check_mode or _patch(api, res, meta, {"labels": labels}):
                 labelled.append(_ref(res, meta))
-        recorded = _record_added(api, objects, known, before, p, module)
+        recorded = _record_added(api, objects, known, before, reported, p, module)
+        # Carry what appeared and nobody claimed when the component failed or the run
+        # stopped inside it: its rerun may report those objects, as updated.
+        failed = stopped or any(r["type"] == "failed" for r in records)
+        unclaimed = {u for u in objects if new(u) and u not in claimed}
+        carry[p["component"]] = (mine | unclaimed) - claimed if failed else set()
     if not module.check_mode:
-        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p))
-    return {"changed": bool(labelled or recorded), "labelled": labelled, "recorded": recorded}
+        carry = {c: u & objects.keys() for c, u in carry.items()}
+        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry)
+    return {"changed": bool(labelled or recorded), "labelled": labelled, "recorded": recorded,
+            "records": len(records)}
 
 
 def _exists(api, res, meta):
@@ -342,10 +485,49 @@ def _exists(api, res, meta):
         raise
 
 
+def _created_by(api, resources, objects, p):
+    """uid -> (resource, metadata) of what labelled objects create without an owner
+    reference: the PVCs of a StatefulSet's volumeClaimTemplates, the Secret of a
+    cert-manager Certificate. One another component labelled is left to it."""
+    by_kind = {(r["group"], r["resource"]): r for r in resources}
+    pvcs, secrets = by_kind.get(("", "persistentvolumeclaims")), by_kind.get(("", "secrets"))
+    key, found = p["label_prefix"] + "/component", {}
+
+    def add(res, namespace, match):
+        for item in _list(api, dict(res, base="%s/namespaces/%s" % (res["base"], namespace))):
+            meta = item["metadata"]
+            if match(meta) and (meta.get("labels") or {}).get(key, p["component"]) == p["component"]:
+                found[meta["uid"]] = (res, meta)
+
+    def spec(res, meta):
+        try:
+            return _get(api, _path(res, meta)).get("spec") or {}
+        except ApiException as e:
+            if e.status == 404:
+                return {}
+            raise
+
+    for res, meta in list(objects.values()):
+        if res["resource"] == "statefulsets" and res["group"] == "apps" and pvcs:
+            spec_ = spec(res, meta)
+            names = [t["metadata"]["name"] for t in spec_.get("volumeClaimTemplates") or []]
+            pattern = re.compile("^(%s)-%s-[0-9]+$" % ("|".join(map(re.escape, names)), re.escape(meta["name"])))
+            if names:
+                add(pvcs, meta["namespace"], lambda m, pattern=pattern: pattern.match(m["name"]))
+        elif res["kind"] == "Certificate" and res["group"] == "cert-manager.io" and secrets:
+            name = spec(res, meta).get("secretName")
+            cert = meta["name"]
+            if name:
+                add(secrets, meta["namespace"], lambda m, name=name, cert=cert: m["name"] == name and (
+                    m.get("annotations") or {}).get("cert-manager.io/certificate-name") == cert)
+    return found
+
+
 def delete(api, p, module):
     selector = "%s/env=%s,%s/component=%s" % (p["label_prefix"], p["env"], p["label_prefix"], p["component"])
     resources = _discover(api, set(p["skip_resources"]))
     objects = _all_objects(api, resources, selector)
+    objects.update(_created_by(api, resources, objects, p))
     restored = _restore(api, resources, p, module)
     deleted = []
     for phase in PHASES:
@@ -383,7 +565,7 @@ def main():
             "env": {"type": "str"},
             "layer": {"type": "str", "default": "unknown"},
             "component": {"type": "str"},
-            "managers": {"type": "list", "elements": "str", "default": []},
+            "declared": {"type": "dict", "default": {}},
             "skip_resources": {"type": "list", "elements": "str", "default": []},
             "label_prefix": {"type": "str", "default": "ai-solutions.intel.com"},
             "restore_resources": {"type": "list", "elements": "str", "default": ["namespaces", "nodes"]},

@@ -17,21 +17,15 @@ ownership_label_prefix: "ai-solutions.intel.com"
 # the component that runs now (cleared once it is labelled).
 ownership_state_file: "{{ tmp_dir | default(playbook_dir ~ '/../env/local/logs/tmp') }}/ownership-uids.json"
 
-# Field managers of the installer's own tools. An object that appeared during a
-# component is only labelled if one of these wrote it, so objects an operator
-# creates in parallel are left alone.
-ownership_managers:
-  - helm                         # kubernetes.core.helm (chart objects)
-  - Helm                         # Helm release secrets
-  - OpenAPI-Generator            # kubernetes.core.k8s
-  - kubectl
-  - kubectl-client-side-apply
-  - kubectl-create
-  - oc
-  - model-manager
-  - ai-solutions-envoy-gateway   # envoy_gateway: server-side apply of its CRDs (envoy_gateway_crds_field_manager)
-  - erag-app-apisix              # erag app_apisix: server-side apply of its CRDs (apisix_crds_field_manager)
-  - cert-manager-certificates-issuing  # the Secret of a Certificate the component created
+# Objects a component creates outside its own tasks, which no task result names:
+# in a Job or a controller it starts. (model-manager prints what it applies the way
+# kubectl does, so its objects need no entry.) Each entry matches by any of kind, namespace,
+# name and labels; only objects that appeared while the component ran are labelled.
+ownership_declared:
+  app_keycloak_config:
+    - {kind: Secret, name: erag-credentials}         # keycloak configurator Job (kubectl apply)
+  app_edp:
+    - {kind: Secret, name: keycloak-minio-secret}    # keycloak client-secret Job (kubectl apply)
 
 # Never listed: high-churn objects that always have an owner, and APIs that are
 # slow or unsafe to list.
