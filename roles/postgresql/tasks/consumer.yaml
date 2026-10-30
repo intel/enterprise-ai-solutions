@@ -1,0 +1,60 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# PostgreSQL — ensure one app's database, user and <app>-db-secret
+# =============================================================================
+# For an app installed on its own (install <app> --only) after its teardown
+# removed the copied secret. Runs this role's install for that one entry, on the
+# existing cluster: the stored password, user and database are kept.
+#   postgresql_consumer  name in postgresql_databases (e.g. langfuse)
+
+- name: "postgresql | consumer {{ postgresql_consumer }} | PostgreSQL cluster"
+  kubernetes.core.k8s_info:
+    api_version: postgresql.cnpg.io/v1
+    kind: Cluster
+    name: "{{ postgresql_cluster_name }}"
+    namespace: "{{ postgresql_namespace }}"
+  register: _pg_consumer_cluster
+
+- name: "postgresql | consumer {{ postgresql_consumer }} | Installed and enabled"
+  vars:
+    _entry: "{{ __postgresql_effective_databases | selectattr('name', 'eq', postgresql_consumer) | list }}"
+  ansible.builtin.assert:
+    that:
+      - _pg_consumer_cluster.resources | length > 0
+      - _entry | length == 1
+    fail_msg: >-
+      {{ 'PostgreSQL is not installed: run install postgresql first.'
+         if _pg_consumer_cluster.resources | length == 0
+         else 'No enabled database ' ~ postgresql_consumer ~ ' in postgresql_databases.' }}
+    quiet: true
+
+# The first entry is the cluster's bootstrap database; the rest are added to it.
+- name: "postgresql | consumer {{ postgresql_consumer }} | Just this database"
+  ansible.builtin.set_fact:
+    _pg_consumer_dbs: >-
+      {{ ([postgresql_databases | first]
+          + (__postgresql_effective_databases | selectattr('name', 'eq', postgresql_consumer) | list))
+         | unique(attribute='name') }}
+
+# The app's teardown may still be deleting its namespace; a secret cannot be
+# created there until it is gone.
+- name: "postgresql | consumer {{ postgresql_consumer }} | Namespace not terminating"
+  vars:
+    _ns: "{{ (_pg_consumer_dbs | last).target_namespace | default(postgresql_consumer) }}"
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ _ns }}"
+  register: _pg_consumer_ns
+  until: (_pg_consumer_ns.resources | first | default({})).status.phase | default('') != 'Terminating'
+  retries: 60
+  delay: 5
+
+- name: "postgresql | consumer {{ postgresql_consumer }} | Database, user and secret"
+  ansible.builtin.include_tasks: install.yaml
+  vars:
+    __postgresql_effective_databases: "{{ _pg_consumer_dbs }}"
+    # Label only this app's namespace, not the bootstrap database's.
+    __postgresql_label_databases: "{{ _pg_consumer_dbs[-1:] }}"
