@@ -25,70 +25,49 @@
   when: _gw_grants.resources | length == 0
 
 - name: "gateway | apex | Admit apex routes only within their path grants"
-  kubernetes.core.k8s:
-    state: "{{ 'present' if gateway_path_mode | bool else 'absent' }}"
-    definition: "{{ lookup('ansible.builtin.template', 'apex-path-admission-policy.yaml.j2') | from_yaml_all | select | list }}"
+  ansible.builtin.include_tasks: apex_policy.yaml
 
-# The landing route lives in the gateway namespace and owns '/' exactly.
-- name: "gateway | apex | Publish the landing redirect path"
-  ansible.builtin.include_tasks: apex_path.yaml
-  vars:
-    gateway_apex_namespace: "{{ gateway_namespace }}"
-    gateway_apex_path: "/"
-  when: gateway_path_mode | bool and gateway_landing_path | length > 0
-
+# The landing redirect holds '/' only while no app does: an app that publishes
+# '/' takes it over (apex_path.yaml), and gets it back when it releases it.
 - name: "gateway | apex | Landing redirect"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: HTTPRoute
-      metadata:
-        name: apex-landing
-        namespace: "{{ gateway_namespace }}"
-      spec:
-        parentRefs:
-          - name: "{{ gateway_name }}"
-            namespace: "{{ gateway_namespace }}"
-            sectionName: https-apex
-        hostnames: ["{{ base_domain_name }}"]
-        rules:
-          # Exact '/', so unknown paths still 404.
-          - matches: [{path: {type: Exact, value: /}}]
-            filters:
-              - type: RequestRedirect
-                requestRedirect:
-                  path: {type: ReplaceFullPath, replaceFullPath: "{{ gateway_landing_path }}"}
-                  statusCode: 302
   when: gateway_path_mode | bool and gateway_landing_path | length > 0
-
-# A redirect carries no credentials; without this the gateway JWT answers 401.
-- name: "gateway | apex | Exempt the landing redirect from gateway auth"
-  ansible.builtin.include_tasks: route_auth_exempt.yaml
   vars:
-    gateway_route_name: apex-landing
-    gateway_route_namespace: "{{ gateway_namespace }}"
-    gateway_route_policy_name: apex-landing-no-auth
-  when: gateway_path_mode | bool and gateway_landing_path | length > 0
+    _root_owner: "{{ ((_gw_grants.resources | first | default({})).data | default({})).get('_root', '') }}"
+  block:
+    - name: "gateway | apex | Read path grants for the landing"
+      kubernetes.core.k8s_info:
+        kind: ConfigMap
+        name: "{{ gateway_path_grants_configmap }}"
+        namespace: "{{ gateway_namespace }}"
+      register: _gw_grants
+
+    - name: "gateway | apex | Hold '/' for the landing redirect"
+      ansible.builtin.include_tasks: apex_path.yaml
+      vars:
+        gateway_apex_namespace: "{{ gateway_namespace }}"
+        gateway_apex_path: "/"
+      when: _root_owner in ['', gateway_namespace]
+
+    - name: "gateway | apex | Landing redirect route"
+      ansible.builtin.include_tasks: apex_landing.yaml
+      vars:
+        gateway_landing_state: present
+      when: _root_owner in ['', gateway_namespace]
+
+    - name: "gateway | apex | '/' belongs to an app"
+      ansible.builtin.debug:
+        msg: >-
+          NOTICE: '/' on {{ base_domain_name }} is published by namespace {{ _root_owner }}, so the
+          landing redirect to {{ gateway_landing_path }} stays off until it releases '/'.
+      when: _root_owner not in ['', gateway_namespace]
 
 - name: "gateway | apex | Remove the landing redirect when off"
   when: not (gateway_path_mode | bool and gateway_landing_path | length > 0)
   block:
     - name: "gateway | apex | Delete the landing route"
-      kubernetes.core.k8s:
-        state: absent
-        api_version: gateway.networking.k8s.io/v1
-        kind: HTTPRoute
-        name: apex-landing
-        namespace: "{{ gateway_namespace }}"
-
-    - name: "gateway | apex | Drop the landing route's auth exemption"
-      ansible.builtin.include_tasks: route_auth_exempt.yaml
+      ansible.builtin.include_tasks: apex_landing.yaml
       vars:
-        gateway_route_name: apex-landing
-        gateway_route_namespace: "{{ gateway_namespace }}"
-        gateway_route_policy_name: apex-landing-no-auth
-        gateway_route_state: absent
+        gateway_landing_state: absent
 
     - name: "gateway | apex | Release the landing path grant"
       ansible.builtin.include_tasks: apex_path_remove.yaml

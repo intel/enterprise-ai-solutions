@@ -1,0 +1,13 @@
+---
+# =============================================================================
+# Headlamp — API server trusts Keycloak (apiserver mode)
+# =============================================================================
+# The kubernetes role points the API server at this file and seeds it empty;
+# its content is owned here and reloaded live by the API server. On a BYO
+# cluster the owner configures it (checked at the start of install.yaml).
+
+- name: "headlamp | apiserver | Configure control-plane nodes"
+  ansible.builtin.include_tasks: apiserver_nodes.yaml
+  vars:
+    __headlamp_trust: true
+  when: existing_kubernetes | default('', true) | length == 0

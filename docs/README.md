@@ -34,6 +34,7 @@ Install the platform, serve a model, deploy RAG, and go beyond a single node.
 | [Deployment Guide](deploy/install_platform.md) | Step-by-step platform install — no Kubernetes experience needed |
 | [Deploy a Model](deploy/deploy_models.md) | Deploying, accessing, and managing LLM inference with `model-manager` |
 | [Multi-Node & BYO Cluster](deploy/topologies.md) | Deploying across several machines, or onto an existing cluster |
+| [Headlamp and Platform Sign-in](deploy/headlamp.md) | The cluster web UI, Keycloak sign-in for every UI, and the API server step on BYO clusters |
 | [Deploy on OpenShift](deploy/openshift.md) | Preparing an OpenShift + OpenShift AI cluster from the marketplace, then installing on top (preview) |
 | [NetApp ONTAP and Trident](deploy/netapp_ontap.md) | Deploying with Trident + ONTAP as the storage backend |
 | [Network Architecture](deploy/networking.md) | Network topology, IP allocation, and how a request reaches a model |

@@ -55,9 +55,11 @@ gateway_request_timeout: "600s"           # Envoy default is 15s — too short f
 # --- Routing ---
 # subdomain: each service on its own host (keycloak.<base>, grafana.<base>, ...)
 # path:      one host, each service under its path (<base>/keycloak, ...);
-#            Langfuse stays on its own subdomain
+#            Langfuse and the vLLM-SR dashboard stay on their own subdomains.
+#            The services then share one browser origin (cookies, storage):
+#            choose subdomain where the apps must be isolated from each other.
 routing_mode: "subdomain"                 # subdomain | path
-# gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects
+# gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects (default: Headlamp when on; an app publishing / takes over)
 
 # --- Custom TLS (only used when gateway_tls_mode=custom) ---
 # gateway_tls_cert_file: "/path/to/cert.pem"
@@ -68,6 +70,8 @@ routing_mode: "subdomain"                 # subdomain | path
 istio_enabled: true
 observability_enabled: true
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
+headlamp_enabled: false                   # opt-in: Kubernetes web UI, Keycloak sign-in (platform realm)
+# headlamp_byo_apiserver_trusted: true    # BYO cluster: its API server already trusts the platform realm
 
 # --- Authentication ---
 # Keycloak is always deployed: people sign in through it and the gateway
@@ -113,6 +117,7 @@ seaweedfs_volume_storage_size: "10Gi"
 
 # --- Keycloak ---
 # keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted
+# keycloak_platform_bootstrap_admin_mfa: true   # platform-admin must enrol OTP at first login
 
 # --- Observability ---
 # observability_grafana_admin_password: set via GRAFANA_ADMIN_PASSWORD env var

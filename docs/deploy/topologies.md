@@ -211,6 +211,10 @@ Then install as normal:
 ./es_auto_installer.sh install inference --env myenv
 ```
 
+> **BYO with Headlamp:** the installer does not change your API server. See
+> [Headlamp and Platform Sign-in](headlamp.md#bring-your-own-kubernetes-byo) for the
+> one-time API server step, or the mode that needs none.
+
 > **BYO node topology:** node labels (`workload-class=platform/inference`) are not applied automatically. Apply them manually if you want workload placement:
 >
 > ```bash
