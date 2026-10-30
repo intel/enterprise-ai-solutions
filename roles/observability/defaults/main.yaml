@@ -108,7 +108,7 @@ gateway_namespace: "envoy-gateway-system"
 # ── Timeouts ──────────────────────────────────────────────────────────────────
 observability_wait_timeout: "600s"
 
-# ── OpenShift (tasks/openshift.yaml) ──────────────────────────────────────────
+# ── OpenShift (install_olm.yaml) ────────────────────────────────────────────────
 # The admin installs the operators from OperatorHub; this role only creates their
 # instances in observability_namespace. Metrics come from the cluster's own
 # monitoring (user-workload monitoring must be on), queried through Thanos Querier.

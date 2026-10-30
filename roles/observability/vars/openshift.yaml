@@ -1,0 +1,4 @@
+---
+# Instances of the operators the admin installed from OperatorHub, with the
+# cluster's own monitoring for metrics (install_olm.yaml).
+_observability_from_olm: true

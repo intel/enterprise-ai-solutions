@@ -1,0 +1,4 @@
+---
+# The chart's fixed UID/GID for the SeaweedFS pods.
+_seaweedfs_pod_ids: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+_seaweedfs_container_ids: {runAsUser: 1000}
