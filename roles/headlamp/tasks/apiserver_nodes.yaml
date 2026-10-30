@@ -10,16 +10,6 @@
   loop: "{{ __headlamp_cp_hosts }}"
   register: __headlamp_authn_stat
 
-- name: "headlamp | apiserver | Cluster built without --authentication-config"
-  ansible.builtin.debug:
-    msg: >-
-      NOTICE: {{ __headlamp_authn_stat.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}
-      has no {{ __headlamp_authn_file }} (cluster built before kubernetes_apiserver_authn_enabled);
-      Kubernetes calls from Headlamp return 401 until the cluster is rebuilt, or use headlamp_auth_mode: gateway.
-  when:
-    - __headlamp_trust | bool
-    - __headlamp_authn_stat.results | rejectattr('stat.exists') | list | length > 0
-
 # A file the API server cannot parse is kept out of use while it runs, but stops
 # it from starting at the next restart; check the rendered file first.
 - name: "headlamp | apiserver | Check the authentication config"

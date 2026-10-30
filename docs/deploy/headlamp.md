@@ -72,6 +72,19 @@ kubectl -n team-a create rolebinding headlamp-team-a \
   --clusterrole=edit --group=oidc:team-a
 ```
 
+## Which mode
+
+- **A cluster this installer built (with this release):** keep the default
+  `apiserver` mode. The installer makes the API server trust the realm, maps the
+  Keycloak host to the gateway on the control-plane nodes, and restarts
+  kube-apiserver once, one node at a time, so it sees that mapping.
+- **A cluster built before this release:** its API server was started without
+  `--authentication-config`, and re-running `install kubernetes` does not add it.
+  The Headlamp install stops; rebuild the cluster, or set
+  `headlamp_auth_mode: gateway`.
+- **Someone else's cluster (BYO):** set `headlamp_auth_mode: gateway`, unless the
+  cluster owner sets up the API server trust as below.
+
 ## Bring your own Kubernetes (BYO)
 
 With `existing_kubernetes` set, the installer does not change the API server. In
@@ -113,5 +126,5 @@ stop message, client ID `headlamp`, username claim `preferred_username`, groups 
 | Symptom | Cause |
 |---------|-------|
 | 403 right after the Keycloak login | The account is not in `headlamp_allowed_groups` |
-| Signed in, but every page shows 401 | The API server does not trust the realm (BYO: see above) |
+| "The cluster did not accept your sign-in" | The API server does not trust the realm, or cannot reach Keycloak for its keys (the issuer host must resolve to the gateway on the control-plane nodes). After the realm is re-created, click Sign In once for a fresh token |
 | Signed in, but resources are forbidden | The person's groups have no RoleBinding (`apiserver` mode) |

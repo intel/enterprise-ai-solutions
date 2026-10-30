@@ -44,13 +44,52 @@
       ansible.builtin.assert:
         that: headlamp_byo_apiserver_trusted | bool
         fail_msg: >-
-          existing_kubernetes is set, so this installer does not change the API server, and in
-          apiserver mode Headlamp needs it to trust issuer {{ __headlamp_issuer_url }} (audience
-          {{ headlamp_oidc_client_id }}; user = claim preferred_username, groups = claim groups, both
-          prefixed '{{ headlamp_oidc_prefix }}'). Apply {{ log_dir }}/headlamp-authentication-config.yaml
-          with kube-apiserver --authentication-config (or the provider's OIDC setting on managed clusters),
-          then set headlamp_byo_apiserver_trusted: true. Or set headlamp_auth_mode: gateway, which needs
-          no API server change. See docs/deploy/headlamp.md.
+          This cluster is not built by the installer (existing_kubernetes is set). Quickest: set
+          headlamp_auth_mode: gateway (one shared read-only account, no API server change). For
+          per-person access instead, the cluster owner makes the API server trust issuer
+          {{ __headlamp_issuer_url }} (audience {{ headlamp_oidc_client_id }}; user = claim
+          preferred_username, groups = claim groups, both prefixed '{{ headlamp_oidc_prefix }}'):
+          apply {{ log_dir }}/headlamp-authentication-config.yaml with kube-apiserver
+          --authentication-config (or the provider's OIDC setting on managed clusters), then set
+          headlamp_byo_apiserver_trusted: true. See docs/deploy/headlamp.md.
+        quiet: true
+
+# ── Cluster this installer built, apiserver mode: its API server must have been
+# started with --authentication-config, which only a fresh build adds (a re-run
+# of install kubernetes seeds the file but does not change the running flags).
+
+- name: "headlamp | Installer-built cluster: API server trust"
+  when: __headlamp_apiserver_mode | bool and existing_kubernetes | default('', true) | length == 0
+  block:
+    - name: "headlamp | API server pods"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: kube-system
+        label_selectors: [component=kube-apiserver]
+      register: __headlamp_apiservers
+
+    - name: "headlamp | API server started with --authentication-config"
+      vars:
+        # Nodes whose kube-apiserver lacks the flag (kubeadm puts it in command).
+        _missing: >-
+          {%- set out = [] -%}
+          {%- for p in __headlamp_apiservers.resources -%}
+          {%- set c = p.spec.containers | first -%}
+          {%- if (c.command | default([]) + c.args | default([])) | select('match', __headlamp_authn_flag | regex_escape) | list | length == 0 -%}
+          {%- set _ = out.append(p.spec.nodeName) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      ansible.builtin.assert:
+        that:
+          - __headlamp_apiservers.resources | length > 0
+          - _missing | length == 0
+        fail_msg: >-
+          kube-apiserver on {{ _missing | join(', ') if _missing else 'this cluster' }} was started without
+          --authentication-config (cluster built before this release), so it would reject every Headlamp
+          sign-in. Quickest: set headlamp_auth_mode: gateway (one shared read-only account). For per-person
+          access, rebuild the cluster with this installer; re-running install kubernetes does not add the flag.
+          See docs/deploy/headlamp.md.
         quiet: true
 
 - name: "headlamp | Namespace"
