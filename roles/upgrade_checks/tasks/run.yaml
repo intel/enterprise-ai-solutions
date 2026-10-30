@@ -1,0 +1,111 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Included from preflight after the plan is resolved, before anything mutates.
+# Notes whether the cluster holds records; on install, reads them, classifies
+# each planned layer against the version of this release and runs the checks.
+- name: "upgrade_checks | Note the planned layers and where each layer's repository is"
+  ansible.builtin.set_fact:
+    _upgrade_layers: "{{ _active_components | map(attribute='layer') | unique | list }}"
+    _installer_version: "{{ lookup('ansible.builtin.file', role_path ~ '/../../VERSION') | trim }}"
+    _layer_dirs: {}
+    _layer_records: {}
+    _layer_release: {}
+    _layer_class: {}
+    _upgrade_verdicts: []
+
+# No cluster yet (first pass of a cold install) or none any more (last pass of
+# an infrastructure teardown): every layer is fresh and nothing is recorded.
+- name: "upgrade_checks | Check that the cluster answers"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ upgrade_record_namespace }}"
+  register: _record_probe
+  failed_when: false
+
+- name: "upgrade_checks | Note whether records are read and written"
+  ansible.builtin.set_fact:
+    _record_cluster: "{{ _record_probe.resources | default([]) | length > 0 }}"
+
+- name: "upgrade_checks | Classify and check the install"
+  when: component_action == 'install'
+  block:
+    - name: "upgrade_checks | Find each layer's repository"
+      ansible.builtin.set_fact:
+        _layer_dirs: "{{ _layer_dirs | claim_layer_dirs(_manifest, item.path | dirname) }}"
+      vars:
+        _manifest: "{{ lookup('ansible.builtin.template', item.path) | from_yaml }}"
+      loop: "{{ (_ext_manifests.files | default([])) | sort(attribute='path') }}"
+      loop_control:
+        label: "{{ item.path | dirname }}"
+
+    - name: "upgrade_checks | Read the deployment records"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ item }}-deployment-manifest"
+        namespace: "{{ upgrade_record_namespace }}"
+      loop: "{{ layers | map(attribute='name') | list }}"
+      register: _record_reads
+      when: _record_cluster
+
+    - name: "upgrade_checks | Lift the deployment records"
+      ansible.builtin.set_fact:
+        _layer_records: >-
+          {{ _layer_records | combine({item.item: item.resources[0].data['manifest.yaml'] | from_yaml | lift_layer_record}) }}
+      loop: "{{ _record_reads.results | default([]) | selectattr('resources', 'defined') | selectattr('resources') | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: "upgrade_checks | Resolve each planned layer's release version"
+      ansible.builtin.set_fact:
+        _layer_release: "{{ _layer_release | combine({item: _release}) }}"
+        _layer_class: >-
+          {{ _layer_class | combine({item: _layer_records[item] | default({}) | classify_run(_release, item)}) }}
+      vars:
+        # infrastructure and platform carry the installer's VERSION; every other layer its own version.yaml.
+        _version_file: "{{ _layer_dirs[item] | default('') }}/version.yaml"
+        _release: >-
+          {{ _installer_version if item in ['infrastructure', 'platform']
+             else (lookup('ansible.builtin.file', _version_file) | from_yaml | layer_release_version) if _version_file is file
+             else none }}
+      loop: "{{ _upgrade_layers }}"
+
+    - name: "upgrade_checks | Note which layers declare supports.upgrade"
+      ansible.builtin.set_fact:
+        _layer_supports_upgrade: >-
+          {{ dict(layers | map(attribute='name') | zip(layers | map(attribute='supports.upgrade', default=false))) }}
+
+    - name: "upgrade_checks | Run the checks"
+      ansible.builtin.include_tasks: "checks/{{ check }}.yaml"
+      vars:
+        _check_layers: "{{ _layer_class | check_layers(check, upgrade_checks_every_class) }}"
+      loop: "{{ upgrade_checks }}"
+      loop_control:
+        loop_var: check
+
+    - name: "upgrade_checks | Decide which verdicts gate the run"
+      ansible.builtin.set_fact:
+        _upgrade_gate: >-
+          {{ _upgrade_verdicts | upgrade_gate(_layer_supports_upgrade, _upgrade_force | default(false) | bool) }}
+
+    - name: "upgrade_checks | Show the run class and the checks"
+      ansible.builtin.debug:
+        msg: |-
+          {% for layer in _upgrade_layers %}
+          {{ layer }}: {{ _layer_class[layer] }} ({{ _layer_records.get(layer, {}).version | default('none', true) }} -> {{ _layer_release[layer] or 'unversioned' }})
+          {% for check in _upgrade_gate.checks | selectattr('layer', 'equalto', layer) %}
+            {{ check.check }}: {{ check.verdict }}{{ ' (gating)' if check.gating else ' (advisory)' if check.verdict == 'blocking' else '' }} — {{ check.reason }}
+          {% endfor %}
+          {% endfor %}
+
+    - name: "upgrade_checks | Refuse a run a gating check blocks"
+      ansible.builtin.fail:
+        msg: |-
+          Upgrade checks refuse this install; nothing was changed.
+          {% for check in _upgrade_gate.checks | selectattr('gating') %}
+            - {{ check.layer }} {{ check.check }}: {{ check.reason }}. Resolve: {{ check.resolve }}
+          {% endfor %}
+          To run anyway, add --force; the run is then recorded as forced.
+      when: _upgrade_gate.refused | length > 0
