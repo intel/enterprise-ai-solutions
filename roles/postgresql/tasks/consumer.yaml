@@ -31,19 +31,22 @@
          else 'No enabled database ' ~ postgresql_consumer ~ ' in postgresql_databases.' }}
     quiet: true
 
-# The first entry is the cluster's bootstrap database; the rest are added to it.
+# The cluster is built from the first enabled entry (its bootstrap database), so
+# it stays in the list install.yaml reads; only the app's entry is reconciled.
 - name: "postgresql | consumer {{ postgresql_consumer }} | Just this database"
   ansible.builtin.set_fact:
+    _pg_consumer_app: "{{ __postgresql_effective_databases | selectattr('name', 'eq', postgresql_consumer) | list }}"
     _pg_consumer_dbs: >-
-      {{ ([postgresql_databases | first]
+      {{ ([__postgresql_effective_databases | first]
           + (__postgresql_effective_databases | selectattr('name', 'eq', postgresql_consumer) | list))
          | unique(attribute='name') }}
+  no_log: "{{ secure_logs }}"
 
 # The app's teardown may still be deleting its namespace; a secret cannot be
 # created there until it is gone.
 - name: "postgresql | consumer {{ postgresql_consumer }} | Namespace not terminating"
   vars:
-    _ns: "{{ (_pg_consumer_dbs | last).target_namespace | default(postgresql_consumer) }}"
+    _ns: "{{ _pg_consumer_app[0].target_namespace | default(postgresql_consumer) }}"
   kubernetes.core.k8s_info:
     kind: Namespace
     name: "{{ _ns }}"
@@ -56,5 +59,5 @@
   ansible.builtin.include_tasks: install.yaml
   vars:
     __postgresql_effective_databases: "{{ _pg_consumer_dbs }}"
-    # Label only this app's namespace, not the bootstrap database's.
-    __postgresql_label_databases: "{{ _pg_consumer_dbs[-1:] }}"
+    # Namespace, labels and secret copy for this app only, not the bootstrap's.
+    __postgresql_consumer_databases: "{{ _pg_consumer_app }}"
