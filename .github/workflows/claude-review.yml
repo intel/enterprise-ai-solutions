@@ -1,7 +1,7 @@
 # pull_request_target: runs the main-branch copy of this file on a base-branch checkout; the PR is
-# only read as a diff, never checked out. Only trusted authors trigger it, and the agent has no
-# shell or write tools, so diff content cannot run commands, push, or edit files.
-# Review only - no approval is granted.
+# only read as a diff, never checked out. Runs only when a trusted author pushes to their own
+# non-draft PR, and the agent has no shell or file-write tools, so diff content cannot run commands,
+# push, or edit files. Review only - no approval is granted.
 name: claude-review
 on:
   pull_request_target:
@@ -15,7 +15,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   review:
-    if: contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    if: >-
+      !github.event.pull_request.draft &&
+      github.actor == github.event.pull_request.user.login &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-24.04
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -29,15 +32,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          curl -sf -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.diff" \
+          curl -sSf -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.diff" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/$PR" > "$RUNNER_TEMP/pr.diff"
-      - uses: anthropics/claude-code-action@2ac8fdedfd9436a306b91c2570f9c0f0351aea1d # v1
+      - id: claude
+        uses: anthropics/claude-code-action@6d5ae526d25ce88daa2200be073e1a373167f064 # v1.0.265
         env:
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           AWS_REGION: us-east-2
         with:
           use_bedrock: "true"
-          github_token: ${{ github.token }}
+          github_token: ${{ secrets.AI_SYS_BOT_GH_TOKEN }}
           track_progress: true
           prompt: |
             Review this PR against .github/REVIEW_RULES.md (read it first).
@@ -48,7 +52,7 @@ jobs:
             then the findings as the rules describe.
           claude_args: >-
             --model us.anthropic.claude-opus-5-5 --fallback-model us.anthropic.claude-opus-5
-            --max-turns 30 --disallowedTools Bash,Edit,Write,MultiEdit
+            --max-turns 30 --disallowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
       - name: show Claude error
-        if: failure()
+        if: failure() && steps.claude.outcome == 'failure'
         run: jq -r '.. | objects | select(.type? == "result") | .result // .error // empty' "$RUNNER_TEMP/claude-execution-output.json" | head -c 3000
