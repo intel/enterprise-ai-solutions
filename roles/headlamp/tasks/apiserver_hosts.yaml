@@ -1,0 +1,52 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Headlamp — does kube-apiserver on one control-plane node see the issuer host
+# =============================================================================
+# Found on the node itself (the kubelet's pod directory, named after the pod's
+# config hash), so node and inventory names need not match.
+#   __hl_node  inventory host of the control-plane node
+#   __hl_line  the /etc/hosts line the API server must see
+
+- name: "headlamp | apiserver | {{ __hl_node }} | Find the running API server pod"
+  ansible.builtin.find:
+    paths: "{{ headlamp_kubelet_dir }}/pods"
+    patterns: kube-apiserver
+    file_type: directory
+    recurse: true
+    depth: 3
+  register: __hl_found
+  become: true
+  delegate_to: "{{ __hl_node }}"
+
+- name: "headlamp | apiserver | {{ __hl_node }} | Its pod directory"
+  ansible.builtin.set_fact:
+    # <pods>/<config hash>/containers/kube-apiserver; the newest if several.
+    __hl_pod_dir: >-
+      {{ (__hl_found.files | sort(attribute='mtime') | last).path | dirname | dirname
+         if __hl_found.files | length > 0 else '' }}
+
+- name: "headlamp | apiserver | {{ __hl_node }} | No API server pod found"
+  ansible.builtin.debug:
+    msg: >-
+      NOTICE: no kube-apiserver pod under {{ headlamp_kubelet_dir }}/pods on {{ __hl_node }}, so it was
+      not checked for the issuer host entry (set headlamp_kubelet_dir if the kubelet uses another root).
+  when: __hl_pod_dir | length == 0
+
+- name: "headlamp | apiserver | {{ __hl_node }} | Its /etc/hosts"
+  ansible.builtin.slurp:
+    src: "{{ __hl_pod_dir }}/etc-hosts"
+  register: __hl_hosts
+  become: true
+  delegate_to: "{{ __hl_node }}"
+  when: __hl_pod_dir | length > 0
+
+- name: "headlamp | apiserver | {{ __hl_node }} | Restart it to see the entry"
+  ansible.builtin.include_tasks: restart_apiserver.yaml
+  vars:
+    __hl_old_hash: "{{ __hl_pod_dir | basename }}"
+  when:
+    - __hl_pod_dir | length > 0
+    - __hl_line not in (__hl_hosts.content | b64decode).splitlines()

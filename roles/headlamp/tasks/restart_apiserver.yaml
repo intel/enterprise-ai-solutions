@@ -53,26 +53,31 @@
           - _pod.metadata.annotations['enterprise-ai/issuer-hosts'] is defined
         quiet: true
 
-    # The API server is down for a moment: k8s_info fails until it is back.
-    - name: "headlamp | apiserver restart | {{ __hl_node }} | Wait for the new API server"
-      kubernetes.core.k8s_info:
-        kind: Pod
-        namespace: kube-system
-        label_selectors: [component=kube-apiserver]
-        field_selectors: ["spec.nodeName={{ __hl_node }}"]
-      register: __hl_pod
+    # The kubelet starts a new pod (a new config hash) with a fresh /etc/hosts.
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Wait for the new API server pod"
+      ansible.builtin.find:
+        paths: "{{ headlamp_kubelet_dir }}/pods"
+        patterns: kube-apiserver
+        file_type: directory
+        recurse: true
+        depth: 3
+      register: __hl_new
       until: >-
-        __hl_pod.resources | default([]) | length > 0
-        and (__hl_pod.resources | first).metadata.annotations['kubernetes.io/config.hash'] | default('') != __hl_old_hash
-        and (__hl_pod.resources | first).status.conditions | default([])
-            | selectattr('type', 'eq', 'Ready') | selectattr('status', 'eq', 'True') | list | length > 0
+        __hl_new.files | map(attribute='path') | map('dirname') | map('dirname') | map('basename')
+        | reject('equalto', __hl_old_hash) | list | length > 0
       retries: 60
       delay: 5
-      failed_when: false
+      become: true
+      delegate_to: "{{ __hl_node }}"
+
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | The new pod"
+      ansible.builtin.set_fact:
+        __hl_new_dir: >-
+          {{ (__hl_new.files | sort(attribute='mtime') | last).path | dirname | dirname }}
 
     - name: "headlamp | apiserver restart | {{ __hl_node }} | Read the new API server's hosts"
       ansible.builtin.slurp:
-        src: "{{ headlamp_kubelet_dir }}/pods/{{ (__hl_pod.resources | first).metadata.annotations['kubernetes.io/config.hash'] }}/etc-hosts"
+        src: "{{ __hl_new_dir }}/etc-hosts"
       register: __hl_hosts_new
       become: true
       delegate_to: "{{ __hl_node }}"
@@ -81,6 +86,24 @@
       ansible.builtin.assert:
         that: __hl_line in (__hl_hosts_new.content | b64decode).splitlines()
         fail_msg: "kube-apiserver on {{ __hl_node }} restarted but its /etc/hosts lacks '{{ __hl_line }}'."
+        quiet: true
+
+    # The API server is down for a moment: k8s_info fails until it is back.
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | Wait for it to be Ready"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: kube-system
+        label_selectors: [component=kube-apiserver]
+      register: __hl_pods
+      until: __hl_new_ready | bool
+      retries: 60
+      delay: 5
+      failed_when: false
+
+    - name: "headlamp | apiserver restart | {{ __hl_node }} | It is Ready"
+      ansible.builtin.assert:
+        that: __hl_new_ready | bool
+        fail_msg: "kube-apiserver on {{ __hl_node }} did not become Ready."
         quiet: true
 
   rescue:

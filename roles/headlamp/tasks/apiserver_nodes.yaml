@@ -50,35 +50,10 @@
 # The API server sees /etc/hosts as it was when it started: restart it, one node
 # at a time, where its copy lacks the entry.
 - name: "headlamp | apiserver | API server picks up the issuer host"
-  when: __headlamp_trust | bool and headlamp_pin_issuer_host | bool and not ansible_check_mode
+  ansible.builtin.include_tasks: apiserver_hosts.yaml
   vars:
     __hl_line: "{{ __headlamp_gateway_ip }} {{ __headlamp_issuer_host }}"
-  block:
-    - name: "headlamp | apiserver | Running API server pods"
-      kubernetes.core.k8s_info:
-        kind: Pod
-        namespace: kube-system
-        label_selectors: [component=kube-apiserver]
-        field_selectors: ["spec.nodeName={{ item }}"]
-      loop: "{{ __headlamp_cp_hosts }}"
-      register: __hl_pods
-
-    - name: "headlamp | apiserver | Their /etc/hosts"
-      ansible.builtin.slurp:
-        src: "{{ headlamp_kubelet_dir }}/pods/{{ (item.resources | first).metadata.annotations['kubernetes.io/config.hash'] }}/etc-hosts"
-      loop: "{{ __hl_pods.results | selectattr('resources') | list }}"
-      loop_control:
-        label: "{{ item.item }}"
-      register: __hl_hosts
-      become: true
-      delegate_to: "{{ item.item }}"
-
-    - name: "headlamp | apiserver | Restart where the entry is missing"
-      ansible.builtin.include_tasks: restart_apiserver.yaml
-      vars:
-        __hl_node: "{{ item.item.item }}"
-        __hl_old_hash: "{{ (item.item.resources | first).metadata.annotations['kubernetes.io/config.hash'] }}"
-      loop: "{{ __hl_hosts.results | rejectattr('content', 'undefined') | list }}"
-      loop_control:
-        label: "{{ item.item.item }}"
-      when: __hl_line not in (item.content | b64decode).splitlines()
+  loop: "{{ __headlamp_cp_hosts }}"
+  loop_control:
+    loop_var: __hl_node
+  when: __headlamp_trust | bool and headlamp_pin_issuer_host | bool and not ansible_check_mode
