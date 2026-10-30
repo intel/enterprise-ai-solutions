@@ -1494,15 +1494,21 @@ main() {
         run_kubespray install
         run site "${vars[@]}" -e "_kubespray_skip_cluster_yml=true" "${EXTRA_VARS[@]}"
     elif [[ "$_includes_k8s" == "true" && "$ACTION" == "teardown" ]]; then
-        # Tear down non-kubernetes components first (need cluster alive), then reset.
+        # Tear down what runs on kubernetes first (it needs the cluster alive), then
+        # reset, then what kubernetes runs on: on rack-scale that is the fabric
+        # carrying the node IPs, which the reset still needs.
         if [[ "$TARGET" != "kubernetes" ]]; then
             # Merged, not replaced: this pass must still leave kubernetes for the reset.
             run site "${vars[@]}" -e "_skip_components=kubernetes${SKIP:+,${SKIP}}" \
-                -e "component_action=teardown" "${EXTRA_VARS[@]}"
+                -e "_teardown_phase=before_reset" -e "component_action=teardown" "${EXTRA_VARS[@]}"
         fi
         run site "${vars[@]}" -e "target=kubernetes" -e "_kubespray_prep_only=true" -e "_include_deps=false" "${EXTRA_VARS[@]}"
         run_kubespray teardown
         run site "${vars[@]}" -e "target=kubernetes" -e "component_action=teardown" -e "_include_deps=false" "${EXTRA_VARS[@]}"
+        if [[ "$TARGET" != "kubernetes" ]]; then
+            run site "${vars[@]}" -e "_skip_components=kubernetes${SKIP:+,${SKIP}}" \
+                -e "_teardown_phase=after_reset" -e "component_action=teardown" "${EXTRA_VARS[@]}"
+        fi
         [[ -f "${ENV_DIR}/kubeconfig.yaml" ]] && { rm -f "${ENV_DIR}/kubeconfig.yaml"; ok "Removed kubeconfig"; }
     else
         # No kubespray involved — single pass

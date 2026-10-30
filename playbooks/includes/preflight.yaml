@@ -366,6 +366,20 @@
                                           include_deps=_include_deps | default(true) | bool,
                                           skip=_skip_components | default('')) }}
 
+# Teardown around the kubespray reset (es_auto_installer.sh). What kubernetes
+# depends on (on rack-scale, the fabric that carries the node IPs) has to outlive
+# the reset: the pass before it leaves those components out, the pass after it
+# runs only them.
+- name: "Preflight - Teardown: split the plan around the kubernetes reset"
+  when: (_teardown_phase | default('')) in ['before_reset', 'after_reset']
+  vars:
+    _under_kubernetes: "{{ components | component_deps('kubernetes') }}"
+  ansible.builtin.set_fact:
+    _active_components: >-
+      {{ (_active_components | rejectattr('name', 'in', _under_kubernetes) | list)
+         if _teardown_phase == 'before_reset'
+         else (_active_components | selectattr('name', 'in', _under_kubernetes) | list) }}
+
 # The record is the source of truth for which solutions an env includes, so a plan that
 # reaches a layer it does not list is a mismatch between env/ and ext/, not a preference:
 # ext/ is per checkout and shared by every env, so a clone alone must not pull a solution
