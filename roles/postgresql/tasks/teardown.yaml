@@ -19,12 +19,15 @@
 
 # The CNPG install creates cnpg_namespace (create_namespace). Deleted by name until
 # namespaces and CRDs carry ownership labels; CRDs stay until then (label_crds.yaml).
+# With the marketplace operator the installer never creates it: a namespace of that
+# name is the admin's, possibly the operator's own.
 - name: "postgresql | Delete CNPG operator namespace"
   kubernetes.core.k8s:
     kind: Namespace
     name: "{{ cnpg_namespace }}"
     state: absent
     wait: true
+  when: not _postgresql_from_olm | bool
 
 - name: "postgresql | Teardown complete"
   ansible.builtin.debug:

@@ -29,6 +29,8 @@
 
 # Under mesh-wide STRICT the host-network apiserver (no mesh identity) can't reach the
 # CNPG admission webhook; open only its port, keep the rest of the pod STRICT.
+# Only for the operator this role installs: the marketplace one runs in the admin's
+# namespace, outside the mesh.
 - name: "postgresql | Allow apiserver to reach CNPG webhook (port-level mTLS)"
   kubernetes.core.k8s:
     state: present
@@ -45,7 +47,9 @@
         mtls:
           mode: STRICT
         portLevelMtls: "{{ {'9443': {'mode': 'PERMISSIVE'}} }}"
-  when: istio_enabled | default(false) | bool
+  when:
+    - istio_enabled | default(false) | bool
+    - not _postgresql_from_olm | bool
 
 - name: "postgresql | Label namespace — PSS"
   kubernetes.core.k8s:
