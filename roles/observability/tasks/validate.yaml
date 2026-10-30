@@ -52,6 +52,14 @@
         fail_msg: "Grafana has no ready replicas"
         success_msg: "Grafana ready ({{ _obs_grafana.resources[0].status.readyReplicas | default(0) }} replicas)"
 
+    - name: "observability | Grafana signs people in through Keycloak"
+      ansible.builtin.include_role:
+        name: keycloak
+        tasks_from: check_sign_in.yaml
+      vars:
+        keycloak_sign_in: {name: Grafana, url: "{{ observability_grafana_url }}/"}
+      when: _obs_grafana_sso | bool and observability_gateway_publish | bool
+
     - name: "observability | Check Node Exporter DaemonSet"
       kubernetes.core.k8s_info:
         api_version: apps/v1

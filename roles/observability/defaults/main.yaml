@@ -54,6 +54,9 @@ observability_grafana_sso: "{{ keycloak_enabled | default(true) | bool }}"
 observability_grafana_oidc_client_id: "grafana"
 # Groups the gateway admits; empty admits every signed-in realm user.
 observability_grafana_allowed_groups: []
+# The Helm stack only: on OpenShift the erag layer signs Grafana in
+# (grafana-sso-env, install_olm.yaml).
+_obs_grafana_sso: "{{ observability_grafana_sso | bool and not _observability_from_olm | bool }}"
 
 # ── Prometheus retention & storage ───────────────────────────────────────────
 observability_prometheus_retention: "30d"
