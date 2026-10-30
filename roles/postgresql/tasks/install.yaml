@@ -358,7 +358,7 @@
       kind: Namespace
       metadata:
         name: "{{ item.target_namespace | default(item.name) }}"
-  loop: "{{ __postgresql_effective_databases }}"
+  loop: "{{ __postgresql_consumer_databases | default(__postgresql_effective_databases) }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"
 
@@ -372,7 +372,7 @@
         name: "{{ item.target_namespace | default(item.name) }}"
         labels:
           istio.io/dataplane-mode: "ambient"
-  loop: "{{ __postgresql_label_databases | default(__postgresql_effective_databases) }}"
+  loop: "{{ __postgresql_consumer_databases | default(__postgresql_effective_databases) }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"
   when: istio_enabled | default(false) | bool
@@ -390,7 +390,7 @@
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
   when: enforce_pss | default(false) | bool
-  loop: "{{ __postgresql_label_databases | default(__postgresql_effective_databases) }}"
+  loop: "{{ __postgresql_consumer_databases | default(__postgresql_effective_databases) }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"
 
@@ -400,7 +400,7 @@
     kind: Secret
     name: "postgresql-{{ item.name }}-secret"
     namespace: "{{ postgresql_namespace }}"
-  loop: "{{ __postgresql_effective_databases }}"
+  loop: "{{ __postgresql_consumer_databases | default(__postgresql_effective_databases) }}"
   loop_control:
     label: "{{ item.name }}"
   register: _pg_db_secrets
