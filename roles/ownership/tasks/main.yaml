@@ -16,7 +16,7 @@
     action: snapshot
     state_file: "{{ ownership_state_file }}"
     label_prefix: "{{ ownership_label_prefix }}"
-    managers: "{{ ownership_managers }}"
+    declared: "{{ ownership_declared }}"
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
   register: _ownership_snapshot
@@ -53,7 +53,7 @@
     env: "{{ env_name | default('local') }}"
     layer: "{{ component.layer | default('unknown') }}"
     component: "{{ component.name }}"
-    managers: "{{ ownership_managers }}"
+    declared: "{{ ownership_declared }}"
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
   register: _ownership_labelled

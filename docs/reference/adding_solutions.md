@@ -284,39 +284,59 @@ ai-solutions.intel.com/layer:     <layer>
 ai-solutions.intel.com/component: <component>
 ```
 
-Before the first component it records the UID of every object on the cluster. After each
-component, also one that failed, it labels the objects that
+Before the first component it records the UID of every object on the cluster. While the
+component runs, a callback (`callback_plugins/ownership_record.py`) records what its own
+tasks report:
+
+- objects a `kubernetes.core.k8s` or `k8s_json_patch` task returns; with `no_log`, the
+  object named in the task's `definition`,
+- releases a `kubernetes.core.helm` task installs or upgrades, also one that failed,
+- objects a `command` or `shell` task prints the way `kubectl` does
+  (`deployment.apps/web created`, also `configured`, `unchanged`, `serverside-applied`,
+  `labeled`, `annotated`, `patched`), which covers `kubectl`, `oc` and `model-manager`, and
+  the release `helm install` / `upgrade` prints,
+- objects the component declares in `ownership_declared` (see below).
+
+After the component, also one that failed, it labels the objects these name that
 
 - were not there before, so they appeared while the component ran,
 - have no `ownerReferences` (their owner is labelled, and garbage collection removes them),
-- were written by the installer's own tools: Helm, `kubernetes.core.k8s`, `kubectl`/`oc`,
-  `model-manager` (`ownership_managers`). Objects an operator creates in parallel are left alone.
+- carry no component label yet.
 
-Helm releases are labelled whole: when the release's first release secret (`v1`) is new,
-or one of its release secrets is already labelled for the component, all objects Helm annotates with that release
-(`meta.helm.sh/release-name`) and all its release secrets are labelled. A release that was
-there before keeps its release secrets unlabelled too, so teardown never deletes part of a
-release's history and leaves the release broken.
+Nothing else is labelled: an object another user, a CronJob or an operator creates while the
+installer runs is left alone, even in the same namespace.
+
+Helm releases are labelled whole: when a task reported the release and its first release
+secret (`v1`) is new, or one of its release secrets is already labelled for the component,
+the release secrets, all objects of the release's manifest and hooks, all objects Helm
+annotates with the release (`meta.helm.sh/release-name`) and the chart's new CRDs (`crds/`)
+are labelled. A release that was there before keeps its release secrets unlabelled too, so
+teardown never deletes part of a release's history and leaves the release broken.
 
 Labels a component adds to a Namespace or Node that was there before (a customer's
 namespace that joins the mesh with `istio.io/dataplane-mode`, a node placement label) are
 recorded, not labelled: the object gets the annotation
 `ai-solutions.intel.com/labels-before.<env>.<component>`, with the value each key had before
-(`null`: absent) and the value set. Only keys that one of the tools above wrote count
-(`managedFields`); kinds are listed in `ownership_restore_resources`. Teardown puts the old
-values back for the keys that still hold the value set, and drops the annotation. A key
-someone changed since is left as it is.
+(`null`: absent) and the value set. Only objects a task reported count; kinds are listed in
+`ownership_restore_resources`. Teardown puts the old values back for the keys that still
+hold the value set, and drops the annotation. A key someone changed since is left as it is.
 
 A run that is killed (Ctrl-C, a lost session) never gets to label the component it was in.
 The component is noted in the state file before it runs, and the next `install` or
-`teardown` labels what appeared since, as that component, before it records the cluster.
+`teardown` labels what its records name, as that component, before it records the cluster.
+The objects that appeared while a component failed or was killed and that nothing named are
+kept aside for it: when its next run reports one of them (as `unchanged` or an update), it
+is labelled as new.
 
 Teardown first restores the recorded labels, then deletes `env=<env>,component=<component>` in this order: custom resources
 first, while their operators still run; then webhooks and APIServices; namespaced objects
 (Helm release secrets included); namespaces; cluster-scoped objects; CRDs last. It waits
 for each step. If an object is still there after `ownership_delete_timeout`, it fails and
 stops before the next step, which may hold the controller that clears the object's
-finalizer. Run teardown again once the cause is fixed.
+finalizer. Run teardown again once the cause is fixed. Teardown also deletes what a
+controller makes from a labelled object and leaves behind: the PVCs of a labelled
+StatefulSet's `volumeClaimTemplates`, and the Secret cert-manager writes for a labelled
+Certificate (`spec.secretName`, annotated with the certificate's name).
 
 What this means for a role:
 
@@ -326,11 +346,14 @@ What this means for a role:
   other change to it in `teardown.yaml` and set `teardown: both`.
 - **Don't recreate objects with `force: true`** (replace). The new object keeps its UID but
   loses the labels.
-- **Use the tools above.** An object created by anything else (a Job, a script in a pod)
-  is not labelled. In a namespace the component created that is fine: it goes with the
-  namespace.
-- **Add your own field manager.** A server-side apply with `field_manager: <name>` writes
-  as `<name>`, not as one of the tools above. Add it to `ownership_managers`.
+- **Let the task report what it creates.** Use `kubernetes.core.k8s` or
+  `kubernetes.core.helm`, or a command that prints `kubectl`-style lines. A `kubectl`
+  command with `-o name` or `--quiet` prints nothing the callback can read.
+- **Declare what a Job creates.** An object created by a Job, a script in a pod or a
+  controller the component starts is not in any task result. In a namespace the component
+  created that is fine: it goes with the namespace. Elsewhere, add it to
+  `ownership_declared` under the component (`kind`, `namespace`, `name`, `labels`, any of
+  them); it is labelled only if it appeared while the component ran.
 
 ---
 
