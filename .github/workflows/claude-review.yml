@@ -4,7 +4,7 @@
 # push, or edit files. Review only - no approval is granted.
 # Maintainer-triggered runs (ready_for_review, pushes to others' PRs) are skipped on purpose.
 # Diffs the API refuses (HTTP 406, too large) fail the run instead of being reviewed.
-# AI_SYS_BOT_GH_TOKEN posts as sys-aibot; github.token only fetches the diff.
+# AI_SYS_BOT_GH_TOKEN (required) posts reviews as sys-aibot.
 name: claude-review
 on:
   pull_request_target:
@@ -13,15 +13,15 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-concurrency:
-  group: claude-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 jobs:
   review:
     if: >-
       !github.event.pull_request.draft &&
       github.actor == github.event.pull_request.user.login &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     steps:
       - uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
