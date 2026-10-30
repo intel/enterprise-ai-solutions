@@ -26,7 +26,7 @@ The rule: **the installer never installs, upgrades, or deletes an operator, a CR
 
 ## Validated environment
 
-Tested on 2026-10-16 with OpenShift Container Platform 4.22.17 on a single node (RHCOS, CRI-O), with the operator versions in [Prerequisites](#prerequisites). Multi-node clusters are expected to work if they have a ReadWriteMany StorageClass (ODF CephFS or Trident). They have not been validated yet.
+Tested on 2026-10-16 with OpenShift Container Platform 4.22.17 on a single node (RHCOS, CRI-O), with the operator versions in [Prerequisites](#prerequisites). Multi-node clusters are expected to work if they have a ReadWriteMany StorageClass (ODF CephFS or Trident) and `storage_custom_rwx: true` ([step 1](#1-storage-default-storageclass)). They have not been validated yet.
 
 ---
 
@@ -59,6 +59,8 @@ Each step lists only what the stack needs beyond the linked guide. The order doe
 ### 1. Storage: default StorageClass
 
 The installer needs a **default** StorageClass. It never creates, modifies, or demotes StorageClasses on OpenShift. LVM Storage (tested) is ReadWriteOnce only, which is fine on a single node. For multi-node clusters use ODF CephFS or Trident; see [NetApp ONTAP and Trident](netapp_ontap.md).
+
+The installer cannot tell from a class whether it is ReadWriteMany, so it assumes ReadWriteOnce and stops on a cluster with more than one node. On a multi-node cluster with a ReadWriteMany default class, set `storage_custom_rwx: true` in `global_config.yaml`.
 
 ```bash
 oc get storageclass                              # one marked (default)
@@ -168,7 +170,7 @@ Preflight prints the result, for example:
 Platform: openshift 4.22.17 (Kubernetes v1.35.8, 133 API group/versions)
 ```
 
-To skip detection, set `cluster_distribution` in `global_config.yaml`. The other facts then fall back to the empty values above.
+To skip detection, set `cluster_distribution` in `global_config.yaml` to `openshift` or `kubernetes`; preflight stops on any other value. `cluster_default_storageclass` is still read; the other facts fall back to the empty values above.
 
 ---
 

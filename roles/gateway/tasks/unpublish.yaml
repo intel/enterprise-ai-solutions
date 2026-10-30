@@ -46,7 +46,7 @@
     tasks_from: openshift_routes.yaml
     vars_from: "{{ cluster_distribution }}.yaml"
   vars:
-    _openshift_route_hosts: "{{ [gateway_publish_host] | reject('in', gateway_openshift_route_exclude) | list }}"
+    _openshift_route_hosts: "{{ [gateway_publish_host] | reject('in', gateway_openshift_route_exclude + [base_domain_name]) | list }}"
     _openshift_route_state: absent
   when:
     - gateway_platform.openshift_routes | default(false) | bool

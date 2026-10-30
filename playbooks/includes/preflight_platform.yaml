@@ -23,7 +23,8 @@
 # One global_config.yaml serves both platforms: a role's dispatcher picks its
 # vars/<cluster_distribution>.yaml from it, instead of
 # the operator setting OpenShift-specific values (docs/reference/adding_solutions.md).
-# Set cluster_distribution in global_config.yaml to skip detection.
+# Set cluster_distribution in global_config.yaml to skip detection; the default
+# StorageClass is still read.
 # =============================================================================
 
 - name: "Preflight - Detect platform"
@@ -71,40 +72,10 @@
         - _platform_ocp is not skipped
         - _platform_ocp.resources is not defined
 
-    # Only the storage mapping uses the default class, and it fails itself when it
-    # needs one; an identity that cannot list StorageClasses must not stop preflight.
-    - name: "Preflight - Read StorageClasses"
-      kubernetes.core.k8s_info:
-        api_version: storage.k8s.io/v1
-        kind: StorageClass
-      register: _platform_sc
-      failed_when: false
-      when: _platform_info.apis is defined
-
-    - name: "Preflight - Warn when StorageClasses cannot be read"
-      ansible.builtin.debug:
-        msg: |-
-          WARNING: cannot list StorageClasses with existing_kubernetes={{ existing_kubernetes }}:
-          {{ (_platform_sc.msg | default('')).splitlines()[:2] | join(' ') }}
-          cluster_default_storageclass stays empty. Grant list on storageclasses.storage.k8s.io,
-          or set storage_custom_storageclass in global_config.yaml if a component needs storage.
-      when:
-        - _platform_sc is not skipped
-        - _platform_sc.resources is not defined
-
     - name: "Preflight - Publish platform facts"
       vars:
         _server: "{{ _platform_info.version.server.kubernetes | default({}) }}"
         _ocp: "{{ _platform_ocp.resources | default([]) | first | default({}) }}"
-        # Annotation keys contain dots, which selectattr cannot address.
-        _default_sc: >-
-          {%- set ns = namespace(name='') -%}
-          {%- for sc in _platform_sc.resources | default([]) -%}
-          {%- if (sc.metadata.annotations | default({})).get('storageclass.kubernetes.io/is-default-class') == 'true' -%}
-          {%- set ns.name = sc.metadata.name -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.name }}
       ansible.builtin.set_fact:
         cluster_distribution: "{{ 'openshift' if _ocp else 'kubernetes' }}"
         cluster_distribution_version: "{{ _ocp.status.desired.version | default('') }}"
@@ -112,7 +83,53 @@
         # minor is "34" upstream but "34+" on some distributions
         cluster_kubernetes_minor: "{{ _server.minor | default('0') | regex_replace('[^0-9]', '') | int }}"
         cluster_apis: "{{ (_platform_info.apis | default({})).keys() | list }}"
-        cluster_default_storageclass: "{{ _default_sc | trim }}"
+
+# Read with or without detection: the storage mapping needs the default class when
+# cluster_distribution is set by hand too. It fails itself when it needs one, so an
+# identity that cannot list StorageClasses must not stop preflight.
+- name: "Preflight - Read StorageClasses"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: _platform_sc
+  failed_when: false
+  when: existing_kubernetes | default('') | trim | length > 0
+
+- name: "Preflight - Warn when StorageClasses cannot be read"
+  ansible.builtin.debug:
+    msg: |-
+      WARNING: cannot list StorageClasses with existing_kubernetes={{ existing_kubernetes }}:
+      {{ (_platform_sc.msg | default('')).splitlines()[:2] | join(' ') }}
+      cluster_default_storageclass stays empty. Grant list on storageclasses.storage.k8s.io,
+      or set storage_custom_storageclass in global_config.yaml if a component needs storage.
+  when:
+    - _platform_sc is not skipped
+    - _platform_sc.resources is not defined
+
+- name: "Preflight - Publish the default StorageClass"
+  vars:
+    # Annotation keys contain dots, which selectattr cannot address.
+    _default_sc: >-
+      {%- set ns = namespace(name='') -%}
+      {%- for sc in _platform_sc.resources | default([]) -%}
+      {%- if (sc.metadata.annotations | default({})).get('storageclass.kubernetes.io/is-default-class') == 'true' -%}
+      {%- set ns.name = sc.metadata.name -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.name }}
+  ansible.builtin.set_fact:
+    cluster_default_storageclass: "{{ _default_sc | trim }}"
+  when: _platform_sc is not skipped
+
+# A hand-set value skips detection; anything else would load no vars/<distribution>.yaml
+# and miss the case-sensitive gates in components.yaml.
+- name: "Preflight - Validate cluster_distribution"
+  ansible.builtin.assert:
+    that: cluster_distribution in ['kubernetes', 'openshift']
+    fail_msg: >-
+      cluster_distribution is '{{ cluster_distribution }}', but only kubernetes and openshift
+      (lowercase) are supported. Fix it in global_config.yaml, or remove it to detect the platform.
+    quiet: true
 
 # The installer never provisions OpenShift. The infrastructure layer leaves a
 # BYO cluster alone because of existing_kubernetes, not cluster_distribution.
