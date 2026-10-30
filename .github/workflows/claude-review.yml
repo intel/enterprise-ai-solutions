@@ -57,4 +57,6 @@ jobs:
             --max-turns 30 --disallowedTools Bash,Edit,Write,MultiEdit,NotebookEdit
       - name: show Claude error
         if: failure() && steps.claude.outcome == 'failure'
-        run: jq -r '.. | objects | select(.type? == "result") | .result // .error // empty' "$RUNNER_TEMP/claude-execution-output.json" | head -c 3000
+        run: |
+          f="$RUNNER_TEMP/claude-execution-output.json"
+          [ ! -f "$f" ] || jq -r '.. | objects | select(.type? == "result") | .result // .error // empty' "$f" | head -c 3000
