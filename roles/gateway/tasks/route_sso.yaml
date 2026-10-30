@@ -1,0 +1,21 @@
+---
+# =============================================================================
+# Gateway — sign people in at the gateway for one route, admit only some groups
+# =============================================================================
+#   gateway_route_name         HTTPRoute name
+#   gateway_route_namespace    its namespace
+#   gateway_route_policy_name  policy name (default <route>-sso)
+#   gateway_route_state        present (default) | absent
+#   gateway_sso:
+#     issuer              public issuer URL (browser redirects, token `iss`)
+#     issuer_internal     same realm reached in-cluster (token exchange, keys)
+#     client_id           OIDC client
+#     client_secret_name  Secret in the route namespace, key `client-secret`
+#     redirect_url        <route URL>/oauth2/callback, registered in the client
+#     allowed_groups      `groups` claim values admitted, everyone else denied;
+#                         empty admits every signed-in realm user
+
+- name: "gateway | sso | {{ gateway_route_namespace }}/{{ gateway_route_name }}"
+  ansible.builtin.include_role:
+    name: "{{ _gw_provider_role }}"
+    tasks_from: route_sso.yaml

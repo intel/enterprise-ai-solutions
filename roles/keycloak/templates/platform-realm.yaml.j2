@@ -1,0 +1,37 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: "{{ keycloak_platform_realm }}-realm"
+  namespace: "{{ keycloak_namespace }}"
+spec:
+  keycloakCRName: keycloak
+{% if keycloak_platform_bootstrap_admin | bool %}
+  # Secret values are injected at import time, never stored in this resource.
+  placeholders:
+    BOOTSTRAP_PASSWORD:
+      secret: {name: "{{ keycloak_platform_realm }}-bootstrap-admin", key: value}
+{% endif %}
+  realm:
+    realm: "{{ keycloak_platform_realm }}"
+    enabled: true
+    sslRequired: external
+    bruteForceProtected: true
+    registrationAllowed: false
+    # Apps identify people by preferred_username: keep it immutable.
+    editUsernameAllowed: false
+    groups:
+      - name: "{{ keycloak_platform_admin_group }}"
+      - name: "{{ keycloak_platform_viewer_group }}"
+{% if keycloak_platform_bootstrap_admin | bool %}
+    users:
+      - username: "{{ keycloak_platform_bootstrap_admin_user }}"
+        enabled: true
+        email: "{{ keycloak_platform_bootstrap_admin_email }}"
+        emailVerified: true
+        groups: ["/{{ keycloak_platform_admin_group }}"]
+        credentials:
+          - type: password
+            value: "${BOOTSTRAP_PASSWORD}"
+            temporary: true
+        requiredActions: {{ (['UPDATE_PASSWORD'] + (['CONFIGURE_TOTP'] if keycloak_platform_bootstrap_admin_mfa | bool else [])) | to_json }}
+{% endif %}

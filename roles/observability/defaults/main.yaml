@@ -45,6 +45,16 @@ observability_grafana_url: >-
   {{ 'https://' ~ base_domain_name ~ observability_grafana_path if _obs_grafana_path_mode | bool
      else 'https://' ~ observability_grafana_hostname }}
 
+# Sign-in through Keycloak (platform realm), first at the gateway, then by
+# Grafana on the same session: keycloak_platform_admin_group members are
+# Grafana admins, everyone else Viewer. The local admin stays for break-glass
+# at <grafana url>/login?disableAutoLogin=true, behind the gateway sign-in, or
+# through a port-forward when Keycloak is down.
+observability_grafana_sso: "{{ keycloak_enabled | default(true) | bool }}"
+observability_grafana_oidc_client_id: "grafana"
+# Groups the gateway admits; empty admits every signed-in realm user.
+observability_grafana_allowed_groups: []
+
 # ── Prometheus retention & storage ───────────────────────────────────────────
 observability_prometheus_retention: "30d"
 observability_prometheus_storage_size: "50Gi"

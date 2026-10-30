@@ -112,6 +112,10 @@
 
     # imageRegistry is what the operator passes on to the trident-controller and
     # trident-node images, so one value mirrors the whole driver.
+      register: _trident_helm_repo
+      until: _trident_helm_repo is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
     - name: "netapp_trident_csi | install | Install Trident operator via Helm"
       kubernetes.core.helm:
         name: trident-operator
@@ -128,6 +132,10 @@
                        if (trident_image_registry | default('', true) | string | trim | length > 0) else {})
              | combine({'imagePullSecrets': [trident_image_pull_secret | string | trim]}
                        if (trident_image_pull_secret | default('', true) | string | trim | length > 0) else {}) }}
+      register: _trident_helm
+      until: _trident_helm is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
 
 - name: "netapp_trident_csi | install | Wait for the TridentBackendConfig CRD"
   kubernetes.core.k8s_info:

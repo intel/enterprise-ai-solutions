@@ -64,3 +64,7 @@
 
 - name: "keycloak | Reconcile and publish"
   ansible.builtin.include_tasks: expose.yaml
+
+# ── Platform SSO realm (people sign in here for every platform UI) ───────────
+- name: "keycloak | Platform SSO realm"
+  ansible.builtin.include_tasks: platform_realm.yaml

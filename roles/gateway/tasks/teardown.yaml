@@ -65,6 +65,16 @@
     - gateway_create
     - gateway_platform.openshift_routes | default(false) | bool
 
+# Deleted on its own: the namespace stays when the controller shares it, and a
+# later unpublish would re-render the apex policy from these grants.
+- name: "gateway | Delete the path grants"
+  kubernetes.core.k8s:
+    kind: ConfigMap
+    name: "{{ gateway_path_grants_configmap }}"
+    namespace: "{{ gateway_namespace }}"
+    state: absent
+  failed_when: false
+
 - name: "gateway | Delete Gateway resource"
   kubernetes.core.k8s:
     api_version: gateway.networking.k8s.io/v1

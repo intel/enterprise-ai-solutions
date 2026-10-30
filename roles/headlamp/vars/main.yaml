@@ -1,0 +1,30 @@
+---
+# Internal (not an override surface).
+__headlamp_host: "{{ headlamp_url | urlsplit('hostname') }}"
+__headlamp_issuer_url: "{{ keycloak_platform_issuer_url }}"
+__headlamp_issuer_host: "{{ __headlamp_issuer_url | urlsplit('hostname') }}"
+__headlamp_issuer_internal: "{{ keycloak_platform_issuer_internal }}"
+__headlamp_check_secret_name: "{{ keycloak_platform_realm }}-{{ __headlamp_check_client_id }}-client"
+__headlamp_check_client_id: "{{ headlamp_oidc_client_id }}-check"
+__headlamp_apiserver_mode: "{{ headlamp_auth_mode == 'apiserver' }}"
+# Headlamp's own callback (apiserver mode) and the gateway's (gateway mode); both
+# are registered so switching modes needs no change in Keycloak.
+__headlamp_redirect_uris: ["{{ headlamp_url }}/oidc-callback", "{{ headlamp_url }}/oauth2/callback"]
+__headlamp_authn_file: "{{ kubernetes_apiserver_authn_dir }}/authentication-config.yaml"
+# The kube-apiserver flag apiserver mode needs (checked on the running pods).
+__headlamp_authn_flag: "--authentication-config="
+# restart_apiserver.yaml: the API server pod with the new config hash is Ready.
+__hl_new_ready: >-
+  {%- set ok = [] -%}
+  {%- for p in __hl_pods.resources | default([]) -%}
+  {%- if (p.metadata.annotations | default({})).get('kubernetes.io/config.hash', '') == __hl_new_dir | default('') | basename
+        and p.status.conditions | default([]) | selectattr('type', 'eq', 'Ready') | selectattr('status', 'eq', 'True') | list -%}
+  {%- set _ = ok.append(1) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ok | length > 0 }}
+__headlamp_apiserver_manifest: /etc/kubernetes/manifests/kube-apiserver.yaml
+__headlamp_apiserver_backup: /etc/kubernetes/kube-apiserver.yaml.headlamp-backup
+__headlamp_cp_hosts: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
+# Headlamp pages (Dashboards, Models), built from src/plugin/headlamp.
+__headlamp_plugin_name: "enterprise-ai"
