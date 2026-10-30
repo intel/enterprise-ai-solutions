@@ -40,6 +40,8 @@
           The cluster at existing_kubernetes={{ existing_kubernetes }} is not reachable:
           {{ _platform_info.msg | default('') }}
           Check the kubeconfig and the proxy settings (no_proxy must cover the API server).
+          Behind a proxy, list the API server host itself in no_proxy: not every client
+          matches CIDR entries such as 10.0.0.0/8.
       when:
         - _platform_info is not skipped
         - _platform_info.apis is not defined
