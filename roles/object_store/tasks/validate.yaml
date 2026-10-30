@@ -1,0 +1,4 @@
+---
+# Nothing to validate: the backend role does it (interface.yaml).
+- name: "object_store | validate"
+  ansible.builtin.include_tasks: interface.yaml

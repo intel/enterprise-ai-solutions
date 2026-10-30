@@ -1,0 +1,83 @@
+---
+# =============================================================================
+# Keycloak — Instance on a running operator (K8s and OpenShift)
+# =============================================================================
+# The operator is up (install.yaml deploys it; on OpenShift it is RHBK from
+# OperatorHub). Creates the admin Secret and the Keycloak CR, waits for it.
+
+- name: "keycloak | Wait for operator rollout"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ _keycloak_operator_deployment }}"
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_operator_deploy
+  until:
+    - _kc_operator_deploy.resources | length > 0
+    - _kc_operator_deploy.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+  retries: 60
+  delay: 5
+
+# ── Keycloak instance ─────────────────────────────────────────────────────────
+
+# The postgresql role copies DB credentials as 'keycloak-db-secret' to
+# the keycloak namespace. Just verify it exists.
+
+- name: "keycloak | Verify DB credentials secret exists"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: keycloak-db-secret
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_db_secret
+  when: keycloak_db_vendor == "postgres"
+  failed_when:
+    - keycloak_db_vendor == "postgres"
+    - (_kc_db_secret.resources | default([]) | length) == 0
+
+# ── Keycloak admin + CR ─────────────────────────────────────────────────────
+
+- name: "keycloak | Create admin credentials secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: keycloak-admin-secret
+        namespace: "{{ keycloak_namespace }}"
+      type: Opaque
+      stringData:
+        username: "{{ keycloak_admin_user }}"
+        password: "{{ keycloak_admin_password }}"
+  when: (_kc_admin_secret_existing.resources | default([]) | length) == 0
+
+- name: "keycloak | Admin credentials secret already exists"
+  ansible.builtin.debug:
+    msg: "keycloak-admin-secret already exists — preserving existing admin password."
+  when: (_kc_admin_secret_existing.resources | default([]) | length) > 0
+
+- name: "keycloak | Apply Keycloak CR"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'keycloak.yaml.j2') | from_yaml }}"
+
+- name: "keycloak | Wait for Keycloak StatefulSet readiness"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_sts
+  until:
+    - _kc_sts.resources | length > 0
+    - (_kc_sts.resources[0].status.readyReplicas | default(0) | int) >= (keycloak_instances | int)
+  retries: 30
+  delay: 10
+
+- name: "keycloak | Install complete"
+  ansible.builtin.debug:
+    msg: >-
+      Keycloak {{ keycloak_version }} operator + instance deployed in {{ keycloak_namespace }}
+      ({{ keycloak_instances }} instance(s), db={{ keycloak_db_vendor }}).
+      Realm/client configuration is owned by solution layers (e.g. keycloak_config role).

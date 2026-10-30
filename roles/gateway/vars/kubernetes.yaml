@@ -1,0 +1,3 @@
+---
+# Stamp the PSS labels when enforce_pss is set.
+_gateway_pss_labels: "{{ enforce_pss | default(false) | bool }}"

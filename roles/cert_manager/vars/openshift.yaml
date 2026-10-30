@@ -1,0 +1,4 @@
+---
+# cert-manager Operator for Red Hat OpenShift, installed by the admin from
+# OperatorHub (OLM). It owns the CRDs and webhooks: the role only checks it runs.
+_certmanager_from_olm: true

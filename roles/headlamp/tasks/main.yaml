@@ -1,3 +1,15 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
-- name: "headlamp | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
+# Canonical dispatcher (docs/reference/adding_solutions.md), the same in every
+# role but for the name. Nothing here differs by platform, so there is no
+# vars/<cluster_distribution>.yaml to load.
+- name: "headlamp | dispatch | Assert supported action"
+  ansible.builtin.assert:
+    that: component_action | default('') in ['install', 'teardown', 'validate']
+    fail_msg: "headlamp: unsupported component_action='{{ component_action | default('') }}'"
+    quiet: true
+
+- name: "headlamp | dispatch | Include {{ component_action }}"
+  ansible.builtin.include_tasks:
+    file: "{{ component_action }}.yaml"

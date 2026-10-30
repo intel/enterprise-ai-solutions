@@ -1,0 +1,7 @@
+---
+# Balloon for TP=1 pods: chosen by their annotation only.
+_nri_cpu_balloons_tp1_match_label: ""
+# The chart grants no SCC; upstream Kubernetes has none.
+_nri_cpu_balloons_grant_scc: false
+# containerd syncs the plugin on a policy switch without losing it.
+_nri_cpu_balloons_restart_on_node_policy: false

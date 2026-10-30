@@ -1,0 +1,10 @@
+---
+# RHOAI's v1alpha1 LLMInferenceService cannot annotate its pods, so its
+# workload label selects the -tp1 balloon instead.
+_nri_cpu_balloons_tp1_match_label: "kserve.io/component=workload"
+# Let the chart grant the plugin ServiceAccount an SCC (a dedicated hostPath-only
+# SCC, or `privileged` when allowPCT is set). Needs chart >= v0.14.0.
+_nri_cpu_balloons_grant_scc: true
+# On CRI-O the sync after a policy switch can fail and leave the plugin without
+# container events (install_advanced.yaml).
+_nri_cpu_balloons_restart_on_node_policy: true

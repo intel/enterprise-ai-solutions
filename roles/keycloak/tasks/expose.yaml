@@ -1,0 +1,106 @@
+---
+# =============================================================================
+# Keycloak — Reconcile the CR and publish it (K8s and OpenShift)
+# =============================================================================
+
+# The install block is skipped once Keycloak is healthy, so a later config
+# change (e.g. routing_mode, which moves the hostname and relative path) would
+# never reach the live CR. The operator rolls the pod only on a real change.
+- name: "keycloak | Reconcile Keycloak CR on re-install"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'keycloak.yaml.j2') | from_yaml }}"
+  register: _kc_reconcile
+  when: _kc_cr_existing.resources | default([]) | length > 0
+
+# A changed CR restarts Keycloak; the realm steps below need it serving again.
+- name: "keycloak | Wait for the operator to apply the change"  # noqa: no-handler
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: Keycloak
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_cr_live
+  vars:
+    _cr: "{{ _kc_cr_live.resources | default([]) | first | default({}) }}"
+    _ready: "{{ _cr.status.conditions | default([]) | selectattr('type', 'eq', 'Ready') | first | default({}) }}"
+  until:
+    - _ready.status | default('') == 'True'
+    - _ready.observedGeneration | default(-1) == _cr.metadata.generation | default(-2)
+  retries: 30
+  delay: 10
+  when: _kc_reconcile is changed
+
+- name: "keycloak | Wait for the restarted Keycloak"  # noqa: no-handler
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_sts_live
+  vars:
+    _sts: "{{ _kc_sts_live.resources | default([]) | first | default({}) }}"
+    _s: "{{ _sts.status | default({}) }}"
+  until:
+    - _s.observedGeneration | default(-1) == _sts.metadata.generation | default(-2)
+    - _s.updateRevision | default('') == _s.currentRevision | default('-')
+    - (_s.readyReplicas | default(0) | int) >= (keycloak_instances | int)
+  retries: 30
+  delay: 10
+  when: _kc_reconcile is changed
+
+# ── HTTPRoute (expose via gateway) — runs even on re-install ──────────────────
+
+- name: "keycloak | Publish Keycloak"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: publish.yaml
+  vars:
+    gateway_publish_name: keycloak
+    gateway_publish_namespace: "{{ keycloak_namespace }}"
+    gateway_publish_host: "{{ keycloak_hostname }}"
+    gateway_publish_path: "{{ keycloak_path }}"
+    gateway_publish_portal: {title: "Keycloak", description: "Identity and access management", path: "/admin/master/console/"}
+  when: keycloak_gateway_publish | bool
+
+- name: "keycloak | Create HTTPRoute for gateway"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: keycloak
+        namespace: "{{ keycloak_namespace }}"
+      spec:
+        parentRefs:
+          # Its own HTTPS listener or the apex (path mode); never plaintext :80.
+          - "{{ gateway_publish.parent_ref }}"
+        hostnames:
+          - "{{ gateway_publish.host }}"
+        rules:
+          - matches: [{path: {type: PathPrefix, value: "{{ gateway_publish.relative_path }}"}}]
+            filters:
+              # HSTS: tell compliant browsers to only ever reach this host over
+              # HTTPS, so a later plaintext attempt is refused client-side before
+              # any credential leaves the browser. Only honored when received over
+              # HTTPS, hence set here on the :443 route, not the :80 redirect.
+              - type: ResponseHeaderModifier
+                responseHeaderModifier:
+                  set:
+                    - name: Strict-Transport-Security
+                      value: "max-age=31536000; includeSubDomains"
+            backendRefs:
+              - name: keycloak-service
+                port: 8080
+  when: keycloak_gateway_publish | bool
+
+- name: "keycloak | Exclude Keycloak route from gateway JWT policy"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: keycloak
+    gateway_route_namespace: "{{ keycloak_namespace }}"
+    gateway_route_policy_name: keycloak-no-auth
+  when: keycloak_gateway_publish | bool

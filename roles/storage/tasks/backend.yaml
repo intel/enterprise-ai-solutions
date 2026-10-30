@@ -1,0 +1,23 @@
+---
+# =============================================================================
+# storage | meta-role: run the action on the backend role
+# =============================================================================
+# Delegates to the backend role the resolver picked. include_role inherits
+# component_action, so the backend's own dispatcher runs the same action, as
+# for any component. Resolution happens in preflight; the guard below only
+# fires when this role is run standalone (e.g. -e target=storage).
+# =============================================================================
+
+- name: "storage | ensure backend is resolved"
+  ansible.builtin.include_tasks: resolve.yaml
+  when: _resolved_storage_role is not defined
+
+- name: "storage | no backend role to run (local-path)"
+  ansible.builtin.debug:
+    msg: "Backend '{{ _resolved_storage_backend }}' has no role to run — handled by Kubespray. Skipping."
+  when: _resolved_storage_role is none
+
+- name: "storage | dispatch to backend role '{{ _resolved_storage_role }}'"
+  ansible.builtin.include_role:
+    name: "{{ _resolved_storage_role }}"
+  when: _resolved_storage_role is not none

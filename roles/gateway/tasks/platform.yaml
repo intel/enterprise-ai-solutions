@@ -25,6 +25,7 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: detect.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
   vars:
     _gw_detect_strict: false
   when: gateway_platform is not defined
