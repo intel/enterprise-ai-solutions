@@ -41,6 +41,8 @@ REPOS_GLOB="${REPOS_DIR}/repos.*.yaml"
 
 EXT_DIR="${SCRIPT_DIR}/ext"
 VENV="${SCRIPT_DIR}/.venv"
+# Written once pip has installed requirements.txt. An interrupted install lacks it.
+VENV_INSTALLED_MARK="${VENV}/.requirements_installed"
 ENV_ROOT="${SCRIPT_DIR}/env"
 # Per-env provisioning record, written by init. See docs/adding_solutions.md.
 readonly SOLUTIONS_BASE=".solutions.yaml"
@@ -796,10 +798,11 @@ ensure_repos() {
     export ANSIBLE_ROLES_PATH="$roles"
 }
 
-# Idempotent — no-op once $VENV has ansible-playbook. Called by configure and,
-# lazily, by ensure_deps. Always exports PATH so venv tools win afterward.
+# Idempotent: does nothing once pip has finished installing into $VENV. Called
+# by configure and, lazily, by ensure_deps. Always exports PATH so venv tools win
+# afterward.
 _ensure_venv() {
-    if [[ -x "$VENV/bin/ansible-playbook" ]]; then
+    if [[ -x "$VENV/bin/ansible-playbook" && -f "$VENV_INSTALLED_MARK" ]]; then
         info "Using existing venv: $VENV"
         export PATH="$VENV/bin:$PATH"
         _ensure_collections
@@ -820,6 +823,7 @@ _ensure_venv() {
     infon "Installing Python dependencies"
     _quiet bash -c "'$VENV/bin/pip' install --upgrade pip && '$VENV/bin/pip' install -r '$SCRIPT_DIR/requirements.txt'" \
         || err "pip install failed (network/proxy issue?)."
+    touch "$VENV_INSTALLED_MARK"
 
     export PATH="$VENV/bin:$PATH"
     _ensure_collections
