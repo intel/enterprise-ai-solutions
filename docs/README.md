@@ -1,4 +1,4 @@
-# Intel® AI for Enterprise Solutions Documentation
+# Toolkit Manager Documentation
 
 The technical documentation for deploying and operating the platform. Start with
 **Meet** for the what and why, **Get started** to stand it up, use the **Deploy**
@@ -10,7 +10,7 @@ guides to take it further, then configure and look things up as needed.
 
 | Guide | What it covers |
 |-------|----------------|
-| [Meet Intel® AI for Enterprise Solutions](meet/meet.md) | What the platform is, the problem it solves, and the layers it deploys |
+| [Meet Toolkit Manager](meet/meet.md) | What the platform is, the problem it solves, and the layers it deploys |
 | [FAQ](faq.md) | Short answers to the questions that come up most |
 | [Glossary](glossary.md) | Every term used in these guides, defined once |
 
@@ -22,7 +22,7 @@ Check your machine meets the bar, then deploy it.
 |-------|----------------|
 | [Prerequisites](quickstart/prerequisites.md) | Everything needed before running the installer |
 | [Getting Started](quickstart/quickstart.md) | Three deployment paths — pick one and follow it end to end |
-| [Getting Started with RAG](quickstart/getting_started_rag.md) | Deploy Intel® AI for Enterprise RAG (vector DB, document ingestion, chat UI) on top of inference |
+| [Getting Started with Intel® Chatbot Toolkit](quickstart/getting_started_rag.md) | Deploy Intel® Chatbot Toolkit (vector DB, document ingestion, chat UI) on top of inference |
 
 ## Deploy
 

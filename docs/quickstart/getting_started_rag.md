@@ -1,4 +1,4 @@
-# Getting Started with Intel® AI for Enterprise RAG
+# Getting Started with Intel® Chatbot Toolkit
 
 [← Docs Index](../README.md)
 

@@ -2,7 +2,7 @@
 
 [← Docs Index](../README.md)
 
-Everything needed before running the Intel® AI for Enterprise Solutions installer, whether you're deploying on-premises, air-gapped, or on a single bare-metal box.
+Everything needed before running the Toolkit Manager installer, whether you're deploying on-premises, air-gapped, or on a single bare-metal box.
 
 ---
 
@@ -82,6 +82,6 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 | If you want to… | Go to |
 |---|---|
 | Start the actual install now that prerequisites are met | [Getting Started](quickstart.md) |
-| Understand what you're installing and why, before running anything | [Meet Intel® AI for Enterprise Solutions](../meet/meet.md) |
+| Understand what you're installing and why, before running anything | [Meet Toolkit Manager](../meet/meet.md) |
 | Plan hardware for a multi-node or bring-your-own-cluster setup | [Multi-Node & BYO Cluster](../deploy/topologies.md) |
 | Set proxy, TLS, or other options `configure` doesn't handle | [Configuration Reference](../customize/configuration.md) |

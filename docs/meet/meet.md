@@ -1,10 +1,10 @@
-# Meet Intel® AI for Enterprise Solutions
+# Meet Toolkit Manager
 
 [← Docs Index](../README.md)
 
 > **One automated workflow connecting Intel's enterprise AI portfolio — self-hosted, on-premises, and ready to deploy.**
 
-Intel® AI for Enterprise Solutions is an open source, Kubernetes-based platform that removes the complexity of deploying self-hosted enterprise AI on Intel® Xeon® processors — on-premises, air-gapped, or in your own private cloud, with no GPU required and no data leaving your infrastructure.
+Toolkit Manager is an open source, Kubernetes-based platform that removes the complexity of deploying self-hosted enterprise AI on Intel® Xeon® processors — on-premises, air-gapped, or in your own private cloud, with no GPU required and no data leaving your infrastructure.
 
 The repository acts as the integration and automation layer across Intel's enterprise AI portfolio. It connects the infrastructure, inference engines, models, retrieval services, security, and observability required to deploy complete AI solutions — through a consistent, automated workflow.
 
@@ -19,12 +19,12 @@ The platform brings together:
 - AI-aware inference routing via Envoy AI Gateway
 - Persistent model storage (NFS, local-path, Ceph)
 - NUMA-aware CPU optimization via NRI CPU Balloons
-- Retrieval-augmented generation services (Intel® AI for Enterprise RAG — opt-in)
+- Retrieval-augmented generation services (Intel® Chatbot Toolkit — opt-in)
 - Metrics, logs, traces, and LLM observability (Prometheus, Grafana, Loki, Tempo, Langfuse)
 
 ---
 
-## Why Choose Intel® AI for Enterprise Solutions Instead of Building It Yourself?
+## Why Choose Toolkit Manager Instead of Building It Yourself?
 
 Enterprise AI requires more than a model server.
 
@@ -50,7 +50,7 @@ Applications  (RAG pipelines, vector DBs, chat UI — opt-in)
 
 ---
 
-## What Makes Intel® AI for Enterprise Solutions Different?
+## What Makes Toolkit Manager Different?
 
 ### One entry point
 
@@ -82,11 +82,11 @@ Prometheus, Grafana, Loki, Tempo, OpenTelemetry, and Langfuse provide infrastruc
 
 | Layer | What it provides | How to deploy |
 |---|---|---|
-| **Inference** | Model serving, routing, authentication, OpenAI-compatible endpoints | `init inference` + `install inference` (pulls infrastructure + platform automatically) |
-| **Intel® AI for Enterprise RAG** | Document ingestion, vector search, grounded chat, chat history, UI | `init erag` + `install erag` (pulls infrastructure + platform + inference) |
-| **Agentic AI** | Agent orchestration, tool calling, sandboxed execution, multi-agent workflows | Planned |
+| **Intel® Inference Toolkit** | Model serving, routing, authentication, OpenAI-compatible endpoints | `init inference` + `install inference` (pulls infrastructure + platform automatically) |
+| **Intel® Chatbot Toolkit** | Document ingestion, vector search, grounded chat, chat history, UI | `init erag` + `install erag` (pulls infrastructure + platform + inference) |
+| **Intel® Agent Toolkit** | Agent orchestration, tool calling, sandboxed execution, multi-agent workflows | Planned |
 
-Each layer builds on the one below it. Deploy what you need today and add layers as your use case evolves. **Intel AI for Enterprise RAG is opt-in** — installing `inference` does not bring it; you must initialize and install it explicitly.
+Each layer builds on the one below it. Deploy what you need today and add layers as your use case evolves. **Intel® Chatbot Toolkit is opt-in** — installing `inference` does not bring it; you must initialize and install it explicitly.
 
 ### Which repository do I start from?
 
@@ -98,12 +98,12 @@ github.com/intel/enterprise-ai-solutions      <- start here; run all commands fr
   |-- es_auto_installer.sh      the single entry point (configure / init / install / teardown)
   |-- env/<name>/               your configuration, kubeconfig, credentials, and logs
   `-- ext/                      cloned automatically by `init`
-        |-- enterprise.ai-inference    model serving: KServe, vLLM, OpenVINO Model Server
-        `-- enterprise.ai-erag         Intel AI for Enterprise RAG: pipelines, ingestion, UI
+        |-- enterprise.ai-inference    Intel® Inference Toolkit: KServe, vLLM, OpenVINO Model Server
+        `-- enterprise.ai-erag         Intel® Chatbot Toolkit: pipelines, ingestion, UI
 ```
 
 > [!IMPORTANT]
-> Do not clone the inference or RAG repositories yourself to deploy them. They are pulled in as pinned dependencies, and every command in this documentation runs from the root of this repository.
+> Do not clone the Intel® Inference Toolkit or Intel® Chatbot Toolkit repositories yourself to deploy them. They are pulled in as pinned dependencies, and every command in this documentation runs from the root of this repository.
 
 ---
 

@@ -1,4 +1,4 @@
-# Intel® AI for Enterprise Solutions
+# Toolkit Manager
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform: Intel Xeon](https://img.shields.io/badge/Platform-Intel%C2%AE%20Xeon%C2%AE-0068B5)](https://www.intel.com/xeon)
@@ -13,17 +13,17 @@
 
 ---
 
-## What is Intel® AI for Enterprise Solutions?
+## What is Toolkit Manager?
 
 Enterprise AI needs more than a model endpoint. Teams need to connect LLM inference, RAG, and agentic workflows, along with security, routing, and observability.
 
-Intel® AI for Enterprise Solutions wires these pieces together in a pre-integrated, customizable Kubernetes stack optimized for Intel® Xeon® processors.
+Toolkit Manager wires these pieces together in a pre-integrated, customizable Kubernetes stack optimized for Intel® Xeon® processors.
 
 A single installer script, `es_auto_installer.sh`, takes bare-metal nodes through Kubernetes provisioning, platform services (networking, security, observability), model serving, and AI gateway setup — delivering a production-ready AI platform with OpenAI-compatible endpoints in one run.
 
 The end result: teams get a secured, load-balanced stack where they can immediately serve LLM models, run RAG pipelines, and monitor everything through a unified gateway. Start with defaults, then configure or extend as needed.
 
-> Want the full picture? See [Architecture](docs/reference/architecture.md) and [Meet AI for Enterprise Solutions](docs/meet/meet.md).
+> Want the full picture? See [Architecture](docs/reference/architecture.md) and [Meet Toolkit Manager](docs/meet/meet.md).
 
 ## Architecture
 
@@ -33,13 +33,13 @@ The stack installs in four ordered layers, in the order they are deployed:
 | --- | --- | --- | --- | --- |
 | 1 | **Infrastructure** | Kubernetes (via Kubespray) · Storage (local-path · NFS · Ceph · NetApp ONTAP) · Intel® Xeon® | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
 | 2 | **Platform** | Istio ambient mesh, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
-| 3 | **Inference** | Envoy AI Gateway, KServe, vLLM / OpenVINO™ Model Server — exposes the model endpoint on top of which services like RAG and agents can be built | [enterprise-inference](https://github.com/intel/enterprise-inference) | [Deploy a Model](docs/deploy/deploy_models.md) |
-| 4 | **Intel® AI for Enterprise RAG** *(opt-in)* | Vector database, document ingestion (EDP), RAG pipeline orchestration (GMC), MCP gateway, chat history, web UI — requires `init erag` and `install erag` | [enterprise-rag](https://github.com/intel/enterprise-rag) | [Getting Started with RAG](docs/quickstart/getting_started_rag.md) |
+| 3 | **Intel® Inference Toolkit** | Envoy AI Gateway, KServe, vLLM / OpenVINO™ Model Server — exposes the model endpoint on top of which services like RAG and agents can be built | [enterprise-inference](https://github.com/intel/enterprise-inference) | [Deploy a Model](docs/deploy/deploy_models.md) |
+| 4 | **Intel® Chatbot Toolkit** *(opt-in)* | Vector database, document ingestion (EDP), RAG pipeline orchestration (GMC), MCP gateway, chat history, web UI — requires `init erag` and `install erag` | [enterprise-rag](https://github.com/intel/enterprise-rag) | [Getting Started with Intel® Chatbot Toolkit](docs/quickstart/getting_started_rag.md) |
 
 **Request flow:** a request enters through the Envoy AI Gateway, is authenticated against Keycloak (or a LiteLLM virtual key), and is routed to the matching model-serving backend. Every layer's health and latency is visible in the built-in Grafana / Prometheus / Loki / Tempo stack.
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="Intel AI for Enterprise Solutions layer diagram: infrastructure layer (Kubernetes, storage) at the base; platform layer (Istio, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability) above it; inference layer (Envoy AI Gateway, KServe, vLLM and OpenVINO Model Server) above that; and an opt-in application layer (RAG pipelines, UI, vector databases) on top, with client requests flowing through the gateway to the serving layer" />
+  <img src="docs/assets/architecture.png" alt="Toolkit Manager layer diagram: infrastructure layer (Kubernetes, storage) at the base; platform layer (Istio, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability) above it; inference layer (Envoy AI Gateway, KServe, vLLM and OpenVINO Model Server) above that; and an opt-in application layer (RAG pipelines, UI, vector databases) on top, with client requests flowing through the gateway to the serving layer" />
 </p>
 
 > See the [Architecture deep-dive](docs/reference/architecture.md) for the full component list, execution flow, and cross-repo layering.
@@ -58,7 +58,7 @@ One node, defaults, and roughly 20 minutes from bare metal to a working stack. E
 | You want | Target | Then follow |
 |---|---|---|
 | An OpenAI-compatible LLM endpoint to build on | `inference` | [Deploy a Model](docs/deploy/deploy_models.md) |
-| A complete RAG application: document ingestion, vector search, chat UI | `erag` | [Getting Started with RAG](docs/quickstart/getting_started_rag.md) |
+| A complete RAG application: document ingestion, vector search, chat UI | `erag` | [Getting Started with Intel® Chatbot Toolkit](docs/quickstart/getting_started_rag.md) |
 | To connect your own app, agent, or framework to the endpoint | `inference` | [Integration Guide](docs/customize/integration.md) |
 
 ### Step 2 - Install
@@ -106,7 +106,7 @@ curl -sk --noproxy '*' \
   "https://$GATEWAY_DOMAIN/v1/chat/completions"
 ```
 
-Everything speaks the OpenAI-compatible API, so any client that works with OpenAI works here. Gated models, ad-hoc Hugging Face deployments, the Python SDK, and the `litellm` access flow are covered in [Deploy a Model](docs/deploy/deploy_models.md). Building the RAG application instead? Continue with [Getting Started with RAG](docs/quickstart/getting_started_rag.md).
+Everything speaks the OpenAI-compatible API, so any client that works with OpenAI works here. Gated models, ad-hoc Hugging Face deployments, the Python SDK, and the `litellm` access flow are covered in [Deploy a Model](docs/deploy/deploy_models.md). Building the RAG application instead? Continue with [Getting Started with Intel® Chatbot Toolkit](docs/quickstart/getting_started_rag.md).
 
 ---
 
@@ -119,7 +119,7 @@ The Quick Start gets you running with single-node defaults. From here you can ta
 | All configuration options | [Configuration Reference](docs/customize/configuration.md) |
 | Multi-node cluster or BYO Kubernetes | [Topologies](docs/deploy/topologies.md) |
 | Deploy and manage models | [Deploy Models](docs/deploy/deploy_models.md) |
-| Deploy the RAG layer | [Getting Started with RAG](docs/quickstart/getting_started_rag.md) |
+| Deploy Intel® Chatbot Toolkit | [Getting Started with Intel® Chatbot Toolkit](docs/quickstart/getting_started_rag.md) |
 | Connect your app or framework | [Integration Guide](docs/customize/integration.md) |
 | CLI commands and flags | [CLI Reference](docs/customize/cli.md) |
 | Architecture deep-dive | [Architecture](docs/reference/architecture.md) |
@@ -140,9 +140,9 @@ Licensed under the [Apache License, Version 2.0](LICENSE).
 
 - [Documentation Index](docs/README.md)
 - [GitHub Repository](https://github.com/intel/enterprise-ai-solutions)
-- [Intel® Enterprise for AI Inference (inference layer)](https://github.com/intel/enterprise-inference)
-- [Intel® AI for Enterprise RAG (RAG layer)](https://github.com/intel/enterprise-rag)
-- [Meet AI for Enterprise Solutions](docs/meet/meet.md)
+- [Intel® Inference Toolkit](https://github.com/intel/enterprise-inference)
+- [Intel® Chatbot Toolkit (Intel® Chatbot Toolkit)](https://github.com/intel/enterprise-rag)
+- [Meet Toolkit Manager](docs/meet/meet.md)
 - [Architecture](docs/reference/architecture.md)
 
 ---
