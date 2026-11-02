@@ -43,9 +43,10 @@ the keys that still hold the value set. Only `restore_resources` are followed
 (Namespaces and Nodes by default), only objects a record names, and only objects
 whose labels the state file holds.
 
-Teardown also deletes what a labelled object creates without an owner reference:
-the PersistentVolumeClaims of a StatefulSet's volumeClaimTemplates, and the Secret
-cert-manager issues for a Certificate.
+Teardown also deletes the Secret cert-manager issues for a labelled Certificate,
+which has no owner reference. It leaves PersistentVolumeClaims, those of a
+StatefulSet's volumeClaimTemplates included, to their chart and the StatefulSet's
+retention policy, so data outlives a reinstall.
 
 Lists use metadata-only responses (PartialObjectMetadataList), so a snapshot of a
 large cluster is a few MB, not the full objects.
@@ -487,10 +488,9 @@ def _exists(api, res, meta):
 
 def _created_by(api, resources, objects, p):
     """uid -> (resource, metadata) of what labelled objects create without an owner
-    reference: the PVCs of a StatefulSet's volumeClaimTemplates, the Secret of a
-    cert-manager Certificate. One another component labelled is left to it."""
-    by_kind = {(r["group"], r["resource"]): r for r in resources}
-    pvcs, secrets = by_kind.get(("", "persistentvolumeclaims")), by_kind.get(("", "secrets"))
+    reference: the Secret of a cert-manager Certificate. One another component
+    labelled is left to it. PVCs are never derived: they outlive a teardown."""
+    secrets = next((r for r in resources if (r["group"], r["resource"]) == ("", "secrets")), None)
     key, found = p["label_prefix"] + "/component", {}
 
     def add(res, namespace, match):
@@ -508,13 +508,7 @@ def _created_by(api, resources, objects, p):
             raise
 
     for res, meta in list(objects.values()):
-        if res["resource"] == "statefulsets" and res["group"] == "apps" and pvcs:
-            spec_ = spec(res, meta)
-            names = [t["metadata"]["name"] for t in spec_.get("volumeClaimTemplates") or []]
-            pattern = re.compile("^(%s)-%s-[0-9]+$" % ("|".join(map(re.escape, names)), re.escape(meta["name"])))
-            if names:
-                add(pvcs, meta["namespace"], lambda m, pattern=pattern: pattern.match(m["name"]))
-        elif res["kind"] == "Certificate" and res["group"] == "cert-manager.io" and secrets:
+        if res["kind"] == "Certificate" and res["group"] == "cert-manager.io" and secrets:
             name = spec(res, meta).get("secretName")
             cert = meta["name"]
             if name:

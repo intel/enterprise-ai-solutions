@@ -334,10 +334,12 @@ first, while their operators still run; then webhooks and APIServices; namespace
 (Helm release secrets included); namespaces; cluster-scoped objects; CRDs last. It waits
 for each step. If an object is still there after `ownership_delete_timeout`, it fails and
 stops before the next step, which may hold the controller that clears the object's
-finalizer. Run teardown again once the cause is fixed. Teardown also deletes what a
-controller makes from a labelled object and leaves behind: the PVCs of a labelled
-StatefulSet's `volumeClaimTemplates`, and the Secret cert-manager writes for a labelled
-Certificate (`spec.secretName`, annotated with the certificate's name).
+finalizer. Run teardown again once the cause is fixed. Teardown also deletes the Secret
+cert-manager writes for a labelled Certificate (`spec.secretName`, annotated with the
+certificate's name), which has no owner reference. It never deletes PVCs that are not
+labelled: those of a StatefulSet's `volumeClaimTemplates` are left to the chart and the
+StatefulSet's `persistentVolumeClaimRetentionPolicy`, so data outlives a teardown and
+reinstall.
 
 What this means for a role:
 
