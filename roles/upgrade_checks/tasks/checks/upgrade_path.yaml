@@ -1,0 +1,15 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# The recorded version against the release's upgrade_base_version; a layer
+# without one (infrastructure, platform: no version.yaml) is skipped. The runner
+# keeps only the version string (_layer_release), so the range is read here.
+- name: "upgrade_checks | upgrade-path"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: >-
+      {{ _upgrade_verdicts + [_version_data | upgrade_path_verdict(item, _layer_records.get(item),
+                                                                   env_name | default('local'))] }}
+  vars:
+    _version_file: "{{ _layer_dirs[item] | default('') }}/version.yaml"
+    _version_data: "{{ (lookup('ansible.builtin.file', _version_file) | from_yaml) if _version_file is file else {} }}"
+  loop: "{{ _check_layers }}"
