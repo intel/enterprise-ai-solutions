@@ -1,0 +1,11 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# downgrade and conflict are blocking; unversioned is skipped (filter_plugins/upgrade_checks.py).
+- name: "upgrade_checks | version-change"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: >-
+      {{ _upgrade_verdicts + [_layer_class[item] | version_change_verdict(item, _layer_records.get(item),
+                                                                          _layer_release[item],
+                                                                          env_name | default('local'))] }}
+  loop: "{{ _check_layers }}"
