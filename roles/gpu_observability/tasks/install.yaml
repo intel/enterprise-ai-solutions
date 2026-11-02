@@ -1,4 +1,7 @@
 ---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
 # =============================================================================
 # GPU Observability — Install
 # =============================================================================
@@ -13,23 +16,9 @@
 #   3. Grafana dashboard ConfigMap
 # =============================================================================
 
-- name: "gpu_observability | Read GPU vendor from generated flags"
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      grep '^rack_scale_gpu_vendor=' {{ env_dir }}/inventory/metadata/rack-scale-flags.env 2>/dev/null | cut -d= -f2
-    executable: /bin/bash
-  register: _gpu_vendor_from_file
-  changed_when: false
-  failed_when: false
-
-- name: "gpu_observability | Set GPU vendor fact"
-  ansible.builtin.set_fact:
-    _gpu_vendor: "{{ _gpu_vendor_from_file.stdout | default('') | trim }}"
-
 - name: "gpu_observability | Skip — no NVIDIA GPU detected"
   ansible.builtin.meta: end_role
-  when: _gpu_vendor != 'nvidia'
+  when: (rack_scale_gpu_vendor | default('')) != 'nvidia'
 
 - name: "gpu_observability | NVIDIA alerts and dashboards"
   environment:
