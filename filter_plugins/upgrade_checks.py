@@ -12,6 +12,7 @@ core writes over it only once the layer declares supports.upgrade, the release
 that stops writing its own.
 """
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 RECORD_FIELDS = ("layer", "version", "targetVersion", "status", "startedAt",
@@ -112,6 +113,47 @@ def version_change_verdict(run_class, layer, record, release, env="<env>"):
     return verdict
 
 
+def _upgrade_range(expr):
+    """A bare version means that version or later."""
+    expr = str(expr).strip()
+    if expr[:1] not in "><=!~":
+        expr = ">=" + expr
+    return SpecifierSet(expr)
+
+
+def upgrade_path_verdict(version_data, layer, record, env="<env>"):
+    """Whether the recorded version lies in the release's upgrade_base_version range."""
+    recorded = (record or {}).get("version")
+    base = (version_data or {}).get("upgrade_base_version")
+    verdict = {"layer": layer, "check": "upgrade-path", "verdict": "pass", "reason": None, "resolve": None}
+    if base is None or str(base).strip() == "":
+        verdict.update(verdict="skipped", reason="%s declares no upgrade_base_version" % layer)
+        return verdict
+    if str(base).strip().lower() == "unsupported":
+        verdict.update(verdict="blocking", reason="this release of %s does not upgrade from an earlier one" % layer,
+                       resolve="stay on the recorded release, or tear %s down and install it fresh (--env %s)" % (layer, env))
+        return verdict
+    try:
+        upgrade_range = _upgrade_range(base)
+    except InvalidSpecifier:
+        verdict.update(verdict="blocking", reason="upgrade_base_version %r of %s is not a range" % (base, layer),
+                       resolve="fix upgrade_base_version in the version.yaml of %s" % layer)
+        return verdict
+    try:
+        allowed = upgrade_range.contains(_version(recorded, layer), prereleases=True)
+    except ValueError as err:
+        verdict.update(verdict="blocking", reason="recorded version: %s" % err,
+                       resolve="correct version in ConfigMap default/%s-deployment-manifest" % layer)
+        return verdict
+    if allowed:
+        verdict.update(reason="%s is in %s" % (recorded, base))
+    else:
+        verdict.update(verdict="blocking", reason="%s %s is outside upgrade_base_version %s" % (layer, recorded, base),
+                       resolve="install %s from a release whose upgrade_base_version covers %s, then this one"
+                               " (--env %s)" % (layer, recorded, env))
+    return verdict
+
+
 def upgrade_gate(verdicts, supports_upgrade, forced=False):
     """Mark each verdict gating or not; return what refuses the run and what --force bypassed.
 
@@ -164,6 +206,7 @@ class FilterModule:
             "layer_release_version": layer_release_version,
             "classify_run": classify_run,
             "version_change_verdict": version_change_verdict,
+            "upgrade_path_verdict": upgrade_path_verdict,
             "upgrade_gate": upgrade_gate,
             "record_forced": record_forced,
             "record_dependencies": record_dependencies,

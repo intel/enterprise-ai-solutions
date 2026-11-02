@@ -7,6 +7,7 @@
 # skipped. The runner (tasks/run.yaml) decides what refuses the run.
 upgrade_checks:
   - version_change
+  - upgrade_path
 
 # Checks that judge every planned layer: version_change is what refuses a
 # downgrade or a conflict. The others judge only layers classed upgrade or downgrade.

@@ -23,6 +23,7 @@ from upgrade_checks import (  # noqa: E402
     record_forced,
     report_due,
     upgrade_gate,
+    upgrade_path_verdict,
     version_change_verdict,
 )
 
@@ -229,3 +230,59 @@ def test_claim_layer_dirs():
 ])
 def test_layer_fully_planned(planned, expected):
     assert layer_fully_planned(["istio", "metallb"], planned) is expected
+
+
+# upgrade-path check
+
+@pytest.mark.parametrize("recorded, base, verdict", [
+    ("3.0.0", ">=3.0.0,<3.1.0", "pass"),
+    ("3.0.4", ">=3.0.0,<3.1.0", "pass"),
+    ("3.0.0+build.7", ">=3.0.0,<3.1.0", "pass"),
+    ("3.0.0", "3.0.0", "pass"),
+    ("3.5.0", "3.0.0", "pass"),
+    ("2.9.0", "3.0.0", "blocking"),
+    ("2.3.0", ">=3.0.0,<3.1.0", "blocking"),
+    ("3.1.0", ">=3.0.0,<3.1.0", "blocking"),
+    ("3.0.0", "unsupported", "blocking"),
+    ("3.0.0", "not a range", "blocking"),
+    ("3.0.0", None, "skipped"),
+    ("3.0.0", "", "skipped"),
+])
+def test_upgrade_path_verdict(recorded, base, verdict):
+    v = upgrade_path_verdict({"solution_version": "3.1.0", "upgrade_base_version": base},
+                             "erag", record(version=recorded), "dev")
+    assert v["verdict"] == verdict
+    assert v["check"] == "upgrade-path" and v["layer"] == "erag"
+    assert v["reason"]
+    assert bool(v["resolve"]) is (verdict == "blocking")
+
+
+def test_upgrade_path_names_the_range_it_refuses():
+    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"), "dev")
+    assert "2.3.0" in v["reason"] and ">=3.0.0,<3.1.0" in v["reason"]
+    assert "erag" in v["resolve"] and "dev" in v["resolve"]
+    v = upgrade_path_verdict({"upgrade_base_version": "3.x"}, "erag", record(version="2.3.0"), "dev")
+    assert "'3.x'" in v["reason"] and "not a range" in v["reason"]
+
+
+@pytest.mark.parametrize("recorded", ["not-a-version", None])
+def test_upgrade_path_blocks_a_recorded_version_that_does_not_parse(recorded):
+    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0"}, "erag", record(version=recorded), "dev")
+    assert v["verdict"] == "blocking" and "erag" in v["reason"] and v["resolve"]
+
+
+def test_upgrade_path_skips_a_layer_without_version_yaml():
+    assert upgrade_path_verdict({}, "platform", record(), "dev")["verdict"] == "skipped"
+    assert upgrade_path_verdict(None, "platform", record(), "dev")["verdict"] == "skipped"
+
+
+def test_upgrade_path_gates_only_a_supports_upgrade_layer():
+    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"))
+    assert upgrade_gate([v], {"erag": True})["refused"] == ["erag/upgrade-path"]
+    assert upgrade_gate([v], {"erag": False})["refused"] == []
+    assert upgrade_gate([v], {"erag": True}, forced=True)["forcedChecks"] == ["erag/upgrade-path"]
+
+
+def test_upgrade_path_judges_only_upgrade_and_downgrade():
+    classes = {"platform": "reinstall", "inference": "fresh", "erag": "upgrade", "x": "downgrade"}
+    assert check_layers(classes, "upgrade_path", ["version_change"]) == ["erag", "x"]
