@@ -10,6 +10,7 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: controller_validate.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
 
 - name: "gateway | Check ListenerSet API"
   kubernetes.core.k8s_info:

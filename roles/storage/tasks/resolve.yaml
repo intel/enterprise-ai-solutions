@@ -26,6 +26,33 @@
   ansible.builtin.set_fact:
     _resolved_storage_backend: "{{ (storage_backend | default('local-path')) | string | trim | lower }}"
 
+# OpenShift has no local-path provisioner: the Kubernetes default becomes the
+# cluster's default StorageClass (preflight_platform.yaml reads it). Facts, not
+# storage_backend itself, because global_config.yaml is extra vars. An explicit
+# storage_custom_storageclass / storage_custom_rwx in global_config.yaml wins.
+- name: "storage | resolve | OpenShift: use the default StorageClass"
+  when:
+    - cluster_distribution | default('kubernetes') == 'openshift'
+    - _resolved_storage_backend == 'local-path'
+  block:
+    - name: "storage | resolve | OpenShift: require a default StorageClass"
+      ansible.builtin.assert:
+        that: (storage_custom_storageclass | default(cluster_default_storageclass | default(''), true)) | length > 0
+        fail_msg: >-
+          OpenShift has no local-path provisioner and the cluster has no default
+          StorageClass. Mark one as default (storageclass.kubernetes.io/is-default-class=true),
+          or set storage_backend: custom and storage_custom_storageclass in global_config.yaml.
+        quiet: true
+
+    # RWX cannot be read off a class; assume RWO (LVMS), which the multi-node
+    # check below rejects. storage_custom_rwx set in global_config.yaml (extra
+    # vars) beats this set_fact, so an RWX class only needs that one line.
+    - name: "storage | resolve | OpenShift: switch to custom"
+      ansible.builtin.set_fact:
+        _resolved_storage_backend: custom
+        storage_custom_storageclass: "{{ storage_custom_storageclass | default(cluster_default_storageclass, true) }}"
+        storage_custom_rwx: false
+
 - name: "storage | resolve | detect multi-node"
   ansible.builtin.set_fact:
     _storage_is_multinode: >-

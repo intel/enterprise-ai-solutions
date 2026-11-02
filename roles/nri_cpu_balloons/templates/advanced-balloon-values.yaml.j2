@@ -66,6 +66,12 @@ config:
     klog:
       skip_headers: true
 
+{% if _nri_cpu_balloons_grant_scc | bool %}
+# OpenShift: let the chart grant the plugin ServiceAccount an SCC (vars/openshift.yaml).
+openshift:
+  grant-scc: true
+
+{% endif %}
 # Deployment Metadata (for reference)
 # Profile: {{ nri_deployment_profile | default('N/A') }}
 # Reserved CPUs: {{ nri_actual_reserved_count | default('N/A') }}

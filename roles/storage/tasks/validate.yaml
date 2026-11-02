@@ -1,0 +1,4 @@
+---
+# The backend role runs the validate (backend.yaml).
+- name: "storage | validate on the backend"
+  ansible.builtin.include_tasks: backend.yaml

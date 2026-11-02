@@ -1,3 +1,20 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
-- name: "cert_manager | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
+# Canonical dispatcher (docs/reference/adding_solutions.md), the same in every
+# role with platform values but for the name.
+#   vars/<cluster_distribution>.yaml   values that differ by platform;
+#                                      the tasks are the same on both
+- name: "cert_manager | dispatch | Assert supported action"
+  ansible.builtin.assert:
+    that: component_action | default('') in ['install', 'teardown', 'validate']
+    fail_msg: "cert_manager: unsupported component_action='{{ component_action | default('') }}'"
+    quiet: true
+
+- name: "cert_manager | dispatch | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
+  when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
+
+- name: "cert_manager | dispatch | Include {{ component_action }}"
+  ansible.builtin.include_tasks:
+    file: "{{ component_action }}.yaml"

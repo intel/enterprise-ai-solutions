@@ -193,13 +193,40 @@ deterministic order. Don't rely on it; fix the cycle.
 
 ## 4. Roles
 
-One role per component, at `<subdir>/roles/<component-name>/`.
+One role per component, at `<subdir>/roles/<component-name>/`:
+
+```text
+roles/<name>/
+├── defaults/main.yaml           public settings only; no platform logic
+├── vars/                        optional, both files or neither
+│   ├── kubernetes.yaml          private _<name>_* literal values
+│   └── openshift.yaml
+├── templates/                   no cluster_distribution
+└── tasks/
+    ├── main.yaml                the dispatcher below, the same in every role but for the name
+    ├── install.yaml             required; the same on both platforms
+    ├── validate.yaml            required
+    ├── teardown.yaml            required
+    └── <helpers>.yaml           called from the files above
+```
 
 ```yaml
 # roles/<name>/tasks/main.yaml - the entire dispatcher
 ---
-- name: "<name> | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
+- name: "<name> | dispatch | Assert supported action"
+  ansible.builtin.assert:
+    that: component_action | default('') in ['install', 'teardown', 'validate']
+    fail_msg: "<name>: unsupported component_action='{{ component_action | default('') }}'"
+    quiet: true
+
+# Only in a role with vars/kubernetes.yaml and vars/openshift.yaml:
+- name: "<name> | dispatch | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
+  when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
+
+- name: "<name> | dispatch | Include {{ component_action }}"
+  ansible.builtin.include_tasks:
+    file: "{{ component_action }}.yaml"
 ```
 
 | File | Required | Contract |
@@ -207,8 +234,29 @@ One role per component, at `<subdir>/roles/<component-name>/`.
 | `tasks/install.yaml` | yes | Idempotent - a second run with no config change reports zero `changed`. |
 | `tasks/teardown.yaml` | yes | Removes what `install` created; succeeds when nothing is installed. |
 | `tasks/validate.yaml` | yes | Read-only; never mutates the cluster. |
+| `vars/kubernetes.yaml`, `vars/openshift.yaml` | no | Both or neither, with the same keys. Literal values, named `_<name>_*`: `include_vars` keeps them for the rest of the play. A role without them has no `Load` step in its dispatcher. |
 | `defaults/main.yaml` | yes | Every variable the role reads, flat-named, with a working default. |
 | `meta/main.yaml` | no | Do **not** use `dependencies:` - ordering comes from `components.yaml`. |
+
+**Platform differences.** `cluster_distribution` (`kubernetes` | `openshift`) is detected once,
+in preflight, and only the dispatcher and `components.yaml` read it. The tasks are the same on
+both platforms: whatever differs is a value in `vars/<platform>.yaml`. A role that uses the
+cluster's operator on OpenShift instead of installing one (cert-manager, CNPG, Keycloak) has a
+boolean `_<name>_from_olm` there: `true` checks the marketplace operator and skips its install,
+and teardown leaves it and its CRDs. A component not used on OpenShift (`istio`, `metallb`,
+`velero`) is gated off in `components.yaml` and its role has no OpenShift steps. What every role needs
+is published once: `gateway` `publish.yaml` creates the OpenShift Routes.
+Library roles, entered with `tasks_from`, have no dispatcher: their caller passes
+`vars_from: "{{ cluster_distribution }}.yaml"`. The rack-scale `fabric_*` roles are not moved
+to this layout yet.
+
+**Infrastructure does not depend on the platform.** The infrastructure layer (`kubernetes`,
+`storage` and its backends `custom_storage`, `nfs_storage`, `rook_ceph_storage`,
+`netapp_trident_csi`) has no `vars/<platform>.yaml`, and `components.yaml` does not gate it on
+`cluster_distribution`. A BYO cluster (`existing_kubernetes`) decides what it does: `kubernetes`
+skips provisioning. OpenShift is always BYO: preflight stops on OpenShift without
+`existing_kubernetes`. `storage/tasks/resolve.yaml` maps the storage selector on OpenShift to the
+cluster's default StorageClass (`custom`): the CSI driver behind it comes from the marketplace.
 
 Conventions: FQCN always (`kubernetes.core.k8s`, not `k8s`); no raw `kubectl` / `helm` /
 `ssh` shell-outs - use `kubernetes.core.*`; pin collection and Python versions. The one

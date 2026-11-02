@@ -11,3 +11,4 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: route_auth_exempt.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"
