@@ -11,6 +11,7 @@
 #   postgresql_consumer  name in postgresql_databases (e.g. langfuse)
 
 # Reached with tasks_from, so main.yaml's per-distribution values are not loaded.
+# Not vars_from on the caller: it would replace vars/main.yaml, which this needs.
 - name: "postgresql | consumer {{ postgresql_consumer }} | Load {{ cluster_distribution }} values"
   ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
   when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
