@@ -6,9 +6,14 @@
 # PostgreSQL — ensure one app's database, user and <app>-db-secret
 # =============================================================================
 # For an app installed on its own (install <app> --only) after its teardown
-# removed the copied secret. Runs this role's install for that one entry, on the
+# removed the copied secret. Runs this role's database steps for that one entry, on the
 # existing cluster: the stored password, user and database are kept.
 #   postgresql_consumer  name in postgresql_databases (e.g. langfuse)
+
+# Reached with tasks_from, so main.yaml's per-distribution values are not loaded.
+- name: "postgresql | consumer {{ postgresql_consumer }} | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
+  when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
 
 - name: "postgresql | consumer {{ postgresql_consumer }} | PostgreSQL cluster"
   kubernetes.core.k8s_info:
@@ -32,7 +37,7 @@
     quiet: true
 
 # The cluster is built from the first enabled entry (its bootstrap database), so
-# it stays in the list install.yaml reads; only the app's entry is reconciled.
+# it stays in the list cluster.yaml reads; only the app's entry is reconciled.
 - name: "postgresql | consumer {{ postgresql_consumer }} | Just this database"
   ansible.builtin.set_fact:
     _pg_consumer_app: "{{ __postgresql_effective_databases | selectattr('name', 'eq', postgresql_consumer) | list }}"
@@ -55,8 +60,9 @@
   retries: 60
   delay: 5
 
+# The cluster exists (asserted above), so the operator steps in install.yaml are not needed.
 - name: "postgresql | consumer {{ postgresql_consumer }} | Database, user and secret"
-  ansible.builtin.include_tasks: install.yaml
+  ansible.builtin.include_tasks: cluster.yaml
   vars:
     __postgresql_effective_databases: "{{ _pg_consumer_dbs }}"
     # Namespace, labels and secret copy for this app only, not the bootstrap's.
