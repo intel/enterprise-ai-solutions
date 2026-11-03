@@ -441,6 +441,17 @@
   ansible.builtin.debug:
     msg: "Skipped (disabled): {{ _disabled_components | join(', ') }}"
 
+# A `used_by` component goes with its users, but not while one outside the plan
+# is enabled: tearing down observability keeps the telemetry SeaweedFS for Langfuse.
+- name: "Preflight - Show components kept for others"
+  vars:
+    _kept: "{{ components | kept_components(_active_components) }}"
+  when:
+    - component_action | default('install') == 'teardown'
+    - _kept | length > 0
+  ansible.builtin.debug:
+    msg: "{% for name, staying in _kept.items() %}Kept: {{ name }}, still used by {{ staying | join(', ') }}. {% endfor %}"
+
 - name: "Preflight - Display execution plan"
   ansible.builtin.debug:
     msg: |

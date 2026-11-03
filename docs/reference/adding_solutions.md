@@ -151,6 +151,7 @@ components:
 | `depends_on` | yes (may be `[]`) | Component names **in the same layer only**. |
 | `enabled` | no (default `true`) | `true`/`false`, or a Jinja expression rendering to one. |
 | `teardown` | no (default `labels`) | `labels`: delete what install labelled (see [Ownership labels](#ownership-labels)). `role`: run the role's `teardown.yaml` instead. `both`: delete by label, then run `teardown.yaml`, for components that also change hosts. |
+| `used_by` | no | Component names, any layer, for a component that exists only to serve them. It is installed only while one of them is enabled, and tearing them down takes it along, unless one outside that teardown is still enabled (preflight prints `Kept: …`). Names not in the registry are ignored. |
 
 ### Rules that actually bite
 
