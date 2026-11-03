@@ -172,7 +172,7 @@ export function Models() {
   };
 
   return (
-    <SectionBox title="Models">
+    <SectionBox title="AI Models">
       <AuthVisible
         item={K8s.ResourceClasses.Job}
         authVerb="create"
