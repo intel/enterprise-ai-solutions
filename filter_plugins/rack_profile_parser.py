@@ -1244,6 +1244,7 @@ def _build_summary(ctx):
         "topology": ctx["topology"],
         "calico_mode": ctx["calico_mode"],
         "fabric_mtu": ctx["fabric_mtu"],
+        "fabric_cidrs": _fabric_supernets(all_nodes, ctx["fabric_prefix"]),
         "node_count": len(all_nodes),
         "gpu_vendor": gpu_vendor,
         "gpu_model": gpu_model,
@@ -1325,10 +1326,37 @@ def no_proxy_uncovered(cidrs, no_proxy):
     return uncovered
 
 
+def metallb_range_overlaps(cidrs, ip_range):
+    """Return the CIDRs that a MetalLB address range overlaps.
+
+    ip_range is one MetalLB pool entry: an address, a CIDR, or 'first-last'.
+    A value that does not parse returns nothing; MetalLB rejects it itself.
+    """
+    value = str(ip_range or "").strip()
+    try:
+        if "-" in value:
+            first, last = (ipaddress.ip_address(v.strip()) for v in value.split("-", 1))
+        else:
+            net = ipaddress.ip_network(value, strict=False)
+            first, last = net.network_address, net.broadcast_address
+        if first.version != last.version or first > last:
+            return []
+    except ValueError:
+        return []
+    overlaps = []
+    for cidr in cidrs or []:
+        net = ipaddress.ip_network(str(cidr), strict=False)
+        if (net.version == first.version
+                and first <= net.broadcast_address and last >= net.network_address):
+            overlaps.append(str(cidr))
+    return overlaps
+
+
 class FilterModule:
     def filters(self):
         return {
             "rack_profile_parse": rack_profile_parse,
             "rack_profile_validate": rack_profile_validate,
             "no_proxy_uncovered": no_proxy_uncovered,
+            "metallb_range_overlaps": metallb_range_overlaps,
         }
