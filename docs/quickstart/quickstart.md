@@ -78,7 +78,7 @@ Takes 15–20 minutes. When it finishes:
 export KUBECONFIG=$(pwd)/env/local/kubeconfig.yaml
 kubectl get nodes
 # NAME      STATUS   ROLES           AGE   VERSION
-# master1   Ready    control-plane   10m   v1.34.3
+# master1   Ready    control-plane   10m   v1.35.4
 ```
 
 → Continue to [Deploy a Model](../deploy/deploy_models.md).

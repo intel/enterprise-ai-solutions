@@ -12,3 +12,4 @@
   ansible.builtin.include_role:
     name: "{{ _gw_provider_role }}"
     tasks_from: route_rate_limit.yaml
+    vars_from: "{{ cluster_distribution }}.yaml"

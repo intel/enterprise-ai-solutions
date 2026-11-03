@@ -47,6 +47,8 @@ components:
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [fabric_netplan]
 
+  # The infrastructure layer does not read cluster_distribution. OpenShift is
+  # always BYO (existing_kubernetes), and the kubernetes role skips a BYO cluster.
   - name: kubernetes
     layer: infrastructure
     enabled: true
@@ -66,14 +68,24 @@ components:
   # --- GPU (NVIDIA; enabled when rack_scale is on; role checks gpu_vendor and no-ops if not nvidia) ---
   # One role per vendor: this is the NVIDIA stack. The Intel stack is a separate
   # role (intel_gpu_operator, planner epic B2), so the two never share a node.
-  # Cannot gate on rack_scale_gpu_vendor here because it's a runtime fact set by
-  # fabric_inventory, but the resolver evaluates enabled at preflight (before any role runs).
+  # The roles gate on rack_scale_gpu_vendor, which preflight loads from
+  # rack-profile.yaml for every action, and no-op unless it is nvidia.
   # Planned (B2): detect vendors from NFD labels, drop the rack_scale gate, move to the
-  # platform layer after nfd, and set nvidia_gpu_operator_nfd_enabled: false.
+  # platform layer after NFD.
+  #
+  # The cluster's one NFD on rack-scale clusters, with or without GPUs, ahead of the GPU
+  # operator so the operator does not bring its own. Preflight leaves the inference
+  # layer's nfd component out of the plan here, for every action; nfd_enabled turns
+  # both off. Other clusters get NFD from the inference layer as before.
+  - name: node_feature_discovery
+    layer: infrastructure
+    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (nfd_enabled | default(true) | bool) }}"
+    depends_on: [fabric_validate]
+
   - name: nvidia_gpu_operator
     layer: infrastructure
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
-    depends_on: [fabric_validate]
+    depends_on: [fabric_validate, node_feature_discovery]
 
   - name: storage
     layer: infrastructure
@@ -92,14 +104,18 @@ components:
     enabled: "{{ cert_manager_enabled | default(true) | bool }}"
     depends_on: []
 
+  # Skipped on OpenShift: the mesh is Service Mesh 3 (Sail operator), which owns
+  # the Istio CRDs and control plane.
   - name: istio
     layer: platform
-    enabled: "{{ istio_enabled | default(true) | bool }}"
+    enabled: "{{ istio_enabled | default(true) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [cert_manager]
 
+  # Skipped on OpenShift: services are exposed through the OpenShift router, and
+  # a customer who wants a dedicated VIP installs MetalLB from the marketplace.
   - name: metallb
     layer: platform
-    enabled: "{{ metallb_enabled | default(true) | bool }}"
+    enabled: "{{ metallb_enabled | default(true) | bool and not (cluster_distribution | default('kubernetes') == 'openshift') }}"
     depends_on: []
 
   # Platform Gateway; gateway_provider picks the implementation (envoy).
@@ -125,25 +141,32 @@ components:
     enabled: true
     depends_on: []
 
+  # Skipped on OpenShift for now: its main consumer is the observability stack
+  # (Loki/Tempo buckets), which on OpenShift is the cluster's own monitoring and
+  # logging, and its UIDs and namespace still need OpenShift support.
   - name: seaweedfs
     layer: platform
-    enabled: "{{ (object_store_backend | default('seaweedfs')) == 'seaweedfs' }}"
+    enabled: "{{ (object_store_backend | default('seaweedfs')) == 'seaweedfs' and not (cluster_distribution | default('kubernetes') == 'openshift') }}"
     depends_on: [object_store]
 
+  # Skipped on OpenShift for now: metrics and logs belong to the cluster's own
+  # monitoring (openshift-monitoring, user-workload monitoring).
   - name: observability
     layer: platform
-    enabled: "{{ observability_enabled | default(true) | bool }}"
+    enabled: "{{ observability_enabled | default(true) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     # keycloak: Grafana sign-in (observability_grafana_sso).
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 
+  # depends_on orders, it does not gate: a disabled observability component
+  # does not disable this one, so it is gated on observability_enabled too.
   - name: gpu_observability
     layer: platform
-    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) }}"
     depends_on: [observability]
 
   - name: velero
     layer: platform
-    enabled: "{{ velero_enabled | default(false) | bool }}"
+    enabled: "{{ velero_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: []
 
   # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on

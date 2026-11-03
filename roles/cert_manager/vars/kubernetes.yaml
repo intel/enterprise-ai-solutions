@@ -1,0 +1,3 @@
+---
+# cert-manager from the jetstack Helm chart, installed by this role.
+_certmanager_from_olm: false

@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# Keycloak — take it off the gateway and delete the CR (K8s and OpenShift)
+# =============================================================================
+
+- name: "keycloak | Drop the gateway auth exemption"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: route_auth_exempt.yaml
+  vars:
+    gateway_route_name: keycloak
+    gateway_route_namespace: "{{ keycloak_namespace }}"
+    gateway_route_policy_name: keycloak-no-auth
+    gateway_route_state: absent
+
+- name: "keycloak | Delete HTTPRoute"
+  kubernetes.core.k8s:
+    api_version: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+    state: absent
+  failed_when: false
+
+- name: "keycloak | Unpublish Keycloak"
+  ansible.builtin.include_role:
+    name: gateway
+    tasks_from: unpublish.yaml
+  vars:
+    gateway_publish_name: keycloak
+    gateway_publish_namespace: "{{ keycloak_namespace }}"
+    gateway_publish_host: "{{ keycloak_hostname }}"
+    gateway_publish_path: "{{ keycloak_path }}"
+
+- name: "keycloak | Delete Keycloak CR"
+  kubernetes.core.k8s:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: Keycloak
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+    state: absent
+  failed_when: false

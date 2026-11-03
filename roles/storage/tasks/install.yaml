@@ -1,0 +1,4 @@
+---
+# The backend role runs the install (backend.yaml).
+- name: "storage | install on the backend"
+  ansible.builtin.include_tasks: backend.yaml

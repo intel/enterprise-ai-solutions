@@ -1,0 +1,14 @@
+---
+# Loaded by roles/gateway for every provider hook (vars_from), as a component
+# role's dispatcher loads its own.
+
+# Envoy as a DaemonSet on the control-plane nodes, behind a LoadBalancer.
+_envoy_gateway_proxy_shape: controlplane_daemonset
+# The chart's fixed UID 65532 is admitted as it is.
+_envoy_gateway_grant_nonroot_scc: false
+# Gateway API CRDs are ours to apply (detect.yaml decides when).
+_envoy_gateway_gateway_api_crds_platform_owned: false
+# The Gateway's LoadBalancer serves the hosts itself.
+_envoy_gateway_openshift_routes: false
+# Stamp the PSS labels when enforce_pss is set.
+_envoy_gateway_pss_labels: "{{ enforce_pss | default(false) | bool }}"

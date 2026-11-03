@@ -8,12 +8,14 @@
     name: cert-manager
     release_namespace: "{{ certmanager_namespace }}"
   register: _cm_release
+  when: not _certmanager_from_olm | bool
 
 - name: "cert_manager | Assert cert-manager is installed"
   ansible.builtin.assert:
     that: _cm_release.status is defined
     fail_msg: "cert-manager is not installed in namespace {{ certmanager_namespace }}"
     success_msg: "cert-manager Helm release found"
+  when: not _certmanager_from_olm | bool
 
 - name: "cert_manager | Check webhook deployment"
   kubernetes.core.k8s_info:

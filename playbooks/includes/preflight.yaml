@@ -63,6 +63,26 @@
 - name: "Preflight - Platform"
   ansible.builtin.include_tasks: preflight_platform.yaml
 
+# ── OpenShift: settings the platform decides ─────────────────────────────────
+# One global_config.yaml serves both platforms. global_config.yaml is passed as
+# extra vars, which set_fact cannot override, so the components that the cluster
+# provides are gated off in components.yaml (istio and observability among them,
+# whatever istio_enabled and observability_enabled say), roles pick their
+# vars/<cluster_distribution>.yaml, and storage is mapped in storage/tasks/resolve.yaml.
+# istio_enabled stays true by default on both: on OpenShift it only labels namespaces
+# for the cluster's Service Mesh 3, which the warning below points out.
+
+- name: "Preflight - OpenShift: warn about mesh enrollment"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: istio_enabled is true on OpenShift. The installer does not deploy
+      Istio here, but roles still label their namespaces for ambient mode, which
+      enrolls them in the cluster's Service Mesh 3. Set istio_enabled: false in
+      env/<env>/global_config.yaml to keep them out.
+  when:
+    - cluster_distribution == 'openshift'
+    - istio_enabled | default(false) | bool
+
 # Captured before the ext merge. ai-solutions' own layers are always in scope; a
 # solution's layer is in scope only when this env was inited for it, which
 # env/<env>/.solutions.yaml records and the installer passes as _env_layers.
@@ -99,6 +119,16 @@
   loop: "{{ (_ext_manifests.files | default([])) | sort(attribute='path') }}"
   loop_control:
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
+
+# ── Rack scale: profile facts (every action) ─────────────────────────────────
+# The GPU and fabric_validate roles gate on these facts in validate and
+# teardown as well, and a --only run never reaches fabric_inventory.
+
+- name: "Preflight - Rack scale: load rack-profile facts"
+  ansible.builtin.include_role:
+    name: fabric_inventory
+    tasks_from: facts.yaml
+  when: rack_scale_enabled | default(false) | bool
 
 # ── Connectivity check (install only) ────────────────────────────────────────
 
@@ -351,6 +381,25 @@
 #   5. Reverse for teardown
 # =============================================================================
 
+# On rack-scale clusters node_feature_discovery is the cluster's NFD. The inference
+# layer's nfd component would find that release and skip its install, but its
+# teardown uninstalls the release whoever installed it, and the chart's post-delete
+# job then prunes every NFD label, the GPU nodes' included. So it stays out of the
+# plan for every action. _skip_components is an extra var, hence a separate fact.
+- name: "Preflight - Rack scale: leave NFD to node_feature_discovery"
+  ansible.builtin.set_fact:
+    _skip_resolved: >-
+      {{ ([_skip_components | default('')]
+          + (['nfd'] if rack_scale_enabled | default(false) | bool else []))
+         | reject('equalto', '') | join(',') }}
+
+- name: "Preflight - Rack scale: note the NFD owner"
+  ansible.builtin.debug:
+    msg: "Rack scale: NFD comes from node_feature_discovery; the inference layer's nfd component is left out."
+  when:
+    - rack_scale_enabled | default(false) | bool
+    - components | selectattr('name', 'equalto', 'nfd') | list | length > 0
+
 - name: "Preflight - Resolve active components (see filter_plugins/resolve_components.py)"
   ansible.builtin.set_fact:
     _active_components: >-
@@ -358,13 +407,13 @@
                                          target=target,
                                          action=component_action | default('install'),
                                          include_deps=_include_deps | default(true) | bool,
-                                         skip=_skip_components | default('')) }}
+                                         skip=_skip_resolved) }}
     _disabled_components: >-
       {{ components | disabled_components(layers,
                                           target=target,
                                           action=component_action | default('install'),
                                           include_deps=_include_deps | default(true) | bool,
-                                          skip=_skip_components | default('')) }}
+                                          skip=_skip_resolved) }}
 
 # The record is the source of truth for which solutions an env includes, so a plan that
 # reaches a layer it does not list is a mismatch between env/ and ext/, not a preference:

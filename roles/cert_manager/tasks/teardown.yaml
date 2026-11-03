@@ -3,50 +3,58 @@
 # cert-manager — Teardown
 # =============================================================================
 
-- name: "cert_manager | Check if Helm release exists"
-  kubernetes.core.helm_info:
-    name: cert-manager
-    release_namespace: "{{ certmanager_namespace }}"
-  register: _cm_release
-  failed_when: false
-
-- name: "cert_manager | Not installed — skipping teardown"
+- name: "cert_manager | Operator from the cluster — nothing to tear down"
   ansible.builtin.debug:
-    msg: "cert-manager Helm release not found in {{ certmanager_namespace }}. Nothing to tear down."
-  when: _cm_release.status is not defined
+    msg: "cert-manager belongs to the cert-manager Operator on this cluster; nothing to tear down."
+  when: _certmanager_from_olm | bool
 
-- name: "cert_manager | Teardown"
-  when: _cm_release.status is defined
+- name: "cert_manager | Uninstall the Helm release"
+  when: not _certmanager_from_olm | bool
   block:
-    - name: "cert_manager | Uninstall Helm release"
-      kubernetes.core.helm:
+    - name: "cert_manager | Check if Helm release exists"
+      kubernetes.core.helm_info:
         name: cert-manager
         release_namespace: "{{ certmanager_namespace }}"
-        state: absent
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
+      register: _cm_release
       failed_when: false
 
-    - name: "cert_manager | Find cert-manager CRDs"
-      kubernetes.core.k8s_info:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-      register: _cm_crds
+    - name: "cert_manager | Not installed — skipping teardown"
+      ansible.builtin.debug:
+        msg: "cert-manager Helm release not found in {{ certmanager_namespace }}. Nothing to tear down."
+      when: _cm_release.status is not defined
 
-    - name: "cert_manager | Delete cert-manager CRDs"
-      kubernetes.core.k8s:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-        name: "{{ item.metadata.name }}"
-        state: absent
-      loop: "{{ _cm_crds.resources | default([]) | selectattr('metadata.name', 'match', '.*cert-manager\\.io') | list }}"
-      loop_control:
-        label: "{{ item.metadata.name }}"
-      failed_when: false
+    - name: "cert_manager | Teardown"
+      when: _cm_release.status is defined
+      block:
+        - name: "cert_manager | Uninstall Helm release"
+          kubernetes.core.helm:
+            name: cert-manager
+            release_namespace: "{{ certmanager_namespace }}"
+            state: absent
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+          failed_when: false
 
-    - name: "cert_manager | Delete namespace"
-      kubernetes.core.k8s:
-        kind: Namespace
-        name: "{{ certmanager_namespace }}"
-        state: absent
-      failed_when: false
+        - name: "cert_manager | Find cert-manager CRDs"
+          kubernetes.core.k8s_info:
+            api_version: apiextensions.k8s.io/v1
+            kind: CustomResourceDefinition
+          register: _cm_crds
+
+        - name: "cert_manager | Delete cert-manager CRDs"
+          kubernetes.core.k8s:
+            api_version: apiextensions.k8s.io/v1
+            kind: CustomResourceDefinition
+            name: "{{ item.metadata.name }}"
+            state: absent
+          loop: "{{ _cm_crds.resources | default([]) | selectattr('metadata.name', 'match', '.*cert-manager\\.io') | list }}"
+          loop_control:
+            label: "{{ item.metadata.name }}"
+          failed_when: false
+
+        - name: "cert_manager | Delete namespace"
+          kubernetes.core.k8s:
+            kind: Namespace
+            name: "{{ certmanager_namespace }}"
+            state: absent
+          failed_when: false

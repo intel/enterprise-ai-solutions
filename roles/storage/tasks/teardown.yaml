@@ -1,0 +1,4 @@
+---
+# The backend role runs the teardown (backend.yaml).
+- name: "storage | teardown on the backend"
+  ansible.builtin.include_tasks: backend.yaml

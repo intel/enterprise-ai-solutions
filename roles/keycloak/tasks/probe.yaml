@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# Keycloak — Probe what is deployed (K8s and OpenShift)
+# =============================================================================
+# Sets _kc_installed: the operator is Available and the instance has its
+# replicas ready. Install then skips straight to reconciling the CR and route.
+
+- name: "keycloak | Validate hostname is set"
+  ansible.builtin.assert:
+    that:
+      - keycloak_hostname | default('') | length > 0
+    fail_msg: >-
+      keycloak_hostname is not set. Set it in global_config.yaml or defaults
+      (e.g. "keycloak.inference-example.com").
+    success_msg: "Keycloak hostname: {{ keycloak_hostname }}"
+
+- name: "keycloak | Check for existing operator deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ _keycloak_operator_deployment }}"
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_existing
+  failed_when: false
+
+- name: "keycloak | Check for existing Keycloak StatefulSet"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_sts_existing
+  failed_when: false
+
+- name: "keycloak | Check for existing Keycloak CR"
+  kubernetes.core.k8s_info:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: Keycloak
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_cr_existing
+  failed_when: false
+
+- name: "keycloak | Check for existing admin credentials secret"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: keycloak-admin-secret
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_admin_secret_existing
+  failed_when: false
+
+- name: "keycloak | Keycloak is installed and ready"
+  ansible.builtin.set_fact:
+    _kc_installed: >-
+      {{ _kc_existing.resources | default([]) | length > 0
+         and _kc_existing.resources[0].status.conditions | default([]) | selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length > 0
+         and _kc_cr_existing.resources | default([]) | length > 0
+         and _kc_sts_existing.resources | default([]) | length > 0
+         and (_kc_sts_existing.resources[0].status.readyReplicas | default(0) | int) >= (keycloak_instances | int) }}
+
+- name: "keycloak | Already installed — skipping"
+  ansible.builtin.debug:
+    msg: "Keycloak operator and instance already deployed in {{ keycloak_namespace }} — skipping install."
+  when: _kc_installed | bool

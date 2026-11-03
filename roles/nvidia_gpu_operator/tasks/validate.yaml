@@ -1,9 +1,13 @@
 ---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
 # =============================================================================
 # NVIDIA GPU Operator — Validate
 # =============================================================================
-# Checks GPU operator health, device plugin GPU advertisement, and runs an
-# nvidia-smi test job. NVIDIA only: nothing to validate for other vendors here.
+# Checks GPU operator health, device plugin GPU advertisement and the
+# ClusterPolicy, and runs an nvidia-smi test pod when a GPU is free. NVIDIA
+# only: nothing to validate for other vendors here.
 # =============================================================================
 
 - name: "nvidia_gpu_operator | validate | Skip — vendor is not NVIDIA"
@@ -40,32 +44,103 @@
 
 # ── Device plugin GPU advertisement ──────────────────────────────────────────
 
-- name: "nvidia_gpu_operator | validate | Check nodes advertising GPUs"
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}: {.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' \
-        | grep -v ': $' | grep -v ': 0'
-    executable: /bin/bash
+- name: "nvidia_gpu_operator | validate | List nodes"
+  kubernetes.core.k8s_info:
+    kind: Node
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
-  register: _gpu_advertised
-  changed_when: false
-  failed_when: false
+  register: _gpu_nodes
+
+- name: "nvidia_gpu_operator | validate | Collect nodes advertising GPUs"
+  ansible.builtin.set_fact:
+    _gpu_advertised: >-
+      {%- set out = [] -%}
+      {%- for n in _gpu_nodes.resources | default([]) -%}
+      {%- set count = (n.status.allocatable | default({})).get('nvidia.com/gpu', '0') | int -%}
+      {%- if count > 0 -%}{%- set _ = out.append(n.metadata.name ~ ': ' ~ count) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ out }}
 
 - name: "nvidia_gpu_operator | validate | Assert GPUs advertised"
   ansible.builtin.assert:
     that:
-      - _gpu_advertised.stdout | trim | length > 0
+      - _gpu_advertised | length > 0
     fail_msg: >-
       No nodes advertising GPU resources. Device plugin may not be running.
       Check: kubectl describe node <gpu-node> | grep -i gpu
-    success_msg: "GPU resources advertised: {{ _gpu_advertised.stdout_lines }}"
+    success_msg: "GPU resources advertised: {{ _gpu_advertised }}"
+
+# ── ClusterPolicy ────────────────────────────────────────────────────────────
+# The operator's own validator (driver, toolkit, CUDA, device plugin) sets the
+# ClusterPolicy to ready. It still holds when every GPU is in use.
+
+- name: "nvidia_gpu_operator | validate | Check ClusterPolicy"
+  kubernetes.core.k8s_info:
+    api_version: nvidia.com/v1
+    kind: ClusterPolicy
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  register: _gpu_cluster_policy
+  until: >-
+    _gpu_cluster_policy.resources | default([])
+    | selectattr('status.state', 'defined')
+    | selectattr('status.state', 'equalto', 'ready') | list | length > 0
+  retries: 6
+  delay: 10
+  failed_when: false
+
+- name: "nvidia_gpu_operator | validate | Assert ClusterPolicy ready"
+  ansible.builtin.assert:
+    that:
+      - >-
+        _gpu_cluster_policy.resources | default([])
+        | selectattr('status.state', 'defined')
+        | selectattr('status.state', 'equalto', 'ready') | list | length > 0
+    fail_msg: >-
+      ClusterPolicy is not ready (state:
+      {{ _gpu_cluster_policy.resources | default([]) | map(attribute='status.state', default='unknown') | list }}).
+      Check: kubectl get clusterpolicy; kubectl get pods -n {{ nvidia_gpu_operator_namespace }}
+    success_msg: "ClusterPolicy ready."
 
 # ── nvidia-smi test (NVIDIA only) ───────────────────────────────────────────
+# The test pod needs one GPU. When serving pods hold them all it cannot be
+# scheduled, so skip it rather than fail a healthy, busy cluster.
+
+- name: "nvidia_gpu_operator | validate | List scheduled pods"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    field_selectors:
+      - status.phase!=Succeeded
+      - status.phase!=Failed
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  register: _gpu_scheduled_pods
+
+- name: "nvidia_gpu_operator | validate | Count free GPUs"
+  ansible.builtin.set_fact:
+    _gpu_free: >-
+      {%- set n = namespace(total=0, used=0) -%}
+      {%- for node in _gpu_nodes.resources | default([]) -%}
+      {%- set n.total = n.total + (node.status.allocatable | default({})).get('nvidia.com/gpu', '0') | int -%}
+      {%- endfor -%}
+      {%- for pod in _gpu_scheduled_pods.resources | default([]) if pod.spec.nodeName is defined -%}
+      {%- for c in pod.spec.containers -%}
+      {%- set n.used = n.used + ((c.resources | default({})).limits | default({})).get('nvidia.com/gpu', '0') | int -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ n.total - n.used }}
+
+- name: "nvidia_gpu_operator | validate | Skip nvidia-smi test (no free GPU)"
+  ansible.builtin.debug:
+    msg: >-
+      All GPUs are allocated to running pods; skipping the nvidia-smi test pod.
+      ClusterPolicy is ready, which covers driver and CUDA validation.
+  when: _gpu_free | int <= 0
 
 - name: "nvidia_gpu_operator | validate | Run nvidia-smi test"
-  when: rack_scale_gpu_vendor == 'nvidia'
+  when:
+    - rack_scale_gpu_vendor == 'nvidia'
+    - _gpu_free | int > 0
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
@@ -76,11 +151,8 @@
         name: gpu-validate-smi-test
         namespace: default
         state: absent
+        wait: true
       failed_when: false
-
-    - name: "nvidia_gpu_operator | validate | Wait for cleanup"
-      ansible.builtin.pause:
-        seconds: 3
 
     - name: "nvidia_gpu_operator | validate | Create nvidia-smi test pod"
       kubernetes.core.k8s:
@@ -115,20 +187,21 @@
       delay: 5
 
     - name: "nvidia_gpu_operator | validate | Get nvidia-smi output"
-      ansible.builtin.command:
-        cmd: kubectl logs gpu-validate-smi-test
+      kubernetes.core.k8s_log:
+        name: gpu-validate-smi-test
+        namespace: default
       register: _smi_output
-      changed_when: false
 
     - name: "nvidia_gpu_operator | validate | Assert nvidia-smi succeeded"
       ansible.builtin.assert:
         that:
-          - "'Driver Version' in _smi_output.stdout or 'NVIDIA-SMI' in _smi_output.stdout"
+          - "'Driver Version' in _smi_output.log or 'NVIDIA-SMI' in _smi_output.log"
         fail_msg: >-
-          nvidia-smi test failed. Output: {{ _smi_output.stdout_lines[:5] }}
+          nvidia-smi test failed. Output: {{ _smi_output.log_lines[:5] }}
         success_msg: >-
-          nvidia-smi passed: {{ _smi_output.stdout_lines | select('match', '.*Driver Version.*|.*NVIDIA-SMI.*') | first | default('OK') }}
+          nvidia-smi passed: {{ _smi_output.log_lines | select('match', '.*Driver Version.*|.*NVIDIA-SMI.*') | first | default('OK') }}
 
+  always:
     - name: "nvidia_gpu_operator | validate | Clean up test pod"
       kubernetes.core.k8s:
         api_version: v1
@@ -146,4 +219,4 @@
       - "GPU validation passed."
       - "Vendor: {{ rack_scale_gpu_vendor }}"
       - "Model: {{ rack_scale_gpu_model | default('unknown') }}"
-      - "GPUs advertised: {{ _gpu_advertised.stdout_lines | default([]) | length }} node(s)"
+      - "GPUs advertised: {{ _gpu_advertised | default([]) | length }} node(s)"

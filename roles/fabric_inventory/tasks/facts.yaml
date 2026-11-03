@@ -1,0 +1,69 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# fabric_inventory | facts
+# =============================================================================
+# Exports the rack-scale facts that later roles read (topology, fabric MTU,
+# GPU vendor/model, Ceph networks) and checks that no_proxy covers the fabric
+# subnets. Preflight includes this for every action, so validate, teardown and
+# --only runs see the same values as a full install. Missing or invalid
+# profile: nothing here; install and validate of fabric_inventory report it.
+# =============================================================================
+
+- name: "fabric_inventory | facts | Check rack-profile.yaml exists"
+  ansible.builtin.stat:
+    path: "{{ rack_profile_path }}"
+  register: _rack_facts_profile
+
+- name: "fabric_inventory | facts | Load rack-profile.yaml"
+  when: _rack_facts_profile.stat.exists
+  block:
+    - name: "fabric_inventory | facts | Read rack-profile.yaml"
+      ansible.builtin.include_vars:
+        file: "{{ rack_profile_path }}"
+        name: _rack_profile_raw
+
+    - name: "fabric_inventory | facts | Validate rack-profile.yaml"
+      ansible.builtin.set_fact:
+        _rack_facts_valid: "{{ (_rack_profile_raw | rack_profile_validate).valid }}"
+
+    - name: "fabric_inventory | facts | Export"
+      when: _rack_facts_valid | bool
+      block:
+        - name: "fabric_inventory | facts | Parse rack-profile.yaml"
+          ansible.builtin.set_fact:
+            _rack_parsed: "{{ _rack_profile_raw | rack_profile_parse }}"
+
+        - name: "fabric_inventory | facts | Export rack-scale facts"
+          ansible.builtin.set_fact:
+            rack_scale_topology: "{{ _rack_parsed.summary.topology }}"
+            rack_scale_calico_mode: "{{ _rack_parsed.summary.calico_mode }}"
+            rack_scale_fabric_mtu: "{{ _rack_parsed.summary.fabric_mtu }}"
+            rack_scale_gpu_vendor: "{{ _rack_parsed.summary.gpu_vendor }}"
+            rack_scale_gpu_model: "{{ _rack_parsed.summary.gpu_model }}"
+            rack_scale_gpu_form: "{{ _rack_parsed.summary.gpu_form }}"
+            rack_scale_site: "{{ _rack_parsed.summary.site }}"
+            rook_ceph_public_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_public_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
+            rook_ceph_cluster_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_cluster_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
+
+        # Behind a corporate proxy the fabric subnets must be in no_proxy, or
+        # Kubespray and API calls to fabric IPs go through the proxy. no_proxy
+        # arrives from global_config.yaml as an extra var, which set_fact
+        # cannot override, so check it instead of appending to it. An empty
+        # no_proxy is caught by the preflight proxy check.
+        - name: "fabric_inventory | facts | Fail if no_proxy misses fabric subnets"
+          ansible.builtin.fail:
+            msg: >-
+              A proxy is configured but no_proxy does not cover these fabric
+              subnets: {{ _fabric_uncovered | join(', ') }}. Add them, or a
+              supernet that contains them, to no_proxy in global_config.yaml.
+          vars:
+            _fabric_uncovered: >-
+              {{ _rack_parsed.fabric_yml | regex_findall('- ([0-9./]+)')
+                 | no_proxy_uncovered(no_proxy | default('')) }}
+          when:
+            - (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0)
+            - no_proxy | default('') | length > 0
+            - _fabric_uncovered | length > 0

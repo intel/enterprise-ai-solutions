@@ -26,7 +26,7 @@ The rule: **the installer never installs, upgrades, or deletes an operator, a CR
 
 ## Validated environment
 
-Tested on 2026-10-16 with OpenShift Container Platform 4.22.17 on a single node (RHCOS, CRI-O), with the operator versions in [Prerequisites](#prerequisites). Multi-node clusters are expected to work if they have a ReadWriteMany StorageClass (ODF CephFS or Trident). They have not been validated yet.
+Tested on 2026-10-16 with OpenShift Container Platform 4.22.17 on a single node (RHCOS, CRI-O), with the operator versions in [Prerequisites](#prerequisites). Multi-node clusters are expected to work if they have a ReadWriteMany StorageClass (ODF CephFS or Trident) and `storage_custom_rwx: true` ([step 1](#1-storage-default-storageclass)). They have not been validated yet.
 
 ---
 
@@ -59,6 +59,8 @@ Each step lists only what the stack needs beyond the linked guide. The order doe
 ### 1. Storage: default StorageClass
 
 The installer needs a **default** StorageClass. It never creates, modifies, or demotes StorageClasses on OpenShift. LVM Storage (tested) is ReadWriteOnce only, which is fine on a single node. For multi-node clusters use ODF CephFS or Trident; see [NetApp ONTAP and Trident](netapp_ontap.md).
+
+The installer cannot tell from a class whether it is ReadWriteMany, so it assumes ReadWriteOnce and stops on a cluster with more than one node. On a multi-node cluster with a ReadWriteMany default class, set `storage_custom_rwx: true` in `global_config.yaml`.
 
 ```bash
 oc get storageclass                              # one marked (default)
@@ -141,9 +143,15 @@ OpenShift AI owns the KServe CRDs and controller. On OpenShift the installer nev
 
 ## Platform detection
 
-Preflight detects the platform before it resolves the components to install, so the same `global_config.yaml` works on Kubernetes and OpenShift. There is no OpenShift-specific setting.
+Preflight detects the platform before it resolves the components to install. Components that OpenShift does not need (`istio`, `metallb`) are skipped there whatever `global_config.yaml` says. The installer never stamps Pod Security labels on OpenShift, whatever `enforce_pss` says: the platform syncs them from the SCCs, and the keycloak namespace is the admin's. One default in `configs/defaults/global_config.yaml` is for Kubernetes. Set it in `env/<env>/global_config.yaml` of an OpenShift env:
+
+```yaml
+istio_enabled: false   # true makes roles label their namespaces for ambient mode, which enrolls them in Service Mesh 3
+```
 
 Only a cluster you bring (`existing_kubernetes` set) is probed. A cluster the installer builds with Kubespray is upstream Kubernetes. Preflight stops if the cluster in `existing_kubernetes` cannot be reached.
+
+The installer does not install OpenShift: set `existing_kubernetes` to the cluster's kubeconfig, or preflight stops. As on any BYO cluster, `kubernetes` leaves the cluster alone. `storage` uses the cluster's default StorageClass (step 1) or the class in `storage_custom_storageclass`, whose CSI driver comes from the marketplace.
 
 A cluster is OpenShift when it serves `config.openshift.io/v1` **and** has the `ClusterVersion` object `version`. The API group alone is not enough, because OKD and MicroShift serve parts of it as well.
 
@@ -162,7 +170,7 @@ Preflight prints the result, for example:
 Platform: openshift 4.22.17 (Kubernetes v1.35.8, 133 API group/versions)
 ```
 
-To skip detection, set `cluster_distribution` in `global_config.yaml`. The other facts then fall back to the empty values above.
+To skip detection, set `cluster_distribution` in `global_config.yaml` to `openshift` or `kubernetes`; preflight stops on any other value. `cluster_default_storageclass` is still read; the other facts fall back to the empty values above.
 
 ---
 
@@ -176,4 +184,5 @@ The installer does not support all of the flow above yet. The blocking items sto
 | **SCC** | Charts set fixed `runAsUser`/`fsGroup`; namespaces get only Pod Security labels, which do not grant an SCC on OpenShift | Leave UID/GID unset on OpenShift so `restricted-v2` assigns them; grant a dedicated SCC only where a component really needs one | **Yes** |
 | **User-workload monitoring** | Not configured on OpenShift; `observability` deploys kube-prometheus-stack instead | When OpenShift is detected, merge `enableUserWorkload: true` into `cluster-monitoring-config` without overwriting the customer's settings, configure `user-workload-monitoring-config` with the StorageClass, and wait for `prometheus-user-workload` | **Yes** (no metrics, no autoscaling) |
 | **Platform components** | Preflight detects OpenShift, but every component still installs as on Kubernetes | Skip what the cluster provides, check the marketplace operators from [Prerequisites](#prerequisites), and create only the instances | **Yes** |
+| **CPU pinning (NRI balloons) and tensor parallelism** | OpenShift AI cannot annotate the pods of an `LLMInferenceService`, so every model pod (`kserve.io/component=workload`) lands in the `vllm-balloon-tp1` balloon and gets the CPUs of one NUMA node. Only TP=1 models are supported | Pick the balloon by the model's TP size | No (TP>1 models run with too few CPUs) |
 | **Preflight checks** | Does not check the operators in [Prerequisites](#prerequisites) | Check them before the first component | No |

@@ -119,12 +119,15 @@
       {%- if v and (not best.v or v is version(best.v, '>')) -%}{%- set best.v = v -%}{%- endif -%}
       {%- endfor -%}
       {{ best.v }}
+    # On OpenShift the Ingress Operator owns the Gateway API CRDs: an admission
+    # policy lets no other client create, update or delete them.
+    _platform_crds: "{{ _envoy_gateway_gateway_api_crds_platform_owned | bool }}"
     # Ours: none yet, applied by this role, or there since our controller came.
     _crds_ours: >-
-      {{ _gw_crd is none
+      {{ not _platform_crds | bool and (_gw_crd is none
          or envoy_gateway_crds_field_manager in (_gwapi_crds | map(attribute='metadata.managedFields', default=[])
                                                  | flatten | map(attribute='manager') | list)
-         or (_det_ctrl is not none and _det_ctrl.ours) }}
+         or (_det_ctrl is not none and _det_ctrl.ours)) }}
     # The installed version keeps its CRDs; an older kept release is left alone.
     _crds_apply: "{{ _managed | bool and (_action != 'keep' or _cur == envoy_gateway_version) }}"
     _foreign_older: >-
@@ -134,7 +137,7 @@
     # the same version only standard ones are re-applied, so experimental CRDs
     # (from the chart on main) keep their extra versions, e.g. BackendTLSPolicy v1alpha3.
     _gwapi_apply: >-
-      {{ _crds_apply | bool and (
+      {{ _crds_apply | bool and not _platform_crds | bool and (
            _gw_crd is none
            or (_crds_ours | bool and _crd_bundle and (_crd_bundle is version(envoy_gateway_gateway_api_version, '<')
                or (_crd_bundle == envoy_gateway_gateway_api_version and _crd_channel == 'standard')))
@@ -186,10 +189,14 @@
           Other Envoy Gateway controllers run in
           {{ _det_found | rejectattr('namespace', 'eq', _ctrl_ns) | map(attribute='namespace') | join(', ') }};
           they need a controllerName other than {{ _ctrl_name }}.
-      - show: "{{ _crds_apply | bool and _foreign_older | bool and not gateway_api_crds_takeover | bool }}"
+      - show: "{{ _crds_apply | bool and _foreign_older | bool and not gateway_api_crds_takeover | bool and not _platform_crds | bool }}"
         msg: >-
           Gateway API CRDs {{ _crd_bundle or '(no version)' }} from another tool are older than
           {{ envoy_gateway_gateway_api_version }} and left as they are; gateway_api_crds_takeover: true replaces them.
+      - show: "{{ _platform_crds | bool and (_foreign_older | bool or _gw_crd is none) }}"
+        msg: >-
+          Gateway API CRDs {{ _crd_bundle or '(none)' }} belong to the OpenShift Ingress Operator and are
+          left as they are (Envoy Gateway {{ envoy_gateway_version }} bundles {{ envoy_gateway_gateway_api_version }}).
       - show: "{{ gateway_attach_mode == 'listenerset' and not _capable | bool }}"
         msg: >-
           gateway_attach_mode is listenerset, but this controller cannot serve ListenerSets; services
@@ -223,6 +230,8 @@
       gateway_api_owned: "{{ _crds_ours | bool or _gwapi_apply | bool }}"
       gateway_api_version: "{{ envoy_gateway_gateway_api_version if _gwapi_apply | bool else _crd_bundle }}"
       attach_mode: "{{ _attach }}"
+      # Hosts need a Route from the cluster router (openshift_routes.yaml).
+      openshift_routes: "{{ _envoy_gateway_openshift_routes | bool }}"
       class_name: "{{ _class }}"
       configure_existing: "{{ envoy_gateway_configure_existing | bool }}"
       notices: "{{ _notices }}"
