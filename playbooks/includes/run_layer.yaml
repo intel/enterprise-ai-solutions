@@ -4,7 +4,8 @@
 # Runs one layer's components between the writes of its deployment record
 # (roles/upgrade_checks/tasks/record.yaml). The record describes the layer, so
 # only a run that holds the layer's full component list writes it; an upgrade
-# or downgrade run also leaves one report per layer.
+# or downgrade run also counts the layer's data before and after its
+# components and leaves one report per layer.
 - name: "Decide what the {{ layer }} run records"
   ansible.builtin.set_fact:
     _layer_recorded: >-
@@ -14,6 +15,7 @@
     _layer_reported: "{{ component_action == 'install' and _layer_class[layer] | default('') | report_due }}"
     _layer_outcome: complete
     _running_component: null
+    _layer_consistency_halt: false
 
 - name: "Record the {{ layer }} {{ component_action }} start"
   ansible.builtin.include_role:
@@ -26,6 +28,15 @@
 
 - name: "Execute {{ layer }} components"
   block:
+    - name: "Count the {{ layer }} data before the run"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: consistency.yaml
+      vars:
+        upgrade_record_layer: "{{ layer }}"
+        upgrade_consistency_phase: pre
+      when: _layer_reported
+
     - name: "Execute components"
       ansible.builtin.include_tasks: run_component.yaml
       loop: "{{ _active_components | selectattr('layer', 'equalto', layer) | list }}"
@@ -37,6 +48,26 @@
     - name: "Note that no {{ layer }} component is running"
       ansible.builtin.set_fact:
         _running_component: null
+
+    - name: "Count the {{ layer }} data after the run"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: consistency.yaml
+      vars:
+        upgrade_record_layer: "{{ layer }}"
+        upgrade_consistency_phase: post
+      when: _layer_reported
+
+    # Gating only for a supports.upgrade layer; the rescue leaves the record halted.
+    - name: "Note whether the {{ layer }} data-consistency verdict stops the run"
+      ansible.builtin.set_fact:
+        _layer_consistency_halt: "{{ _layer_reported and _layer_consistency[layer].gating }}"
+      when: _layer_reported
+
+    - name: "Stop on the {{ layer }} data-consistency verdict"
+      ansible.builtin.fail:
+        msg: "{{ layer }} data consistency is blocking: {{ _layer_consistency[layer].reason }}"
+      when: _layer_consistency_halt
 
     - name: "Record the {{ layer }} {{ component_action }} end"
       ansible.builtin.include_role:
@@ -60,11 +91,18 @@
       vars:
         upgrade_record_layer: "{{ layer }}"
         upgrade_record_status: halted
+        upgrade_record_halt_reason: "{{ 'data-consistency' if _layer_consistency_halt else '' }}"
       when: _layer_recorded and component_action == 'install'
 
     - name: "Stop after the {{ layer }} failure"
       ansible.builtin.fail:
-        msg: "{{ layer }} {{ component_action }} failed in {{ _running_component or 'its deployment record write' }}; the failing task is reported above."
+        msg: "{{ layer }} {{ component_action }} failed in {{ _failed_step }}; the failing task is reported above."
+      vars:
+        _failed_step: >-
+          {{ _running_component
+             or ('its data-consistency check' if _layer_consistency_halt
+                 else 'its data-consistency count' if _layer_reported and layer not in _layer_consistency | default({})
+                 else 'its deployment record write') }}
 
   always:
     - name: "Report the {{ layer }} run"
@@ -74,4 +112,13 @@
       vars:
         upgrade_record_layer: "{{ layer }}"
         upgrade_report_outcome: "{{ _layer_outcome }}"
+      when: _layer_reported
+
+    - name: "Remove the {{ layer }} data-consistency temporary files"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: consistency.yaml
+      vars:
+        upgrade_record_layer: "{{ layer }}"
+        upgrade_consistency_phase: end
       when: _layer_reported

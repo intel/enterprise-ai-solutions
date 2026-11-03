@@ -7,6 +7,7 @@
 # skipped. The runner (tasks/run.yaml) decides what refuses the run.
 upgrade_checks:
   - version_change
+  - data_consistency_present
 
 # Checks that judge every planned layer: version_change is what refuses a
 # downgrade or a conflict. The others judge only layers classed upgrade or downgrade.
@@ -20,3 +21,6 @@ upgrade_record_labels:
   ai-solutions.io/record: "deployment-manifest"
 
 upgrade_report_dir: "{{ env_dir }}/reports"
+
+# What a layer's data-consistency probes may write; removed when the layer's run ends.
+upgrade_consistency_tmp_dir: "{{ tmp_dir }}/data-consistency"

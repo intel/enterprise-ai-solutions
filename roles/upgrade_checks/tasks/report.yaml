@@ -6,10 +6,7 @@
 #   upgrade_record_layer:  layer the report describes
 #   upgrade_report_outcome: complete | halted
 - name: "upgrade_checks | Create the report directory"
-  ansible.builtin.file:
-    path: "{{ upgrade_report_dir }}"
-    state: directory
-    mode: "0755"
+  ansible.builtin.include_tasks: report_dir.yaml
 
 - name: "upgrade_checks | Write the {{ upgrade_record_layer }} upgrade report"
   vars:
@@ -28,7 +25,7 @@
           'forced': _forced | length > 0,
           'forcedChecks': _forced,
           'checks': _upgrade_gate.checks | selectattr('layer', 'equalto', upgrade_record_layer) | list,
-          'consistency': {'verdict': 'not run'}} | to_nice_yaml(indent=2, sort_keys=false) }}
+          'consistency': (_layer_consistency | default({})).get(upgrade_record_layer, {'verdict': 'not run'})} | to_nice_yaml(indent=2, sort_keys=false) }}
     mode: "0644"
   register: _upgrade_report_file
 
