@@ -7,3 +7,7 @@ rack_scale_netplan_dir: "{{ env_dir }}/inventory/netplan"
 rack_scale_netplan_dest: /etc/netplan/99-fabric.yaml
 rack_scale_netplan_old: /etc/netplan/60-fabric.yaml
 rack_scale_netplan_settle_seconds: 3
+# Another netplan file (e.g. cloud-init's 50-cloud-init.yaml) that configures a
+# fabric NIC is merged with the fabric file, so the NIC carries both. Install
+# stops when it finds one; true downgrades that to a warning.
+rack_scale_netplan_allow_other_definitions: false
