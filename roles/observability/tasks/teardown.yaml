@@ -212,14 +212,15 @@
         api_version: "{{ item.api_version }}"
         kind: "{{ item.kind }}"
         name: "{{ item.name }}"
-        namespace: "{{ observability_namespace }}"
+        namespace: "{{ item.namespace | default(observability_namespace) }}"
         state: absent
         wait: true
       loop:
         - {api_version: grafana.integreatly.org/v1beta1, kind: Grafana, name: "{{ observability_openshift_grafana_name }}"}
         - {api_version: opentelemetry.io/v1beta1, kind: OpenTelemetryCollector, name: opentelemetry}
         - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo}
-        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs}
+        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs,
+           namespace: "{{ observability_openshift_log_collector_namespace }}"}
         - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki}
       loop_control:
         label: "{{ item.kind }} {{ item.name }}"
@@ -246,10 +247,13 @@
         label: "{{ item.kind }} {{ observability_namespace }}-{{ item.name }}"
       failed_when: false
 
-    - name: "observability | olm | Delete namespace"
+    - name: "observability | olm | Delete namespaces"
       kubernetes.core.k8s:
         kind: Namespace
-        name: "{{ observability_namespace }}"
+        name: "{{ item }}"
         state: absent
         wait: true
+      loop:
+        - "{{ observability_openshift_log_collector_namespace }}"
+        - "{{ observability_namespace }}"
       failed_when: false

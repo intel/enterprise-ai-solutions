@@ -11,7 +11,7 @@ Pod Security Admission (PSA) and Istio ambient labels applied to every namespace
 | **PSA enforce** | `privileged` / `baseline` / `restricted` / — (unlabeled) |
 | **PSA audit** | same — violations logged, not blocked |
 | **PSA warn** | same — violations surfaced as API warnings |
-| **Istio** | `ambient` = enrolled in ztunnel mesh / — = not enrolled |
+| **Istio** | `ambient` = enrolled in ztunnel mesh / — = not enrolled. On OpenShift `istio-injection=enabled` (or `istio.io/rev`) instead: sidecars of Service Mesh 3 |
 
 ---
 

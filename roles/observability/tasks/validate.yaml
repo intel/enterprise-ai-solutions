@@ -183,11 +183,12 @@
         api_version: "{{ item.api_version }}"
         kind: "{{ item.kind }}"
         name: "{{ item.name }}"
-        namespace: "{{ observability_namespace }}"
+        namespace: "{{ item.namespace | default(observability_namespace) }}"
       register: _obs_os_instances
       loop:
         - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki, condition: Ready}
-        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready}
+        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready,
+           namespace: "{{ observability_openshift_log_collector_namespace }}"}
         - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo, condition: Ready}
         - {api_version: apps/v1, kind: Deployment, name: opentelemetry-collector, condition: Available}
         - {api_version: apps/v1, kind: Deployment, name: "{{ observability_openshift_grafana_name }}-deployment", condition: Available}
@@ -201,7 +202,7 @@
           - >-
             ((item.resources | first).status | default({})).conditions | default([])
             | selectattr('type', 'equalto', item.item.condition) | selectattr('status', 'equalto', 'True') | list | length > 0
-        fail_msg: "{{ item.item.kind }} {{ observability_namespace }}/{{ item.item.name }} is not {{ item.item.condition }}"
+        fail_msg: "{{ item.item.kind }} {{ item.item.namespace | default(observability_namespace) }}/{{ item.item.name }} is not {{ item.item.condition }}"
         success_msg: "{{ item.item.kind }} {{ item.item.name }} {{ item.item.condition }}"
       loop: "{{ _obs_os_instances.results }}"
       loop_control:

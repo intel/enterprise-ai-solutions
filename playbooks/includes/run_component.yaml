@@ -52,7 +52,17 @@
         - component_action == 'install'
         - ownership_enabled | default(true) | bool
 
-- name: "{{ component.name }} — {{ (_component_prep_only | default(false)) | ternary('prep complete (install continues from caller)', component_action + ' complete') }}"
+# After the label pass: the namespaces the component put in the mesh carry the
+# env's labels (or a record of the label added) by now, and the policies this
+# adds carry the component's own labels, so its teardown deletes them.
+- name: "Mesh for what {{ component.name }} installed"
+  ansible.builtin.include_role:
+    name: mesh
+  when:
+    - component_action == 'install'
+    - istio_enabled | default(false) | bool
+
+- name: "{{ component.name }} —{{ (_component_prep_only | default(false)) | ternary('prep complete (install continues from caller)', component_action + ' complete') }}"
   ansible.builtin.debug:
     msg: |-
       {% if _component_prep_only | default(false) %}

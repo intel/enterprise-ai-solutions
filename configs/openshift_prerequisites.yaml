@@ -54,9 +54,11 @@ openshift_prerequisites:
     apis: [cert-manager.io/v1]
 
   - name: service_mesh
-    title: Service Mesh 3 (ambient)
-    doc: "#3-service-mesh-3-ambient-mode"
+    title: Service Mesh 3
+    doc: "#3-service-mesh-3"
     # No istio_enabled gate: on OpenShift the istio component steps aside for this one.
+    # Pods join with sidecars (preflight_mesh.yaml): IstioCNI sets up their traffic
+    # redirection, no ZTunnel needed.
     layers: [platform]
     package: servicemeshoperator3
     channel: stable
@@ -65,7 +67,6 @@ openshift_prerequisites:
     instances:
       - {api_version: sailoperator.io/v1, kind: Istio, name: default, conditions: {Ready: "True"}}
       - {api_version: sailoperator.io/v1, kind: IstioCNI, name: default, conditions: {Ready: "True"}}
-      - {api_version: sailoperator.io/v1, kind: ZTunnel, name: default, conditions: {Ready: "True"}}
 
   - name: gateway_api
     title: Gateway API

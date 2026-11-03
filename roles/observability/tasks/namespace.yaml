@@ -20,6 +20,5 @@
       kind: Namespace
       metadata:
         name: "{{ observability_namespace }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
+        labels: "{{ istio_namespace_labels }}"
   when: istio_enabled | default(false) | bool

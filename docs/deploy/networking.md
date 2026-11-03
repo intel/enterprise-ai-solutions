@@ -267,6 +267,8 @@ In Intel® AI for Enterprise Solutions, all workload namespaces are enrolled in 
 - **Calico handles L3 routing** (pod-to-pod IP, VXLAN or direct), Istio handles **L4 identity and encryption** on top.
 - Namespaces excluded from the mesh: `metallb-system` (raw ARP), `csi-driver-nfs` (host network; the CSI driver mounts NFS on the node, not through a pod's network), `kube-system`.
 
+On OpenShift the mesh is the cluster's Service Mesh 3, and the services join it with sidecars instead (see [OpenShift, step 3](openshift.md#3-service-mesh-3)). There is no mesh-wide policy there: each namespace gets its own STRICT `PeerAuthentication`, and the cluster's Prometheus, which is not in the mesh, reaches the ports it scrapes in plaintext. Envoy Gateway sends to Services rather than pod IPs, so its sidecar can wrap each call in mTLS.
+
 The ambient mesh is transparent to the request flow described below — it adds ~0.1-0.3ms per hop for encryption/decryption but does not change the routing topology.
 
 ---
