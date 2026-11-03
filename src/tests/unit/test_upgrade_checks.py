@@ -13,6 +13,7 @@ from upgrade_checks import (  # noqa: E402
     check_layers,
     claim_layer_dirs,
     classify_run,
+    data_consistency_present_verdict,
     layer_fully_planned,
     layer_record_is_legacy,
     record_owned_by_layer,
@@ -124,6 +125,24 @@ def test_conflict_on_deleting_names_the_teardown():
     assert v["resolve"] == "./es_auto_installer.sh teardown erag --env dev"
 
 
+def test_data_consistency_present_passes_when_the_file_is_there():
+    verdict = data_consistency_present_verdict("erag", True, True)
+    assert (verdict["verdict"], verdict["check"]) == ("pass", "data-consistency-present")
+    assert verdict["resolve"] is None
+
+
+def test_data_consistency_present_blocks_a_gating_layer_with_no_file():
+    verdict = data_consistency_present_verdict("erag", True, False)
+    assert verdict["verdict"] == "blocking"
+    assert verdict["reason"] == "erag declares supports.upgrade but ships no data_consistency.yaml"
+    assert "data_consistency.yaml" in verdict["resolve"] and "--force" in verdict["resolve"]
+
+
+def test_data_consistency_present_is_skipped_without_supports_upgrade():
+    assert data_consistency_present_verdict("inference", False, False)["verdict"] == "skipped"
+    assert data_consistency_present_verdict("inference", False, True)["verdict"] == "skipped"
+
+
 DOWNGRADE = version_change_verdict("downgrade", "erag", record(version="3.1.0"), "3.0.0")
 PASS = version_change_verdict("reinstall", "platform", record(), "1.1.0")
 
@@ -216,3 +235,80 @@ def test_claim_layer_dirs():
 ])
 def test_layer_fully_planned(planned, expected):
     assert layer_fully_planned(["istio", "metallb"], planned) is expected
+
+
+# Data consistency
+from upgrade_checks import (  # noqa: E402
+    compare_consistency,
+    consistency_counts,
+    consistency_failed,
+    consistency_merge,
+    consistency_verdict,
+)
+
+DISABLED = {"skipped": "chat history disabled (chat_history_enabled: false)"}
+
+
+class TestConsistencyCounts:
+    def test_counts_and_skipped_stores_are_kept(self):
+        assert consistency_counts({"vdb": 5, "edp": "7", "chat": DISABLED}, "count.yaml") == {
+            "vdb": 5, "edp": 7, "chat": DISABLED}
+
+    @pytest.mark.parametrize("value", [-1, True, "many", None, {"skipped": ""}, {"count": 3}])
+    def test_a_value_that_is_no_count_is_skipped_naming_the_probe(self, value):
+        reason = consistency_counts({"vdb": value}, "count.yaml")["vdb"]["skipped"]
+        assert reason.startswith("probe count.yaml returned")
+
+    def test_a_result_that_is_no_mapping_is_one_skipped_store(self):
+        assert list(consistency_counts("5", "count.yaml")) == ["count.yaml"]
+        assert "not a mapping" in consistency_counts(None, "count.yaml")["count.yaml"]["skipped"]
+
+    def test_a_failed_probe_is_one_skipped_store(self):
+        assert consistency_failed("count.yaml", "Job timed out") == {
+            "count.yaml": {"skipped": "probe count.yaml failed: Job timed out"}}
+
+    def test_a_store_two_probes_report_is_skipped_naming_the_second(self):
+        merged = consistency_merge(consistency_merge({}, {"vdb": 5}, "a.yaml"), {"vdb": 6, "edp": 1}, "b.yaml")
+        assert merged == {"vdb": {"skipped": "store reported by more than one probe, again by b.yaml"}, "edp": 1}
+
+
+class TestCompareConsistency:
+    @pytest.mark.parametrize("pre, post, verdict", [(5, 7, "pass"), (5, 5, "pass"), (5, 4, "blocking"), (0, 0, "baseline")])
+    def test_counted_store(self, pre, post, verdict):
+        assert compare_consistency({"vdb": pre}, {"vdb": post}) == {"vdb": {"pre": pre, "post": post, "verdict": verdict}}
+
+    def test_a_skipped_store_carries_the_reason_and_its_uncounted_side_is_null(self):
+        assert compare_consistency({"chat": 4}, {"chat": DISABLED}) == {
+            "chat": {"pre": 4, "post": None, "verdict": "skipped", "reason": DISABLED["skipped"]}}
+
+    def test_a_store_counted_on_one_side_only_is_skipped(self):
+        stores = compare_consistency({"vdb": 2}, {"edp": 1})
+        assert stores["vdb"]["reason"] == "not counted after the run"
+        assert stores["edp"]["reason"] == "not counted before the run"
+
+
+class TestConsistencyVerdict:
+    def test_a_layer_without_probes_is_skipped_naming_the_file(self):
+        verdict = consistency_verdict(None, {}, "erag", True)
+        assert (verdict["verdict"], verdict["gating"]) == ("skipped", False)
+        assert verdict["reason"] == "erag ships no data_consistency.yaml"
+
+    def test_lost_entries_block_and_gate_a_supports_upgrade_layer(self):
+        verdict = consistency_verdict({"vdb": 5, "chat": DISABLED}, {"vdb": 4, "chat": DISABLED}, "erag", True)
+        assert (verdict["verdict"], verdict["gating"], verdict["check"]) == ("blocking", True, "data-consistency")
+        assert verdict["reason"] == "entries lost: vdb: 5 -> 4"
+
+    def test_lost_entries_on_a_layer_without_supports_upgrade_do_not_gate(self):
+        verdict = consistency_verdict({"vdb": 5}, {"vdb": 4}, "inference", False)
+        assert (verdict["verdict"], verdict["gating"]) == ("blocking", False)
+
+    def test_only_skipped_stores_is_skipped_never_a_baseline(self):
+        assert consistency_verdict({"chat": DISABLED}, {"chat": DISABLED}, "erag")["verdict"] == "skipped"
+        assert consistency_verdict({}, {}, "erag")["verdict"] == "skipped"
+
+    def test_every_counted_store_empty_is_a_baseline(self):
+        assert consistency_verdict({"vdb": 0, "chat": DISABLED}, {"vdb": 0, "chat": DISABLED}, "erag")["verdict"] == "baseline"
+
+    def test_an_empty_store_beside_a_kept_one_passes(self):
+        verdict = consistency_verdict({"vdb": 0, "edp": 3}, {"vdb": 0, "edp": 3}, "erag", True)
+        assert (verdict["verdict"], verdict["gating"]) == ("pass", False)
