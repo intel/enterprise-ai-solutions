@@ -31,15 +31,15 @@ The stack installs in four ordered layers, in the order they are deployed:
 
 | # | Layer | Components | Source | Documentation |
 | --- | --- | --- | --- | --- |
-| 1 | **Infrastructure** | Kubernetes (via Kubespray) · Storage (local-path · NFS · Ceph · NetApp ONTAP) · Intel® Xeon® | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
-| 2 | **Platform** | Istio ambient mesh, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability | [enterprise-ai-solutions](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
-| 3 | **Intel® Inference Toolkit** | Envoy AI Gateway, KServe, vLLM / OpenVINO™ Model Server — exposes the model endpoint on top of which services like RAG and agents can be built | [enterprise-inference](https://github.com/intel/enterprise-inference) | [Deploy a Model](docs/deploy/deploy_models.md) |
-| 4 | **Intel® Chatbot Toolkit** *(opt-in)* | Vector database, document ingestion (EDP), RAG pipeline orchestration (GMC), MCP gateway, chat history, web UI — requires `init erag` and `install erag` | [enterprise-rag](https://github.com/intel/enterprise-rag) | [Getting Started with Intel® Chatbot Toolkit](docs/quickstart/getting_started_rag.md) |
+| 1 | **Infrastructure** | Kubernetes (via Kubespray) · Storage (local-path · NFS · Ceph · NetApp ONTAP) · Intel® Xeon® | [Toolkit Manager](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
+| 2 | **Platform** | Istio ambient mesh, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability | [Toolkit Manager](https://github.com/intel/enterprise-ai-solutions) | [Deployment Guide](docs/deploy/install_platform.md) |
+| 3 | **Intel® Inference Toolkit** | Envoy AI Gateway, KServe, vLLM / OpenVINO™ Model Server — exposes the model endpoint on top of which services like RAG and agents can be built | [Inference Toolkit](https://github.com/intel/enterprise-inference) | [Deploy a Model](docs/deploy/deploy_models.md) |
+| 4 | **Intel® Chatbot Toolkit** *(opt-in)* | Vector database, document ingestion (EDP), RAG pipeline orchestration (GMC), MCP gateway, chat history, web UI — requires `init erag` and `install erag` | [Chatbot Toolkit](https://github.com/intel/enterprise-rag) | [Getting Started with Intel® Chatbot Toolkit](docs/quickstart/getting_started_rag.md) |
 
 **Request flow:** a request enters through the Envoy AI Gateway, is authenticated against Keycloak (or a LiteLLM virtual key), and is routed to the matching model-serving backend. Every layer's health and latency is visible in the built-in Grafana / Prometheus / Loki / Tempo stack.
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="Toolkit Manager layer diagram: infrastructure layer (Kubernetes, storage) at the base; platform layer (Istio, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability) above it; inference layer (Envoy AI Gateway, KServe, vLLM and OpenVINO Model Server) above that; and an opt-in application layer (RAG pipelines, UI, vector databases) on top, with client requests flowing through the gateway to the serving layer" />
+  <img src="docs/assets/toolkit-manager-architecture.png" alt="Toolkit Manager architecture: Toolkit Manager is the core repository and one installer (git clone, then the installer, then the solutions). It auto-deploys an enterprise platform with inference, RAG, and agents. Four blocks stack upward: Infrastructure (Kubernetes, Intel infrastructure, OS and drivers, bring-your-own cluster) at the base; Platform (gateway, auth, routing, observability, serving, storage) builds on infrastructure; Model Inference (Intel® Inference Toolkit and Intel® Inference Microservices) builds on the platform; Solutions requires inference. Chatbot/RAG (Intel® Chatbot Toolkit) and Agents (Intel® Agent Toolkit) are marked coming soon." />
 </p>
 
 > See the [Architecture deep-dive](docs/reference/architecture.md) for the full component list, execution flow, and cross-repo layering.
