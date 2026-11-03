@@ -37,7 +37,7 @@ already present). You can install them manually instead:
 |------|---------|-------|
 | Python | ≥ 3.11 | plus the matching `python<ver>-venv` package |
 | yq | v4.53.2 | [mikefarah/yq](https://github.com/mikefarah/yq) |
-| kubectl | v1.34.3 | |
+| kubectl | v1.35.4 | |
 | helm | v3.20.2 | |
 | git | any | required to clone the external repos |
 
@@ -142,7 +142,7 @@ You should see:
 
 ```
 NAME      STATUS   ROLES           AGE   VERSION
-master1   Ready    control-plane   10m   v1.34.3
+master1   Ready    control-plane   10m   v1.35.4
 ```
 
 Done. Skip to [Step 4](#step-4-verify-everything-works).

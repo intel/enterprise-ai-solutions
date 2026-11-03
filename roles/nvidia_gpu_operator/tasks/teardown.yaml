@@ -1,4 +1,7 @@
 ---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
 # =============================================================================
 # NVIDIA GPU Operator — Teardown
 # =============================================================================
@@ -9,13 +12,12 @@
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
     - name: "nvidia_gpu_operator | teardown | nvidia | Helm uninstall"
-      ansible.builtin.command:
-        cmd: >-
-          helm uninstall {{ nvidia_gpu_operator_release_name }}
-          --namespace {{ nvidia_gpu_operator_namespace }}
-      register: _gpu_helm_uninstall
+      kubernetes.core.helm:
+        name: "{{ nvidia_gpu_operator_release_name }}"
+        release_namespace: "{{ nvidia_gpu_operator_namespace }}"
+        state: absent
+        wait: true
       failed_when: false
-      changed_when: _gpu_helm_uninstall.rc == 0
 
     - name: "nvidia_gpu_operator | teardown | nvidia | Delete DCGM metrics ConfigMap"
       kubernetes.core.k8s:
@@ -32,4 +34,18 @@
         api_version: v1
         kind: Namespace
         state: absent
+      failed_when: false
+
+    # helm uninstall leaves the chart's CRDs behind. The NFD CRDs it also
+    # ships belong to node_feature_discovery unless the bundled NFD was used.
+    - name: "nvidia_gpu_operator | teardown | nvidia | Delete CRDs"
+      kubernetes.core.k8s:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        state: absent
+      loop: >-
+        {{ ['clusterpolicies.nvidia.com', 'nvidiadrivers.nvidia.com']
+           + (['nodefeatures.nfd.k8s-sigs.io', 'nodefeaturerules.nfd.k8s-sigs.io', 'nodefeaturegroups.nfd.k8s-sigs.io']
+              if nvidia_gpu_operator_nfd_enabled | bool else []) }}
       failed_when: false

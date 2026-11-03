@@ -8,10 +8,13 @@
 
 rack_scale_topology: "star"
 
-# Payload size for jumbo-frame MTU test (ping -M do -s <size>).
-# 8950 + 28 (IP+ICMP header) + 14 (Ethernet) = ~8992 on the wire,
-# well within 9000-byte MTU.  Proves jumbo frames traverse the fabric.
-rack_scale_validate_mtu_size: 8950
+# Fabric MTU from rack-profile.yaml (network.mtu); fabric_inventory exports it.
+rack_scale_fabric_mtu: 9000
+
+# Payload size for the don't-fragment ping (ping -M do -s <size>): the fabric
+# MTU minus 28 bytes of IP + ICMP header, so the ping fills the MTU exactly.
+# Skipped when the fabric MTU is 1500 or less.
+rack_scale_validate_mtu_size: "{{ (rack_scale_fabric_mtu | int) - 28 }}"
 
 # Seconds to wait for fabric IP reachability before declaring failure.
 rack_scale_validate_timeout: 15

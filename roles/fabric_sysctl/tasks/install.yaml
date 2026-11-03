@@ -17,6 +17,10 @@
 # a no-op on single-homed Clos sites and clusters with no star hub.
 # =============================================================================
 
+- name: "fabric_sysctl | Skip — topology=none (no fabric)"
+  ansible.builtin.meta: end_role
+  when: (rack_scale_topology | default('star')) == 'none'
+
 # ── ECMP (Clos: nodes with dual uplinks) ────────────────────────────────────
 
 - name: "fabric_sysctl | ECMP | Configure L4 flow hashing"

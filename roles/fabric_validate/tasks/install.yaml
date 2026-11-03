@@ -1,4 +1,51 @@
 ---
-- name: "fabric_validate | install | No-op (validate-only role)"
+# =============================================================================
+# fabric_validate — Install
+# =============================================================================
+# Applies node labels from parser-generated hostvars. These labels must be
+# present during deployment (not just validation) because GPU operator and
+# inference scheduling depend on them.
+# =============================================================================
+
+- name: "fabric_validate | install | Apply silicon/GPU node labels"
+  ansible.builtin.command:
+    cmd: >-
+      kubectl label node {{ item }}
+      {% if hostvars[item].node_family is defined and hostvars[item].node_family | length > 0 %}
+      cpu-gen={{ hostvars[item].node_family }}
+      {% endif %}
+      {% if hostvars[item].node_sku is defined and hostvars[item].node_sku | length > 0 %}
+      cpu-sku={{ hostvars[item].node_sku }}
+      {% endif %}
+      {% if hostvars[item].node_accelerator is defined and hostvars[item].node_accelerator | length > 0 %}
+      gpu-vendor={{ hostvars[item].node_gpu_vendor }}
+      gpu-model={{ hostvars[item].node_gpu_model }}
+      {% if hostvars[item].node_gpu_form is defined and hostvars[item].node_gpu_form | length > 0 %}
+      gpu-form={{ hostvars[item].node_gpu_form }}
+      {% endif %}
+      gpu-count={{ hostvars[item].node_gpu_count | default('0') }}
+      {% endif %}
+      --overwrite
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  delegate_to: localhost
+  changed_when: true
+  loop: "{{ groups['k8s_cluster'] | default([]) | reject('equalto', 'localhost') | list }}"
+  loop_control:
+    label: "{{ item }}"
+  when: >-
+    hostvars[item].node_family is defined or
+    hostvars[item].node_accelerator is defined
+
+- name: "fabric_validate | install | Report applied labels"
+  ansible.builtin.command:
+    cmd: kubectl get nodes --show-labels
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  delegate_to: localhost
+  changed_when: false
+  register: _node_labels
+
+- name: "fabric_validate | install | Node labels"
   ansible.builtin.debug:
-    msg: "fabric_validate has no install action — use validate."
+    msg: "{{ _node_labels.stdout_lines }}"
