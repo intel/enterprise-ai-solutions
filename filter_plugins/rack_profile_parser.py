@@ -106,11 +106,6 @@ def _nic_prefix(fn, fabric_prefix):
     return fn.get("prefix", fabric_prefix)
 
 
-def _node_ceph_nic(node, ceph_nic):
-    """Ceph fabric NIC for one node — per-node override, else site-wide default."""
-    return node.get("ceph_fabric_nic", ceph_nic)
-
-
 def _node_primary_nic(node):
     fnics = node.get("fabric_nics", [])
     return fnics[0] if fnics else None
@@ -283,6 +278,121 @@ def _cluster_cidr_faults(pod_cidr, service_cidr, all_nodes, fabric_prefix):
     return faults
 
 
+def _clos_leaf_faults(all_nodes, leafs):
+    """Clos: each fabric NIC's leaf is the one whose fabric_subnet holds its IP.
+
+    'leaf:' is optional; when given it must agree with the subnet. Fills in
+    'leaf' on NICs that leave it out, so the netplan, BGP and ECMP generators
+    see it. A leaf with fabric_subnet TBD can't be derived from, so its NICs
+    still name it.
+    """
+    if not leafs:
+        return []
+    faults, nets, tbd = [], [], []
+    for lf in leafs:
+        sub = lf.get("fabric_subnet", "TBD")
+        if sub in (None, "", "TBD"):
+            tbd.append(lf["name"])
+            continue
+        net = _safe_ip_network(sub, f"leaf '{lf['name']}' fabric_subnet", faults)
+        if net is not None:
+            nets.append((lf["name"], net))
+    for i, (a, net_a) in enumerate(nets):
+        for b, net_b in nets[i + 1:]:
+            if net_a.overlaps(net_b):
+                faults.append(
+                    f"leaf subnets overlap: {a} {net_a} and {b} {net_b} — a "
+                    f"fabric_ip would be inside more than one leaf's fabric_subnet")
+    if faults:
+        return faults
+
+    by_name = dict(nets)
+    for node_name, node in sorted(all_nodes.items()):
+        for fn in node.get("fabric_nics", []):
+            ip = ipaddress.ip_address(fn["fabric_ip"])
+            where = f"node '{node_name}' NIC '{fn.get('nic', '?')}' fabric_ip {ip}"
+            named = fn.get("leaf")
+            if named:
+                net = by_name.get(named)
+                if net is not None and ip not in net:
+                    faults.append(f"{where} is not within {named}'s fabric_subnet {net}")
+                continue
+            hits = [name for name, net in nets if ip in net]
+            if hits:
+                fn["leaf"] = hits[0]
+                continue
+            known = ", ".join(f"{name} {net}" for name, net in nets) or "none set"
+            hint = (f"; name its leaf with 'leaf:' (fabric_subnet is TBD for "
+                    f"{', '.join(tbd)})" if tbd else "")
+            faults.append(f"{where} is in no leaf's fabric_subnet ({known}){hint}")
+    return faults
+
+
+def _l2_segment_faults(all_nodes, fabric_prefix):
+    """L2: every fabric_ip must be inside the one shared segment.
+
+    The segment is the on-link network (fabric_prefix, or a NIC's prefix:)
+    that holds the most fabric IPs; every IP outside it is reported.
+    """
+    nics = [(name, fn, ipaddress.ip_address(fn["fabric_ip"]))
+            for name, node in sorted(all_nodes.items())
+            for fn in node.get("fabric_nics", [])]
+    if not nics:
+        return []
+    candidates = sorted(
+        {ipaddress.ip_network(f"{fn['fabric_ip']}/{_nic_prefix(fn, fabric_prefix)}",
+                              strict=False) for _, fn, _ in nics},
+        key=lambda n: (n.network_address, n.prefixlen))
+    segment = max(candidates,
+                  key=lambda n: (sum(ip in n for _, _, ip in nics), -n.prefixlen))
+    return [
+        f"node '{name}' NIC '{fn.get('nic', '?')}' fabric_ip {ip} is outside the "
+        f"L2 segment {segment} — every node on an L2 fabric shares one subnet"
+        for name, fn, ip in nics if ip not in segment]
+
+
+def _ceph_address_faults(all_nodes, public_net, cluster_net, cp_on_fabric):
+    """Storage nodes need fabric IPs in the Ceph networks.
+
+    Rook runs with provider: host and binds to the addresses in
+    ceph_public_network / ceph_cluster_network; the NIC name plays no part.
+    Each storage node needs a fabric IP in the public network (and in the
+    cluster network when it is set), and its node IP, when that is a fabric
+    IP, must be in the public network.
+    """
+    if not public_net:
+        return []
+    faults = []
+    public = _safe_ip_network(public_net, "storage.ceph_public_network", faults)
+    cluster = (_safe_ip_network(cluster_net, "storage.ceph_cluster_network", faults)
+               if cluster_net else None)
+    if faults:
+        return faults
+    for name, node in sorted(all_nodes.items()):
+        roles = node.get("roles", [])
+        if "storage" not in roles:
+            continue
+        ips = [ipaddress.ip_address(fn["fabric_ip"])
+               for fn in node.get("fabric_nics", [])]
+        shown = ", ".join(str(ip) for ip in ips) or "none"
+        if not any(ip in public for ip in ips):
+            faults.append(
+                f"storage node '{name}' has no fabric_ip in ceph_public_network "
+                f"{public} (fabric IPs: {shown})")
+            continue
+        is_cp = "kube_control_plane" in roles or "etcd" in roles
+        if (not is_cp or cp_on_fabric) and ips[0] not in public:
+            faults.append(
+                f"storage node '{name}' node IP {ips[0]} (its first fabric NIC) "
+                f"is outside ceph_public_network {public} — list the NIC in "
+                f"that network first")
+        if cluster is not None and not any(ip in cluster for ip in ips):
+            faults.append(
+                f"storage node '{name}' has no fabric_ip in ceph_cluster_network "
+                f"{cluster} (fabric IPs: {shown})")
+    return faults
+
+
 # ── Netplan helpers ──────────────────────────────────────────────────────────
 
 def _star_hub(all_nodes):
@@ -436,6 +546,17 @@ def _parse_and_validate(profile):
 
     for node_name, node in all_nodes.items():
         _check_keys(node, VALID_NODE_KEYS, f"node '{node_name}'", schema_errors)
+        # Every node is an SSH target (ansible_host is mgmt_ip, the deploy
+        # node included) and must land in at least one inventory group.
+        if not node.get("mgmt_ip"):
+            schema_errors.append(
+                f"node '{node_name}' is missing required field 'mgmt_ip' "
+                f"(the address Ansible connects to, the deploy node included)")
+        roles = node.get("roles")
+        if not isinstance(roles, list) or not roles:
+            schema_errors.append(
+                f"node '{node_name}' has no roles — it would be in no "
+                f"inventory group (e.g. roles: [kube_node])")
         for i, fn in enumerate(node.get("fabric_nics", [])):
             _check_keys(fn, VALID_FABRIC_NIC_KEYS,
                          f"node '{node_name}' fabric_nics[{i}]", schema_errors)
@@ -561,8 +682,11 @@ def _parse_and_validate(profile):
     for node_name, node in all_nodes.items():
         for fn in node.get("fabric_nics", []):
             if fn.get("leaf") and fn["leaf"] not in leaf_names:
-                warnings.append(
-                    f"node '{node_name}' references unknown leaf '{fn['leaf']}'")
+                # On Clos that NIC would get no route and no BGP peer.
+                (errors if topology == "clos" else warnings).append(
+                    f"node '{node_name}' NIC '{fn.get('nic', '?')}' references "
+                    f"unknown leaf '{fn['leaf']}' "
+                    f"(defined: {', '.join(sorted(leaf_names)) or 'none'})")
         for role in node.get("roles", []):
             if role not in KNOWN_ROLES:
                 warnings.append(
@@ -591,19 +715,6 @@ def _parse_and_validate(profile):
         if len(owners) > 1:
             errors.append(
                 f"duplicate fabric_ip {ip} claimed by: {', '.join(owners)}")
-
-    # Storage node NIC validation.
-    for node_name, node in all_nodes.items():
-        if "storage" not in node.get("roles", []):
-            continue
-        want = _node_ceph_nic(node, ceph_nic)
-        if not want:
-            continue
-        have = [fn.get("nic") for fn in node.get("fabric_nics", [])]
-        if want not in have:
-            warnings.append(
-                f"storage node '{node_name}' has no NIC named '{want}' "
-                f"(ceph_fabric_nic); found: {', '.join(have) or 'none'}")
 
     # Star topology invariants.
     if topology == "star":
@@ -706,6 +817,13 @@ def _parse_and_validate(profile):
     # Cluster CIDR sanity.
     errors.extend(_cluster_cidr_faults(pod_cidr, service_cidr, all_nodes,
                                        fabric_prefix))
+
+    if topology == "clos":
+        errors.extend(_clos_leaf_faults(all_nodes, leafs))
+    if topology == "l2":
+        errors.extend(_l2_segment_faults(all_nodes, fabric_prefix))
+    errors.extend(_ceph_address_faults(all_nodes, ceph_public_net,
+                                       ceph_cluster_net, cp_on_fabric))
 
     # Pack everything the generators need into a context dict.
     ctx = {
