@@ -293,8 +293,8 @@ The admin password is in the `grafana-admin-credentials` Secret, as on Kubernete
 
 On OpenShift, `install` and `validate` check the [Prerequisites](#prerequisites) before the first component runs. They check only what the plan needs:
 
-- The platform layer needs the default StorageClass, cert-manager, Service Mesh 3, Gateway API, CloudNativePG, and the Red Hat build of Keycloak when `auth_type: jwt`.
-- The inference layer adds NFD, LeaderWorkerSet, Connectivity Link and OpenShift AI.
+- The platform layer needs the default StorageClass, cert-manager, Service Mesh 3, Gateway API, CloudNativePG, NFD, and the Red Hat build of Keycloak when `auth_type: jwt`.
+- The inference layer adds LeaderWorkerSet, Connectivity Link and OpenShift AI.
 
 | What | Passes when |
 |---|---|

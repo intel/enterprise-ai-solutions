@@ -109,7 +109,7 @@ openshift_prerequisites:
   - name: nfd
     title: Node Feature Discovery
     doc: "#8-node-feature-discovery"
-    layers: [inference]
+    layers: [platform]
     when: "{{ nfd_enabled | default(true) | bool }}"
     package: nfd
     channel: stable
