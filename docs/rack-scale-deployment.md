@@ -464,7 +464,7 @@ racks:
 
 **What happens automatically:**
 - Parser detects `accelerator:` → sets `rack_scale_gpu_vendor=nvidia`
-- `node_feature_discovery` installs the cluster's one NFD (release `node-feature-discovery` in namespace `node-feature-discovery`). It does this on every rack-scale cluster, with or without GPUs, and the inference layer's `nfd` component is left out of install, validate and teardown; `nfd_enabled: false` turns both off
+- `node_feature_discovery`, first in the platform layer, installs the cluster's one NFD (release `node-feature-discovery` in namespace `node-feature-discovery`). It does this on every cluster, rack-scale or not, with or without GPUs, and the inference layer's `nfd` component is left out of install, validate and teardown; `nfd_enabled: false` turns NFD off
 - `nvidia_gpu_operator` role installs the NVIDIA GPU operator without the chart's bundled NFD (NVIDIA only; other vendors log a warning and get no stack from this role)
 - Node labels applied: `gpu-vendor=nvidia`, `gpu-model=b300`, `gpu-form=hgx`, `gpu-count=8`
 - Inference scheduling and the GPU operator use these labels
@@ -527,29 +527,30 @@ and continue.
 
 **Star (rack_scale_enabled=true, no BGP):**
 ```
-fabric_inventory → fabric_netplan → fabric_sysctl → kubernetes → fabric_validate → node_feature_discovery → storage
+fabric_inventory → fabric_netplan → fabric_sysctl → kubernetes → fabric_validate → storage
 ```
 
 **Clos (rack_scale_enabled=true, BGP on):**
 ```
-fabric_inventory → fabric_netplan → fabric_sysctl → kubernetes → fabric_bgp → fabric_validate → node_feature_discovery → storage
+fabric_inventory → fabric_netplan → fabric_sysctl → kubernetes → fabric_bgp → fabric_validate → storage
 ```
 
 **L2 (rack_scale_enabled=true, topology=l2):**
 ```
-fabric_inventory → fabric_netplan → kubernetes → fabric_validate → node_feature_discovery → storage
+fabric_inventory → fabric_netplan → kubernetes → fabric_validate → storage
 ```
 fabric_sysctl and fabric_bgp are no-ops (no hub, no ToR peers).
 
 **None (rack_scale_enabled=true, topology=none):**
 ```
-fabric_inventory → kubernetes → fabric_validate (labels only) → node_feature_discovery → storage
+fabric_inventory → kubernetes → fabric_validate (labels only) → storage
 ```
 fabric_netplan, fabric_sysctl, fabric_bgp all skip. No fabric network — rack-profile used for inventory and GPU labels only.
 
-**With NVIDIA GPU nodes** (any topology), the GPU operator follows NFD:
+**Platform layer** (every cluster), after the infrastructure layer: NFD comes first, and
+**with NVIDIA GPU nodes** (any topology) the GPU operator follows it:
 ```
-fabric_validate → node_feature_discovery → nvidia_gpu_operator → storage
+node_feature_discovery → nvidia_gpu_operator → cert_manager → …
 ```
 
 **Default (rack_scale_enabled=false):**
