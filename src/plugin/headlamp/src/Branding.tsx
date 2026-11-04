@@ -3,7 +3,7 @@
 
 import { Typography } from '@mui/material';
 
-export const BRAND = 'AI Toolkit cluster dashboard';
+export const BRAND = 'Agent Toolkit cluster dashboard';
 
 // Top-bar logo: the product name instead of Headlamp's mark.
 export function BrandLogo(props: { logoType?: 'small' | 'large' }) {
@@ -14,7 +14,7 @@ export function BrandLogo(props: { logoType?: 'small' | 'large' }) {
       noWrap
       sx={{ fontWeight: 600, color: 'inherit', letterSpacing: 0.2 }}
     >
-      {props.logoType === 'small' ? 'AITK' : BRAND}
+      {props.logoType === 'small' ? 'ATK' : BRAND}
     </Typography>
   );
 }
