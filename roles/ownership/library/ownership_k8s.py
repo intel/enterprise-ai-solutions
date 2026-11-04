@@ -524,6 +524,9 @@ def delete(api, p, module):
     objects.update(_created_by(api, resources, objects, p))
     restored = _restore(api, resources, p, module)
     deleted = []
+    # Not waited for in their own phase: deleting the namespace removes them, along with
+    # what holds them that no component owns (a model-manager model mounting the model store).
+    owned_ns = {meta["name"] for res, meta in objects.values() if _phase(res) == "namespaces"}
     for phase in PHASES:
         targets = sorted((t for t in objects.values() if _phase(t[0]) == phase), key=lambda t: _ref(*t))
         for res, meta in targets:
@@ -538,6 +541,8 @@ def delete(api, p, module):
             except ApiException as e:
                 if e.status != 404:
                     raise
+        if phase == "namespaced":
+            targets = [t for t in targets if t[1].get("namespace") not in owned_ns]
         deadline = time.time() + p["timeout"]
         while targets and not module.check_mode:  # the next phase may need this one gone
             targets = [t for t in targets if _exists(api, *t)]
