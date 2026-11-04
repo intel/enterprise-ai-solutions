@@ -100,6 +100,11 @@ You don't have to deploy everything at once. Target individual layers:
 ./es_auto_installer.sh teardown inference
 ```
 
+Node Feature Discovery belongs to the platform layer (`node_feature_discovery`), so
+`teardown inference` keeps NFD and its node labels. `teardown platform` removes them,
+and on rack-scale clusters with NVIDIA GPUs the GPU operator as well. On OpenShift NFD
+comes from its operator, and teardown leaves it.
+
 You can also target individual components directly — component resolving traverses the dependency tree automatically:
 
 ```bash
