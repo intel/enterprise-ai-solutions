@@ -465,6 +465,10 @@ def _parse_and_validate(profile):
                 f"node '{node_name}' has role 'storage' but is not a kube member. "
                 f"Add 'kube_node' to its roles — Ceph OSDs run as pods and require kubelet.")
 
+    storage_errors, storage_warnings = _storage_node_faults(storage, all_nodes)
+    errors.extend(storage_errors)
+    warnings.extend(storage_warnings)
+
     # Duplicate leaf name detection
     _leaf_name_counts = {}
     for lf in leafs:
@@ -1006,6 +1010,48 @@ def _gen_calico_yml(ctx):
     return "\n".join(lines) + "\n"
 
 
+def _ceph_device_map(storage):
+    """{node: [/dev/... paths]} from storage.nodes: the rook_ceph_devices map the Ceph role takes.
+
+    A device may be a bare name (nvme1n1) or a path under /dev (disk/by-id/...); both become /dev paths.
+    """
+    out = {}
+    for entry in storage.get("nodes") or []:
+        out[entry["name"]] = [d if d.startswith("/dev/") else "/dev/" + d.lstrip("/")
+                              for d in entry.get("devices") or []]
+    return out
+
+
+def _storage_node_faults(storage, all_nodes):
+    """Errors and warnings for storage.nodes, the source of the Ceph OSD devices."""
+    errors, warnings = [], []
+    entries = storage.get("nodes") or []
+    if not isinstance(entries, list):
+        return [f"storage.nodes must be a list, got {type(entries).__name__}"], []
+    seen = []
+    for i, entry in enumerate(entries):
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name:
+            errors.append(f"storage.nodes[{i}] needs a 'name' (a node defined under racks)")
+            continue
+        if name in seen:
+            errors.append(f"storage.nodes lists '{name}' more than once")
+        seen.append(name)
+        if name not in all_nodes:
+            errors.append(f"storage.nodes entry '{name}' is not a node defined under racks")
+        devices = entry.get("devices")
+        if (not isinstance(devices, list) or not devices
+                or not all(isinstance(d, str) and d.strip() for d in devices)):
+            errors.append(f"storage node '{name}' needs a non-empty devices list, e.g. devices: [nvme1n1]")
+    with_role = sorted(n for n, node in all_nodes.items() if "storage" in node.get("roles", []))
+    listed = sorted(n for n in set(seen) if n in all_nodes)
+    if entries and with_role != listed:
+        warnings.append(
+            f"nodes with role 'storage' ({', '.join(with_role) or 'none'}) and storage.nodes "
+            f"({', '.join(listed) or 'none'}) disagree — Ceph runs on the storage.nodes entries")
+    return errors, warnings
+
+
 def _gen_ceph_vars(ctx):
     c = ctx
     lines = [
@@ -1248,6 +1294,7 @@ def _build_summary(ctx):
         "gpu_vendor": gpu_vendor,
         "gpu_model": gpu_model,
         "gpu_form": gpu_form,
+        "ceph_devices": _ceph_device_map(ctx["storage"]),
     }
 
 
