@@ -106,7 +106,7 @@ Model autoscaling uses KEDA instead of the Prometheus Adapter that the installer
 
 ### 8. Node Feature Discovery
 
-Create a `NodeFeatureDiscovery` instance with the operator's default spec. With `nfd_enabled: true` (the default) the installer checks that one exists and fails if not. The model catalog's `require_amx: true` schedules models only on nodes labelled `feature.node.kubernetes.io/cpu-cpuid.AMXBF16`, so without NFD every model stays Pending.
+Create a `NodeFeatureDiscovery` instance with the operator's default spec. With `nfd_enabled: true` (the default) the platform layer's `node_feature_discovery` component checks that one exists and fails if not; it installs nothing, and teardown leaves the operator and its labels. The model catalog's `require_amx: true` schedules models only on nodes labelled `feature.node.kubernetes.io/cpu-cpuid.AMXBF16`, so without NFD every model stays Pending.
 
 ### 9. LeaderWorkerSet
 

@@ -243,7 +243,7 @@ roles/<name>/
 **Platform differences.** `cluster_distribution` (`kubernetes` | `openshift`) is detected once,
 in preflight, and only the dispatcher and `components.yaml` read it. The tasks are the same on
 both platforms: whatever differs is a value in `vars/<platform>.yaml`. A role that uses the
-cluster's operator on OpenShift instead of installing one (cert-manager, CNPG, Keycloak) has a
+cluster's operator on OpenShift instead of installing one (cert-manager, CNPG, Keycloak, NFD) has a
 boolean `_<name>_from_olm` there: `true` checks the marketplace operator and skips its install,
 and teardown leaves it and its CRDs. Where the two stacks differ throughout (`observability`:
 Helm charts, or instances of the OperatorHub operators) the shared steps stay in `install.yaml`

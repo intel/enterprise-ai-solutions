@@ -27,7 +27,7 @@ nvidia_gpu_operator_wait_timeout: "10m"
 
 # --- Node Feature Discovery (NFD) ---
 # The chart ships its own NFD. Off by default: the node_feature_discovery
-# component installs the cluster's one NFD before this role, and the inference
-# layer reuses it. Set true only on a cluster without that NFD; install fails
+# component (platform layer) installs the cluster's one NFD before this role, and
+# the inference layer reuses it. Set true only on a cluster without that NFD; install fails
 # early when this is false and no NFD release is found.
 nvidia_gpu_operator_nfd_enabled: false

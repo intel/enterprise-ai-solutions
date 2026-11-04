@@ -1,0 +1,3 @@
+---
+# NFD from the kubernetes-sigs Helm chart, installed by this role.
+_node_feature_discovery_from_olm: false

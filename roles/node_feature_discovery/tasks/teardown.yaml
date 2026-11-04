@@ -5,11 +5,18 @@
 # =============================================================================
 # Node Feature Discovery — Teardown
 # =============================================================================
-# Every rack-scale cluster: this component owns the release there, and the
-# inference layer's nfd component is left out of the plan.
+# This component owns the release, and the inference layer's nfd component is
+# left out of the plan. With _node_feature_discovery_from_olm the operator, its
+# CRDs and its labels belong to the cluster: nothing to tear down.
 # =============================================================================
 
+- name: "node_feature_discovery | Operator from the cluster — nothing to tear down"
+  ansible.builtin.debug:
+    msg: "NFD belongs to the Node Feature Discovery operator on this cluster; nothing to tear down."
+  when: _node_feature_discovery_from_olm | bool
+
 - name: "node_feature_discovery | teardown"
+  when: not _node_feature_discovery_from_olm | bool
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
