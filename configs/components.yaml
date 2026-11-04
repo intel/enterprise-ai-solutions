@@ -95,10 +95,11 @@ components:
   # rack-profile.yaml for every action, and no-op unless it is nvidia.
   # In the platform layer after NFD, whose labels place its operands; fabric_validate
   # (infrastructure) has run before it. Planned (B2): detect vendors from NFD labels
-  # and drop the rack_scale gate.
+  # and drop the rack_scale gate. Not on OpenShift for now: it expects the NFD Helm
+  # release, and OpenShift gets NFD from its operator.
   - name: nvidia_gpu_operator
     layer: platform
-    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
+    enabled: "{{ rack_scale_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [node_feature_discovery]
 
   - name: cert_manager
@@ -168,10 +169,11 @@ components:
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 
   # depends_on orders, it does not gate: a disabled observability component
-  # does not disable this one, so it is gated on observability_enabled too.
+  # does not disable this one, so it is gated on observability_enabled too, and
+  # off on OpenShift like nvidia_gpu_operator.
   - name: gpu_observability
     layer: platform
-    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) }}"
+    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [observability, nvidia_gpu_operator]
 
   - name: velero
