@@ -198,6 +198,10 @@
       ansible.builtin.package:
         name: [git, curl, tar, python3-pip, python3-venv]
         state: present
+      register: _k8s_bastion_pkgs
+      until: _k8s_bastion_pkgs is succeeded
+      retries: 5
+      delay: 10
 
     # ── Kubespray prep ──
     - name: "kubernetes | Kubespray preparation"
