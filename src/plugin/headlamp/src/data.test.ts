@@ -3,12 +3,15 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  accessExample,
   buildJob,
+  catalogAccess,
   catalogModels,
   categories,
   filterRows,
   jobArgs,
   latestJobs,
+  liveFacts,
   modelPods,
   parseJobTemplate,
   portalEntries,
@@ -238,5 +241,69 @@ describe('modelPods', () => {
     expect(modelPods(pods, 'q')).toEqual({ server: 'q-new', router: 'q-rs' });
     expect(modelPods(pods, 'e')).toEqual({ server: 'e-pred' });
     expect(modelPods(pods, 'none')).toEqual({});
+  });
+});
+
+describe('liveFacts', () => {
+  it('reads image and size from an LLMInferenceService', () => {
+    const spec = {
+      template: {
+        containers: [
+          {
+            image: 'docker.io/vllm/vllm-openai-cpu:v0.24.0',
+            resources: { requests: { cpu: '4', memory: '16Gi' } },
+          },
+        ],
+      },
+    };
+    expect(liveFacts({ spec })).toEqual({
+      runtime: 'vllm-openai-cpu:v0.24.0',
+      cpu: '4',
+      memory: '16Gi',
+    });
+  });
+
+  it('falls back to the runtime name of an InferenceService', () => {
+    const spec = {
+      predictor: {
+        model: { runtime: 'openvino-runtime', resources: { requests: { cpu: 8, memory: '8Gi' } } },
+      },
+    };
+    expect(liveFacts({ spec })).toEqual({ runtime: 'openvino-runtime', cpu: 8, memory: '8Gi' });
+  });
+
+  it('returns no facts for an empty object', () => {
+    expect(liveFacts({})).toEqual({ runtime: undefined, cpu: undefined, memory: undefined });
+  });
+});
+
+describe('catalogAccess', () => {
+  const data = (v: unknown) => ({ 'access.json': JSON.stringify(v) });
+
+  it('reads the base URL and credential type', () => {
+    expect(catalogAccess(data({ base_url: 'https://solutions.ai/inference/v1/', auth_type: 'jwt' }))).toEqual({
+      baseURL: 'https://solutions.ai/inference/v1',
+      authType: 'jwt',
+    });
+  });
+
+  it('refuses missing data, non-https URLs and unknown credential types', () => {
+    expect(catalogAccess(undefined)).toBeNull();
+    expect(catalogAccess({ 'access.json': 'not json' })).toBeNull();
+    expect(catalogAccess(data({ base_url: 'javascript:alert(1)', auth_type: 'jwt' }))).toBeNull();
+    expect(catalogAccess(data({ base_url: 'http://x/v1', auth_type: 'jwt' }))).toBeNull();
+    expect(catalogAccess(data({ base_url: 'https://x/v1', auth_type: 'basic' }))).toBeNull();
+  });
+});
+
+describe('accessExample', () => {
+  const access = { baseURL: 'https://inference.solutions.ai/v1', authType: 'jwt' as const };
+
+  it('picks the API and body by category, the model in the body', () => {
+    expect(accessExample(access, 'q').endpoint).toBe('https://inference.solutions.ai/v1/chat/completions');
+    expect(JSON.parse(accessExample(access, 'q').body).model).toBe('q');
+    expect(accessExample(access, 'e', 'embed').endpoint).toMatch(/\/v1\/embeddings$/);
+    expect(JSON.parse(accessExample(access, 'e', 'embed').body).input).toEqual(['Hello world']);
+    expect(accessExample(access, 'r', 'rerank').endpoint).toMatch(/\/v1\/score$/);
   });
 });

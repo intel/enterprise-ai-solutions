@@ -10,6 +10,6 @@ describe('branding', () => {
     const { rerender } = render(<BrandLogo />);
     expect(screen.getByText(BRAND)).toBeTruthy();
     rerender(<BrandLogo logoType="small" />);
-    expect(screen.getByText('EAI')).toBeTruthy();
+    expect(screen.getByText('AITK')).toBeTruthy();
   });
 });

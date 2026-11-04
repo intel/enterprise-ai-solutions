@@ -59,17 +59,13 @@
         | selectattr('type', 'eq', 'Accepted') | selectattr('status', 'eq', 'True') | list | length == 0))
   when: headlamp_gateway_publish | bool
 
-- name: "headlamp | validate | Realm imported"
-  kubernetes.core.k8s_info:
-    api_version: k8s.keycloak.org/v2beta1
-    kind: KeycloakRealmImport
-    name: "{{ keycloak_platform_realm }}-realm"
-    namespace: "{{ keycloak_namespace }}"
-  register: __headlamp_val_realm
-  failed_when: >-
-    __headlamp_val_realm.resources | length == 0
-    or (__headlamp_val_realm.resources[0].status.conditions | default([])
-        | selectattr('type', 'eq', 'Done') | selectattr('status', 'eq', 'True') | list | length == 0)
+# kcadm fails (Resource not found) when the realm is missing.
+- name: "headlamp | validate | Platform realm exists"
+  ansible.builtin.include_role:
+    name: keycloak
+    tasks_from: kcadm.yaml
+  vars:
+    _kc_args: [get, "realms/{{ keycloak_platform_realm }}", --fields, realm]
 
 # ── Through the gateway, as a browser sees it ────────────────────────────────
 # Skipped, with a notice, when the Headlamp host does not resolve here.

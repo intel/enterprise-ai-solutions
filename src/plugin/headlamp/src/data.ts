@@ -65,6 +65,39 @@ export function catalogModels(data: Record<string, string> | undefined): Catalog
   return list.filter((m): m is CatalogModel => typeof m?.name === 'string');
 }
 
+// ── How to call a model: model-catalog access.json (llm_services role) ─────
+export type AuthType = 'jwt' | 'litellm_vkey';
+
+export interface Access {
+  baseURL: string;
+  authType: AuthType;
+}
+
+// null when absent (an older inference release) or not a plain https URL.
+export function catalogAccess(data: Record<string, string> | undefined): Access | null {
+  const v = parseJSON(data?.['access.json']) as { base_url?: unknown; auth_type?: unknown };
+  const url = safeHttpsURL(v?.base_url);
+  if (!url || (v.auth_type !== 'jwt' && v.auth_type !== 'litellm_vkey')) return null;
+  return { baseURL: url.replace(/\/+$/, ''), authType: v.auth_type };
+}
+
+export interface AccessExample {
+  endpoint: string;
+  body: string;
+}
+
+// The request model-manager prints after a deploy: the API by category, the model in the body.
+export function accessExample(access: Access, model: string, category?: string): AccessExample {
+  const api = category === 'embed' ? 'embeddings' : category === 'rerank' ? 'score' : 'chat/completions';
+  const body =
+    category === 'embed'
+      ? { model, input: ['Hello world'] }
+      : category === 'rerank'
+      ? { model, text_1: 'query', text_2: ['doc1', 'doc2'] }
+      : { model, messages: [{ role: 'user', content: 'Hello' }], max_tokens: 16 };
+  return { endpoint: `${access.baseURL}/${api}`, body: JSON.stringify(body) };
+}
+
 // ── Deploy from the Models page: model-manager Jobs ─────────────────────────
 // The template is published by the installer (llm_services role); an admission
 // policy admits only pods built from it, with deploy|undeploy <catalogue name>.
@@ -206,6 +239,35 @@ export function filterRows(rows: Row[], f: RowFilter): Row[] {
 
 export function categories(rows: Row[]): string[] {
   return [...new Set(rows.map(r => r.category).filter((c): c is string => !!c))].sort();
+}
+
+// Every serving resource model-manager creates carries this label.
+export const MANAGED_BY = 'app.kubernetes.io/managed-by=model-manager';
+
+export interface ServingLike {
+  spec?: {
+    template?: { containers?: ContainerLike[] };
+    predictor?: { model?: ContainerLike & { runtime?: string } };
+  };
+}
+
+interface ContainerLike {
+  image?: string;
+  resources?: { requests?: { cpu?: string | number; memory?: string } };
+}
+
+// Facts a deployed resource carries, for models with no catalogue entry: the
+// Hugging Face ID is not recorded on it, the image and its size are.
+export function liveFacts(s: ServingLike): Pick<CatalogModel, 'runtime' | 'cpu' | 'memory'> {
+  const llm = s.spec?.template?.containers?.[0];
+  const model = s.spec?.predictor?.model;
+  const c = llm ?? model ?? {};
+  const requests = c.resources?.requests ?? {};
+  return {
+    runtime: c.image?.split('/').pop() || model?.runtime || undefined,
+    cpu: requests.cpu,
+    memory: requests.memory,
+  };
 }
 
 // What a person may start on a row: catalogue models only, never while a run is going.

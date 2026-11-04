@@ -28,7 +28,12 @@ describe('ModelCards', () => {
             memory: '16Gi',
             state: 'Ready',
           }),
-          row({ name: 'custom', state: 'Deploying', inCatalogue: false }),
+          row({
+            name: 'custom',
+            state: 'Deploying',
+            inCatalogue: false,
+            runtime: 'vllm-openai-cpu:v0.24.0',
+          }),
         ]}
         empty="none"
         lastAction={r => (r.name === 'qwen3-0-6b' ? 'Last deploy: Succeeded' : null)}
@@ -42,6 +47,10 @@ describe('ModelCards', () => {
     expect(screen.getByText('Last deploy: Succeeded')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'act qwen3-0-6b' })).toBeTruthy();
     expect(screen.getByText('outside the catalogue')).toBeTruthy();
+    expect(screen.getByText('vllm-openai-cpu:v0.24.0')).toBeTruthy();
+    // The badge marks catalogue cards only: one of the two here.
+    expect(screen.getAllByLabelText('In the catalogue')).toHaveLength(1);
+    expect(screen.getByText('C')).toBeTruthy();
   });
 
   it('shows the empty message when there are no models', () => {

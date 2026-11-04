@@ -1,4 +1,7 @@
 ---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
 # =============================================================================
 # Fabric Sysctl — Teardown
 # =============================================================================
@@ -16,6 +19,10 @@
     label: "{{ item }}"
   register: _ecmp_removed
 
+# The file is gone either way; the reload only re-applies what is left.
+# sysctl --system re-applies every sysctl.d file and exits non-zero when any
+# key is unknown to the running kernel (Ubuntu 22.04 GNR nodes reject
+# net.ipv4.conf.all.accept_source_route), so a failure here is not ours.
 - name: "fabric_sysctl | teardown | Reload sysctl on ECMP nodes"
   ansible.builtin.command: sysctl --system
   delegate_to: "{{ item.item }}"
@@ -24,6 +31,7 @@
   loop_control:
     label: "{{ item.item }}"
   changed_when: true
+  failed_when: false
 
 # ── Remove star hub settings ────────────────────────────────────────────────
 
@@ -66,6 +74,8 @@
   loop_control:
     label: "{{ item.item }}"
   changed_when: true
+  # Same as the ECMP reload above.
+  failed_when: false
 
 - name: "fabric_sysctl | teardown | Re-save iptables after rule removal"
   ansible.builtin.shell: >

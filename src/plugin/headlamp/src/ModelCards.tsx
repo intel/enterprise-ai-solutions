@@ -2,7 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { StatusLabel } from '@kinvolk/headlamp-plugin/lib/CommonComponents';
-import { Box, Card, CardActions, CardContent, Chip, Stack, Typography } from '@mui/material';
+import {
+  Box,
+  Card,
+  CardActions,
+  CardContent,
+  Chip,
+  Stack,
+  Tooltip,
+  Typography,
+} from '@mui/material';
 import { ReactNode } from 'react';
 import { Row, statusColour } from './data';
 
@@ -27,7 +36,7 @@ export function ModelCards(props: {
         ].filter(Boolean) as string[];
         return (
           <Card key={r.name} variant="outlined" sx={{ display: 'flex', flexDirection: 'column' }}>
-            <CardContent sx={{ flexGrow: 1 }}>
+            <CardContent sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
               <Stack
                 direction="row"
                 justifyContent="space-between"
@@ -55,6 +64,21 @@ export function ModelCards(props: {
               <Typography variant="body2" sx={{ mt: 1 }} component="div">
                 {props.lastAction(r)}
               </Typography>
+              {/* Pinned to the bottom, just above the action button. */}
+              {r.inCatalogue && (
+                <Box sx={{ mt: 'auto', pt: 1 }}>
+                  <Tooltip title="In the catalogue">
+                    <Chip
+                      label="C"
+                      aria-label="In the catalogue"
+                      size="small"
+                      variant="outlined"
+                      color="info"
+                      sx={{ height: 20, fontSize: '0.7rem', fontWeight: 600 }}
+                    />
+                  </Tooltip>
+                </Box>
+              )}
             </CardContent>
             <CardActions>{props.action(r)}</CardActions>
           </Card>

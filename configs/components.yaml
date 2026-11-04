@@ -150,6 +150,14 @@ components:
     enabled: "{{ keycloak_enabled | default(true) | bool }}"
     depends_on: [cert_manager, gateway, postgresql]
 
+  # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on
+  # OpenShift, whose console covers it.
+  # Right after keycloak: its API server restart then hits few running components.
+  - name: headlamp
+    layer: platform
+    enabled: "{{ headlamp_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    depends_on: [cert_manager, gateway, keycloak]
+
   - name: object_store
     layer: platform
     enabled: true
@@ -183,15 +191,6 @@ components:
     layer: platform
     enabled: "{{ velero_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: []
-
-  # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on
-  # OpenShift, whose console covers it.
-  # teardown both: its own teardown also resets the API server trust on the nodes.
-  - name: headlamp
-    layer: platform
-    teardown: both
-    enabled: "{{ headlamp_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
-    depends_on: [cert_manager, gateway, keycloak]
 
   # --- Inference ---
   # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy

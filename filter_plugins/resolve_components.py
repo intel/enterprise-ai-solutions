@@ -305,10 +305,26 @@ def kept_components(components, active):
             if staying}
 
 
+def component_deps(components, name):
+    """Names of every component `name` depends on, directly or through others."""
+    alias = _aliases(components)
+    by_name = {c["name"]: c for c in components}
+    seen = set()
+    queue = deque([alias.get(name, name)])
+    while queue:
+        for dep in by_name.get(queue.popleft(), {}).get("depends_on") or []:
+            dep = alias.get(dep, dep)
+            if dep not in seen:
+                seen.add(dep)
+                queue.append(dep)
+    return sorted(seen)
+
+
 class FilterModule(object):
     def filters(self):
         return {
             "resolve_components": resolve_components,
             "disabled_components": disabled_components,
             "kept_components": kept_components,
+            "component_deps": component_deps,
         }
