@@ -259,9 +259,25 @@ def disabled_components(components, layers, target, action="install",
     return [c["name"] for c in candidates if c["name"] not in kept]
 
 
+def component_deps(components, name):
+    """Names of every component `name` depends on, directly or through others."""
+    alias = _aliases(components)
+    by_name = {c["name"]: c for c in components}
+    seen = set()
+    queue = deque([alias.get(name, name)])
+    while queue:
+        for dep in by_name.get(queue.popleft(), {}).get("depends_on") or []:
+            dep = alias.get(dep, dep)
+            if dep not in seen:
+                seen.add(dep)
+                queue.append(dep)
+    return sorted(seen)
+
+
 class FilterModule(object):
     def filters(self):
         return {
             "resolve_components": resolve_components,
             "disabled_components": disabled_components,
+            "component_deps": component_deps,
         }
