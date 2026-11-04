@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# metrics-server — Validate (whoever serves it, metrics.k8s.io must answer)
+# =============================================================================
+
+- name: "metrics_server | Detect"
+  ansible.builtin.include_tasks: detect.yaml
+
+- name: "metrics_server | Check deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: metrics-server
+    namespace: "{{ metrics_server_namespace }}"
+  register: _ms_deploy
+  when: _ms_ours | bool
+
+- name: "metrics_server | Assert replicas ready"
+  ansible.builtin.assert:
+    that:
+      - _ms_deploy.resources | length > 0
+      - (_ms_deploy.resources[0].status.readyReplicas | default(0) | int) >= (metrics_server_replicas | int)
+    fail_msg: "metrics-server has fewer than {{ metrics_server_replicas }} ready replica(s)"
+    success_msg: "metrics-server has {{ _ms_deploy.resources[0].status.readyReplicas | default(0) }} ready replica(s)"
+  when: _ms_ours | bool
+
+- name: "metrics_server | Assert metrics.k8s.io Available"
+  ansible.builtin.assert:
+    that:
+      - _ms_api.resources | length > 0
+      - _ms_api.resources[0].status.conditions | default([])
+        | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+    fail_msg: "metrics.k8s.io is not Available: kubectl top and the Headlamp CPU/memory tiles will be empty"
+    success_msg: "metrics.k8s.io is Available"
+
+- name: "metrics_server | Read node metrics"
+  kubernetes.core.k8s_info:
+    api_version: metrics.k8s.io/v1beta1
+    kind: NodeMetrics
+  register: _ms_nodes
+  until: _ms_nodes.resources | default([]) | length > 0
+  retries: 6
+  delay: 10

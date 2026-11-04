@@ -118,6 +118,13 @@ components:
     enabled: "{{ metallb_enabled | default(true) | bool and not (cluster_distribution | default('kubernetes') == 'openshift') }}"
     depends_on: []
 
+  # Resource metrics (kubectl top, HPA, Headlamp CPU/memory). Skipped on OpenShift,
+  # which serves metrics.k8s.io itself; skips itself when a BYO cluster already does.
+  - name: metrics_server
+    layer: platform
+    enabled: "{{ metrics_server_enabled | default(true) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    depends_on: []
+
   # Platform Gateway; gateway_provider picks the implementation (envoy).
   - name: gateway
     aliases: [envoy_gateway]

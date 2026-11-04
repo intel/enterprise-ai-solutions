@@ -1,0 +1,20 @@
+---
+# Ours = our Helm release exists. Foreign = metrics.k8s.io is served by something else.
+- name: "metrics_server | Check our Helm release"
+  kubernetes.core.helm_info:
+    name: metrics-server
+    release_namespace: "{{ metrics_server_namespace }}"
+  register: _ms_release
+  failed_when: false
+
+- name: "metrics_server | Check metrics.k8s.io APIService"
+  kubernetes.core.k8s_info:
+    api_version: apiregistration.k8s.io/v1
+    kind: APIService
+    name: v1beta1.metrics.k8s.io
+  register: _ms_api
+
+- name: "metrics_server | Classify"
+  ansible.builtin.set_fact:
+    _ms_ours: "{{ (_ms_release.status | default(none)) is not none }}"
+    _ms_foreign: "{{ (_ms_release.status | default(none)) is none and (_ms_api.resources | length > 0) }}"

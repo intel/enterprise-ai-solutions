@@ -1,0 +1,21 @@
+---
+# =============================================================================
+# metrics-server — Teardown (only our release; kube-system is never deleted)
+# =============================================================================
+
+- name: "metrics_server | Detect"
+  ansible.builtin.include_tasks: detect.yaml
+
+- name: "metrics_server | Uninstall Helm release"
+  kubernetes.core.helm:
+    name: metrics-server
+    release_namespace: "{{ metrics_server_namespace }}"
+    state: absent
+    wait: "{{ helm_wait }}"
+    timeout: "{{ helm_timeout }}"
+  when: _ms_ours | bool
+
+- name: "metrics_server | Not installed by us — nothing to tear down"
+  ansible.builtin.debug:
+    msg: "No metrics-server release in {{ metrics_server_namespace }}."
+  when: not (_ms_ours | bool)

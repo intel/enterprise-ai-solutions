@@ -1,0 +1,16 @@
+---
+# =============================================================================
+# metrics-server — serves the resource-metrics API (metrics.k8s.io)
+# =============================================================================
+# Used by kubectl top, HPA CPU/memory targets and the Headlamp CPU/memory tiles.
+# Not the same as prometheus-adapter (custom.metrics.k8s.io); both can run.
+# Skipped when the cluster already serves metrics.k8s.io (most BYO clusters).
+
+metrics_server_version: "3.14.0"   # chart; app 0.9.0
+metrics_server_namespace: "kube-system"
+metrics_server_helm_repo: "https://kubernetes-sigs.github.io/metrics-server/"
+metrics_server_replicas: 1
+
+# Kubespray kubelets serve self-signed certificates, which metrics-server cannot
+# verify. Set false once kubelet serving certificates are signed by the cluster CA.
+metrics_server_kubelet_insecure_tls: true
