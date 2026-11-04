@@ -2,11 +2,11 @@
 
 [← Docs Index](../README.md)
 
-> **One automated workflow connecting Intel's enterprise AI portfolio — self-hosted, on-premises, and ready to deploy.**
+> **One automated workflow connecting Intel's AI portfolio — self-hosted, on-premises, and ready to deploy.**
 
-Toolkit Manager is an open source, Kubernetes-based platform that removes the complexity of deploying self-hosted enterprise AI on Intel® Xeon® processors — on-premises, air-gapped, or in your own private cloud, with no GPU required and no data leaving your infrastructure.
+Toolkit Manager is an open source, Kubernetes-based platform that removes the complexity of deploying self-hosted AI on Intel® Xeon® processors — on-premises, air-gapped, or in your own private cloud, with no GPU required and no data leaving your infrastructure.
 
-The repository acts as the integration and automation layer across Intel's enterprise AI portfolio. It connects the infrastructure, inference engines, models, retrieval services, security, and observability required to deploy complete AI solutions — through a consistent, automated workflow.
+The repository acts as the integration and automation layer across Intel's AI portfolio. It connects the infrastructure, inference engines, models, retrieval services, security, and observability required to deploy complete AI solutions — through a consistent, automated workflow.
 
 Instead of requiring teams to manually assemble and configure each component, the platform takes them from bare metal or an existing Kubernetes cluster to a secured, observable, OpenAI-compatible AI environment. Because inference could run entirely locally — a meaningful advantage for regulated or data-sovereignty-sensitive environments that need to keep inference in-house.
 
@@ -26,11 +26,11 @@ The platform brings together:
 
 ## Why Choose Toolkit Manager Instead of Building It Yourself?
 
-Enterprise AI requires more than a model server.
+A production deployment requires more than a model server.
 
 Teams also need Kubernetes, networking, storage, TLS, identity, model routing, observability, and workload placement. Building and integrating those layers individually can take significant engineering effort — weeks to months.
 
-AI Solutions deploys them through one environment-based workflow:
+Toolkit Manager deploys them through one environment-based workflow:
 
 ```bash
 ./es_auto_installer.sh install inference --env <name>

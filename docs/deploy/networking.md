@@ -26,7 +26,7 @@ KServe Predictor Pod (vLLM inference)
 
 ## Layer 1: MetalLB — LoadBalancer IP Assignment
 
-MetalLB is the component that gives the stack LoadBalancer IPs on bare-metal, on-premises clusters that have no cloud load balancer to call.
+MetalLB is the component that gives the stack LoadBalancer IPs on bare-metal clusters that have no cloud load balancer to call.
 
 ### Purpose
 
@@ -395,7 +395,7 @@ Here is every hop an inference request takes through the stack, from the externa
 
 ## Multi-Node Network Topology
 
-A typical multi-node stack that Toolkit Manager installs on-premises looks like this at the network layer.
+A typical multi-node stack that Toolkit Manager installs looks like this at the network layer.
 
 ### Example: 1 Master + 2 Workers
 
@@ -689,7 +689,7 @@ curl -k -H "Authorization: Bearer $TOKEN" \
 
 ## Summary
 
-Networking in a stack Toolkit Manager installs follows a small set of principles that keep on-premises deployments fast and simple to operate.
+Networking in a stack Toolkit Manager installs follows a small set of principles that keep deployments fast and simple to operate.
 
 **Key Principles:**
 
