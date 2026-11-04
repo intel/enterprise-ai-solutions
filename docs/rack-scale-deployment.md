@@ -466,6 +466,7 @@ racks:
 - Parser detects `accelerator:` → sets `rack_scale_gpu_vendor=nvidia`
 - `node_feature_discovery`, first in the platform layer, installs the cluster's one NFD (release `node-feature-discovery` in namespace `node-feature-discovery`). It does this on every cluster, rack-scale or not, with or without GPUs, and the inference layer's `nfd` component is left out of install, validate and teardown; `nfd_enabled: false` turns NFD off
 - `nvidia_gpu_operator` role installs the NVIDIA GPU operator without the chart's bundled NFD (NVIDIA only; other vendors log a warning and get no stack from this role)
+- Both are platform components: `teardown inference` keeps them, `teardown platform` removes the GPU operator and NFD, and with NFD the node labels it set. On OpenShift the GPU operator and `gpu_observability` are not installed for now
 - Node labels applied: `gpu-vendor=nvidia`, `gpu-model=b300`, `gpu-form=hgx`, `gpu-count=8`
 - Inference scheduling and the GPU operator use these labels
 
