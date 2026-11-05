@@ -2,7 +2,7 @@
 
 [← Docs Index](../README.md)
 
-Three ways to deploy Intel® AI for Enterprise Solutions — single node, multi-node, or an existing (bring-your-own) Kubernetes cluster — depending on your setup. Pick one and follow it end to end.
+Three ways to deploy Toolkit Manager — single node, multi-node, or an existing (bring-your-own) Kubernetes cluster — depending on your setup. Pick one and follow it end to end.
 
 ---
 

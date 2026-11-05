@@ -3,7 +3,9 @@
 # Keycloak — platform SSO realm (people sign in here for every platform UI)
 # =============================================================================
 # A realm import only ever creates the realm; settings that may change later
-# (session timeouts) are converged with kcadm calls on every run.
+# (session timeouts) are converged with kcadm calls on every run. A marker
+# ConfigMap records the import, so the import itself (and its finished Job and
+# pod) is removed afterwards.
 
 - name: "keycloak | platform realm | Bootstrap admin password (once)"
   when: keycloak_platform_bootstrap_admin | bool
@@ -32,33 +34,47 @@
       when: _kc_bootstrap.resources | length == 0
       no_log: true
 
-- name: "keycloak | platform realm | Read the realm import"
+- name: "keycloak | platform realm | Read the import marker"
   kubernetes.core.k8s_info:
-    api_version: k8s.keycloak.org/v2beta1
-    kind: KeycloakRealmImport
-    name: "{{ keycloak_platform_realm }}-realm"
+    kind: ConfigMap
+    name: "{{ keycloak_platform_realm }}-realm-imported"
     namespace: "{{ keycloak_namespace }}"
-  register: _kc_platform_import
+  register: _kc_platform_marker
 
+# An older install's finished import passes the wait at once and gets its marker.
 - name: "keycloak | platform realm | Import the realm"
-  kubernetes.core.k8s:
-    state: present
-    template: platform-realm.yaml.j2
-  when: _kc_platform_import.resources | length == 0
+  when: _kc_platform_marker.resources | length == 0
+  block:
+    - name: "keycloak | platform realm | Create the realm import"
+      kubernetes.core.k8s:
+        state: present
+        template: platform-realm.yaml.j2
 
-# Done only: HasErrors is set on a failed attempt while the Job still retries.
-- name: "keycloak | platform realm | Wait for the import"
-  kubernetes.core.k8s_info:
-    api_version: k8s.keycloak.org/v2beta1
-    kind: KeycloakRealmImport
-    name: "{{ keycloak_platform_realm }}-realm"
-    namespace: "{{ keycloak_namespace }}"
-  register: _kc_platform_import
-  until: >-
-    (_kc_platform_import.resources | first | default({})).status.conditions | default([])
-    | selectattr('type', 'eq', 'Done') | selectattr('status', 'eq', 'True') | list | length > 0
-  retries: 60
-  delay: 5
+    # Done only: HasErrors is set on a failed attempt while the Job still retries.
+    - name: "keycloak | platform realm | Wait for the import"
+      kubernetes.core.k8s_info:
+        api_version: k8s.keycloak.org/v2beta1
+        kind: KeycloakRealmImport
+        name: "{{ keycloak_platform_realm }}-realm"
+        namespace: "{{ keycloak_namespace }}"
+      register: _kc_platform_import
+      until: >-
+        (_kc_platform_import.resources | first | default({})).status.conditions | default([])
+        | selectattr('type', 'eq', 'Done') | selectattr('status', 'eq', 'True') | list | length > 0
+      retries: 60
+      delay: 5
+
+    - name: "keycloak | platform realm | Record the import"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ keycloak_platform_realm }}-realm-imported"
+            namespace: "{{ keycloak_namespace }}"
+          data:
+            realm: "{{ keycloak_platform_realm }}"
 
 # The import creates groups only with the realm; add any missing on later runs.
 - name: "keycloak | platform realm | Read groups"
@@ -97,3 +113,13 @@
   when: >-
     (_kc_kcadm.stdout | from_json).ssoSessionIdleTimeout | default(0) | int != keycloak_platform_session_idle_timeout | int
     or (_kc_kcadm.stdout | from_json).ssoSessionMaxLifespan | default(0) | int != keycloak_platform_session_max_lifespan | int
+
+# Last, after every kcadm call: removing the import leaves the realm as is and
+# takes its finished Job and pod with it.
+- name: "keycloak | platform realm | Remove the finished import"
+  kubernetes.core.k8s:
+    api_version: k8s.keycloak.org/v2beta1
+    kind: KeycloakRealmImport
+    name: "{{ keycloak_platform_realm }}-realm"
+    namespace: "{{ keycloak_namespace }}"
+    state: absent

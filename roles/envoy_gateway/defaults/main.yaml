@@ -5,9 +5,17 @@
 # Release lines: baseline by default; envoy_gateway_upgrade: true selects latest
 # for new installs and upgrades this platform's own older release (never
 # downgrades). Envoy AI Gateway follows the installed minor (envoy_ai_gateway).
+# envoy_proxy: data-plane image set on every EnvoyProxy of this release; the
+# releases' own defaults still trust the compromised eMudhra CA roots.
 envoy_gateway_releases:
-  baseline: {version: "1.7.1", gateway_api: "1.4.1"}
-  latest: {version: "1.9.2", gateway_api: "1.6.1"}
+  baseline:
+    version: "1.7.5"
+    gateway_api: "1.4.1"
+    envoy_proxy: "docker.io/envoyproxy/envoy:distroless-v1.37.11@sha256:3045dea2805bd3a53b3fd0752ac29ba5015b6bc5d90347f92a363e0b2db7c773"
+  latest:
+    version: "1.9.3"
+    gateway_api: "1.6.1"
+    envoy_proxy: "docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994"
 envoy_gateway_upgrade: false
 _eg_line: "{{ envoy_gateway_releases['latest' if envoy_gateway_upgrade | bool else 'baseline'] }}"
 envoy_gateway_version: "{{ _eg_line.version }}"

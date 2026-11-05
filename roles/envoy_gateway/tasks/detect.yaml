@@ -225,6 +225,10 @@
       release: "{{ _det_ctrl.release if _det_ctrl is not none else envoy_gateway_release_name }}"
       version: "{{ _version }}"
       previous_version: "{{ _cur }}"
+      # Proxy image of the release line in use; empty keeps the release default.
+      envoy_proxy_image: >-
+        {{ (envoy_gateway_releases.values() | selectattr('version', 'eq', _version) | first | default({})).envoy_proxy
+           | default('') if _managed | bool else '' }}
       crds_apply: "{{ _crds_apply | bool }}"
       gateway_api_apply: "{{ _gwapi_apply | bool }}"
       gateway_api_owned: "{{ _crds_ours | bool or _gwapi_apply | bool }}"

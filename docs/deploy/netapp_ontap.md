@@ -7,7 +7,7 @@ Two flows. Pick the one that matches what you want on the cluster:
 - **Flow A: array-backed persistent volumes.** Trident CSI serves every PVC in the
   platform and serving stack (the model store, PostgreSQL, observability) from the array.
   This is what you want if you are deploying model serving, or platform services only.
-- **Flow B: Flow A plus ONTAP S3 as the document store for Intel AI for Enterprise RAG.**
+- **Flow B: Flow A plus ONTAP S3 as the document store for Intel® Chatbot Toolkit.**
   Everything in Flow A, and RAG documents live in an ONTAP bucket instead of the
   in-cluster object store. Only choose this if the SVM already runs an object-store
   server.
@@ -103,7 +103,7 @@ Both flows assume the array side already exists. The installer creates nothing o
    edp_s3_compatible_secret_access_key: "<secret key>"
    ```
 
-5. Deploy the RAG layer. It depends on `platform` and `inference`, so this pulls
+5. Deploy Intel® Chatbot Toolkit. It depends on `platform` and `inference`, so this pulls
    `infrastructure`, `platform` and `inference` first, in that order:
 
    ```bash
@@ -122,12 +122,12 @@ either can be used without the other:
    `roles/netapp_trident_csi` role, selected through the backend registry in
    `roles/storage/defaults/main.yaml`.
 
-2. **ONTAP S3 as the document store for the RAG layer (optional).** When the SVM also
+2. **ONTAP S3 as the document store for Intel® Chatbot Toolkit (optional).** When the SVM also
    runs an object-store server, the RAG data-prep service (EDP) can use it instead of
    the in-cluster SeaweedFS. Because the object-store data LIF sits on the storage
    network and browsers upload straight to the presigned URL they are handed, the
    endpoint is published through the platform Envoy Gateway as a reverse proxy. The
-   proxy objects are owned by the RAG layer (`ext/enterprise.ai-erag`, role `app_edp`);
+   proxy objects are owned by Intel® Chatbot Toolkit (`ext/enterprise.ai-erag`, role `app_edp`);
    the dedicated gateway listener that makes SigV4 signatures survive the hop is owned
    by `roles/envoy_gateway`.
 
@@ -145,14 +145,14 @@ or deleted by this installer. Everything below must exist before you run it.
 
 | Prerequisite | Why |
 |---|---|
-| ONTAP 9.16.1P4 or newer (recommended) | The pairing the pinned Trident 25.10 chart is qualified against, and the floor for the ONTAP S3 presigned-URL behaviour the RAG layer relies on. ONTAP 9.11 is the floor for the REST-based backend the role configures (`ontap_use_rest: true`). |
+| ONTAP 9.16.1P4 or newer (recommended) | The pairing the pinned Trident 25.10 chart is qualified against, and the floor for the ONTAP S3 presigned-URL behaviour Intel® Chatbot Toolkit relies on. ONTAP 9.11 is the floor for the REST-based backend the role configures (`ontap_use_rest: true`). |
 | A licensed ONTAP system, with the NFS protocol and FlexClone entitled | Trident is Apache-2.0 and needs no license of its own, but every capability it drives is an ONTAP feature. |
 | An SVM with NFS enabled | Trident's `ontap-nas` driver provisions FlexVols and exports them over NFS. |
 | A management LIF reachable on TCP 443 from **every** cluster node | The Trident controller can be scheduled on any node. Preflight probes this from each node and fails with the full node-by-port matrix. |
 | An NFS data LIF reachable on TCP 2049 and 111 from every **schedulable** node | 2049 is nfsd; some export configurations still need rpcbind on 111 for mount negotiation, so both are probed. Only nodes that can run a pod mount a volume, so preflight probes these ports from the `kube_node` group - a `NoSchedule`-tainted control plane off the storage VLAN is not a failure. An inventory with no `kube_node` group is probed from every node. |
 | An NFS export policy on that SVM permitting the Kubernetes node network | Missing or read-only rules produce a PVC that binds and a pod that cannot write. The end-to-end validation test catches this with a `test -w` inside the volume, which no reachability probe can replace. |
 | An ONTAP user with `http`/`ontapi` application access to that SVM | Used by the Trident controller. Credentials are placed in a Kubernetes Secret; nothing else reads them. |
-| For ONTAP S3 only: an object-store server, a bucket and an S3 user with access keys | The RAG layer needs the keys; it cannot create them. On the array: `vserver object-store-server create`, `... bucket create`, `... user create`. |
+| For ONTAP S3 only: an object-store server, a bucket and an S3 user with access keys | Intel® Chatbot Toolkit needs the keys; it cannot create them. On the array: `vserver object-store-server create`, `... bucket create`, `... user create`. |
 | Clocks in sync on the array and on the nodes (NTP) | S3 SigV4 rejects a signed request outside a 15-minute window, and the presigned DELETE the RAG UI issues carries a 60-second expiry, so a clock offset breaks file deletion first. |
 
 Node-side prerequisites are handled for you on an installer-provisioned cluster: the
@@ -169,7 +169,7 @@ The array topology goes in `env/<name>/global_config.yaml`, created by
 `configs/defaults/global_config.yaml` is the same list, commented out, with inline notes.
 
 Settings that belong to a solution layer rather than to the array live in that layer's
-own config. For the RAG layer that is `env/<name>/config.erag.yaml`, seeded from the
+own config. For Intel® Chatbot Toolkit that is `env/<name>/config.erag.yaml`, seeded from the
 pipeline flavour you chose at `init` time. The installer's `global_config.yaml` carries no
 layer-specific variables.
 
@@ -204,13 +204,13 @@ The array topology is the installer's concern; the credentials belong to the lay
 consumes them. See `../../ext/enterprise.ai-erag/docs/customize/object_store.md` for the RAG side.
 
 `ontap_s3_data_lif` is what activates the gateway's dedicated S3 listener and, together
-with the credentials, the reverse proxy in the RAG layer. `edp_rbac_enabled` must stay
+with the credentials, the reverse proxy in Intel® Chatbot Toolkit. `edp_rbac_enabled` must stay
 `false` (its default): RBAC mode makes EDP sign requests as the logged-in user through
-STS `AssumeRoleWithWebIdentity`, which ONTAP S3 does not implement. The RAG layer asserts
+STS `AssumeRoleWithWebIdentity`, which ONTAP S3 does not implement. Intel® Chatbot Toolkit asserts
 that too, with the reason.
 
 Set `ontap_s3_port` as well if the object-store server does not answer on 443. Leaving it
-unset is not the same as setting 443: the RAG layer defaults to 443, but the platform
+unset is not the same as setting 443: Intel® Chatbot Toolkit defaults to 443, but the platform
 preflight only adds the S3 endpoint to the reachability matrix when the port is set
 explicitly. Setting it is the difference between a blocked S3 port failing in seconds at
 preflight and failing on the first upload from the RAG UI.
@@ -245,7 +245,7 @@ wrong in a running deployment it tells you where it came from.
 | Access mode for the shared model cache | `ReadWriteMany` on every backend except `local-path` |
 | StorageClass for the model store | Empty, meaning "use the cluster default", which this backend asserts is exactly one, and exactly its own, at install time |
 | Activation of the ONTAP S3 reverse proxy | Implied by `ontap_s3_data_lif` |
-| `edp_storage_type: s3compatible` | From `ontap_s3_data_lif` plus an access key on a `netapp-trident` cluster. Set once in `app_pre_install`, so the data-prep layer, the UI and the pod checks all agree on it. Setting it yourself still wins, and the RAG layer then reports the contradiction rather than picking a side. |
+| `edp_storage_type: s3compatible` | From `ontap_s3_data_lif` plus an access key on a `netapp-trident` cluster. Set once in `app_pre_install`, so the data-prep layer, the UI and the pod checks all agree on it. Setting it yourself still wins, and Intel® Chatbot Toolkit then reports the contradiction rather than picking a side. |
 | EDP internal URL, external URL, region, bucket filter, two certificate-verify flags | From the LIF, the port, the TLS mode, `base_domain_name` and `routing_mode` |
 | `presignedUrlCredentialsSystemFallback`, the scheduled bucket sync and its period | Role defaults; the scheduled sync is switched on automatically because ONTAP S3 has no bucket notifications |
 | The MetalLB address pool and L2 advertisement | The `metallb` component, with the range auto-detected |
@@ -272,13 +272,13 @@ while working through a failure, target the component:
 ```
 
 Teardown is also a layer operation, and it resolves **upward**: the target plus every
-layer that depends on it. So `teardown infrastructure` removes the RAG layer, the serving
+layer that depends on it. So `teardown infrastructure` removes Intel® Chatbot Toolkit, the serving
 stack, the platform, the storage backend and then the cluster itself, in that order, and
 it asks for confirmation first because Kubespray reset destroys the cluster.
 Tearing down a single layer, for example `teardown erag`, leaves everything below it
 running.
 
 ```bash
-./es_auto_installer.sh teardown erag --env prod             # just the RAG layer
+./es_auto_installer.sh teardown erag --env prod             # just Intel® Chatbot Toolkit
 ./es_auto_installer.sh teardown infrastructure --env prod   # everything, cluster included
 ```

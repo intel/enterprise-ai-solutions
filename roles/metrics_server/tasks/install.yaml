@@ -1,0 +1,132 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# metrics-server — Install (Helm)
+# =============================================================================
+
+- name: "metrics_server | Detect"
+  ansible.builtin.include_tasks: detect.yaml
+
+- name: "metrics_server | metrics.k8s.io belongs to another install — skipping"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'The cluster already serves metrics.k8s.io' if _ms_foreign | bool
+         else 'metrics.k8s.io is registered but not Available' }}
+      ({{ _ms_api_service.namespace | default('?') }}/{{ _ms_api_service.name | default('?') }}); leaving it alone.
+      {{ '' if _ms_foreign | bool
+         else 'Remove the APIService v1beta1.metrics.k8s.io, or fix the service behind it, then install again.' }}
+  when: _ms_foreign | bool or _ms_stale | bool
+
+- name: "metrics_server | Install"
+  when: not (_ms_foreign | bool or _ms_stale | bool)
+  block:
+    - name: "metrics_server | Namespace"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ metrics_server_namespace }}"
+            labels: >-
+              {{ ({'istio.io/dataplane-mode': 'ambient'} if istio_enabled | default(false) | bool else {})
+                 | combine({'pod-security.kubernetes.io/enforce': 'restricted',
+                            'pod-security.kubernetes.io/audit': 'restricted',
+                            'pod-security.kubernetes.io/warn': 'restricted'}
+                           if enforce_pss | default(false) | bool else {}) }}
+
+    # The host-network apiserver calls the aggregated API over plaintext: only
+    # 10250 is PERMISSIVE, and only the node addresses may reach it.
+    - name: "metrics_server | Mesh exception for the apiserver"
+      when: istio_enabled | default(false) | bool
+      block:
+        - name: "metrics_server | Read node internal IPs"
+          kubernetes.core.k8s_info:
+            kind: Node
+          register: _ms_nodes
+
+        - name: "metrics_server | Allow apiserver plaintext on 10250 (port-level mTLS)"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: security.istio.io/v1
+              kind: PeerAuthentication
+              metadata:
+                name: allow-metrics-server
+                namespace: "{{ metrics_server_namespace }}"
+              spec:
+                selector:
+                  matchLabels: {app.kubernetes.io/name: metrics-server}
+                mtls:
+                  mode: STRICT
+                portLevelMtls: {"10250": {mode: PERMISSIVE}}
+
+        # Node addresses are a snapshot; re-running the role refreshes them.
+        - name: "metrics_server | Restrict 10250 to the apiserver"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: security.istio.io/v1
+              kind: AuthorizationPolicy
+              metadata:
+                name: authz-metrics-server
+                namespace: "{{ metrics_server_namespace }}"
+              spec:
+                selector:
+                  matchLabels: {app.kubernetes.io/name: metrics-server}
+                action: ALLOW
+                rules:
+                  - from:
+                      - source:
+                          ipBlocks: >-
+                            {{ _ms_nodes.resources | map(attribute='status.addresses') | flatten
+                               | selectattr('type', 'eq', 'InternalIP') | map(attribute='address') | unique | list }}
+                    to:
+                      - operation:
+                          ports: ["10250"]
+
+    - name: "metrics_server | Add Helm repo"
+      kubernetes.core.helm_repository:
+        name: metrics-server
+        repo_url: "{{ metrics_server_helm_repo }}"
+      register: _ms_repo
+      until: _ms_repo is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+
+    - name: "metrics_server | Install via Helm"
+      kubernetes.core.helm:
+        name: metrics-server
+        chart_ref: metrics-server/metrics-server
+        release_namespace: "{{ metrics_server_namespace }}"
+        create_namespace: false
+        chart_version: "{{ metrics_server_version }}"
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+        values:
+          replicas: "{{ metrics_server_replicas | int }}"
+          affinity: "{{ _platform_affinity | default({}) }}"
+          # Appended to the chart's defaultArgs.
+          args: "{{ ['--kubelet-insecure-tls'] if metrics_server_kubelet_insecure_tls | bool else [] }}"
+      register: _ms_install
+      until: _ms_install is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+
+    - name: "metrics_server | Wait for metrics.k8s.io"
+      kubernetes.core.k8s_info:
+        api_version: apiregistration.k8s.io/v1
+        kind: APIService
+        name: v1beta1.metrics.k8s.io
+      register: _ms_api_ready
+      until:
+        - _ms_api_ready.resources | length > 0
+        - _ms_api_ready.resources[0].status.conditions | default([])
+          | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+      retries: 30
+      delay: 10
+
+    - name: "metrics_server | Install complete"
+      ansible.builtin.debug:
+        msg: "metrics-server chart {{ metrics_server_version }} in {{ metrics_server_namespace }}; metrics.k8s.io is Available."

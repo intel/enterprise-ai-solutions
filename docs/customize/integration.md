@@ -2,7 +2,7 @@
 
 [← Docs Index](../README.md)
 
-How to integrate **your tool, framework, or application** with the Intel® AI for Enterprise Solutions inference stack — without modifying the stack itself.
+How to integrate **your tool, framework, or application** with the Toolkit Manager inference stack — without modifying the stack itself.
 
 > **TL;DR** — point any OpenAI-compatible client at the inference endpoint and pass a Bearer token. With `auth_type=litellm_vkey`: use `https://${LITELLM_DOMAIN}/v1/chat/completions` with a LiteLLM virtual key. With `auth_type=jwt`: use `https://${GATEWAY_DOMAIN}/llm-inference/<model>/v1/chat/completions` with a Keycloak JWT.
 
@@ -679,7 +679,7 @@ These are the rare cases:
 | See where the gateway and auth boundary you just integrated with fit in the full stack | [Architecture & Design Document](../reference/architecture.md) |
 | Trace exactly how a request flows through MetalLB, the gateway, and ingress | [Network Architecture](../deploy/networking.md) |
 | Deploy, list, or undeploy the model you're pointing your app at | [Deploy an LLM](../deploy/deploy_models.md) |
-| Dig into the underlying inference-serving repo (`model-manager`, vLLM/OVMS configs) | [Model Manager (Enterprise Inference) on GitHub](https://github.com/intel/enterprise-inference) |
+| Dig into the underlying inference-serving repo (`model-manager`, vLLM/OVMS configs) | [Model Manager (Intel® Inference Toolkit) on GitHub](https://github.com/intel/enterprise-inference) |
 
 Config file references for the auth flow above:
 - Envoy Gateway `SecurityPolicy`: `roles/envoy_gateway/templates/security-policy.yaml.j2`

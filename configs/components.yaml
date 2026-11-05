@@ -118,6 +118,13 @@ components:
     enabled: "{{ metallb_enabled | default(true) | bool and not (cluster_distribution | default('kubernetes') == 'openshift') }}"
     depends_on: []
 
+  # Resource metrics (kubectl top, HPA, Headlamp CPU/memory). Skipped on OpenShift,
+  # which serves metrics.k8s.io itself; skips itself when a BYO cluster already does.
+  - name: metrics_server
+    layer: platform
+    enabled: "{{ metrics_server_enabled | default(true) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    depends_on: []
+
   # Platform Gateway; gateway_provider picks the implementation (envoy).
   - name: gateway
     aliases: [envoy_gateway]
@@ -135,6 +142,14 @@ components:
     # Both auth modes: people sign in through Keycloak; the gateway trusts its JWTs.
     enabled: "{{ keycloak_enabled | default(true) | bool }}"
     depends_on: [cert_manager, gateway, postgresql]
+
+  # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on
+  # OpenShift, whose console covers it.
+  # Right after keycloak: its API server restart then hits few running components.
+  - name: headlamp
+    layer: platform
+    enabled: "{{ headlamp_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    depends_on: [cert_manager, gateway, keycloak]
 
   - name: object_store
     layer: platform
@@ -168,15 +183,6 @@ components:
     layer: platform
     enabled: "{{ velero_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: []
-
-  # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on
-  # OpenShift, whose console covers it.
-  # teardown both: its own teardown also resets the API server trust on the nodes.
-  - name: headlamp
-    layer: platform
-    teardown: both
-    enabled: "{{ headlamp_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
-    depends_on: [cert_manager, gateway, keycloak]
 
   # --- Inference ---
   # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy
