@@ -231,7 +231,7 @@ kubectl label nodes --all workload-class-
 
 ## Architecture Notes
 
-### Why Does Intel® AI for Enterprise Solutions Use Soft Affinity Instead of Taints?
+### Why Does Toolkit Manager Use Soft Affinity Instead of Taints?
 
 **Taints** enforce hard placement rules (`NoSchedule`, `NoExecute`). Rejected because:
 - Hard failures if resources constrained
@@ -264,4 +264,4 @@ Labels are applied **idempotently** — re-running installer won't duplicate or 
 ## External References
 
 - [Kubernetes Node Affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity) — official docs on the `preferredDuringSchedulingIgnoredDuringExecution` rules this feature uses
-- [Taints and Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) — the hard-enforcement alternative this design deliberately avoids (see [Why Does Intel® AI for Enterprise Solutions Use Soft Affinity Instead of Taints?](#why-does-intel-ai-for-enterprise-solutions-use-soft-affinity-instead-of-taints) above)
+- [Taints and Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) — the hard-enforcement alternative this design deliberately avoids (see [Why Does Toolkit Manager Use Soft Affinity Instead of Taints?](#why-does-toolkit-manager-use-soft-affinity-instead-of-taints) above)

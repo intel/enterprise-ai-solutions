@@ -4,7 +4,7 @@
 
 ## What Does global_config.yaml Control?
 
-An Intel® AI for Enterprise Solutions deployment is described by **one file**:
+A Toolkit Manager deployment is described by **one file**:
 
 ```
 env/<name>/global_config.yaml
