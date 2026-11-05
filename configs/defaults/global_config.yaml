@@ -124,7 +124,7 @@ seaweedfs_volume_storage_size: "10Gi"
 # observability_prometheus_retention: "30d"
 # observability_prometheus_storage_size: "50Gi"
 
-# Envoy Gateway 1.7.1 by default; true installs 1.9.2 (ListenerSets) and
+# Envoy Gateway 1.7.5 by default; true installs 1.9.3 (ListenerSets) and
 # upgrades this platform's own older release. Never downgrades.
 # envoy_gateway_upgrade: false
 
