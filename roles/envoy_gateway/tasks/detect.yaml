@@ -162,9 +162,9 @@
     _attach: >-
       {{ 'listenerset' if gateway_attach_mode in ['auto', 'listenerset'] and _capable | bool else 'shared' }}
     _ctrl_ns: "{{ _det_ctrl.namespace if _det_ctrl is not none else envoy_gateway_namespace }}"
-    _in_mesh: >-
-      {{ ((_det_ns.resources | default([]) | first | default({})).metadata.labels | default({}))
-         .get('istio.io/dataplane-mode') == 'ambient' }}
+    _ns_labels: "{{ (_det_ns.resources | default([]) | first | default({})).metadata.labels | default({}) }}"
+    # In the mesh: the namespace carries every label preflight would put on it.
+    _in_mesh: "{{ _ns_labels | combine(istio_namespace_labels | default({})) == _ns_labels }}"
     _notice_rules:
       - show: "{{ _action == 'install' and envoy_gateway_version is version(_latest, '<') }}"
         msg: >-
@@ -208,7 +208,7 @@
              and not envoy_gateway_configure_existing | bool and not _in_mesh | bool }}
         msg: >-
           The Envoy Gateway namespace {{ _ctrl_ns }} is not in the Istio mesh, so its proxies cannot reach
-          meshed services (503). Set envoy_gateway_configure_existing: true, or label it istio.io/dataplane-mode=ambient.
+          meshed services (503). Set envoy_gateway_configure_existing: true, or label it {{ (istio_namespace_labels | default({})).items() | map('join', '=') | join(',') }}.
       - show: "{{ _class == 'enterprise-ai' and not _gw }}"
         msg: "GatewayClass eg belongs to another controller or platform; the platform Gateway uses enterprise-ai."
     _notices: "{{ _notice_rules | selectattr('show') | map(attribute='msg') | map('trim') | list }}"

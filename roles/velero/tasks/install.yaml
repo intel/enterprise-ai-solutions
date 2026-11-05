@@ -177,8 +177,7 @@
           kind: Namespace
           metadata:
             name: "{{ velero_namespace }}"
-            labels:
-              istio.io/dataplane-mode: "ambient"
+            labels: "{{ istio_namespace_labels }}"
       when: istio_enabled | default(false) | bool
 
     - name: "velero | Label namespace — PSS"

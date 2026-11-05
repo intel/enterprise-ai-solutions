@@ -36,7 +36,7 @@ component in state_file: they count as new for it, and only for it, until it run
 again without a failure. Its rerun reports them (as updated) and labels them.
 
 Labels a task adds to an object that was already there (a Namespace it does not
-own gets istio.io/dataplane-mode, a Node a placement label) are recorded instead,
+own gets the mesh label, a Node a placement label) are recorded instead,
 in the annotation <prefix>/labels-before.<env>.<component> on that object: each key
 with the value it had before (null: absent) and the value set. Teardown restores
 the keys that still hold the value set. Only `restore_resources` are followed
