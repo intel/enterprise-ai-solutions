@@ -256,6 +256,14 @@
           with dmsetup ls.
       when: _incomplete | length > 0
 
+# ─── Remove what the Kubespray reset leaves on the nodes ─────────────────
+- name: "kubernetes | teardown | Clean the nodes after the reset"
+  ansible.builtin.include_tasks: teardown_node.yaml
+  loop: "{{ _k8s_inventory_nodes }}"
+  loop_control:
+    loop_var: _node
+  when: _cluster_alive.rc != 0
+
 # Kubespray reset.yml already removes ~/.kube, /etc/kubernetes, and the
 # {{ bin_dir }}/{kubectl,helm} binaries on every node. We do NOT reinstall
 # host tooling here — teardown must not mutate the host beyond removing the
