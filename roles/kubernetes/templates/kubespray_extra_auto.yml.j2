@@ -60,6 +60,10 @@ local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
+# kubelet hands this file to pods, so it needs a real nameserver. Kubespray assumes
+# systemd-resolved on Ubuntu; each node decides from its own /etc/resolv.conf facts:
+# a loopback stub (resolved's 127.0.0.53) means resolved's upstream file.
+kube_resolv_conf: "{% raw %}{{ '/etc/resolv.conf' if (ansible_facts['dns']['nameservers'] | default([]) | reject('match', '^(127[.]|::1$)') | list) else '/run/systemd/resolve/resolv.conf' }}{% endraw %}"
 {% if kubernetes_apiserver_authn_enabled | bool %}
 # Directory mount, so atomic file replacement reaches the container.
 kube_kubeadm_apiserver_extra_args:
