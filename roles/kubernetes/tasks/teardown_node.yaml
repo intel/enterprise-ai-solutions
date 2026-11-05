@@ -10,189 +10,206 @@
 #   - the Headlamp issuer entry in /etc/hosts (its own teardown does not run here).
 #   - local-path volume data, unless kubernetes_teardown_purge_volumes is false.
 
-# No nftables module exists; listing is read-only.
-- name: "kubernetes | teardown | {{ _node }} | Read nftables tables"
-  ansible.builtin.command:
-    argv: [nft, list, tables]
+# An unreachable node is skipped and reported, so the other nodes still get cleaned.
+# wait_for_connection fails instead of going unreachable, which would end the play.
+- name: "kubernetes | teardown | {{ _node }} | Check the node is reachable"
+  ansible.builtin.wait_for_connection:
+    timeout: 30
   delegate_to: "{{ _node }}"
-  become: true
-  register: _kn_nft
-  changed_when: false
-  failed_when: false
+  register: _kn_ping
+  ignore_errors: true
 
-# No nftables module exists; argv deletes exactly the listed table.
-- name: "kubernetes | teardown | {{ _node }} | Delete kube-proxy nftables tables"
-  ansible.builtin.command:
-    argv: [nft, delete, table, "{{ item.split()[1] }}", kube-proxy]
-  delegate_to: "{{ _node }}"
-  become: true
-  loop: "{{ _kn_nft.stdout_lines | default([]) | select('match', '^table (ip|ip6) kube-proxy$') | list }}"
-  changed_when: true
-
-# The iptables module cannot list chains; listing is read-only. The legacy backend
-# (iptables-legacy) holds Istio's chain on some hosts.
-- name: "kubernetes | teardown | {{ _node }} | Read iptables chains"
-  ansible.builtin.command:
-    argv: ["{{ item.0 }}", -t, "{{ item.1 }}", -S]
-  delegate_to: "{{ _node }}"
-  become: true
-  loop: "{{ ['iptables', 'ip6tables', 'iptables-legacy', 'ip6tables-legacy'] | product(['filter', 'nat', 'mangle', 'raw']) | list }}"
-  loop_control:
-    label: "{{ item.0 }} -t {{ item.1 }}"
-  register: _kn_chains
-  changed_when: false
-  failed_when: false
-
-# Rules elsewhere that jump to them: reset flushes only the IPv4 tables of the
-# default backend, so IPv6 and legacy keep e.g. "-A POSTROUTING -j ISTIO_POSTRT".
-- name: "kubernetes | teardown | {{ _node }} | Select leftover chains and the rules that jump to them"
-  vars:
-    _ours: '^(cali-|KUBE-|CNI-|ISTIO)'
-  ansible.builtin.set_fact:
-    _kn_leftover: >-
-      {%- set out = [] -%}
-      {%- for r in _kn_chains.results | default([]) if r.rc | default(1) == 0 -%}
-      {%- for line in r.stdout_lines if line is match('^-N ') and line.split()[1] is match(_ours) -%}
-      {%- set _ = out.append({'bin': r.item.0, 'table': r.item.1, 'chain': line.split()[1]}) -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {{ out }}
-    _kn_jumps: >-
-      {%- set out = [] -%}
-      {%- for r in _kn_chains.results | default([]) if r.rc | default(1) == 0 -%}
-      {%- for line in r.stdout_lines if line is match('^-A ') and line.split()[1] is not match(_ours) -%}
-      {%- set words = line | regex_findall('"[^"]*"|\\S+') | map('regex_replace', '^"(.*)"$', '\\1') | list -%}
-      {%- if words | select('in', ['-j', '-g']) | list and (words[(words.index('-j') if '-j' in words else words.index('-g')) + 1] is match(_ours)) -%}
-      {%- set _ = out.append({'bin': r.item.0, 'table': r.item.1, 'rule': ['-D'] + words[1:]}) -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {{ out }}
-
-# A rule spec can carry any match; the iptables module needs each as a parameter.
-- name: "kubernetes | teardown | {{ _node }} | Delete rules that jump to leftover chains"
-  ansible.builtin.command:
-    argv: "{{ [item.bin, '-t', item.table] + item.rule }}"
-  delegate_to: "{{ _node }}"
-  become: true
-  loop: "{{ _kn_jumps }}"
-  loop_control:
-    label: "{{ item.bin }} {{ item.table }}: {{ item.rule | join(' ') }}"
-  register: _kn_jump_del
-  changed_when: _kn_jump_del.rc == 0
-  failed_when: false
-
-# Chains may jump to each other: flush them all, then delete.
-- name: "kubernetes | teardown | {{ _node }} | Flush leftover chains"
-  ansible.builtin.iptables:
-    ip_version: "{{ 'ipv6' if item.bin == 'ip6tables' else 'ipv4' }}"
-    table: "{{ item.table }}"
-    chain: "{{ item.chain }}"
-    flush: true
-  delegate_to: "{{ _node }}"
-  become: true
-  loop: "{{ _kn_leftover | rejectattr('bin', 'search', 'legacy') | list }}"
-  loop_control:
-    label: "{{ item.bin }} {{ item.table }}/{{ item.chain }}"
-  register: _kn_flush
-  failed_when: false
-
-- name: "kubernetes | teardown | {{ _node }} | Delete leftover chains"
-  ansible.builtin.iptables:
-    ip_version: "{{ 'ipv6' if item.bin == 'ip6tables' else 'ipv4' }}"
-    table: "{{ item.table }}"
-    chain: "{{ item.chain }}"
-    chain_management: true
-    state: absent
-  delegate_to: "{{ _node }}"
-  become: true
-  loop: "{{ _kn_leftover | rejectattr('bin', 'search', 'legacy') | list }}"
-  loop_control:
-    label: "{{ item.bin }} {{ item.table }}/{{ item.chain }}"
-  register: _kn_del
-  failed_when: false
-
-# The iptables module drives the nft backend only; argv, one chain per call.
-- name: "kubernetes | teardown | {{ _node }} | Delete leftover legacy chains"
-  ansible.builtin.command:
-    argv: ["{{ item.0.bin }}", -t, "{{ item.0.table }}", "{{ item.1 }}", "{{ item.0.chain }}"]
-  delegate_to: "{{ _node }}"
-  become: true
-  loop: "{{ _kn_leftover | selectattr('bin', 'search', 'legacy') | product(['-F', '-X']) | list }}"
-  loop_control:
-    label: "{{ item.0.bin }} {{ item.0.table }}/{{ item.0.chain }} {{ item.1 }}"
-  changed_when: true
-  register: _kn_del_legacy
-  failed_when: false
-
-# No ipset module exists; listing is read-only.
-- name: "kubernetes | teardown | {{ _node }} | Read ipsets"
-  ansible.builtin.command:
-    argv: [ipset, list, -n]
-  delegate_to: "{{ _node }}"
-  become: true
-  register: _kn_ipsets
-  changed_when: false
-  failed_when: false
-
-# No ipset module exists; argv destroys exactly the listed set.
-- name: "kubernetes | teardown | {{ _node }} | Destroy Calico and Istio ipsets"
-  ansible.builtin.command:
-    argv: [ipset, destroy, "{{ item }}"]
-  delegate_to: "{{ _node }}"
-  become: true
-  loop: "{{ _kn_ipsets.stdout_lines | default([]) | select('match', '^(cali|istio-)') | list }}"
-  changed_when: true
-  register: _kn_ipset_del
-  failed_when: false
-
-- name: "kubernetes | teardown | {{ _node }} | Check the containerd service"
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  delegate_to: "{{ _node }}"
-  loop:
-    - /etc/systemd/system/containerd.service
-    - /usr/lib/systemd/system/containerd.service
-    - /lib/systemd/system/containerd.service
-  register: _kn_containerd_unit
-
-- name: "kubernetes | teardown | {{ _node }} | Remove containerd config"
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  delegate_to: "{{ _node }}"
-  become: true
-  loop:
-    - /etc/containerd
-    - /etc/systemd/system/containerd.service.d
-  when: _kn_containerd_unit.results | selectattr('stat.exists') | list | length == 0
-
-- name: "kubernetes | teardown | {{ _node }} | Remove the Headlamp issuer entry from /etc/hosts"
-  ansible.builtin.blockinfile:
-    path: /etc/hosts
-    marker: "# {mark} enterprise-ai headlamp issuer"
-    state: absent
-  delegate_to: "{{ _node }}"
-  become: true
-
-- name: "kubernetes | teardown | {{ _node }} | Remove local-path volume data"
-  ansible.builtin.file:
-    path: "{{ kubernetes_local_path_root }}"
-    state: absent
-  delegate_to: "{{ _node }}"
-  become: true
-  when: kubernetes_teardown_purge_volumes | bool
-
-- name: "kubernetes | teardown | {{ _node }} | Report what could not be removed"
-  vars:
-    _failed: >-
-      {{ ((_kn_jump_del.results | default([])) + (_kn_flush.results | default([])) + (_kn_del.results | default([]))
-          + (_kn_del_legacy.results | default([])) + (_kn_ipset_del.results | default([])))
-         | selectattr('failed', 'defined') | selectattr('failed') | list
-         + ((_kn_jump_del.results | default([])) + (_kn_del_legacy.results | default([])) + (_kn_ipset_del.results | default([])))
-         | selectattr('rc', 'defined') | rejectattr('rc', 'equalto', 0) | list }}
+- name: "kubernetes | teardown | {{ _node }} | Warn that the node is unreachable"
   ansible.builtin.debug:
-    msg: >-
-      WARNING: on {{ _node }} the post-reset cleanup left {{ _failed | length }} item(s):
-      {{ _failed | map(attribute='item') | map('string') | unique | join('; ') | truncate(600) }}
-  when: _failed | length > 0
+    msg: "WARNING: {{ _node }} is unreachable; its post-reset cleanup was skipped. Re-run the teardown once it is back."
+  when: _kn_ping is failed
+
+- name: "kubernetes | teardown | {{ _node }} | Clean the node"
+  when: _kn_ping is not failed
+  block:
+    # No nftables module exists; listing is read-only.
+    - name: "kubernetes | teardown | {{ _node }} | Read nftables tables"
+      ansible.builtin.command:
+        argv: [nft, list, tables]
+      delegate_to: "{{ _node }}"
+      become: true
+      register: _kn_nft
+      changed_when: false
+      failed_when: false
+
+    # No nftables module exists; argv deletes exactly the listed table.
+    - name: "kubernetes | teardown | {{ _node }} | Delete kube-proxy nftables tables"
+      ansible.builtin.command:
+        argv: [nft, delete, table, "{{ item.split()[1] }}", kube-proxy]
+      delegate_to: "{{ _node }}"
+      become: true
+      loop: "{{ _kn_nft.stdout_lines | default([]) | select('match', '^table (ip|ip6) kube-proxy$') | list }}"
+      changed_when: true
+
+    # The iptables module cannot list chains; listing is read-only. The legacy backend
+    # (iptables-legacy) holds Istio's chain on some hosts.
+    - name: "kubernetes | teardown | {{ _node }} | Read iptables chains"
+      ansible.builtin.command:
+        argv: ["{{ item.0 }}", -t, "{{ item.1 }}", -S]
+      delegate_to: "{{ _node }}"
+      become: true
+      loop: "{{ ['iptables', 'ip6tables', 'iptables-legacy', 'ip6tables-legacy'] | product(['filter', 'nat', 'mangle', 'raw']) | list }}"
+      loop_control:
+        label: "{{ item.0 }} -t {{ item.1 }}"
+      register: _kn_chains
+      changed_when: false
+      failed_when: false
+
+    # Rules elsewhere that jump to them: reset flushes only the IPv4 tables of the
+    # default backend, so IPv6 and legacy keep e.g. "-A POSTROUTING -j ISTIO_POSTRT".
+    - name: "kubernetes | teardown | {{ _node }} | Select leftover chains and the rules that jump to them"
+      vars:
+        _ours: '^(cali-|KUBE-|CNI-|ISTIO)'
+      ansible.builtin.set_fact:
+        _kn_leftover: >-
+          {%- set out = [] -%}
+          {%- for r in _kn_chains.results | default([]) if r.rc | default(1) == 0 -%}
+          {%- for line in r.stdout_lines if line is match('^-N ') and line.split()[1] is match(_ours) -%}
+          {%- set _ = out.append({'bin': r.item.0, 'table': r.item.1, 'chain': line.split()[1]}) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+        _kn_jumps: >-
+          {%- set out = [] -%}
+          {%- for r in _kn_chains.results | default([]) if r.rc | default(1) == 0 -%}
+          {%- for line in r.stdout_lines if line is match('^-A ') and line.split()[1] is not match(_ours) -%}
+          {%- set words = line | regex_findall('"[^"]*"|\\S+') | map('regex_replace', '^"(.*)"$', '\\1') | list -%}
+          {%- if words | select('in', ['-j', '-g']) | list and (words[(words.index('-j') if '-j' in words else words.index('-g')) + 1] is match(_ours)) -%}
+          {%- set _ = out.append({'bin': r.item.0, 'table': r.item.1, 'rule': ['-D'] + words[1:]}) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    # A rule spec can carry any match; the iptables module needs each as a parameter.
+    - name: "kubernetes | teardown | {{ _node }} | Delete rules that jump to leftover chains"
+      ansible.builtin.command:
+        argv: "{{ [item.bin, '-t', item.table] + item.rule }}"
+      delegate_to: "{{ _node }}"
+      become: true
+      loop: "{{ _kn_jumps }}"
+      loop_control:
+        label: "{{ item.bin }} {{ item.table }}: {{ item.rule | join(' ') }}"
+      register: _kn_jump_del
+      changed_when: _kn_jump_del.rc == 0
+      failed_when: false
+
+    # Chains may jump to each other: flush them all, then delete.
+    - name: "kubernetes | teardown | {{ _node }} | Flush leftover chains"
+      ansible.builtin.iptables:
+        ip_version: "{{ 'ipv6' if item.bin == 'ip6tables' else 'ipv4' }}"
+        table: "{{ item.table }}"
+        chain: "{{ item.chain }}"
+        flush: true
+      delegate_to: "{{ _node }}"
+      become: true
+      loop: "{{ _kn_leftover | rejectattr('bin', 'search', 'legacy') | list }}"
+      loop_control:
+        label: "{{ item.bin }} {{ item.table }}/{{ item.chain }}"
+      register: _kn_flush
+      failed_when: false
+
+    - name: "kubernetes | teardown | {{ _node }} | Delete leftover chains"
+      ansible.builtin.iptables:
+        ip_version: "{{ 'ipv6' if item.bin == 'ip6tables' else 'ipv4' }}"
+        table: "{{ item.table }}"
+        chain: "{{ item.chain }}"
+        chain_management: true
+        state: absent
+      delegate_to: "{{ _node }}"
+      become: true
+      loop: "{{ _kn_leftover | rejectattr('bin', 'search', 'legacy') | list }}"
+      loop_control:
+        label: "{{ item.bin }} {{ item.table }}/{{ item.chain }}"
+      register: _kn_del
+      failed_when: false
+
+    # The iptables module drives the nft backend only; argv, one chain per call.
+    - name: "kubernetes | teardown | {{ _node }} | Delete leftover legacy chains"
+      ansible.builtin.command:
+        argv: ["{{ item.0.bin }}", -t, "{{ item.0.table }}", "{{ item.1 }}", "{{ item.0.chain }}"]
+      delegate_to: "{{ _node }}"
+      become: true
+      loop: "{{ _kn_leftover | selectattr('bin', 'search', 'legacy') | product(['-F', '-X']) | list }}"
+      loop_control:
+        label: "{{ item.0.bin }} {{ item.0.table }}/{{ item.0.chain }} {{ item.1 }}"
+      changed_when: true
+      register: _kn_del_legacy
+      failed_when: false
+
+    # No ipset module exists; listing is read-only.
+    - name: "kubernetes | teardown | {{ _node }} | Read ipsets"
+      ansible.builtin.command:
+        argv: [ipset, list, -n]
+      delegate_to: "{{ _node }}"
+      become: true
+      register: _kn_ipsets
+      changed_when: false
+      failed_when: false
+
+    # No ipset module exists; argv destroys exactly the listed set.
+    - name: "kubernetes | teardown | {{ _node }} | Destroy Calico and Istio ipsets"
+      ansible.builtin.command:
+        argv: [ipset, destroy, "{{ item }}"]
+      delegate_to: "{{ _node }}"
+      become: true
+      loop: "{{ _kn_ipsets.stdout_lines | default([]) | select('match', '^(cali|istio-)') | list }}"
+      changed_when: true
+      register: _kn_ipset_del
+      failed_when: false
+
+    - name: "kubernetes | teardown | {{ _node }} | Check the containerd service"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      delegate_to: "{{ _node }}"
+      loop:
+        - /etc/systemd/system/containerd.service
+        - /usr/lib/systemd/system/containerd.service
+        - /lib/systemd/system/containerd.service
+      register: _kn_containerd_unit
+
+    - name: "kubernetes | teardown | {{ _node }} | Remove containerd config"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      delegate_to: "{{ _node }}"
+      become: true
+      loop:
+        - /etc/containerd
+        - /etc/systemd/system/containerd.service.d
+      when: _kn_containerd_unit.results | selectattr('stat.exists') | list | length == 0
+
+    - name: "kubernetes | teardown | {{ _node }} | Remove the Headlamp issuer entry from /etc/hosts"
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} enterprise-ai headlamp issuer"
+        state: absent
+      delegate_to: "{{ _node }}"
+      become: true
+
+    - name: "kubernetes | teardown | {{ _node }} | Remove local-path volume data"
+      ansible.builtin.file:
+        path: "{{ kubernetes_local_path_root }}"
+        state: absent
+      delegate_to: "{{ _node }}"
+      become: true
+      when: kubernetes_teardown_purge_volumes | bool
+
+    - name: "kubernetes | teardown | {{ _node }} | Report what could not be removed"
+      vars:
+        _failed: >-
+          {{ ((_kn_jump_del.results | default([])) + (_kn_flush.results | default([])) + (_kn_del.results | default([]))
+              + (_kn_del_legacy.results | default([])) + (_kn_ipset_del.results | default([])))
+             | selectattr('failed', 'defined') | selectattr('failed') | list
+             + ((_kn_jump_del.results | default([])) + (_kn_del_legacy.results | default([])) + (_kn_ipset_del.results | default([])))
+             | selectattr('rc', 'defined') | rejectattr('rc', 'equalto', 0) | list }}
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: on {{ _node }} the post-reset cleanup left {{ _failed | length }} item(s):
+          {{ _failed | map(attribute='item') | map('string') | unique | join('; ') | truncate(600) }}
+      when: _failed | length > 0

@@ -47,6 +47,8 @@ all:
                 kube_node:
             vars:
                 ansible_become: true
+                # The playbooks run with connection: local; delegated node tasks need SSH.
+                ansible_connection: ssh
                 ansible_python_interpreter: /usr/bin/python3
         calico_rr:
             hosts: {}
