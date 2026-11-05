@@ -1,5 +1,8 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
-# Ours = our Helm release exists. Foreign = metrics.k8s.io is served by something else.
+# Ours = our Helm release in our own namespace. Otherwise an existing
+# metrics.k8s.io belongs to someone else: foreign when it answers, stale when not.
 - name: "metrics_server | Check our Helm release"
   kubernetes.core.helm_info:
     name: metrics-server
@@ -15,6 +18,14 @@
   register: _ms_api
 
 - name: "metrics_server | Classify"
+  vars:
+    _api: "{{ _ms_api.resources | first | default(none) }}"
+    _available: >-
+      {{ _api is not none and _api.status.conditions | default([])
+         | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0 }}
+    _ours: "{{ (_ms_release.status | default(none)) is not none }}"
   ansible.builtin.set_fact:
-    _ms_ours: "{{ (_ms_release.status | default(none)) is not none }}"
-    _ms_foreign: "{{ (_ms_release.status | default(none)) is none and (_ms_api.resources | length > 0) }}"
+    _ms_ours: "{{ _ours | bool }}"
+    _ms_foreign: "{{ not _ours | bool and _available | bool }}"
+    _ms_stale: "{{ not _ours | bool and _api is not none and not _available | bool }}"
+    _ms_api_service: "{{ (_api.spec.service | default({}, true)) if _api is not none else {} }}"

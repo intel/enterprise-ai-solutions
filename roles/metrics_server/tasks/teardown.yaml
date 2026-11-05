@@ -1,19 +1,33 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# metrics-server — Teardown (only our release; kube-system is never deleted)
+# metrics-server — Teardown (our release and namespace only)
 # =============================================================================
 
 - name: "metrics_server | Detect"
   ansible.builtin.include_tasks: detect.yaml
 
-- name: "metrics_server | Uninstall Helm release"
-  kubernetes.core.helm:
-    name: metrics-server
-    release_namespace: "{{ metrics_server_namespace }}"
-    state: absent
-    wait: "{{ helm_wait }}"
-    timeout: "{{ helm_timeout }}"
+- name: "metrics_server | Teardown"
   when: _ms_ours | bool
+  block:
+    - name: "metrics_server | Uninstall Helm release"
+      kubernetes.core.helm:
+        name: metrics-server
+        release_namespace: "{{ metrics_server_namespace }}"
+        state: absent
+        wait: "{{ helm_wait }}"
+        timeout: "{{ helm_timeout }}"
+
+    # Takes the mesh policies with it.
+    - name: "metrics_server | Delete the namespace"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Namespace
+        name: "{{ metrics_server_namespace }}"
+        wait: true
+        wait_timeout: 300
 
 - name: "metrics_server | Not installed by us — nothing to tear down"
   ansible.builtin.debug:
