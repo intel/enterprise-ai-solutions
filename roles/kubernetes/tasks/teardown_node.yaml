@@ -7,7 +7,8 @@
 #   - CNI chains outside filter: reset flushes every table but deletes chains in filter only.
 #   - Calico/Istio ipsets.
 #   - containerd's config, once reset has removed the service.
-#   - local-path volume data, only with kubernetes_teardown_purge_volumes.
+#   - the Headlamp issuer entry in /etc/hosts (its own teardown does not run here).
+#   - local-path volume data, unless kubernetes_teardown_purge_volumes is false.
 
 # No nftables module exists; listing is read-only.
 - name: "kubernetes | teardown | {{ _node }} | Read nftables tables"
@@ -165,6 +166,14 @@
     - /etc/containerd
     - /etc/systemd/system/containerd.service.d
   when: _kn_containerd_unit.results | selectattr('stat.exists') | list | length == 0
+
+- name: "kubernetes | teardown | {{ _node }} | Remove the Headlamp issuer entry from /etc/hosts"
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} enterprise-ai headlamp issuer"
+    state: absent
+  delegate_to: "{{ _node }}"
+  become: true
 
 - name: "kubernetes | teardown | {{ _node }} | Remove local-path volume data"
   ansible.builtin.file:

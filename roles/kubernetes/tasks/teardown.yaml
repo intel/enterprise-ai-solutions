@@ -128,7 +128,7 @@
 # Kubespray renames the hostname (override_system_hostname) but reset.yml
 # does NOT restore it or update /etc/hosts.  Subsequent "become" tasks
 # fail with "Timed out waiting for become success" because sudo tries
-# to resolve the new hostname via DNS.
+# to resolve the new hostname via DNS. The line is marked and removed at the end.
 - name: "kubernetes | teardown | Ensure hostname is resolvable"
   become: false
   ansible.builtin.shell:
@@ -136,7 +136,7 @@
       set -o pipefail
       hn=$(hostname)
       if ! getent hosts "$hn" &>/dev/null; then
-        echo "127.0.1.1 $hn" | sudo tee -a /etc/hosts >/dev/null
+        echo "127.0.1.1 $hn  # enterprise-ai teardown" | sudo tee -a /etc/hosts >/dev/null
         echo "added"
       else
         echo "ok"
@@ -271,6 +271,13 @@
 # the installer restores. The local kubeconfig ({{ kubernetes_kubeconfig }})
 # is removed by es_auto_installer.sh after this pass. .kubespray is shared
 # across environments — never remove it during teardown.
+
+- name: "kubernetes | teardown | Remove the hostname line this teardown added"
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '  # enterprise-ai teardown$'
+    state: absent
+  become: true
 
 - name: "kubernetes | teardown | Kubernetes removed"
   ansible.builtin.debug:
