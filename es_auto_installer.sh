@@ -142,9 +142,10 @@ usage() {
   Usage:  $me <action> [args] [-- ansible-playbook args]
 
   Actions:
-    configure              install Python ≥ 3.11 + venv pkg + yq + kubectl + helm
+    configure [--force]    install Python ≥ 3.11 + venv pkg + yq + kubectl + helm
                            (sudo, PERMANENT system changes). Run once per machine;
-                           skip if those are already present.
+                           replaces a kubectl older than the pinned one. --force
+                           skips the prompt (no terminal needed).
     init <layer>           create env and seed configs. Clones every repo in
                            configs/repos/repos.<layer>.yaml at its pinned rev
                            and seeds a config.<layer>.yaml for each. --flavour
@@ -436,6 +437,11 @@ _download() {
   through sudo automatically, if not double check connectivity and firewall rules."
 }
 
+# _version_ge <a> <b> — true when version a ≥ b (a leading v is ignored).
+_version_ge() {
+    [[ "$(printf '%s\n%s\n' "${2#v}" "${1#v}" | sort -V | head -n1)" == "${2#v}" ]]
+}
+
 _install_yq() {
     if command -v yq &>/dev/null; then warn "yq exists ($(yq --version 2>&1 | grep -oP 'v[\d.]+' || echo '?')) — ensure ≥ ${YQ_VERSION}"; return 0; fi
     local arch; arch=$(_arch)
@@ -454,7 +460,13 @@ _install_yq() {
 }
 
 _install_kubectl() {
-    if command -v kubectl &>/dev/null; then warn "kubectl exists ($(kubectl version --client -o json 2>/dev/null | yq -r '.clientVersion.gitVersion' 2>/dev/null || echo '?')) — ensure ≥ ${KUBECTL_VERSION}"; return 0; fi
+    if command -v kubectl &>/dev/null; then
+        local have; have=$(kubectl version --client -o json 2>/dev/null | yq -r '.clientVersion.gitVersion' 2>/dev/null)
+        if [[ -n "$have" && "$have" != "null" ]] && _version_ge "$have" "$KUBECTL_VERSION"; then
+            ok "kubectl ${have} exists (≥ ${KUBECTL_VERSION}) — keeping it"; return 0
+        fi
+        warn "kubectl ${have:-of unknown version} at $(command -v kubectl) is older than ${KUBECTL_VERSION} — replacing /usr/local/bin/kubectl"
+    fi
     local arch; arch=$(_arch)
     infon "Installing kubectl ${KUBECTL_VERSION} (${arch})"
     local tmp; tmp=$(mktemp -d)
@@ -848,13 +860,35 @@ _ensure_collections() {
 
 # ensure_deps: verify host prerequisites, then venv + pip + collections.
 ensure_deps() {
-    local _tool
-    for _tool in yq kubectl helm; do
-        command -v "$_tool" &>/dev/null \
-            || err "${_tool} missing. Run './es_auto_installer.sh configure' or install it manually."
-    done
-
+    command -v yq &>/dev/null \
+        || err "yq missing. Run './es_auto_installer.sh configure' or install it manually."
     _ensure_venv
+}
+
+# _ensure_cluster_tools — kubectl and helm, for runs that reach a cluster: every
+# install, and any other action while a cluster is there (BYO, or our kubeconfig).
+# A teardown after the cluster is gone (node-level steps on rack-scale) needs neither;
+# the Kubespray reset removes /usr/local/bin/kubectl on cluster nodes.
+_ensure_cluster_tools() {
+    local _tool _missing=()
+    for _tool in kubectl helm; do
+        command -v "$_tool" &>/dev/null || _missing+=("$_tool")
+    done
+    (( ${#_missing[@]} == 0 )) && return 0
+    if [[ "$ACTION" == "install" || "$IS_BYO" == "true" || -f "$KUBE_CFG" ]]; then
+        err "${_missing[*]} missing. Run './es_auto_installer.sh configure --force' or install it manually."
+    fi
+    warn "${_missing[*]} missing — not needed while no cluster is there (${KUBE_CFG} absent)."
+}
+
+# _check_cluster_answers — an existing kubeconfig means "cluster up, skip Kubespray".
+# One left over from a removed cluster would skip Kubespray and fail much later, so
+# stop here when its API server does not answer.
+_check_cluster_answers() {
+    kubectl --kubeconfig "$KUBE_CFG" --request-timeout=10s get --raw=/readyz &>/dev/null && return 0
+    err "The kubeconfig at ${KUBE_CFG} points to a cluster that does not answer
+  ($(kubectl config view --kubeconfig "$KUBE_CFG" --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo 'unknown server')).
+  If that cluster was removed, delete the file to reinstall it; otherwise check the API server."
 }
 
 # ensure_sudo: detect whether passwordless sudo is available on localhost.
@@ -1296,9 +1330,15 @@ parse_args() {
     [[ "$ACTION" =~ ^(install|teardown|validate)$ ]] && _takes_target=true
 
     # configure and show read neither env nor target, so an option there is a mistake
-    # rather than a no-op.
-    [[ "$ACTION" =~ ^(configure|show)$ && $# -gt 0 ]] \
-        && err "'${ACTION}' takes no arguments (got '$1')."
+    # rather than a no-op; configure takes --force for unattended runs.
+    if [[ "$ACTION" == "configure" ]]; then
+        while [[ $# -gt 0 ]]; do
+            [[ "$1" == "--force" ]] || err "'configure' takes only --force (got '$1')."
+            FORCE=true; shift
+        done
+    fi
+    [[ "$ACTION" == "show" && $# -gt 0 ]] \
+        && err "'show' takes no arguments (got '$1')."
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1458,6 +1498,7 @@ main() {
     fi
 
     _resolve_kubeconfig
+    _ensure_cluster_tools
     vars+=(-e "kubernetes_kubeconfig=${KUBE_CFG}")
     [[ "$IS_BYO" == "true" ]] && vars+=(-e "existing_kubernetes=${KUBE_CFG}")
     # Export after the path is resolved so Ansible collections and kubectl
@@ -1477,6 +1518,7 @@ main() {
 
     local _includes_k8s=false
     _needs_kubespray && _includes_k8s=true
+    [[ "$_includes_k8s" == "true" && "$ACTION" == "install" && -f "$KUBE_CFG" ]] && _check_cluster_answers
 
     if [[ "$ACTION" == "teardown" ]]; then
         local _what="'${TARGET}' and everything above it, in env/${ENV_NAME}"
