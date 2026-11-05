@@ -200,13 +200,12 @@
       become: true
       when: kubernetes_teardown_purge_volumes | bool
 
+    # Commands and the iptables module both return rc; failed_when hides failed.
     - name: "kubernetes | teardown | {{ _node }} | Report what could not be removed"
       vars:
         _failed: >-
           {{ ((_kn_jump_del.results | default([])) + (_kn_flush.results | default([])) + (_kn_del.results | default([]))
               + (_kn_del_legacy.results | default([])) + (_kn_ipset_del.results | default([])))
-             | selectattr('failed', 'defined') | selectattr('failed') | list
-             + ((_kn_jump_del.results | default([])) + (_kn_del_legacy.results | default([])) + (_kn_ipset_del.results | default([])))
              | selectattr('rc', 'defined') | rejectattr('rc', 'equalto', 0) | list }}
       ansible.builtin.debug:
         msg: >-
