@@ -13,7 +13,7 @@ repos:
   - layer: "inference"
     url: "https://github.com/intel/enterprise-inference"
     dest: "enterprise.ai-inference"
-    rev: "d035b1ef1981fbf5084ff05c9a337e620478bb87" # release-1.1 
+    rev: "d035b1ef1981fbf5084ff05c9a337e620478bb87" # v1.1.0
     deployment_subdir: ""
     config_dir: ""
     default_flavour: ""
