@@ -74,6 +74,9 @@ velero_enabled: false                     # opt-in: backup/restore. Requires CSI
 headlamp_enabled: false                   # opt-in: Kubernetes web UI, Keycloak sign-in (platform realm)
 # headlamp_byo_apiserver_trusted: true    # BYO cluster: its API server already trusts the platform realm
 
+# --- TDX ---
+tdx_enabled: false
+
 # --- Authentication ---
 # Keycloak is always deployed: people sign in through it and the gateway
 # requires its JWT unless a route authenticates itself. API client auth
@@ -163,3 +166,6 @@ kata_runtime: "kata-fc"                   # kata-fc | kata-qemu | both
 # gateway names its dedicated S3 listener after it, and a solution layer that
 # publishes an S3 API reads the same value, so both agree by construction.
 # gateway_s3_subdomain: "s3"
+#
+#TDX attestation service address (only used when tdx_enabled=true)
+#kbs_address: ""

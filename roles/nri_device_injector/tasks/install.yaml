@@ -1,0 +1,19 @@
+---
+- name: "nri_device_injector | Banner"
+  ansible.builtin.debug:
+    msg:
+      - "================================================================="
+      - "NRI Device Injector"
+      - "================================================================="
+
+- name: "nri_device_injector | Render NRI device-injector manifests"
+  ansible.builtin.include_tasks: render_manifest.yaml
+
+- name: "nri_device_injector | Create NRI device-injector resource"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ nri_device_injector_manifest.stdout }}"
+  register: helm_nri_device_injector_install_result
+  until: helm_nri_device_injector_install_result is succeeded
+  retries: 5
+  delay: 15

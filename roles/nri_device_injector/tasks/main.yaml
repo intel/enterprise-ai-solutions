@@ -1,0 +1,3 @@
+---
+- name: "nri_device_injector | Dispatch action: {{ component_action }}"
+  ansible.builtin.include_tasks: "{{ component_action }}.yaml"
