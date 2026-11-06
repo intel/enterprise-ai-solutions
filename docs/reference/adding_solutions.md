@@ -150,6 +150,7 @@ components:
 | `layer` | yes | Your layer, or an existing one you're extending. |
 | `depends_on` | yes (may be `[]`) | Component names **in the same layer only**. |
 | `enabled` | no (default `true`) | `true`/`false`, or a Jinja expression rendering to one. |
+| `used_by` | no | Component names, any layer, for a component that exists only to serve them. It is installed only while one of them is enabled, and tearing them down takes it along, unless one outside that teardown is still enabled (preflight prints `Kept: …`). Names not in the registry are ignored. |
 
 ### Rules that actually bite
 
@@ -243,7 +244,9 @@ in preflight, and only the dispatcher and `components.yaml` read it. The tasks a
 both platforms: whatever differs is a value in `vars/<platform>.yaml`. A role that uses the
 cluster's operator on OpenShift instead of installing one (cert-manager, CNPG, Keycloak, NFD) has a
 boolean `_<name>_from_olm` there: `true` checks the marketplace operator and skips its install,
-and teardown leaves it and its CRDs. A component not used on OpenShift (`istio`, `metallb`,
+and teardown leaves it and its CRDs. Where the two stacks differ throughout (`observability`:
+Helm charts, or instances of the OperatorHub operators) the shared steps stay in `install.yaml`
+and the flag picks a helper, `install_helm.yaml` or `install_olm.yaml`. A component not used on OpenShift (`istio`, `metallb`,
 `velero`) is gated off in `components.yaml` and its role has no OpenShift steps. What every role needs
 is published once: `gateway` `publish.yaml` creates the OpenShift Routes.
 Library roles, entered with `tasks_from`, have no dispatcher: their caller passes

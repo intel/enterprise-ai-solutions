@@ -1,7 +1,10 @@
 ---
 # =============================================================================
 # Observability — Teardown
-# Removes in reverse install order: OTel Collector → Tempo → Loki → kube-prometheus-stack
+# The Helm stack goes in reverse install order: OTel Collector → Tempo → Loki →
+# kube-prometheus-stack. With _observability_from_olm only the instances
+# install_olm.yaml created go; the operators, their CRDs and the cluster's
+# monitoring belong to the admin and stay.
 # =============================================================================
 
 - name: "observability | Check if any release exists"
@@ -10,14 +13,19 @@
     release_namespace: "{{ observability_namespace }}"
   register: _obs_prom_check
   failed_when: false
+  when: not _observability_from_olm | bool
 
 - name: "observability | Not installed — skipping teardown"
   ansible.builtin.debug:
     msg: "No observability stack found in {{ observability_namespace }}. Nothing to tear down."
-  when: _obs_prom_check.status is not defined
+  when:
+    - not _observability_from_olm | bool
+    - _obs_prom_check.status is not defined
 
-- name: "observability | Teardown"
-  when: _obs_prom_check.status is defined
+- name: "observability | Teardown the Helm stack"
+  when:
+    - not _observability_from_olm | bool
+    - _obs_prom_check.status is defined
   block:
     # ── Prometheus Adapter (must go first — owns the custom.metrics APIService) ─
 
@@ -48,24 +56,8 @@
 
     # ── Gateway route ─────────────────────────────────────────────────────────
 
-    - name: "observability | Delete Grafana HTTPRoute"
-      kubernetes.core.k8s:
-        api_version: gateway.networking.k8s.io/v1
-        kind: HTTPRoute
-        name: grafana
-        namespace: "{{ observability_namespace }}"
-        state: absent
-      failed_when: false
-
-    - name: "observability | Unpublish Grafana"
-      ansible.builtin.include_role:
-        name: gateway
-        tasks_from: unpublish.yaml
-      vars:
-        gateway_publish_name: grafana
-        gateway_publish_namespace: "{{ observability_namespace }}"
-        gateway_publish_host: "{{ observability_grafana_hostname }}"
-        gateway_publish_path: "{{ observability_grafana_path }}"
+    - name: "observability | Take Grafana off the gateway"
+      ansible.builtin.include_tasks: grafana_route_remove.yaml
 
     # ── OTel Collector ────────────────────────────────────────────────────────
 
@@ -188,4 +180,76 @@
         kind: Namespace
         name: "{{ observability_namespace }}"
         state: absent
+      failed_when: false
+
+# ── The OperatorHub stack ────────────────────────────────────────────────────
+# Its instances go first, so each operator cleans up what it made.
+
+- name: "observability | olm | Look up the namespace"
+  when: _observability_from_olm | bool
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ observability_namespace }}"
+  register: _obs_os_ns
+
+- name: "observability | olm | Not installed — skipping teardown"
+  ansible.builtin.debug:
+    msg: "Namespace {{ observability_namespace }} not found. Nothing to tear down."
+  when:
+    - _observability_from_olm | bool
+    - _obs_os_ns.resources | length == 0
+
+- name: "observability | olm | Teardown"
+  when:
+    - _observability_from_olm | bool
+    - _obs_os_ns.resources | length > 0
+  block:
+    - name: "observability | olm | Take Grafana off the gateway"
+      ansible.builtin.include_tasks: grafana_route_remove.yaml
+
+    - name: "observability | olm | Delete the operator instances"
+      kubernetes.core.k8s:
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ observability_namespace }}"
+        state: absent
+        wait: true
+      loop:
+        - {api_version: grafana.integreatly.org/v1beta1, kind: Grafana, name: "{{ observability_openshift_grafana_name }}"}
+        - {api_version: opentelemetry.io/v1beta1, kind: OpenTelemetryCollector, name: opentelemetry}
+        - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo}
+        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs}
+        - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki}
+      loop_control:
+        label: "{{ item.kind }} {{ item.name }}"
+      failed_when: false
+
+    # Cluster-scoped, so the namespace does not take them along.
+    - name: "observability | olm | Delete cluster RBAC"
+      kubernetes.core.k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: "{{ item.kind }}"
+        name: "{{ observability_namespace }}-{{ item.name }}"
+        state: absent
+      loop:
+        - {kind: ClusterRoleBinding, name: log-collector-collect-application-logs}
+        - {kind: ClusterRoleBinding, name: log-collector-logging-collector-logs-writer}
+        - {kind: ClusterRoleBinding, name: otel-collector}
+        - {kind: ClusterRole, name: otel-collector}
+        - {kind: ClusterRoleBinding, name: grafana-application-logs-view}
+        - {kind: ClusterRoleBinding, name: grafana-cluster-monitoring-view}
+        - {kind: ClusterRole, name: application-logs-view}
+        - {kind: ClusterRoleBinding, name: grafana-dashboards}
+        - {kind: ClusterRole, name: grafana-dashboards}
+      loop_control:
+        label: "{{ item.kind }} {{ observability_namespace }}-{{ item.name }}"
+      failed_when: false
+
+    - name: "observability | olm | Delete namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ observability_namespace }}"
+        state: absent
+        wait: true
       failed_when: false

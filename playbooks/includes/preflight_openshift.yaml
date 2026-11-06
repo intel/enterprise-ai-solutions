@@ -1,0 +1,268 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Preflight | OpenShift prerequisites
+# =============================================================================
+# On OpenShift the cluster admin installs the operators and their cluster-level
+# instances (docs/deploy/openshift.md, Prerequisites). This checks, before the
+# first component runs, that every one the plan needs is there, is Succeeded and
+# Ready, and is at least the tested version, and lists everything that is not.
+#
+# Read-only, with one exception: when the identity cannot list StorageClasses, a
+# 1Mi PVC in a temporary namespace shows whether the default class works. The
+# namespace is deleted again whatever the outcome; set
+# openshift_prereq_storage_probe: false to skip it.
+#
+# Requirements: configs/openshift_prerequisites.yaml
+# Evaluation:   filter_plugins/openshift_prerequisites.py
+#
+# Toggles (global_config.yaml):
+#   openshift_prereq_check          false → skip this file entirely
+#   openshift_prereq_strict         true  → a version newer than tested fails too
+#   openshift_prereq_storage_probe  false → no probe PVC when StorageClasses are unreadable
+# =============================================================================
+
+- name: "Preflight - OpenShift: load prerequisites"
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../configs/openshift_prerequisites.yaml"
+
+- name: "Preflight - OpenShift: select what the plan needs"
+  vars:
+    _planned: "{{ (_active_components | map(attribute='name') | list) + (_disabled_components | default([])) }}"
+    _planned_layers: "{{ components | selectattr('name', 'in', _planned) | map(attribute='layer') | unique | list }}"
+  ansible.builtin.set_fact:
+    _prq_needed: "{{ openshift_prerequisites | openshift_prereq_select(_planned_layers) }}"
+
+# cluster_apis is empty when cluster_distribution was set by hand and nothing was probed.
+- name: "Preflight - OpenShift: discover served APIs"
+  kubernetes.core.k8s_cluster_info: {}
+  register: _prq_info
+  failed_when: false
+  when: cluster_apis | default([]) | length == 0
+
+- name: "Preflight - OpenShift: read Subscriptions"
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: Subscription
+  register: _prq_subs
+  failed_when: false
+  when: _prq_needed | selectattr('package', 'defined') | list | length > 0
+
+- name: "Preflight - OpenShift: read OLM v1 ClusterExtensions"
+  kubernetes.core.k8s_info:
+    api_version: olm.operatorframework.io/v1
+    kind: ClusterExtension
+  register: _prq_exts
+  failed_when: false
+  when:
+    - _prq_needed | selectattr('package', 'defined') | list | length > 0
+    - "'olm.operatorframework.io/v1' in (_prq_apis | default(cluster_apis))"
+  vars:
+    _prq_apis: "{{ (_prq_info.apis | default({})).keys() | list if cluster_apis | default([]) | length == 0 else cluster_apis }}"
+
+- name: "Preflight - OpenShift: read the installed CSVs"
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    name: "{{ item.status.installedCSV }}"
+    namespace: "{{ item.metadata.namespace }}"
+  register: _prq_csvs
+  failed_when: false
+  loop: >-
+    {{ _prq_subs.resources | default([])
+       | selectattr('spec.name', 'in', _prq_needed | selectattr('package', 'defined') | map(attribute='package') | list)
+       | selectattr('status.installedCSV', 'defined') | list }}
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.status.installedCSV }}"
+
+# A Manual-approval Subscription waits on an unapproved InstallPlan for the first
+# install and for every upgrade; name it so the admin knows what to approve.
+- name: "Preflight - OpenShift: read the InstallPlans the Subscriptions wait on"
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: InstallPlan
+    name: "{{ item.status.installPlanRef.name }}"
+    namespace: "{{ item.metadata.namespace }}"
+  register: _prq_plans
+  failed_when: false
+  loop: >-
+    {{ _prq_subs.resources | default([])
+       | selectattr('spec.name', 'in', _prq_needed | selectattr('package', 'defined') | map(attribute='package') | list)
+       | selectattr('status.installPlanRef.name', 'defined') | list }}
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.status.installPlanRef.name }}"
+
+- name: "Preflight - OpenShift: read operator instances"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.1.api_version }}"
+    kind: "{{ item.1.kind }}"
+    name: "{{ item.1.name | default(omit) }}"
+    namespace: "{{ item.1.namespace | default(omit) }}"
+  register: _prq_instances
+  failed_when: false
+  loop: "{{ _prq_needed | subelements('instances', skip_missing=true) }}"
+  loop_control:
+    label: "{{ item.1.kind }} {{ item.1.name | default('*') }}"
+
+- name: "Preflight - OpenShift: storage"
+  when: _prq_needed | selectattr('storage', 'defined') | list | length > 0
+  vars:
+    _prq_sc_wanted: >-
+      {{ storage_custom_storageclass | default('', true) | string | trim
+         if (_resolved_storage_backend | default(storage_backend | default(''))) == 'custom' else '' }}
+  block:
+    - name: "Preflight - OpenShift: read StorageClasses"
+      kubernetes.core.k8s_info:
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+      register: _prq_sc
+      failed_when: false
+
+    # The DefaultStorageClass admission plugin fills in spec.storageClassName, so the
+    # PVC shows which class is the default without reading StorageClasses at all.
+    - name: "Preflight - OpenShift: probe the StorageClass with a PVC"
+      when:
+        - _prq_sc.resources is not defined
+        - openshift_prereq_storage_probe | default(true) | bool
+      vars:
+        _prq_probe_ns: "{{ openshift_prereq_probe_namespace | default('ai-solutions-preflight') }}"
+        _prq_probe_timeout: "{{ openshift_prereq_probe_timeout | default(30) | int }}"
+      block:
+        - name: "Preflight - OpenShift: create the probe namespace"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ _prq_probe_ns }}"
+                labels:
+                  app.kubernetes.io/managed-by: ai-solutions
+                  app.kubernetes.io/component: preflight
+
+        - name: "Preflight - OpenShift: create the probe PVC"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: PersistentVolumeClaim
+              metadata:
+                name: storage-probe
+                namespace: "{{ _prq_probe_ns }}"
+              spec:
+                accessModes: [ReadWriteOnce]
+                resources:
+                  requests:
+                    storage: 1Mi
+                storageClassName: "{{ _prq_sc_wanted if _prq_sc_wanted | length > 0 else omit }}"
+
+        # Bound, or an event that settles it: WaitForFirstConsumer (works, binds with
+        # the first pod) or ProvisioningFailed.
+        - name: "Preflight - OpenShift: wait for the probe PVC"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Event
+            namespace: "{{ _prq_probe_ns }}"
+            field_selectors:
+              - involvedObject.name=storage-probe
+          register: _prq_probe_events
+          until: >-
+            (_prq_probe_events.resources | default([]) | map(attribute='reason')
+             | select('in', ['WaitForFirstConsumer', 'ProvisioningFailed', 'ProvisioningSucceeded'])
+             | list | length) > 0
+          retries: "{{ (_prq_probe_timeout | int / 3) | round(0, 'ceil') | int }}"
+          delay: 3
+          failed_when: false
+
+        - name: "Preflight - OpenShift: read the probe PVC"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: PersistentVolumeClaim
+            name: storage-probe
+            namespace: "{{ _prq_probe_ns }}"
+          register: _prq_probe_pvc
+          failed_when: false
+
+      rescue:
+        - name: "Preflight - OpenShift: note why the probe failed"
+          ansible.builtin.set_fact:
+            _prq_probe_error: "{{ (ansible_failed_result.msg | default('')).splitlines()[:2] | join(' ') }}"
+
+      always:
+        - name: "Preflight - OpenShift: delete the probe namespace"
+          kubernetes.core.k8s:
+            state: absent
+            api_version: v1
+            kind: Namespace
+            name: "{{ _prq_probe_ns }}"
+            wait: true
+            wait_timeout: 120
+          register: _prq_probe_cleanup
+          failed_when: false
+
+        - name: "Preflight - OpenShift: warn when the probe namespace stays behind"
+          ansible.builtin.debug:
+            msg: |-
+              WARNING: could not delete the probe namespace {{ _prq_probe_ns }}:
+              {{ (_prq_probe_cleanup.msg | default('')).splitlines()[:2] | join(' ') }}
+              Delete it by hand: oc delete namespace {{ _prq_probe_ns }}
+          when: _prq_probe_cleanup.result is not defined
+
+- name: "Preflight - OpenShift: evaluate"
+  vars:
+    _prq_storage:
+      class: "{{ _prq_sc_wanted | default('') }}"
+      list: "{{ _prq_sc | default({}) }}"
+      probe: >-
+        {{ {'pvc': _prq_probe_pvc | default({'msg': _prq_probe_error | default('not created')}),
+            'events': _prq_probe_events | default({}),
+            'error': _prq_probe_error | default(''),
+            'timeout': openshift_prereq_probe_timeout | default(30)}
+           if (_prq_sc | default({})).resources is not defined
+              and openshift_prereq_storage_probe | default(true) | bool else {} }}
+    _prq_sc_wanted: >-
+      {{ storage_custom_storageclass | default('', true) | string | trim
+         if (_resolved_storage_backend | default(storage_backend | default(''))) == 'custom' else '' }}
+  ansible.builtin.set_fact:
+    _prq_report: >-
+      {{ _prq_needed | openshift_prereq_report(
+           platform=openshift_prerequisites_platform,
+           distribution_version=cluster_distribution_version | default(''),
+           apis=cluster_apis if cluster_apis | default([]) | length > 0 else (_prq_info.apis | default({})).keys() | list,
+           subscriptions=_prq_subs | default({}),
+           extensions=_prq_exts | default({}),
+           csvs=_prq_csvs | default({}),
+           installplans=_prq_plans | default({}),
+           instances=_prq_instances | default({}),
+           storage=_prq_storage,
+           strict=openshift_prereq_strict | default(false)) }}
+
+- name: "Preflight - OpenShift: show prerequisites"
+  ansible.builtin.debug:
+    msg: |-
+      ━━━ OpenShift prerequisites ({{ openshift_prerequisites_doc }}) ━━━
+      {% for r in _prq_report %}
+      {{ '%-4s' | format({'ok': 'OK', 'warn': 'WARN', 'fail': 'FAIL'}[r.level]) }} {{ '%-28s' | format(r.title) }} {{ r.status if r.level != 'ok' else '' }}
+      {% for d in r.details %}
+           - {{ d }}
+      {% endfor %}
+      {% endfor %}
+
+- name: "Preflight - OpenShift: fail on unmet prerequisites"
+  vars:
+    _failed: "{{ _prq_report | selectattr('level', 'equalto', 'fail') | list }}"
+  ansible.builtin.fail:
+    msg: |-
+      {{ _failed | length }} OpenShift prerequisite(s) not met:
+      {% for r in _failed %}
+        ✗ {{ r.title }}: {{ r.status }}
+      {% for d in r.problems %}
+            {{ d }}
+      {% endfor %}
+            see {{ openshift_prerequisites_doc }}{{ r.doc }}
+      {% endfor %}
+      The installer does not install or change operators on a cluster you bring; install
+      them as the doc describes, then run again. To skip this check (not recommended), set
+      openshift_prereq_check: false in global_config.yaml.
+  when: _failed | length > 0
