@@ -3,13 +3,41 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # =============================================================================
-# Node Feature Discovery — Install
+# Node Feature Discovery — Install via Helm, or check the cluster's operator
 # =============================================================================
-# Every rack-scale cluster. A release the inference layer installed before is
-# taken over as is: same name, namespace, chart and values.
+# The cluster's one NFD. A release the inference layer's nfd role installed
+# before is taken over as is: same name, namespace, chart and values.
+# With _node_feature_discovery_from_olm (OpenShift) the Node Feature Discovery
+# Operator produces the same feature.node.kubernetes.io/* labels, so install
+# only checks it. Its worker would also need a privileged SCC.
 # =============================================================================
 
-- name: "node_feature_discovery | Install"
+- name: "node_feature_discovery | Check the cluster's operator"
+  when: _node_feature_discovery_from_olm | bool
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "node_feature_discovery | Look up NodeFeatureDiscovery instances"
+      kubernetes.core.k8s_info:
+        api_version: nfd.openshift.io/v1
+        kind: NodeFeatureDiscovery
+      register: _nfd_olm_instances
+      failed_when: false
+
+    - name: "node_feature_discovery | Require the NFD operator"
+      ansible.builtin.assert:
+        that: _nfd_olm_instances.resources | default([]) | length > 0
+        fail_msg: |-
+          No NodeFeatureDiscovery instance found. Install the Node Feature Discovery
+          operator (package nfd, namespace openshift-nfd) from OperatorHub and create a
+          NodeFeatureDiscovery (docs/deploy/openshift.md, step 8), or set nfd_enabled: false
+          if no model needs AMX node affinity (require_amx).
+        success_msg: >-
+          NFD provided by the cluster (OLM, {{ _nfd_olm_instances.resources | map(attribute='metadata.namespace') | join(', ') }})
+          — skipping Helm install.
+
+- name: "node_feature_discovery | Helm release"
+  when: not _node_feature_discovery_from_olm | bool
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
@@ -102,20 +130,25 @@
       retries: 30
       delay: 10
 
-    # The inference layer's nfd role used to report this; it is left out here.
-    - name: "node_feature_discovery | Find AMX nodes"
-      kubernetes.core.k8s_info:
-        kind: Node
-        label_selectors:
-          - "feature.node.kubernetes.io/cpu-cpuid.AMXBF16=true"
-      register: _nfd_amx_nodes
+# The model catalog's require_amx schedules models only on these nodes.
+- name: "node_feature_discovery | Find AMX nodes"
+  kubernetes.core.k8s_info:
+    kind: Node
+    label_selectors:
+      - "feature.node.kubernetes.io/cpu-cpuid.AMXBF16=true"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  register: _nfd_amx_nodes
 
-    - name: "node_feature_discovery | AMX node summary"
-      ansible.builtin.debug:
-        msg: >-
-          NFD detected {{ _nfd_amx_nodes.resources | length }} node(s) with AMX support:
-          {{ _nfd_amx_nodes.resources | map(attribute='metadata.name') | join(', ') or 'none' }}
+- name: "node_feature_discovery | AMX node summary"
+  ansible.builtin.debug:
+    msg: >-
+      NFD detected {{ _nfd_amx_nodes.resources | length }} node(s) with AMX support:
+      {{ _nfd_amx_nodes.resources | map(attribute='metadata.name') | join(', ') or 'none' }}
 
-    - name: "node_feature_discovery | ━━━ DONE ━━━"
-      ansible.builtin.debug:
-        msg: "NFD {{ node_feature_discovery_version }} running in '{{ node_feature_discovery_namespace }}' — the cluster's one NFD."
+- name: "node_feature_discovery | ━━━ DONE ━━━"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'NFD operator' if _node_feature_discovery_from_olm | bool
+         else 'NFD ' ~ node_feature_discovery_version ~ ' running in ' ~ node_feature_discovery_namespace }}
+      — the cluster's one NFD.

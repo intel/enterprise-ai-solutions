@@ -5,12 +5,12 @@
 # =============================================================================
 # Node Feature Discovery Role Defaults
 # =============================================================================
-# The one NFD on rack-scale clusters, with or without GPUs, installed before the
-# GPU operator so the operator does not bring its own copy. The release name
-# (node-feature-discovery), namespace, chart and values match the inference
-# layer's nfd role, which preflight leaves out on these clusters, so the labels
-# the inference layer relies on are unchanged. The nfd_* overrides of that role
-# apply here too.
+# The cluster's one NFD, installed before the GPU operator so the operator does
+# not bring its own copy. On OpenShift the Node Feature Discovery Operator is
+# checked instead (vars/openshift.yaml). The release name (node-feature-discovery),
+# namespace, chart and values match the inference layer's former nfd role, which
+# preflight leaves out of the plan, so the labels the inference layer relies on
+# (cpu-cpuid.AMXBF16, ...) are unchanged. The nfd_* overrides of that role apply here too.
 # =============================================================================
 
 node_feature_discovery_namespace: "{{ nfd_namespace | default('node-feature-discovery') }}"

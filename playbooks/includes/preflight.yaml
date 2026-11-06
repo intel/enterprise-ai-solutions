@@ -381,24 +381,21 @@
 #   5. Reverse for teardown
 # =============================================================================
 
-# On rack-scale clusters node_feature_discovery is the cluster's NFD. The inference
-# layer's nfd component would find that release and skip its install, but its
-# teardown uninstalls the release whoever installed it, and the chart's post-delete
-# job then prunes every NFD label, the GPU nodes' included. So it stays out of the
-# plan for every action. _skip_components is an extra var, hence a separate fact.
-- name: "Preflight - Rack scale: leave NFD to node_feature_discovery"
-  ansible.builtin.set_fact:
-    _skip_resolved: >-
-      {{ ([_skip_components | default('')]
-          + (['nfd'] if rack_scale_enabled | default(false) | bool else []))
-         | reject('equalto', '') | join(',') }}
-
-- name: "Preflight - Rack scale: note the NFD owner"
+# node_feature_discovery (platform) is the cluster's NFD on every cluster. An inference
+# repo that still ships an nfd component would find that release and skip its install,
+# but its teardown uninstalls the release whoever installed it, and the chart's
+# post-delete job then prunes every NFD label, the GPU nodes' included. On OpenShift it
+# would only repeat the operator check. So it is dropped from the registry for every
+# action, rather than skipped: a skipped component still counts as planned, so the
+# layer would look partly run.
+- name: "Preflight - Note the NFD owner"
   ansible.builtin.debug:
-    msg: "Rack scale: NFD comes from node_feature_discovery; the inference layer's nfd component is left out."
-  when:
-    - rack_scale_enabled | default(false) | bool
-    - components | selectattr('name', 'equalto', 'nfd') | list | length > 0
+    msg: "NFD comes from node_feature_discovery (platform layer); the inference layer's nfd component is left out."
+  when: components | selectattr('name', 'equalto', 'nfd') | list | length > 0
+
+- name: "Preflight - Leave NFD to node_feature_discovery"
+  ansible.builtin.set_fact:
+    components: "{{ components | rejectattr('name', 'equalto', 'nfd') | list }}"
 
 - name: "Preflight - Resolve active components (see filter_plugins/resolve_components.py)"
   ansible.builtin.set_fact:
@@ -407,13 +404,13 @@
                                          target=target,
                                          action=component_action | default('install'),
                                          include_deps=_include_deps | default(true) | bool,
-                                         skip=_skip_resolved) }}
+                                         skip=_skip_components | default('')) }}
     _disabled_components: >-
       {{ components | disabled_components(layers,
                                           target=target,
                                           action=component_action | default('install'),
                                           include_deps=_include_deps | default(true) | bool,
-                                          skip=_skip_resolved) }}
+                                          skip=_skip_components | default('')) }}
 
 # Teardown around the kubespray reset (es_auto_installer.sh). What kubernetes
 # depends on (on rack-scale, the fabric that carries the node IPs) has to outlive

@@ -1,0 +1,5 @@
+---
+# Node Feature Discovery Operator, installed by the admin from OperatorHub (OLM)
+# with a NodeFeatureDiscovery instance. It owns the CRDs and the labeller: a Helm
+# NFD next to it would duplicate both, so the role only checks it runs.
+_node_feature_discovery_from_olm: true

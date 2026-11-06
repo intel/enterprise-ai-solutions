@@ -65,28 +65,6 @@ components:
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [kubernetes, fabric_bgp]
 
-  # --- GPU (NVIDIA; enabled when rack_scale is on; role checks gpu_vendor and no-ops if not nvidia) ---
-  # One role per vendor: this is the NVIDIA stack. The Intel stack is a separate
-  # role (intel_gpu_operator, planner epic B2), so the two never share a node.
-  # The roles gate on rack_scale_gpu_vendor, which preflight loads from
-  # rack-profile.yaml for every action, and no-op unless it is nvidia.
-  # Planned (B2): detect vendors from NFD labels, drop the rack_scale gate, move to the
-  # platform layer after NFD.
-  #
-  # The cluster's one NFD on rack-scale clusters, with or without GPUs, ahead of the GPU
-  # operator so the operator does not bring its own. Preflight leaves the inference
-  # layer's nfd component out of the plan here, for every action; nfd_enabled turns
-  # both off. Other clusters get NFD from the inference layer as before.
-  - name: node_feature_discovery
-    layer: infrastructure
-    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (nfd_enabled | default(true) | bool) }}"
-    depends_on: [fabric_validate]
-
-  - name: nvidia_gpu_operator
-    layer: infrastructure
-    enabled: "{{ rack_scale_enabled | default(false) | bool }}"
-    depends_on: [fabric_validate, node_feature_discovery]
-
   - name: storage
     layer: infrastructure
     enabled: true
@@ -99,6 +77,31 @@ components:
     depends_on: [kubernetes]
 
   # --- Platform ---
+  # --- Node features and GPU ---
+  # The cluster's one NFD, on every cluster: the Helm chart on Kubernetes, a check of
+  # the Node Feature Discovery Operator on OpenShift (vars/openshift.yaml). First in
+  # the platform layer, ahead of the GPU operator so the operator does not bring its
+  # own. Preflight leaves the inference layer's former nfd component out of the plan,
+  # for every action; nfd_enabled turns NFD off.
+  - name: node_feature_discovery
+    layer: platform
+    enabled: "{{ nfd_enabled | default(true) | bool }}"
+    depends_on: []
+
+  # NVIDIA; enabled when rack_scale is on; role checks gpu_vendor and no-ops if not nvidia.
+  # One role per vendor: this is the NVIDIA stack. The Intel stack is a separate
+  # role (intel_gpu_operator, planner epic B2), so the two never share a node.
+  # The roles gate on rack_scale_gpu_vendor, which preflight loads from
+  # rack-profile.yaml for every action, and no-op unless it is nvidia.
+  # In the platform layer after NFD, whose labels place its operands; fabric_validate
+  # (infrastructure) has run before it. Planned (B2): detect vendors from NFD labels
+  # and drop the rack_scale gate. Not on OpenShift for now: it expects the NFD Helm
+  # release, and OpenShift gets NFD from its operator.
+  - name: nvidia_gpu_operator
+    layer: platform
+    enabled: "{{ rack_scale_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    depends_on: [node_feature_discovery]
+
   - name: cert_manager
     layer: platform
     enabled: "{{ cert_manager_enabled | default(true) | bool }}"
@@ -173,11 +176,12 @@ components:
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 
   # depends_on orders, it does not gate: a disabled observability component
-  # does not disable this one, so it is gated on observability_enabled too.
+  # does not disable this one, so it is gated on observability_enabled too, and
+  # off on OpenShift like nvidia_gpu_operator.
   - name: gpu_observability
     layer: platform
-    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) }}"
-    depends_on: [observability]
+    enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    depends_on: [observability, nvidia_gpu_operator]
 
   - name: velero
     layer: platform

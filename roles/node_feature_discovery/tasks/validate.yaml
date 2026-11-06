@@ -6,7 +6,32 @@
 # Node Feature Discovery — Validate
 # =============================================================================
 
+- name: "node_feature_discovery | validate | Operator from the cluster"
+  when: _node_feature_discovery_from_olm | bool
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "node_feature_discovery | validate | Look up NodeFeatureDiscovery instances"
+      kubernetes.core.k8s_info:
+        api_version: nfd.openshift.io/v1
+        kind: NodeFeatureDiscovery
+      register: _nfd_val_olm
+      failed_when: _nfd_val_olm.resources | default([]) | length == 0
+
+    - name: "node_feature_discovery | validate | Check nodes carry CPU feature labels"
+      kubernetes.core.k8s_info:
+        kind: Node
+        label_selectors:
+          - feature.node.kubernetes.io/cpu-model.vendor_id
+      register: _nfd_val_nodes
+      failed_when: _nfd_val_nodes.resources | default([]) | length == 0
+
+    - name: "node_feature_discovery | validate | PASS"
+      ansible.builtin.debug:
+        msg: "NFD operator present; {{ _nfd_val_nodes.resources | length }} node(s) carry its labels."
+
 - name: "node_feature_discovery | validate"
+  when: not _node_feature_discovery_from_olm | bool
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
