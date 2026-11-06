@@ -57,7 +57,7 @@ no_proxy: "{{ no_proxy }}"
 local_path_provisioner_enabled: true
 local_path_provisioner_storage_class: "local-path"
 local_path_provisioner_is_default_storageclass: "true"
-local_path_provisioner_claim_root: /opt/local-path-provisioner/
+local_path_provisioner_claim_root: {{ kubernetes_local_path_root }}/
 {% endif %}
 override_system_hostname: false
 {% if kubernetes_apiserver_authn_enabled | bool %}

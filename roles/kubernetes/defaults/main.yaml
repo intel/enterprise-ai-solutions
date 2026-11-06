@@ -127,6 +127,12 @@ no_proxy: "localhost,127.0.0.1,.svc,.cluster.local,{{ kubernetes_service_cidr }}
 # Overridden by global_config.yaml (default: true).
 node_topology_enabled: false
 
+# --- Teardown ---
+# local-path-provisioner volume data (model weights, databases, metrics) is removed
+# from the nodes with the cluster; false keeps it.
+kubernetes_teardown_purge_volumes: true
+kubernetes_local_path_root: "/opt/local-path-provisioner"
+
 # --- System Requirements ---
 kubernetes_disable_swap: true
 kubernetes_disable_firewall: false
