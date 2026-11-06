@@ -1,0 +1,4 @@
+---
+test_namespace: "apply"
+
+k8s_wait_timeout: 240

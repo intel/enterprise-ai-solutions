@@ -1,0 +1,4 @@
+---
+test_namespace: "scale"
+
+k8s_wait_timeout: 400

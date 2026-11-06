@@ -105,33 +105,22 @@
       changed_when: _kn_jump_del.rc == 0
       failed_when: false
 
-    # Chains may jump to each other: flush them all, then delete.
-    - name: "kubernetes | teardown | {{ _node }} | Flush leftover chains"
+    # Chains may jump to each other: every flush runs before any delete.
+    - name: "kubernetes | teardown | {{ _node }} | Flush, then delete leftover chains"
       ansible.builtin.iptables:
-        ip_version: "{{ item.ip_version }}"
-        table: "{{ item.table }}"
-        chain: "{{ item.chain }}"
-        flush: true
-      loop: "{{ _kn_leftover | rejectattr('legacy') | list }}"
+        ip_version: "{{ item.1.ip_version }}"
+        table: "{{ item.1.table }}"
+        chain: "{{ item.1.chain }}"
+        flush: "{{ item.0 == 'flush' }}"
+        chain_management: "{{ item.0 == 'delete' }}"
+        state: "{{ 'absent' if item.0 == 'delete' else 'present' }}"
+      loop: "{{ ['flush', 'delete'] | product(_kn_leftover | rejectattr('legacy') | list) | list }}"
       loop_control:
-        label: "{{ item.bin }} {{ item.table }}/{{ item.chain }}"
-      register: _kn_flush
+        label: "{{ item.1.bin }} {{ item.1.table }}/{{ item.1.chain }} {{ item.0 }}"
+      register: _kn_chain_del
       failed_when: false
 
-    - name: "kubernetes | teardown | {{ _node }} | Delete leftover chains"
-      ansible.builtin.iptables:
-        ip_version: "{{ item.ip_version }}"
-        table: "{{ item.table }}"
-        chain: "{{ item.chain }}"
-        chain_management: true
-        state: absent
-      loop: "{{ _kn_leftover | rejectattr('legacy') | list }}"
-      loop_control:
-        label: "{{ item.bin }} {{ item.table }}/{{ item.chain }}"
-      register: _kn_del
-      failed_when: false
-
-    # Every -F runs before any -X, as above.
+    # The iptables module drives only the default backend; same order.
     - name: "kubernetes | teardown | {{ _node }} | Flush, then delete leftover legacy chains"
       ansible.builtin.command:
         argv: ["{{ item.1.bin }}", -t, "{{ item.1.table }}", "{{ item.0 }}", "{{ item.1.chain }}"]
@@ -194,7 +183,7 @@
       vars:
         _failed: >-
           {{ ((_kn_nft_del.results | default([])) + (_kn_jump_del.results | default([]))
-              + (_kn_flush.results | default([])) + (_kn_del.results | default([]))
+              + (_kn_chain_del.results | default([]))
               + (_kn_del_legacy.results | default([])) + (_kn_ipset_del.results | default([])))
              | selectattr('rc', 'defined') | rejectattr('rc', 'equalto', 0) | list }}
       ansible.builtin.debug:
@@ -202,3 +191,20 @@
           WARNING: on {{ _node }} the post-reset cleanup left {{ _failed | length }} item(s):
           {{ _failed | map(attribute='item') | map('string') | unique | join('; ') | truncate(600) }}
       when: _failed | length > 0
+
+    # A failed read (e.g. no nft or ipset binary) leaves nothing to delete, unchecked.
+    # cmd is a list, or a string when the binary is missing.
+    - name: "kubernetes | teardown | {{ _node }} | Report what could not be read"
+      vars:
+        _unread: >-
+          {%- set out = [] -%}
+          {%- for r in [_kn_nft, _kn_ipsets] + (_kn_chains.results | default([]))
+              if r.rc is defined and r.rc != 0 -%}
+          {%- set _ = out.append(r.cmd if r.cmd is string else r.cmd | join(' ')) -%}
+          {%- endfor -%}
+          {{ out }}
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: on {{ _node }} these reads failed, so their leftovers were not checked:
+          {{ _unread | join('; ') }}
+      when: _unread | length > 0
