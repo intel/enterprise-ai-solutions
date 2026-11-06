@@ -1,0 +1,619 @@
+---
+# =============================================================================
+# Observability — the OperatorHub stack (install.yaml, _observability_from_olm true)
+# The admin installs the operators from OperatorHub (observability_openshift_required_crds)
+# and turns on user-workload monitoring; this file creates only their instances,
+# all in observability_namespace:
+#   metrics  cluster monitoring + user-workload monitoring, read through Thanos Querier
+#   logs     ClusterLogForwarder (Logging) → LokiStack (Loki Operator) on the object store
+#   traces   OpenTelemetryCollector → TempoMonolithic on the object store
+#   UI       Grafana (Grafana Operator), the same datasource uids, dashboards and
+#            gateway route as the Helm stack
+# =============================================================================
+
+# ── Object store keys ────────────────────────────────────────────────────────
+
+- name: "observability | olm | Store object store keys for Loki and Tempo"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ observability_namespace }}"
+      type: Opaque
+      stringData: "{{ item.data }}"
+  loop:
+    # Loki Operator's s3 format
+    - name: logging-loki-s3
+      data:
+        bucketnames: loki-chunks
+        endpoint: "{{ object_store_endpoint }}"
+        access_key_id: "{{ object_store_loki_access_key }}"
+        access_key_secret: "{{ object_store_loki_secret_key }}"
+        region: us-east-1
+        forcepathstyle: "true"
+    # Tempo Operator's s3 format
+    - name: tempo-s3
+      data:
+        bucket: tempo-traces
+        endpoint: "{{ object_store_endpoint }}"
+        access_key_id: "{{ object_store_tempo_access_key }}"
+        access_key_secret: "{{ object_store_tempo_secret_key }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# =============================================================================
+# 1. Logs: LokiStack + our own ClusterLogForwarder
+#    A ClusterLogForwarder in our namespace, with its own service account, leaves
+#    any forwarding the admin set up untouched.
+# =============================================================================
+
+- name: "observability | olm | LokiStack"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: loki.grafana.com/v1
+      kind: LokiStack
+      metadata:
+        name: logging-loki
+        namespace: "{{ observability_namespace }}"
+      spec:
+        size: "{{ observability_openshift_loki_size }}"
+        storageClassName: "{{ _obs_os_storage_class }}"
+        storage:
+          schemas:
+            - version: v13
+              effectiveDate: "2024-10-01"
+          secret:
+            name: logging-loki-s3
+            type: s3
+        limits:
+          global:
+            retention:
+              days: "{{ (observability_loki_retention_hours | int / 24) | round(0, 'ceil') | int }}"
+            # Stream labels the dashboards select on, as on K8s ({k8s_container_name="…"});
+            # the openshift-logging defaults index only the namespace.
+            otlp:
+              streamLabels:
+                resourceAttributes:
+                  - name: k8s.container.name
+                  - name: k8s.pod.name
+        # Readers and writers authenticate with OpenShift tokens; logs are kept per
+        # tenant (application, infrastructure, audit).
+        tenants:
+          mode: openshift-logging
+
+- name: "observability | olm | Log collector service account"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: log-collector
+        namespace: "{{ observability_namespace }}"
+
+# ClusterRoles from the Logging operator: read application logs on the nodes,
+# write them to a LokiStack.
+- name: "observability | olm | Let the log collector read and write logs"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ observability_namespace }}-log-collector-{{ item }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: "{{ item }}"
+      subjects:
+        - kind: ServiceAccount
+          name: log-collector
+          namespace: "{{ observability_namespace }}"
+  loop:
+    - collect-application-logs
+    - logging-collector-logs-writer
+
+- name: "observability | olm | ClusterLogForwarder"
+  vars:
+    _obs_os_custom_input: "{{ observability_openshift_log_namespaces | length > 0 }}"
+    _obs_os_inputs:
+      - name: platform-namespaces
+        type: application
+        application:
+          includes: "{{ observability_openshift_log_namespaces | map('community.general.dict_kv', 'namespace') | list }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: observability.openshift.io/v1
+      kind: ClusterLogForwarder
+      metadata:
+        name: platform-logs
+        namespace: "{{ observability_namespace }}"
+      spec:
+        managementState: Managed
+        serviceAccount:
+          name: log-collector
+        inputs: "{{ _obs_os_inputs if _obs_os_custom_input else [] }}"
+        outputs:
+          - name: lokistack
+            type: lokiStack
+            lokiStack:
+              target:
+                name: logging-loki
+                namespace: "{{ observability_namespace }}"
+              authentication:
+                token:
+                  from: serviceAccount
+              # OpenTelemetry labels (k8s_namespace_name, k8s_container_name, …),
+              # as the K8s collector writes them: the dashboards query those.
+              dataModel: Otel
+            tls:
+              ca:
+                configMapName: openshift-service-ca.crt
+                key: service-ca.crt
+        pipelines:
+          - name: application-logs
+            inputRefs: ["{{ 'platform-namespaces' if _obs_os_custom_input else 'application' }}"]
+            outputRefs: [lokistack]
+
+# =============================================================================
+# 2. Traces: TempoMonolithic + OpenTelemetryCollector
+#    The collector is named so its Service is opentelemetry-collector, the
+#    endpoint (observability_otel_grpc_endpoint) instrumented services use on K8s.
+# =============================================================================
+
+- name: "observability | olm | TempoMonolithic"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: tempo.grafana.com/v1alpha1
+      kind: TempoMonolithic
+      metadata:
+        name: tempo
+        namespace: "{{ observability_namespace }}"
+      spec:
+        storage:
+          traces:
+            backend: s3
+            s3:
+              secret: tempo-s3
+            size: "{{ observability_openshift_tempo_wal_size }}"
+            storageClassName: "{{ _obs_os_storage_class }}"
+        extraConfig:
+          tempo:
+            compactor:
+              compaction:
+                block_retention: "{{ observability_loki_retention_hours }}h"
+
+- name: "observability | olm | OTel Collector service account"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: otel-collector
+        namespace: "{{ observability_namespace }}"
+
+# k8sattributes adds the pod, namespace and workload to every span.
+- name: "observability | olm | Let the OTel Collector read pod metadata"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: "{{ observability_namespace }}-otel-collector"
+      rules:
+        - apiGroups: [""]
+          resources: [pods, namespaces, nodes]
+          verbs: [get, list, watch]
+        - apiGroups: [apps]
+          resources: [replicasets, deployments, statefulsets, daemonsets]
+          verbs: [get, list, watch]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ observability_namespace }}-otel-collector"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: "{{ observability_namespace }}-otel-collector"
+      subjects:
+        - kind: ServiceAccount
+          name: otel-collector
+          namespace: "{{ observability_namespace }}"
+  loop_control:
+    label: "{{ item.kind }}"
+
+- name: "observability | olm | OpenTelemetryCollector"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: opentelemetry.io/v1beta1
+      kind: OpenTelemetryCollector
+      metadata:
+        # The operator appends -collector: Service opentelemetry-collector.
+        name: opentelemetry
+        namespace: "{{ observability_namespace }}"
+      spec:
+        mode: deployment
+        serviceAccount: otel-collector
+        config:
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: "0.0.0.0:{{ observability_otel_grpc_port }}"
+                http:
+                  endpoint: "0.0.0.0:{{ observability_otel_http_port }}"
+          processors:
+            memory_limiter:
+              check_interval: 5s
+              limit_percentage: 80
+              spike_limit_percentage: 25
+            k8sattributes:
+              auth_type: serviceAccount
+              passthrough: false
+              extract:
+                metadata:
+                  - k8s.namespace.name
+                  - k8s.pod.name
+                  - k8s.pod.uid
+                  - k8s.node.name
+                  - k8s.deployment.name
+                  - k8s.statefulset.name
+                  - k8s.daemonset.name
+                  - k8s.container.name
+              pod_association:
+                - sources: [{from: resource_attribute, name: k8s.pod.ip}]
+                - sources: [{from: resource_attribute, name: k8s.pod.uid}]
+                - sources: [{from: connection}]
+            batch:
+              send_batch_size: 1000
+              timeout: 5s
+          exporters:
+            otlp/tempo:
+              endpoint: "tempo-tempo.{{ observability_namespace }}.svc.cluster.local:{{ observability_tempo_otlp_grpc_port }}"
+              tls:
+                insecure: true
+          service:
+            pipelines:
+              traces:
+                receivers: [otlp]
+                processors: [memory_limiter, k8sattributes, batch]
+                exporters: [otlp/tempo]
+
+# =============================================================================
+# 3. Grafana
+# =============================================================================
+
+# Datasources authenticate with this account's token: cluster-monitoring-view for
+# Thanos Querier, application logs for the LokiStack gateway.
+- name: "observability | olm | Datasource service account and its token"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: grafana-datasources
+        namespace: "{{ observability_namespace }}"
+    - apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/service-account-token
+      metadata:
+        name: grafana-datasources-token
+        namespace: "{{ observability_namespace }}"
+        annotations:
+          kubernetes.io/service-account.name: grafana-datasources
+    # The LokiStack gateway authorizes reads per tenant.
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: "{{ observability_namespace }}-application-logs-view"
+      rules:
+        - apiGroups: [loki.grafana.com]
+          resources: [application]
+          resourceNames: [logs]
+          verbs: [get]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ observability_namespace }}-grafana-application-logs-view"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: "{{ observability_namespace }}-application-logs-view"
+      subjects:
+        - kind: ServiceAccount
+          name: grafana-datasources
+          namespace: "{{ observability_namespace }}"
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ observability_namespace }}-grafana-cluster-monitoring-view"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-monitoring-view
+      subjects:
+        - kind: ServiceAccount
+          name: grafana-datasources
+          namespace: "{{ observability_namespace }}"
+  loop_control:
+    label: "{{ item.kind }} {{ item.metadata.name }}"
+
+# The dashboard sidecars list ConfigMaps in every namespace, as on K8s.
+- name: "observability | olm | Let the dashboard sidecars read ConfigMaps"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: "{{ observability_namespace }}-grafana-dashboards"
+      rules:
+        - apiGroups: [""]
+          resources: [configmaps]
+          verbs: [get, list, watch]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ observability_namespace }}-grafana-dashboards"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: "{{ observability_namespace }}-grafana-dashboards"
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ observability_openshift_grafana_name }}-sa"
+          namespace: "{{ observability_namespace }}"
+  loop_control:
+    label: "{{ item.kind }}"
+
+- name: "observability | olm | Dashboard provider"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-dashboard-provider
+        namespace: "{{ observability_namespace }}"
+      data:
+        provider.yaml: |
+          apiVersion: 1
+          providers:
+            - name: sidecarProvider
+              orgId: 1
+              type: file
+              disableDeletion: false
+              allowUiUpdates: false
+              updateIntervalSeconds: 30
+              options:
+                # /tmp/dashboards/OpenShift becomes the OpenShift folder
+                foldersFromFilesStructure: true
+                path: /tmp/dashboards
+
+- name: "observability | olm | Grafana"
+  vars:
+    _obs_os_admin_env:
+      - name: GF_SECURITY_ADMIN_USER
+        valueFrom: {secretKeyRef: {name: grafana-admin-credentials, key: username}}
+      - name: GF_SECURITY_ADMIN_PASSWORD
+        valueFrom: {secretKeyRef: {name: grafana-admin-credentials, key: password}}
+    _obs_os_proxy_env: >-
+      {{ [{'name': 'http_proxy', 'value': http_proxy}, {'name': 'https_proxy', 'value': https_proxy | default(http_proxy)},
+          {'name': 'no_proxy', 'value': no_proxy | default('') ~ ',.svc,.cluster.local,localhost,127.0.0.1'}]
+         if http_proxy | default('') | length > 0 else [] }}
+    _obs_os_grafana_container:
+      name: grafana
+      env: "{{ _obs_os_admin_env + _obs_os_proxy_env }}"
+      # Keycloak sign-in, written by the erag layer (app_keycloak_config).
+      envFrom:
+        - secretRef:
+            name: grafana-sso-env
+            optional: true
+      volumeMounts:
+        - {name: sc-dashboard-volume, mountPath: /tmp/dashboards}
+        - {name: sc-dashboard-provider, mountPath: /etc/grafana/provisioning/dashboards}
+    # One sidecar per label: ours from every namespace, OpenShift's Kubernetes
+    # dashboards from openshift-config-managed.
+    _obs_os_sidecar_env:
+      - {name: METHOD, value: WATCH}
+      - {name: RESOURCE, value: configmap}
+      - {name: REQ_URL, value: "http://localhost:3000/api/admin/provisioning/dashboards/reload"}
+      - {name: REQ_METHOD, value: POST}
+      - name: REQ_USERNAME
+        valueFrom: {secretKeyRef: {name: grafana-admin-credentials, key: username}}
+      - name: REQ_PASSWORD
+        valueFrom: {secretKeyRef: {name: grafana-admin-credentials, key: password}}
+    _obs_os_sidecar_containers:
+      - name: dashboards
+        image: "{{ observability_openshift_sidecar_image }}"
+        env: >-
+          {{ _obs_os_sidecar_env + [{'name': 'LABEL', 'value': 'grafana_dashboard'}, {'name': 'LABEL_VALUE', 'value': '1'},
+             {'name': 'NAMESPACE', 'value': 'ALL'}, {'name': 'FOLDER', 'value': '/tmp/dashboards'}] }}
+        volumeMounts:
+          - {name: sc-dashboard-volume, mountPath: /tmp/dashboards}
+      - name: openshift-dashboards
+        image: "{{ observability_openshift_sidecar_image }}"
+        env: >-
+          {{ _obs_os_sidecar_env + [{'name': 'LABEL', 'value': 'console.openshift.io/dashboard'}, {'name': 'LABEL_VALUE', 'value': 'true'},
+             {'name': 'NAMESPACE', 'value': 'openshift-config-managed'}, {'name': 'FOLDER', 'value': '/tmp/dashboards/OpenShift'}] }}
+        volumeMounts:
+          - {name: sc-dashboard-volume, mountPath: /tmp/dashboards}
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: grafana.integreatly.org/v1beta1
+      kind: Grafana
+      metadata:
+        name: "{{ observability_openshift_grafana_name }}"
+        namespace: "{{ observability_namespace }}"
+        labels:
+          dashboards: "{{ observability_openshift_grafana_name }}"
+      spec:
+        # Admin credentials come from grafana-admin-credentials (container env);
+        # the operator reads them from there too.
+        disableDefaultAdminSecret: true
+        config:
+          log:
+            mode: console
+          # Serves under its path in path mode; the gateway passes it through.
+          server:
+            root_url: "{{ observability_grafana_url }}/"
+            serve_from_sub_path: "{{ _obs_grafana_path_mode | bool | string | lower }}"
+          # Served only over HTTPS through the gateway.
+          security:
+            cookie_secure: "true"
+          plugins:
+            plugin_admin_enabled: "true"
+            preinstall: grafana-metricsdrilldown-app,grafana-lokiexplore-app,grafana-exploretraces-app,grafana-pyroscope-app
+          auth:
+            login_maximum_lifetime_duration: 3h
+            login_maximum_inactive_lifetime_duration: 30m
+            token_rotation_interval_minutes: "10"
+        persistentVolumeClaim:
+          spec:
+            accessModes: [ReadWriteOnce]
+            storageClassName: "{{ _obs_os_storage_class }}"
+            resources:
+              requests:
+                storage: "{{ observability_openshift_grafana_storage_size }}"
+        deployment:
+          spec:
+            # The data volume is ReadWriteOnce.
+            strategy:
+              type: Recreate
+            template:
+              spec:
+                volumes:
+                  - name: grafana-data
+                    persistentVolumeClaim:
+                      claimName: "{{ observability_openshift_grafana_name }}-pvc"
+                  - name: sc-dashboard-volume
+                    emptyDir: {}
+                  - name: sc-dashboard-provider
+                    configMap:
+                      name: grafana-dashboard-provider
+                containers: "{{ [_obs_os_grafana_container] + _obs_os_sidecar_containers }}"
+
+- name: "observability | olm | Datasources (same uids as on K8s)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: grafana.integreatly.org/v1beta1
+      kind: GrafanaDatasource
+      metadata:
+        name: "{{ item.datasource.uid }}"
+        namespace: "{{ observability_namespace }}"
+      spec:
+        instanceSelector:
+          matchLabels:
+            dashboards: "{{ observability_openshift_grafana_name }}"
+        valuesFrom: "{{ _obs_os_auth_values if item.auth | default(false) else [] }}"
+        datasource: >-
+          {{ item.datasource | combine({'access': 'proxy'})
+             | combine(_obs_os_auth_datasource if item.auth | default(false) else {}, recursive=true) }}
+  vars:
+    _obs_os_auth_values:
+      - targetPath: secureJsonData.httpHeaderValue1
+        valueFrom: {secretKeyRef: {name: grafana-datasources-token, key: token}}
+      - targetPath: secureJsonData.tlsCACert
+        valueFrom: {configMapKeyRef: {name: openshift-service-ca.crt, key: service-ca.crt}}
+    _obs_os_auth_datasource:
+      jsonData:
+        httpHeaderName1: Authorization
+        tlsAuthWithCACert: true
+      secureJsonData:
+        httpHeaderValue1: "Bearer ${token}"
+        tlsCACert: "${service-ca.crt}"
+  loop:
+    - auth: true
+      datasource:
+        name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: "{{ observability_openshift_thanos_url }}"
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          timeInterval: 30s
+          prometheusType: Thanos
+    - auth: true
+      datasource:
+        name: Loki
+        uid: loki
+        type: loki
+        url: "https://logging-loki-gateway-http.{{ observability_namespace }}.svc.cluster.local:8080/api/logs/v1/application/"
+        isDefault: false
+        jsonData:
+          maxLines: 1000
+    - datasource:
+        name: Tempo
+        uid: tempo
+        type: tempo
+        url: "http://tempo-tempo.{{ observability_namespace }}.svc.cluster.local:{{ observability_tempo_port }}"
+        isDefault: false
+        jsonData:
+          tracesToLogs:
+            datasourceUid: loki
+            filterByTraceID: true
+          serviceMap:
+            datasourceUid: prometheus
+          lokiSearch:
+            datasourceUid: loki
+  loop_control:
+    label: "{{ item.datasource.name }}"
+
+# ── Wait ─────────────────────────────────────────────────────────────────────
+
+- name: "observability | olm | Wait for the instances"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ observability_namespace }}"
+  register: _obs_os_ready
+  until: >-
+    (_obs_os_ready.resources | default([])) | length > 0
+    and (((_obs_os_ready.resources | first).status | default({})).conditions | default([])
+         | selectattr('type', 'equalto', item.condition) | selectattr('status', 'equalto', 'True') | list | length > 0)
+  retries: 60
+  delay: 10
+  loop:
+    - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki, condition: Ready}
+    - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready}
+    - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo, condition: Ready}
+    - {api_version: apps/v1, kind: Deployment, name: opentelemetry-collector, condition: Available}
+    - {api_version: apps/v1, kind: Deployment, name: "{{ observability_openshift_grafana_name }}-deployment", condition: Available}
+  loop_control:
+    label: "{{ item.kind }} {{ item.name }}"
+
+# ── Gateway route ────────────────────────────────────────────────────────────
+
+- name: "observability | olm | Publish Grafana"
+  ansible.builtin.include_tasks: grafana_route.yaml
+  vars:
+    observability_grafana_service: "{{ observability_openshift_grafana_name }}-service"
+    observability_grafana_service_port: 3000
+
+- name: "observability | olm | Install complete"
+  ansible.builtin.debug:
+    msg: >-
+      Observability instances deployed in namespace '{{ observability_namespace }}':
+      LokiStack logging-loki ({{ observability_openshift_loki_size }}), ClusterLogForwarder platform-logs,
+      TempoMonolithic tempo, OpenTelemetryCollector opentelemetry, Grafana {{ observability_openshift_grafana_name }}.
+      Metrics: {{ observability_openshift_thanos_url }}.
+      Grafana: {{ observability_grafana_url }}
+      OTLP gRPC: {{ observability_otel_grpc_endpoint }}

@@ -19,6 +19,7 @@
 #        layer: platform
 #        enabled: "{{ (object_store_backend | default('seaweedfs')) == 'rustfs' }}"
 #        depends_on: []
+#        used_by: [observability, langfuse]   # as seaweedfs: torn down with them
 # 5. In global_config.yaml, set: object_store_backend: "rustfs"
 #
 # 6. Add rustfs to observability's depends_on in configs/components.yaml.

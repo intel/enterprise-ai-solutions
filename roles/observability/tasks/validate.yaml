@@ -1,173 +1,231 @@
 ---
 # =============================================================================
-# Observability — Validate
+# Observability — Validate (the stack _observability_from_olm picked)
 # =============================================================================
 
-# ── kube-prometheus-stack ─────────────────────────────────────────────────────
+- name: "observability | The Helm stack"
+  when: not _observability_from_olm | bool
+  block:
+    # ── kube-prometheus-stack ─────────────────────────────────────────────────────
 
-- name: "observability | Check kube-prometheus-stack release"
-  kubernetes.core.helm_info:
-    name: kube-prometheus-stack
-    release_namespace: "{{ observability_namespace }}"
-  register: _obs_prom_release
+    - name: "observability | Check kube-prometheus-stack release"
+      kubernetes.core.helm_info:
+        name: kube-prometheus-stack
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_prom_release
 
-- name: "observability | Assert kube-prometheus-stack is installed"
-  ansible.builtin.assert:
-    that: _obs_prom_release.status is defined
-    fail_msg: "kube-prometheus-stack is not installed in {{ observability_namespace }}"
-    success_msg: "kube-prometheus-stack release found"
+    - name: "observability | Assert kube-prometheus-stack is installed"
+      ansible.builtin.assert:
+        that: _obs_prom_release.status is defined
+        fail_msg: "kube-prometheus-stack is not installed in {{ observability_namespace }}"
+        success_msg: "kube-prometheus-stack release found"
 
-- name: "observability | Check Prometheus Operator deployment"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    name: kube-prometheus-stack-operator
-    namespace: "{{ observability_namespace }}"
-  register: _obs_prom_operator
+    - name: "observability | Check Prometheus Operator deployment"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: kube-prometheus-stack-operator
+        namespace: "{{ observability_namespace }}"
+      register: _obs_prom_operator
 
-- name: "observability | Assert Prometheus Operator is ready"
-  ansible.builtin.assert:
-    that:
-      - _obs_prom_operator.resources | length > 0
-      - (_obs_prom_operator.resources[0].status.readyReplicas | default(0) | int) >= 1
-    fail_msg: "Prometheus Operator has no ready replicas"
-    success_msg: "Prometheus Operator ready"
+    - name: "observability | Assert Prometheus Operator is ready"
+      ansible.builtin.assert:
+        that:
+          - _obs_prom_operator.resources | length > 0
+          - (_obs_prom_operator.resources[0].status.readyReplicas | default(0) | int) >= 1
+        fail_msg: "Prometheus Operator has no ready replicas"
+        success_msg: "Prometheus Operator ready"
 
-- name: "observability | Check Grafana deployment"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: Deployment
-    name: kube-prometheus-stack-grafana
-    namespace: "{{ observability_namespace }}"
-  register: _obs_grafana
+    - name: "observability | Check Grafana deployment"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: kube-prometheus-stack-grafana
+        namespace: "{{ observability_namespace }}"
+      register: _obs_grafana
 
-- name: "observability | Assert Grafana is ready"
-  ansible.builtin.assert:
-    that:
-      - _obs_grafana.resources | length > 0
-      - (_obs_grafana.resources[0].status.readyReplicas | default(0) | int) >= 1
-    fail_msg: "Grafana has no ready replicas"
-    success_msg: "Grafana ready ({{ _obs_grafana.resources[0].status.readyReplicas | default(0) }} replicas)"
+    - name: "observability | Assert Grafana is ready"
+      ansible.builtin.assert:
+        that:
+          - _obs_grafana.resources | length > 0
+          - (_obs_grafana.resources[0].status.readyReplicas | default(0) | int) >= 1
+        fail_msg: "Grafana has no ready replicas"
+        success_msg: "Grafana ready ({{ _obs_grafana.resources[0].status.readyReplicas | default(0) }} replicas)"
 
-- name: "observability | Grafana signs people in through Keycloak"
-  ansible.builtin.include_role:
-    name: keycloak
-    tasks_from: check_sign_in.yaml
-  vars:
-    keycloak_sign_in: {name: Grafana, url: "{{ observability_grafana_url }}/"}
-  when: observability_grafana_sso | bool and observability_gateway_publish | bool
+    - name: "observability | Grafana signs people in through Keycloak"
+      ansible.builtin.include_role:
+        name: keycloak
+        tasks_from: check_sign_in.yaml
+      vars:
+        keycloak_sign_in: {name: Grafana, url: "{{ observability_grafana_url }}/"}
+      when: _obs_grafana_sso | bool and observability_gateway_publish | bool
 
-- name: "observability | Check Node Exporter DaemonSet"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: DaemonSet
-    name: kube-prometheus-stack-prometheus-node-exporter
-    namespace: "{{ observability_namespace }}"
-  register: _obs_node_exporter
+    - name: "observability | Check Node Exporter DaemonSet"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: kube-prometheus-stack-prometheus-node-exporter
+        namespace: "{{ observability_namespace }}"
+      register: _obs_node_exporter
 
-- name: "observability | Assert Node Exporter is fully scheduled"
-  ansible.builtin.assert:
-    that:
-      - _obs_node_exporter.resources | length > 0
-      - (_obs_node_exporter.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
-      - (_obs_node_exporter.resources[0].status.numberReady | default(0) | int) == (_obs_node_exporter.resources[0].status.desiredNumberScheduled | int)
-    fail_msg: "Node Exporter DaemonSet not fully ready"
-    success_msg: "Node Exporter ready on all {{ _obs_node_exporter.resources[0].status.numberReady }} nodes"
+    - name: "observability | Assert Node Exporter is fully scheduled"
+      ansible.builtin.assert:
+        that:
+          - _obs_node_exporter.resources | length > 0
+          - (_obs_node_exporter.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+          - (_obs_node_exporter.resources[0].status.numberReady | default(0) | int) == (_obs_node_exporter.resources[0].status.desiredNumberScheduled | int)
+        fail_msg: "Node Exporter DaemonSet not fully ready"
+        success_msg: "Node Exporter ready on all {{ _obs_node_exporter.resources[0].status.numberReady }} nodes"
 
-# ── Loki ─────────────────────────────────────────────────────────────────────
+    # ── Loki ─────────────────────────────────────────────────────────────────────
 
-- name: "observability | Check Loki release"
-  kubernetes.core.helm_info:
-    name: loki
-    release_namespace: "{{ observability_namespace }}"
-  register: _obs_loki_release
+    - name: "observability | Check Loki release"
+      kubernetes.core.helm_info:
+        name: loki
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_loki_release
 
-- name: "observability | Assert Loki is installed"
-  ansible.builtin.assert:
-    that: _obs_loki_release.status is defined
-    fail_msg: "Loki is not installed in {{ observability_namespace }}"
-    success_msg: "Loki release found"
+    - name: "observability | Assert Loki is installed"
+      ansible.builtin.assert:
+        that: _obs_loki_release.status is defined
+        fail_msg: "Loki is not installed in {{ observability_namespace }}"
+        success_msg: "Loki release found"
 
-- name: "observability | Check Loki StatefulSet"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: StatefulSet
-    name: loki
-    namespace: "{{ observability_namespace }}"
-  register: _obs_loki_sts
+    - name: "observability | Check Loki StatefulSet"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        name: loki
+        namespace: "{{ observability_namespace }}"
+      register: _obs_loki_sts
 
-- name: "observability | Assert Loki has ready replicas"
-  ansible.builtin.assert:
-    that:
-      - _obs_loki_sts.resources | length > 0
-      - (_obs_loki_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
-    fail_msg: "Loki StatefulSet has no ready replicas"
-    success_msg: "Loki ready ({{ _obs_loki_sts.resources[0].status.readyReplicas | default(0) }} replicas)"
+    - name: "observability | Assert Loki has ready replicas"
+      ansible.builtin.assert:
+        that:
+          - _obs_loki_sts.resources | length > 0
+          - (_obs_loki_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
+        fail_msg: "Loki StatefulSet has no ready replicas"
+        success_msg: "Loki ready ({{ _obs_loki_sts.resources[0].status.readyReplicas | default(0) }} replicas)"
 
-# ── Tempo ─────────────────────────────────────────────────────────────────────
+    # ── Tempo ─────────────────────────────────────────────────────────────────────
 
-- name: "observability | Check Tempo release"
-  kubernetes.core.helm_info:
-    name: tempo
-    release_namespace: "{{ observability_namespace }}"
-  register: _obs_tempo_release
+    - name: "observability | Check Tempo release"
+      kubernetes.core.helm_info:
+        name: tempo
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_tempo_release
 
-- name: "observability | Assert Tempo is installed"
-  ansible.builtin.assert:
-    that: _obs_tempo_release.status is defined
-    fail_msg: "Tempo is not installed in {{ observability_namespace }}"
-    success_msg: "Tempo release found"
+    - name: "observability | Assert Tempo is installed"
+      ansible.builtin.assert:
+        that: _obs_tempo_release.status is defined
+        fail_msg: "Tempo is not installed in {{ observability_namespace }}"
+        success_msg: "Tempo release found"
 
-- name: "observability | Check Tempo StatefulSet"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: StatefulSet
-    name: tempo
-    namespace: "{{ observability_namespace }}"
-  register: _obs_tempo_sts
+    - name: "observability | Check Tempo StatefulSet"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: StatefulSet
+        name: tempo
+        namespace: "{{ observability_namespace }}"
+      register: _obs_tempo_sts
 
-- name: "observability | Assert Tempo is ready"
-  ansible.builtin.assert:
-    that:
-      - _obs_tempo_sts.resources | length > 0
-      - (_obs_tempo_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
-    fail_msg: "Tempo StatefulSet has no ready replicas"
-    success_msg: "Tempo ready ({{ _obs_tempo_sts.resources[0].status.readyReplicas | default(0) }} replicas)"
+    - name: "observability | Assert Tempo is ready"
+      ansible.builtin.assert:
+        that:
+          - _obs_tempo_sts.resources | length > 0
+          - (_obs_tempo_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
+        fail_msg: "Tempo StatefulSet has no ready replicas"
+        success_msg: "Tempo ready ({{ _obs_tempo_sts.resources[0].status.readyReplicas | default(0) }} replicas)"
 
-# ── OTel Collector ────────────────────────────────────────────────────────────
+    # ── OTel Collector ────────────────────────────────────────────────────────────
 
-- name: "observability | Check OTel Collector release"
-  kubernetes.core.helm_info:
-    name: opentelemetry-collector
-    release_namespace: "{{ observability_namespace }}"
-  register: _obs_otel_release
+    - name: "observability | Check OTel Collector release"
+      kubernetes.core.helm_info:
+        name: opentelemetry-collector
+        release_namespace: "{{ observability_namespace }}"
+      register: _obs_otel_release
 
-- name: "observability | Assert OTel Collector is installed"
-  ansible.builtin.assert:
-    that: _obs_otel_release.status is defined
-    fail_msg: "OpenTelemetry Collector is not installed in {{ observability_namespace }}"
-    success_msg: "OpenTelemetry Collector release found"
+    - name: "observability | Assert OTel Collector is installed"
+      ansible.builtin.assert:
+        that: _obs_otel_release.status is defined
+        fail_msg: "OpenTelemetry Collector is not installed in {{ observability_namespace }}"
+        success_msg: "OpenTelemetry Collector release found"
 
-- name: "observability | Check OTel Collector DaemonSet"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: DaemonSet
-    name: opentelemetry-collector-agent
-    namespace: "{{ observability_namespace }}"
-  register: _obs_otel_ds
+    - name: "observability | Check OTel Collector DaemonSet"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: opentelemetry-collector-agent
+        namespace: "{{ observability_namespace }}"
+      register: _obs_otel_ds
 
-- name: "observability | Assert OTel Collector is running on all nodes"
-  ansible.builtin.assert:
-    that:
-      - _obs_otel_ds.resources | length > 0
-      - (_obs_otel_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
-      - (_obs_otel_ds.resources[0].status.numberReady | default(0) | int) == (_obs_otel_ds.resources[0].status.desiredNumberScheduled | int)
-    fail_msg: "OTel Collector DaemonSet not fully ready"
-    success_msg: "OTel Collector running on all {{ _obs_otel_ds.resources[0].status.numberReady }} nodes"
+    - name: "observability | Assert OTel Collector is running on all nodes"
+      ansible.builtin.assert:
+        that:
+          - _obs_otel_ds.resources | length > 0
+          - (_obs_otel_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+          - (_obs_otel_ds.resources[0].status.numberReady | default(0) | int) == (_obs_otel_ds.resources[0].status.desiredNumberScheduled | int)
+        fail_msg: "OTel Collector DaemonSet not fully ready"
+        success_msg: "OTel Collector running on all {{ _obs_otel_ds.resources[0].status.numberReady }} nodes"
 
-- name: "observability | Validation passed"
-  ansible.builtin.debug:
-    msg: >-
-      Observability stack validation passed.
-      Grafana: {{ observability_grafana_url }}
-      All components healthy in namespace '{{ observability_namespace }}'.
+    - name: "observability | Validation passed"
+      ansible.builtin.debug:
+        msg: >-
+          Observability stack validation passed.
+          Grafana: {{ observability_grafana_url }}
+          All components healthy in namespace '{{ observability_namespace }}'.
+
+- name: "observability | The OperatorHub stack"
+  when: _observability_from_olm | bool
+  block:
+    - name: "observability | olm | Check the instances"
+      kubernetes.core.k8s_info:
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ observability_namespace }}"
+      register: _obs_os_instances
+      loop:
+        - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki, condition: Ready}
+        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready}
+        - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo, condition: Ready}
+        - {api_version: apps/v1, kind: Deployment, name: opentelemetry-collector, condition: Available}
+        - {api_version: apps/v1, kind: Deployment, name: "{{ observability_openshift_grafana_name }}-deployment", condition: Available}
+      loop_control:
+        label: "{{ item.kind }} {{ item.name }}"
+
+    - name: "observability | olm | Assert the instances are ready"
+      ansible.builtin.assert:
+        that:
+          - item.resources | length > 0
+          - >-
+            ((item.resources | first).status | default({})).conditions | default([])
+            | selectattr('type', 'equalto', item.item.condition) | selectattr('status', 'equalto', 'True') | list | length > 0
+        fail_msg: "{{ item.item.kind }} {{ observability_namespace }}/{{ item.item.name }} is not {{ item.item.condition }}"
+        success_msg: "{{ item.item.kind }} {{ item.item.name }} {{ item.item.condition }}"
+      loop: "{{ _obs_os_instances.results }}"
+      loop_control:
+        label: "{{ item.item.kind }} {{ item.item.name }}"
+
+    - name: "observability | olm | Check the Grafana datasources"
+      kubernetes.core.k8s_info:
+        api_version: grafana.integreatly.org/v1beta1
+        kind: GrafanaDatasource
+        namespace: "{{ observability_namespace }}"
+      register: _obs_os_datasources
+
+    - name: "observability | olm | Assert the datasources are synced to Grafana"
+      ansible.builtin.assert:
+        that: _obs_os_synced | sort == ['loki', 'prometheus', 'tempo']
+        fail_msg: "Datasources synced to Grafana: {{ _obs_os_synced | join(', ') or 'none' }}; expected loki, prometheus, tempo"
+        success_msg: "Datasources synced: {{ _obs_os_synced | join(', ') }}"
+      vars:
+        _obs_os_synced: >-
+          {%- set names = [] -%}
+          {%- for ds in _obs_os_datasources.resources -%}
+            {%- if (ds.status | default({})).conditions | default([])
+                   | selectattr('type', 'equalto', 'DatasourceSynchronized') | selectattr('status', 'equalto', 'True') | list -%}
+              {%- set _ = names.append(ds.metadata.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ names }}
