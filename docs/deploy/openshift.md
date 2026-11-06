@@ -114,6 +114,8 @@ Required by OpenShift AI's llm-d serving path (`LLMInferenceService`). Create th
 
 ### 10. Red Hat Connectivity Link
 
+OLM installs its dependencies, `authorino-operator`, `dns-operator` and `limitador-operator`, into the same namespace (`kuadrant-system` in the tested setup); nothing to install for them.
+
 Create the `Kuadrant` instance **before** the DataScienceCluster. Without it the DataScienceCluster reports `KserveLLMInferenceServiceDependencies=False`, and `LLMInferenceService`, which model-manager uses for every model, cannot be used.
 
 ```bash
@@ -147,6 +149,8 @@ OpenShift AI owns the KServe CRDs and controller. On OpenShift the installer nev
 
 ### 12. User-workload monitoring
 
+OpenShift's own monitoring (Prometheus, Alertmanager, Thanos Querier) covers only metrics. Logs, traces and Grafana need the five operators of steps 13–17 from the marketplace. With `observability_enabled: false` none of steps 12–17 is needed.
+
 Metrics come from the cluster's own monitoring: the installer creates only `ServiceMonitor`s, and Grafana reads them through Thanos Querier. Switch on user-workload monitoring and keep its data for 30 days, as on Kubernetes (`observability_prometheus_retention`):
 
 ```yaml
@@ -173,7 +177,17 @@ Without `enableUserWorkload: true` the `observability` component stops with a me
 
 ### 13–17. Logs, traces and Grafana
 
-Install the Loki, Logging, Tempo, OpenTelemetry and Grafana operators in all namespaces, each in its own namespace as the guides describe (the Grafana Operator goes into `openshift-operators`). Do **not** create a `LokiStack`, `ClusterLogForwarder`, `TempoMonolithic`, `OpenTelemetryCollector` or `Grafana`: the installer creates its own instances in `monitoring`, and leaves any the cluster already has alone. The Logging console plugin (the Cluster Observability Operator's `UIPlugin`) is not needed.
+Install the Loki, Logging, Tempo, OpenTelemetry and Grafana operators in all namespaces, each in its own namespace as the guides describe:
+
+| Operator | Package | Namespace |
+|---|---|---|
+| Loki Operator | `loki-operator` | `openshift-operators-redhat` |
+| Red Hat OpenShift Logging | `cluster-logging` | `openshift-logging` |
+| Tempo Operator | `tempo-product` | `openshift-tempo-operator` |
+| Red Hat build of OpenTelemetry | `opentelemetry-product` | `openshift-opentelemetry-operator` |
+| Grafana Operator | `grafana-operator` (community-operators) | `openshift-operators` |
+
+Do **not** create a `LokiStack`, `ClusterLogForwarder`, `TempoMonolithic`, `OpenTelemetryCollector` or `Grafana`: the installer creates its own instances in `monitoring`, and leaves any the cluster already has alone. The Logging console plugin (the Cluster Observability Operator's `UIPlugin`) is not needed.
 
 ```bash
 oc get csv -A | grep -E 'loki|cluster-logging|tempo|opentelemetry|grafana'   # all Succeeded
@@ -294,6 +308,7 @@ The admin password is in the `grafana-admin-credentials` Secret, as on Kubernete
 On OpenShift, `install` and `validate` check the [Prerequisites](#prerequisites) before the first component runs. They check only what the plan needs:
 
 - The platform layer needs the default StorageClass, cert-manager, Service Mesh 3, Gateway API, CloudNativePG, NFD, and the Red Hat build of Keycloak when `auth_type: jwt`.
+- With `observability_enabled: true` (the default), the platform layer also needs user-workload monitoring and the Loki, Logging, Tempo, OpenTelemetry and Grafana operators.
 - The inference layer adds LeaderWorkerSet, Connectivity Link and OpenShift AI.
 
 | What | Passes when |
@@ -301,7 +316,7 @@ On OpenShift, `install` and `validate` check the [Prerequisites](#prerequisites)
 | OpenShift | `ClusterVersion` is at least the tested 4.22 |
 | Operator | its Subscription (or OLM v1 `ClusterExtension`) has an installed CSV that is `Succeeded`, at least the tested version, and in the required namespace (`keycloak` for RHBK) |
 | APIs | the cluster serves the operator's group/versions, for example `gateway.networking.k8s.io/v1` |
-| Instances | `Istio`/`IstioCNI`/`ZTunnel` `default` Ready, a `NodeFeatureDiscovery` Available, `LeaderWorkerSetOperator` `cluster` Available, a `Kuadrant` Ready, and a `DataScienceCluster` with phase `Ready`, KServe `Managed` and `KserveLLMInferenceServiceDependencies=True` |
+| Instances | `Istio`/`IstioCNI`/`ZTunnel` `default` Ready, a `NodeFeatureDiscovery` Available, `LeaderWorkerSetOperator` `cluster` Available, a `Kuadrant` Ready, a `DataScienceCluster` with phase `Ready`, KServe `Managed` and `KserveLLMInferenceServiceDependencies=True`, and the `user-workload` `Prometheus` Available (it exists only with `enableUserWorkload: true`) |
 | Storage | exactly one default StorageClass, or the `storage_custom_storageclass` exists when `storage_backend: custom` |
 
 Preflight prints one line per requirement, then stops with every requirement that failed, the reason, and the step to follow:

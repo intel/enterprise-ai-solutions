@@ -153,3 +153,68 @@ openshift_prerequisites:
         kind: DataScienceCluster
         fields: {status.phase: Ready, spec.components.kserve.managementState: Managed}
         conditions: {KserveLLMInferenceServiceDependencies: "True"}
+
+  # Observability (steps 12–17). The observability role checks the same CRDs itself,
+  # but only when the component runs; here a missing operator stops the run before it starts.
+  - name: user_workload_monitoring
+    title: User-workload monitoring
+    doc: "#12-user-workload-monitoring"
+    layers: [platform]
+    when: "{{ observability_enabled | default(true) | bool }}"
+    # The Prometheus exists only with enableUserWorkload: true in cluster-monitoring-config.
+    instances:
+      - api_version: monitoring.coreos.com/v1
+        kind: Prometheus
+        name: user-workload
+        namespace: openshift-user-workload-monitoring
+        conditions: {Available: "True"}
+
+  - name: loki
+    title: Loki Operator
+    doc: "#1317-logs-traces-and-grafana"
+    layers: [platform]
+    when: "{{ observability_enabled | default(true) | bool }}"
+    package: loki-operator
+    channel: stable-6.6
+    version: "6.6.1"
+    apis: [loki.grafana.com/v1]
+
+  - name: logging
+    title: Red Hat OpenShift Logging
+    doc: "#1317-logs-traces-and-grafana"
+    layers: [platform]
+    when: "{{ observability_enabled | default(true) | bool }}"
+    package: cluster-logging
+    channel: stable-6.6
+    version: "6.6.1"
+    apis: [observability.openshift.io/v1]
+
+  - name: tempo
+    title: Tempo Operator
+    doc: "#1317-logs-traces-and-grafana"
+    layers: [platform]
+    when: "{{ observability_enabled | default(true) | bool }}"
+    package: tempo-product
+    channel: stable
+    version: "0.22.0-3"
+    apis: [tempo.grafana.com/v1alpha1]
+
+  - name: opentelemetry
+    title: Red Hat build of OpenTelemetry
+    doc: "#1317-logs-traces-and-grafana"
+    layers: [platform]
+    when: "{{ observability_enabled | default(true) | bool }}"
+    package: opentelemetry-product
+    channel: stable
+    version: "0.158.0"
+    apis: [opentelemetry.io/v1beta1]
+
+  - name: grafana
+    title: Grafana Operator
+    doc: "#1317-logs-traces-and-grafana"
+    layers: [platform]
+    when: "{{ observability_enabled | default(true) | bool }}"
+    package: grafana-operator
+    channel: v5
+    version: "5.25.0"
+    apis: [grafana.integreatly.org/v1beta1]
