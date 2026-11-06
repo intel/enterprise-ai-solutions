@@ -1080,6 +1080,13 @@ def _gen_flags_env(ctx):
     return "\n".join(lines) + "\n"
 
 
+# A dual-homed Clos node's route to the other NIC's subnet, via this NIC's leaf, has
+# the same prefix as that NIC's connected route. Without a higher metric the kernel
+# picks whichever was added first, and can send traffic for a directly connected
+# leaf through the other leaf (DCAIDSE8-2525). With it, the route is only a backup.
+CROSS_LEAF_BACKUP_METRIC = 200
+
+
 def _gen_netplan_files(ctx):
     c = ctx
     all_nodes = c["all_nodes"]
@@ -1117,10 +1124,16 @@ def _gen_netplan_files(ctx):
                         if (other_leaf["name"] != leaf_name
                                 and other_leaf.get("fabric_subnet", "TBD")
                                 != "TBD"):
-                            routes.append({
+                            route = {
                                 "to": other_leaf["fabric_subnet"],
                                 "via": gateway,
-                            })
+                            }
+                            subnet = ipaddress.ip_network(
+                                other_leaf["fabric_subnet"], strict=False)
+                            if any(ipaddress.ip_address(other["fabric_ip"]) in subnet
+                                   for other in nics if other is not fn):
+                                route["metric"] = CROSS_LEAF_BACKUP_METRIC
+                            routes.append(route)
 
             iface_cfg = {
                 "addresses": [
@@ -1147,7 +1160,9 @@ def _gen_netplan_files(ctx):
             }
             if "routes" in cfg:
                 entry["routes"] = [
-                    {"to": r["to"], "via": r["via"]} for r in cfg["routes"]]
+                    {"to": r["to"], "via": r["via"],
+                     **({"metric": r["metric"]} if "metric" in r else {})}
+                    for r in cfg["routes"]]
             netplan["network"]["ethernets"][nic] = entry
 
         content = (
