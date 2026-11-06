@@ -229,7 +229,9 @@ Set via `auth_provider`. Controls which authentication stack is deployed and how
 | `keycloak` (default) | Keycloak + keycloak_config | Envoy Gateway validates JWT → KServe predictor | Production SSO, RBAC, per-user tokens |
 | `litellm` | LiteLLM + Langfuse + Valkey (Keycloak **not** deployed) | Envoy Gateway extAuth → LiteLLM `/key/verify` → KServe | Multi-tenant, per-key budgets, simpler setup |
 
-Switching `auth_provider` changes which components deploy and how the gateway `SecurityPolicy` is configured. It is best set before the first install.
+`init agent-toolkit` sets `litellm` when it creates `global_config.yaml`; every other `init` keeps the `keycloak` default.
+
+Switching `auth_provider` changes which components deploy and how the gateway `SecurityPolicy` is configured; a re-run of `install` after switching between `keycloak` and `litellm` drops the previous mode's auth section from the policy. Components of the previous mode stay installed: after a switch to `keycloak`, remove LiteLLM and Langfuse with `./es_auto_installer.sh teardown litellm -- -e litellm_enabled=true`. In LiteLLM mode Keycloak is off unless `keycloak_enabled: true`.
 
 ---
 
@@ -390,6 +392,39 @@ existing_kubernetes: "/absolute/path/to/kubeconfig"   # skips all Kubespray phas
 
 ---
 
+## Kata Containers
+
+Opt-in microVM runtime for the Agent Sandbox of the Intel® Agent Toolkit: each
+sandbox runs as a microVM with its own guest kernel instead of a pod sharing
+the host kernel. Set the two Kata switches in `env/<name>/global_config.yaml`,
+where `init` seeds them (a value there wins over `config.agent-toolkit.yaml`).
+
+| Setting | Default | Description |
+|---|---|---|
+| `kata_containers_enabled` | `false` | Install Kata Containers (the `kata_containers` infrastructure component) with the upstream kata-deploy chart |
+| `kata_runtime` | `kata-fc` | `kata-fc` (Firecracker) \| `kata-qemu` \| `both`: which RuntimeClasses kata-deploy creates |
+| `kubernetes_registry_enabled` | `false` | Kubespray's in-cluster image registry (`kube-system`, ClusterIP, port 5000). `config.agent-toolkit.yaml` turns it on; it applies only when Kubespray provisions the cluster, so run `init agent-toolkit` before the first install |
+
+Before anything is installed, every node in the inventory is checked and
+prepared:
+
+- `/dev/kvm` (Intel VT-x on bare metal, or nested virtualisation on a VM) and
+  `/dev/vhost-vsock`. The installer loads `kvm_intel` and `vhost_vsock` itself.
+- `kata-fc` and `both` also need containerd's devmapper snapshotter: the
+  installer creates a sparse loopback thin-pool under
+  `/var/lib/containerd/devmapper` and registers it in the containerd config. On
+  CPUs with AMX, Firecracker needs a kernel 5.17 or later.
+
+A missing prerequisite stops the install with its cause and every node's
+preflight result. Nodes without `/dev/kvm` are left out as long as one node has
+it. Kata is not supported on a BYO cluster (`existing_kubernetes`): the host
+preparation runs over SSH on the inventory nodes, so the install stops there.
+Teardown removes the kata-deploy release and the node label; the thin-pool
+unit, the containerd config entry and the `vhost_vsock` module entry stay on
+the nodes.
+
+---
+
 ## Version pinning
 
 Component versions are set in `global_config.yaml` and can be overridden at runtime:
@@ -409,6 +444,7 @@ In addition to `global_config.yaml`, each solution layer has its own configurati
 
 - **`env/<name>/config.inference.yaml`** — seeded by `init inference` from the inference repo's `config.yaml`
 - **`env/<name>/config.erag.yaml`** — seeded by `init erag` from the chosen flavour's `config.yaml` (default: `chatqna`)
+- **`env/<name>/config.agent-toolkit.yaml`** — seeded by `init agent-toolkit` from the agent toolkit repo's `config.yaml`
 
 These files are **flat** override surfaces loaded via `-e @file`, so nested dicts clobber role defaults rather than merging. The installer loads them in manifest order (dependencies first), then loads `global_config.yaml`, so `global_config.yaml` wins over layer configs. This lets you set solution-specific defaults in your layer config and override them globally when needed.
 

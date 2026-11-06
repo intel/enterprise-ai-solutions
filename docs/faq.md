@@ -30,7 +30,7 @@ No. Inference runs on Intel® Xeon® CPUs, with NUMA-aware CPU pinning and vLLM 
 
 ### Which targets can I pass to `init`?
 
-`inference` and `erag`. Those are the layers with a repository manifest. Other layers and single components are valid targets for `install`, `teardown`, and `validate`, but not for `init`.
+`inference`, `erag`, and `agent-toolkit`. Those are the layers with a repository manifest. Other layers and single components are valid targets for `install`, `teardown`, and `validate`, but not for `init`.
 
 ### How long does a full install take?
 
@@ -111,6 +111,10 @@ Yes, a Hugging Face token exported as `HF_TOKEN` before deploying. Llama, Mistra
 ### How do I call the model once it is running?
 
 Any OpenAI-compatible client, with a Bearer token. With `keycloak`, source the token helper script to get a JWT and the gateway address; with `litellm`, use a virtual key. See [Integration Guide](customize/integration.md).
+
+### I installed agent-toolkit. Which model does it serve, and where is LiteLLM?
+
+The Intel® Agent Toolkit deploys one default model on install, `qwen2-5-coder-14b`, set by `llm_services_autodeploy_models` in `env/<name>/config.agent-toolkit.yaml`; set it to `[]` to skip it, and deploy others with `./model-manager deploy <name>`. LiteLLM belongs to the inference layer and is deployed when `auth_provider: litellm` is set in `env/<name>/global_config.yaml`. `init agent-toolkit` sets it when it creates that file, so a new agent-toolkit env serves the models on `litellm.<domain>` with virtual keys and `./model-manager deploy` registers them there. An env whose `global_config.yaml` already existed keeps its value. For Keycloak JWTs on the inference endpoint instead, set `auth_provider: keycloak` there and re-run `install agent-toolkit`, which includes the inference layer. See [Access the model](deploy/deploy_models.md#access-the-model).
 
 ### Can I serve more than one model at a time?
 

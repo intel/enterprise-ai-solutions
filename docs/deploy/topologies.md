@@ -121,6 +121,7 @@ all:
   vars:
     ansible_user: ubuntu
     ansible_ssh_private_key_file: ~/.ssh/cluster_key
+    ansible_connection: ssh   # node-level steps run over SSH, not on the installer machine
 ```
 
 **Behind a jump host?** Add to the `vars` block:

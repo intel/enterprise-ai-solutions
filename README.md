@@ -27,7 +27,7 @@ The end result: teams get a secured, load-balanced stack where they can immediat
 
 ## Architecture
 
-The stack installs in four ordered layers, in the order they are deployed:
+The stack installs in four ordered layers, in the order they are deployed. Layer 4 is opt-in: RAG, the Agent Toolkit, or both:
 
 | # | Layer | Components | Source | Documentation |
 | --- | --- | --- | --- | --- |

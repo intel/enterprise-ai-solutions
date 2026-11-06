@@ -377,6 +377,17 @@
     label: "{{ item.target_namespace | default(item.name) }}"
   when: istio_enabled | default(false) | bool
 
+- name: "postgresql | Read consumer namespaces"
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ item.target_namespace | default(item.name) }}"
+  register: _pg_consumer_ns
+  when: enforce_pss | default(false) | bool
+  loop: "{{ postgresql_databases | default([]) }}"
+  loop_control:
+    label: "{{ item.target_namespace | default(item.name) }}"
+
+# Only namespaces without a level: a consumer sets its own (LiteLLM needs baseline) and re-runs must keep it
 - name: "postgresql | Label consumer namespaces — PSS"
   kubernetes.core.k8s:
     state: present
@@ -384,15 +395,17 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ item.target_namespace | default(item.name) }}"
+        name: "{{ item.item.target_namespace | default(item.item.name) }}"
         labels:
           pod-security.kubernetes.io/enforce: "restricted"
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
-  when: enforce_pss | default(false) | bool
-  loop: "{{ postgresql_databases | default([]) }}"
+  when:
+    - enforce_pss | default(false) | bool
+    - "'pod-security.kubernetes.io/enforce' not in ((item.resources | default([]) | first | default({})).metadata.labels | default({}))"
+  loop: "{{ _pg_consumer_ns.results | default([]) }}"
   loop_control:
-    label: "{{ item.target_namespace | default(item.name) }}"
+    label: "{{ item.item.target_namespace | default(item.item.name) }}"
 
 - name: "postgresql | Read per-database passwords"
   kubernetes.core.k8s_info:

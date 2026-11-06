@@ -66,6 +66,12 @@ repos:
 | `default_flavour` | no (`""`) | Flavour used when `--flavour` is omitted. |
 | `model_catalog` | no | Path **from the repo root** (not from `deployment_subdir`) to a `models.yaml` seeded into the env. |
 
+**Optional top-level `global_config:`** - a map of top-level `global_config.yaml` keys to plain
+values, for a layer whose new envs need a different environment-wide default.
+`repos.agent-toolkit.yaml` uses it for `auth_provider: "litellm"`. `init` applies it only when it
+creates `env/<env>/global_config.yaml`. An existing file is never changed; `init` names the keys
+that differ instead.
+
 **A manifest is self-contained.** List every repo the layer needs, including its
 dependencies, each pinned separately. That keeps versions correlated per layer: a layer is
 installed from exactly one manifest, so `rev:` there is that repo's version *for that
@@ -246,7 +252,9 @@ Later `-e` wins in Ansible. The installer builds them in this order:
 
 So **`global_config.yaml` overrides whatever your `config.<layer>.yaml` ships** - the
 operator's environment-wide settings win over your defaults. Put solution-specific defaults
-in your `config.yaml`, and expect anything an operator sets globally to take precedence.
+in your `config.yaml`, and expect anything an operator sets globally to take precedence. A key
+that `global_config.yaml` already sets (such as `auth_provider`) cannot be changed from your
+`config.yaml`; declare a new-env default for it in the manifest's `global_config:` (section 1).
 
 ---
 

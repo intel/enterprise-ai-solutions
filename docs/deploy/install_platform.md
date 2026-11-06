@@ -220,6 +220,7 @@ all:
   vars:
     ansible_user: ubuntu
     ansible_ssh_private_key_file: ~/.ssh/cluster_key
+    ansible_connection: ssh   # node-level steps run over SSH, not on the installer machine
 ```
 
 **What do the groups mean?**
@@ -259,6 +260,7 @@ all:
   vars:
     ansible_user: ubuntu
     ansible_ssh_private_key_file: ~/.ssh/cluster_key
+    ansible_connection: ssh   # node-level steps run over SSH, not on the installer machine
 ```
 
 **Example: 3 masters + 3 workers (production HA)**
@@ -307,6 +309,7 @@ all:
   vars:
     ansible_user: ubuntu
     ansible_ssh_private_key_file: ~/.ssh/cluster_key
+    ansible_connection: ssh   # node-level steps run over SSH, not on the installer machine
 ```
 
 #### B.3 — Install
@@ -392,6 +395,7 @@ all:
   vars:
     ansible_user: ubuntu
     ansible_ssh_private_key_file: ~/.ssh/cluster_key
+    ansible_connection: ssh   # node-level steps run over SSH, not on the installer machine
 ```
 
 **If there's another jump host between your bastion and the nodes**, add to the `vars` section:
@@ -400,6 +404,7 @@ all:
   vars:
     ansible_user: ubuntu
     ansible_ssh_private_key_file: ~/.ssh/cluster_key
+    ansible_connection: ssh   # node-level steps run over SSH, not on the installer machine
     ansible_ssh_common_args: '-o ProxyJump=jumpuser@10.0.0.5'
 ```
 
@@ -489,6 +494,7 @@ Already have a running cluster and want to add workers? Easy.
      vars:
        ansible_user: ubuntu
        ansible_ssh_private_key_file: ~/.ssh/cluster_key
+       ansible_connection: ssh   # node-level steps run over SSH, not on the installer machine
    ```
 
 3. Re-run the installer — it detects new nodes and adds them:

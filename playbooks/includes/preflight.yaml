@@ -362,3 +362,13 @@
       Action: {{ component_action }}
       Target: {{ target }}
       Components: {{ _active_components | map(attribute='name') | list | join(', ') }}
+
+# ── Agent Toolkit node readiness (envs inited for agent-toolkit only) ────────
+- name: "Preflight - Agent Toolkit node readiness"
+  ansible.builtin.include_tasks: agent_toolkit_preflight.yaml
+  when:
+    - (component_action | default('install')) == 'install'
+    - "'agent-toolkit' in (_env_layers | default('') | split(','))"
+    - not (_kubespray_skip_cluster_yml | default(false) | bool)
+    - _include_deps | default(true) | bool
+    - node_preflight_enabled | default(true) | bool

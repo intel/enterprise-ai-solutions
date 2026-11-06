@@ -1,0 +1,275 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# =============================================================================
+# Kata Containers — Install
+# =============================================================================
+
+# The preflight prepares the nodes over SSH, so they must be in the inventory.
+- name: "kata_containers | Fail when the cluster nodes are not in the inventory"
+  ansible.builtin.fail:
+    msg: >-
+      kata_containers_enabled is set, but this is
+      {{ 'an OpenShift cluster' if (cluster_distribution | default('kubernetes')) == 'openshift'
+         else 'a BYO cluster (existing_kubernetes)' }}. Kata host preparation (KVM
+      modules, the containerd devmapper thin-pool and snapshotter config) runs
+      over SSH on the cluster nodes listed in the inventory, and here the
+      inventory holds only the installer host, so it would change the wrong
+      machine. Set kata_containers_enabled: false for this environment, or
+      deploy Kata on a cluster this installer provisions.
+  when: >-
+    (existing_kubernetes | default('') | trim | length > 0) or
+    ((cluster_distribution | default('kubernetes')) == 'openshift')
+
+- name: "kata_containers | Fail on invalid kata_runtime value"
+  ansible.builtin.fail:
+    msg: >-
+      kata_runtime='{{ kata_runtime | default('') }}' is not valid
+      (expected kata-fc, kata-qemu or both). Fix it in the environment's
+      config and re-run.
+  when: kata_runtime | default('kata-fc') not in ['kata-fc', 'kata-qemu', 'both']
+
+- name: "kata_containers | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _kata_all_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | unique }}
+    _kata_node_results: {}
+
+- name: "kata_containers | Fail when the inventory lists no cluster nodes"
+  ansible.builtin.fail:
+    msg: >-
+      No hosts in the kube_control_plane or kube_node inventory groups, so no
+      node can be checked or prepared for Kata. Add the cluster nodes to the
+      inventory, or set kata_containers_enabled: false, then re-run.
+  when: _kata_all_nodes | length == 0
+
+- name: "kata_containers | Node preflight"
+  ansible.builtin.include_tasks: node_preflight.yaml
+  loop: "{{ _kata_all_nodes }}"
+  loop_control:
+    loop_var: kata_node
+
+- name: "kata_containers | Check Kubernetes cluster connectivity"
+  ansible.builtin.command: kubectl get nodes
+  register: k8s_nodes_check
+  changed_when: false
+
+- name: "kata_containers | Build eligible host lists from preflight facts"
+  ansible.builtin.set_fact:
+    kata_kvm_hosts: "{{ _kata_node_results | dict2items | selectattr('value.kvm_ok') | map(attribute='key') | list }}"
+    kata_devmapper_hosts: "{{ _kata_node_results | dict2items | selectattr('value.devmapper_ok') | map(attribute='key') | list }}"
+    _kata_preflight_summary: "{{ _kata_node_results | dict2items | map(attribute='value.summary') | list }}"
+
+- name: "kata_containers | Fail when no node has hardware virtualisation"
+  ansible.builtin.fail:
+    msg: |-
+      kata_containers_enabled is set but no cluster node exposes /dev/kvm.
+      Kata requires Intel VT-x on bare metal, or nested virtualisation on a VM.
+      Verify on a node with: ls -l /dev/kvm && grep -c vmx /proc/cpuinfo
+      Enable VT-x, or set kata_containers_enabled: false, then re-run.
+      Node preflight results:
+      {% for line in _kata_preflight_summary %}
+        {{ line }}
+      {% endfor %}
+  when: kata_kvm_hosts | length == 0
+
+- name: "kata_containers | Find KVM nodes that cannot boot a Kata microVM"
+  ansible.builtin.set_fact:
+    _kata_vsock_missing_hosts: >-
+      {{ _kata_node_results | dict2items
+         | selectattr('key', 'in', kata_kvm_hosts)
+         | rejectattr('value.vsock_ok')
+         | map(attribute='key') | list }}
+    _kata_fc_amx_blocked_hosts: >-
+      {{ (_kata_node_results | dict2items
+          | selectattr('key', 'in', kata_kvm_hosts)
+          | selectattr('value.fc_amx_blocked')
+          | map(attribute='key') | list)
+         if kata_runtime | default('kata-fc') in ['kata-fc', 'both'] else [] }}
+
+- name: "kata_containers | Fail when a node is missing vhost-vsock"
+  ansible.builtin.fail:
+    msg: |-
+      /dev/vhost-vsock is missing on: {{ _kata_vsock_missing_hosts | join(', ') }}
+      Kata needs vsock to reach the guest agent; sandboxes would time out on boot.
+      modprobe vhost_vsock failed on these nodes. Check with:
+        sudo modprobe vhost_vsock && ls -l /dev/vhost-vsock
+      Then re-run.
+      Node preflight results:
+      {% for line in _kata_preflight_summary %}
+        {{ line }}
+      {% endfor %}
+  when: _kata_vsock_missing_hosts | length > 0
+
+- name: "kata_containers | Fail when Firecracker cannot run on an AMX CPU with an old kernel"
+  ansible.builtin.fail:
+    msg: |-
+      kata-fc (Firecracker) cannot start microVMs on these AMX-capable nodes:
+      {% for h in _kata_fc_amx_blocked_hosts %}
+        {{ h }} (kernel {{ _kata_node_results[h].kernel }})
+      {% endfor %}
+      Firecracker enables AMX for the guest via arch_prctl(ARCH_REQ_XCOMP_GUEST_PERM),
+      which requires Linux >= 5.17. On older kernels it exits with:
+        'Failed to request permission for XSTATE feature (18): Invalid argument'
+      Fix: upgrade the kernel on each listed node (Ubuntu 22.04 -> HWE 6.8), then re-run:
+        sudo apt-get update && sudo apt-get install -y linux-generic-hwe-22.04
+        sudo reboot
+        uname -r    # after reboot, must be >= 5.17
+      Alternatives: set kata_runtime: kata-qemu, or remove these nodes from the inventory.
+      Node preflight results:
+      {% for line in _kata_preflight_summary %}
+        {{ line }}
+      {% endfor %}
+  when: _kata_fc_amx_blocked_hosts | length > 0
+
+- name: "kata_containers | Resolve which shims to enable"
+  ansible.builtin.set_fact:
+    kata_enable_fc: "{{ (kata_runtime | default('kata-fc') in ['kata-fc', 'both'] and kata_devmapper_hosts | length > 0) | bool }}"
+    kata_enable_qemu: "{{ (kata_runtime | default('kata-fc') in ['kata-qemu', 'both']) | bool }}"
+
+- name: "kata_containers | Fail when Firecracker was requested but devmapper is unavailable"
+  ansible.builtin.fail:
+    msg: |-
+      kata_runtime={{ kata_runtime }} needs Firecracker, but no node has containerd's
+      devmapper snapshotter in 'ok' state. Firecracker does not support overlayfs for
+      the rootfs, so kata-fc pods would fail with FailedCreatePodSandBox. The node
+      preflight sets up the thin-pool itself; check on a node:
+        systemctl status containerd-devmapper.service
+        ctr plugins ls | grep devmapper
+      Fix the thin-pool, or set kata_runtime: kata-qemu, then re-run.
+      Node preflight results:
+      {% for line in _kata_preflight_summary %}
+        {{ line }}
+      {% endfor %}
+  when:
+    - kata_runtime | default('kata-fc') in ['kata-fc', 'both']
+    - not kata_enable_fc
+
+- name: "kata_containers | Record the RuntimeClasses kata-deploy is expected to create"
+  ansible.builtin.set_fact:
+    kata_expected_runtime_classes: >-
+      {{ ([kata_fc_runtime_class] if kata_enable_fc else [])
+         + ([kata_qemu_runtime_class] if kata_enable_qemu else []) }}
+
+# Firecracker needs devmapper on the node itself: label only nodes that can run every enabled shim
+- name: "kata_containers | Select the nodes to label"
+  ansible.builtin.set_fact:
+    kata_label_hosts: "{{ (kata_kvm_hosts | intersect(kata_devmapper_hosts)) if kata_enable_fc else kata_kvm_hosts }}"
+
+- name: "kata_containers | Warn about KVM nodes left out (devmapper not ok, Firecracker on)"
+  ansible.builtin.debug:
+    msg: >-
+      Not labelled for Kata: {{ kata_kvm_hosts | difference(kata_label_hosts) | join(', ') }}.
+      Firecracker needs containerd's devmapper snapshotter on the node, and it is not ok there
+      (see the node preflight results); Kata pods are not scheduled on these nodes.
+      Fix the thin-pool and re-run, or set kata_runtime: kata-qemu.
+  when: kata_kvm_hosts | difference(kata_label_hosts) | length > 0
+
+- name: "kata_containers | Get node list from Kubernetes cluster"
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: k8s_nodes
+
+- name: "kata_containers | Label preflight-passing nodes with kata eligibility"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels: "{{ { kata_node_label_key: kata_node_label_value } }}"
+  loop: "{{ k8s_nodes.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: >
+    item.metadata.name in kata_label_hosts or
+    (item.metadata.labels['kubernetes.io/hostname'] | default('')) in kata_label_hosts or
+    (k8s_nodes.resources | length == 1 and kata_label_hosts | length > 0)
+
+# A node labelled on an earlier run whose devmapper is no longer ok must not keep the label
+- name: "kata_containers | Remove the kata label from nodes that no longer qualify"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels: "{{ { kata_node_label_key: none } }}"
+  loop: "{{ k8s_nodes.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: >
+    kata_node_label_key in (item.metadata.labels | default({})) and not (
+    item.metadata.name in kata_label_hosts or
+    (item.metadata.labels['kubernetes.io/hostname'] | default('')) in kata_label_hosts or
+    (k8s_nodes.resources | length == 1 and kata_label_hosts | length > 0))
+
+# helm upgrade --install cannot recover a failed first release
+- name: "kata_containers | Check for an existing kata-deploy release"
+  kubernetes.core.helm_info:
+    name: "{{ kata_release_name }}"
+    release_namespace: "{{ kata_namespace }}"
+  register: _kata_release
+  failed_when: false
+
+- name: "kata_containers | Remove a prior failed kata-deploy release"
+  kubernetes.core.helm:
+    name: "{{ kata_release_name }}"
+    release_namespace: "{{ kata_namespace }}"
+    state: absent
+  when: ((_kata_release.status | default({}, true)).status | default('') | lower) == 'failed'
+
+- name: "kata_containers | Install kata-deploy chart"
+  kubernetes.core.helm:
+    name: "{{ kata_release_name }}"
+    chart_ref: "{{ kata_chart_ref }}"
+    chart_version: "{{ kata_version }}"
+    release_namespace: "{{ kata_namespace }}"
+    # One values dict, so an unchanged release is not upgraded on every run
+    values: >-
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/values.yaml') | from_yaml
+         | combine({'nodeSelector': {kata_node_label_key: kata_node_label_value | string},
+                    'shims': {'fc': {'enabled': kata_enable_fc | bool},
+                              'qemu': {'enabled': kata_enable_qemu | bool}},
+                    'defaultShim': {'amd64': 'fc' if kata_enable_fc | bool else 'qemu'}},
+                   recursive=True) }}
+    wait: "{{ helm_wait }}"
+    timeout: "{{ kata_wait_timeout }}"
+  register: helm_install_result
+  until: helm_install_result is succeeded
+  retries: "{{ helm_retries }}"
+  delay: 15
+
+- name: "kata_containers | Wait for kata-deploy DaemonSet rollout"
+  ansible.builtin.command: >-
+    kubectl -n {{ kata_namespace }} rollout status daemonset/{{ kata_release_name }}
+    --timeout={{ kata_wait_timeout }}
+  changed_when: false
+
+- name: "kata_containers | Get RuntimeClasses created by kata-deploy"
+  kubernetes.core.k8s_info:
+    api_version: node.k8s.io/v1
+    kind: RuntimeClass
+  register: kata_runtime_classes
+
+- name: "kata_containers | Verify expected RuntimeClasses exist"
+  ansible.builtin.assert:
+    that: item in (kata_runtime_classes.resources | map(attribute='metadata.name') | list)
+    fail_msg: "RuntimeClass '{{ item }}' was not created by kata-deploy"
+  loop: "{{ kata_expected_runtime_classes }}"
+
+- name: "kata_containers | Deployment summary"
+  ansible.builtin.debug:
+    msg:
+      - "============================================================"
+      - "  Kata Containers deployed successfully!"
+      - "  Version       : {{ kata_version }}"
+      - "  Namespace     : {{ kata_namespace }}"
+      - "  Shims         : {{ ((['fc'] if kata_enable_fc else []) + (['qemu'] if kata_enable_qemu else [])) | join(', ') }}"
+      - "  RuntimeClasses: {{ kata_expected_runtime_classes | join(', ') }}"
+      - "  Kata nodes    : {{ kata_label_hosts | join(', ') }} (label {{ kata_node_label_key }}={{ kata_node_label_value }})"
+      - "  Sandbox template + warm pool: applied by agent_sandbox (agent-toolkit layer)"
+      - "  Verify        : kubectl get runtimeclass; kubectl get nodes -l {{ kata_node_label_key }}={{ kata_node_label_value }}"
+      - "============================================================"

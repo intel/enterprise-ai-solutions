@@ -423,11 +423,43 @@
 
 # ── SecurityPolicy (auth) ─────────────────────────────────────────────────────
 
+# An apply merges, so the auth section of the previous auth_provider (jwt or
+# extAuth) would stay on the live policy after a switch. It is nulled after the apply,
+# so the gateway is never left without auth.
+- name: "envoy_gateway | Read the current gateway SecurityPolicy"
+  kubernetes.core.k8s_info:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+  register: _eg_auth_live
+  when: auth_provider in ['keycloak', 'litellm'] and gateway_create
+
 - name: "envoy_gateway | Apply SecurityPolicy ({{ auth_provider }})"
   kubernetes.core.k8s:
     state: present
     definition: "{{ lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | list }}"
   when: auth_provider in ['keycloak', 'litellm'] and gateway_create
+
+- name: "envoy_gateway | Drop auth sections the policy no longer has"
+  vars:
+    _rendered: "{{ (lookup('ansible.builtin.template', 'security-policy.yaml.j2') | from_yaml_all | select | first).spec }}"
+    _stale: >-
+      {{ ((_eg_auth_live.resources | default([]) | first | default({})).spec | default({})).keys()
+         | difference(_rendered.keys()) | list }}
+  kubernetes.core.k8s:
+    state: patched
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: SecurityPolicy
+    name: gateway-auth
+    namespace: "{{ gateway_namespace }}"
+    merge_type: merge
+    definition:
+      spec: >-
+        {%- set out = {} -%}
+        {%- for k in _stale -%}{%- set _ = out.update({k: None}) -%}{%- endfor -%}
+        {{ out }}
+  when: auth_provider in ['keycloak', 'litellm'] and gateway_create and _stale | length > 0
 
 - name: "envoy_gateway | Apply no-auth SecurityPolicy overrides"
   kubernetes.core.k8s:

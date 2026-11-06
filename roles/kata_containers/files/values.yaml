@@ -1,0 +1,16 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# kata-deploy chart overrides; the role enables the shims selected by kata_runtime.
+
+deploymentMode: daemonset
+priorityClassName: system-node-critical
+
+runtimeClasses:
+  enabled: true
+  createDefault: false
+
+shims:
+  disableAll: true
+
+nodeSelector: {}
