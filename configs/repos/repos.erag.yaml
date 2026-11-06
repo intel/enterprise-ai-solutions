@@ -13,7 +13,7 @@ repos:
   - layer: "inference"
     url: "https://github.com/intel/enterprise-inference"
     dest: "enterprise.ai-inference"
-    rev: "5d92bef0e3a2bcfed9016746a87ddcc43f6a67fa" # v1.0.1
+    rev: "d035b1ef1981fbf5084ff05c9a337e620478bb87" # v1.1.0
     deployment_subdir: ""
     config_dir: ""
     default_flavour: ""
@@ -22,7 +22,7 @@ repos:
   - layer: "erag"
     url: "https://github.com/intel/enterprise-rag"
     dest: "enterprise.ai-erag"
-    rev: "25812cbbbadbf711af15b50b49d79e38c20c4190" # v3.0.0
+    rev: "209c738a1093d29ff054855fed566fcd214b0890" # v3.0.1
     deployment_subdir: "deployment"
     config_dir: "pipelines"
     default_flavour: "chatqna"
