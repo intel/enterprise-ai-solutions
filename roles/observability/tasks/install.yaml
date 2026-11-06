@@ -104,11 +104,23 @@
   register: _obs_nodes
   when: istio_enabled | default(false) | bool
 
+# Across nodes the apiserver's call leaves through the CNI tunnel, so Calico's tunnel
+# addresses are apiserver sources too.
 - name: "observability | Collect node internal IPs"
+  vars:
+    _obs_tunnel_annotations:
+      - projectcalico.org/IPv4VXLANTunnelAddr
+      - projectcalico.org/IPv4IPIPTunnelAddr
+      - projectcalico.org/IPv4WireguardInterfaceAddr
+      - projectcalico.org/IPv6VXLANTunnelAddr
+      - projectcalico.org/IPv6WireguardInterfaceAddr
   ansible.builtin.set_fact:
     _obs_node_ips: >-
-      {{ _obs_nodes.resources | map(attribute='status.addresses') | flatten
-         | selectattr('type', 'eq', 'InternalIP') | map(attribute='address')
+      {{ ((_obs_nodes.resources | map(attribute='status.addresses') | flatten
+           | selectattr('type', 'eq', 'InternalIP') | map(attribute='address') | list)
+          + (_obs_nodes.resources | map(attribute='metadata.annotations', default={})
+             | map('dict2items') | flatten | selectattr('key', 'in', _obs_tunnel_annotations)
+             | map(attribute='value') | list))
          | unique | list }}
   when: istio_enabled | default(false) | bool
 
