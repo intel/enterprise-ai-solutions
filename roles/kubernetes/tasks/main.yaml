@@ -3,10 +3,11 @@
 ---
 # Canonical dispatcher (docs/reference/adding_solutions.md), the same in every
 # role but for the name. Nothing here differs by platform, so there is no
-# vars/<cluster_distribution>.yaml to load.
+# vars/<cluster_distribution>.yaml to load. kubernetes is also the only role
+# that handles add-node/remove-node (see filter_plugins/resolve_components.py).
 - name: "kubernetes | dispatch | Assert supported action"
   ansible.builtin.assert:
-    that: component_action | default('') in ['install', 'teardown', 'validate']
+    that: component_action | default('') in ['install', 'teardown', 'validate', 'add-node', 'remove-node']
     fail_msg: "kubernetes: unsupported component_action='{{ component_action | default('') }}'"
     quiet: true
 
