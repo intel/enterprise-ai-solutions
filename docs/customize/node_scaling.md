@@ -4,6 +4,8 @@
 
 Grow or shrink an already-provisioned cluster without a full teardown/reinstall, using Kubespray's own `scale.yml` and `remove-node.yml` playbooks.
 
+> **Note:** ADVANCED OPERATION: PROCEED ONLY IF YOU KNOW WHAT YOU'RE DOING — always run with `--dry-run` first.
+
 ## Overview
 
 Two CLI actions, both driven entirely from `env/<name>/nodes.yaml` — neither takes a node name on the command line:

@@ -95,17 +95,27 @@ ok()   { echo -e "${GRN}$*${RST}"; }
 # Box banner for the final milestone. Each arg is one line; the box widens to
 # the longest. Padding uses ${#l}, so keep the content ASCII — a multibyte glyph
 # (em dash, emoji) counts as >1 under LC_ALL=C and skews the right edge.
+# Green by default; set BANNER_CLR for the call (BANNER_CLR="$YEL" banner ...).
 banner() {
     local -a lines=("$@")
-    local w=0 l pad bar="" i
+    local w=0 l pad bar="" i c="${BANNER_CLR:-$GRN}"
     for l in "${lines[@]}"; do (( ${#l} > w )) && w=${#l}; done
     for (( i = 0; i < w + 2; i++ )); do bar+='─'; done
-    printf '\n%s╭%s╮%s\n' "$GRN" "$bar" "$RST"
+    printf '\n%s╭%s╮%s\n' "$c" "$bar" "$RST"
     for l in "${lines[@]}"; do
         pad=$(( w - ${#l} ))
-        printf '%s│%s %s%*s %s│%s\n' "$GRN" "$RST" "$l" "$pad" "" "$GRN" "$RST"
+        printf '%s│%s %s%*s %s│%s\n' "$c" "$RST" "$l" "$pad" "" "$c" "$RST"
     done
-    printf '%s╰%s╯%s\n\n' "$GRN" "$bar" "$RST"
+    printf '%s╰%s╯%s\n\n' "$c" "$bar" "$RST"
+}
+
+# _advanced_op_banner — shown before the add-node/remove-node confirm prompt.
+# Both change a live cluster's membership; see docs/customize/node_scaling.md.
+_advanced_op_banner() {
+    BANNER_CLR="$YEL" banner \
+        "ADVANCED OPERATION: PROCEED ONLY IF YOU KNOW WHAT YOU'RE DOING" \
+        "${ACTION} changes the membership of a live cluster. Review the" \
+        "--dry-run output and docs/customize/node_scaling.md first."
 }
 _quiet() {
     if (( _LOG_LEVEL >= 1 )); then
@@ -1596,6 +1606,7 @@ do_add_node() {
             info "  would run: add-node post phase only (no scale.yml)"
             exit 0
         fi
+        _advanced_op_banner
         confirm "About to run the add-node post phase for: ${pending_csv//,/, }"
         run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${pending_csv}" \
             -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}" "${EXTRA_VARS[@]}"
@@ -1653,6 +1664,7 @@ ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or f
         exit 0
     fi
 
+    _advanced_op_banner
     confirm "About to run Kubespray scale.yml for: ${added_csv//,/, }"
     # Regenerate the inventory to INCLUDE the new node(s) before scale.yml runs
     # — it needs their connection details to reach and join them. _added_nodes
@@ -1800,6 +1812,7 @@ $(sed 's/^/  /' <<< "$sim_findings")
         exit 0
     fi
 
+    _advanced_op_banner
     confirm "$_confirm_msg"
     # Ensure kubespray only — the inventory is NOT regenerated here on purpose;
     # remove-node.yml needs the target node(s) still present in it to reach

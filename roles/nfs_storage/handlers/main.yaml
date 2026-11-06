@@ -1,0 +1,27 @@
+---
+# Notified by tasks/refresh_exports.yaml when /etc/exports changes, and
+# flushed right there (meta: flush_handlers). Handlers run in the order
+# listed here.
+
+# exportfs -ra only reloads the export table — it does not restart nfsd or
+# disrupt sessions already in progress, so this is safe to run against a
+# live cluster.
+- name: "nfs_storage | exports | Re-export all shares"
+  ansible.builtin.command: exportfs -ra
+  delegate_to: "{{ _nfs_target | trim }}"
+  become: true
+  changed_when: true
+  listen: nfs_storage exports changed
+
+- name: "nfs_storage | exports | Current exports"
+  ansible.builtin.command: exportfs -v
+  delegate_to: "{{ _nfs_target | trim }}"
+  become: true
+  changed_when: false
+  register: _nfs_verify_exports
+  listen: nfs_storage exports changed
+
+- name: "nfs_storage | exports | NFS exports"
+  ansible.builtin.debug:
+    msg: "{{ _nfs_verify_exports.stdout_lines }}"
+  listen: nfs_storage exports changed

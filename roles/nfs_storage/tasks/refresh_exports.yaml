@@ -128,28 +128,11 @@
     mode: "0644"
   delegate_to: "{{ _nfs_target | trim }}"
   become: true
-  register: _nfs_exports_changed
+  notify: nfs_storage exports changed
 
-# exportfs -ra only reloads the export table — it does not restart nfsd or
-# disrupt sessions already in progress, so this is safe to run against a
-# live cluster. Gated on the line actually changing so add-node/remove-node
-# runs that touch nothing here don't poke the NFS server for no reason.
-- name: "nfs_storage | exports | Re-export all shares"
-  ansible.builtin.command: exportfs -ra
-  delegate_to: "{{ _nfs_target | trim }}"
-  become: true
-  changed_when: true
-  when: _nfs_exports_changed.changed | bool
-
-- name: "nfs_storage | exports | Current exports"
-  ansible.builtin.command: exportfs -v
-  delegate_to: "{{ _nfs_target | trim }}"
-  become: true
-  changed_when: false
-  register: _nfs_verify_exports
-  when: _nfs_exports_changed.changed | bool
-
-- name: "nfs_storage | exports | NFS exports"
-  ansible.builtin.debug:
-    msg: "{{ _nfs_verify_exports.stdout_lines }}"
-  when: _nfs_exports_changed.changed | bool
+# Run the re-export handlers (handlers/main.yaml) now rather than at the end
+# of the play: install.yaml's smoke test, right after this file, needs the
+# export already live. Only fires when the line above actually changed, so
+# add-node/remove-node runs that touch nothing here don't poke the server.
+- name: "nfs_storage | exports | Apply export changes"
+  ansible.builtin.meta: flush_handlers

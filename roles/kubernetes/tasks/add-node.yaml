@@ -80,21 +80,22 @@
         _nfs_refresh_hosts_override: "{{ _added_nodes_list }}"
       when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
 
+    # Looked up by exact name (not filtered from the full node list), so
+    # there are no substring collisions between e.g. worker1/worker10.
     - name: "kubernetes | add-node | Wait for new node(s) to be Ready"
-      ansible.builtin.shell:
-        # Passing the names as `kubectl get nodes` arguments (not as a grep
-        # filter over the full node list) avoids substring collisions between
-        # node names such as worker1/worker10.
-        cmd: |
-          kubectl get nodes {{ _added_nodes_list | join(' ') }} --no-headers | grep -v ' Ready' | wc -l
-        executable: /bin/bash
-      environment:
-        KUBECONFIG: "{{ kubernetes_kubeconfig }}"
-      register: _k8s_new_not_ready_count
-      until: (_k8s_new_not_ready_count.stdout | trim | int) == 0
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ item }}"
+        kubeconfig: "{{ kubernetes_kubeconfig }}"
+      register: _k8s_new_node
+      until: >-
+        (_k8s_new_node.resources | default([]) | length) > 0
+        and (_k8s_new_node.resources[0].status.conditions | default([])
+             | selectattr('type', 'equalto', 'Ready')
+             | selectattr('status', 'equalto', 'True') | list | length) > 0
       retries: 30
       delay: 10
-      changed_when: false
+      loop: "{{ _added_nodes_list }}"
 
     # Without its own node.<NAME> CR, a new node's balloons agent runs on the
     # cluster `default` CR — sized for whichever node was most capable when
@@ -136,13 +137,17 @@
     # If anything earlier failed, the node keeps the taint — nothing lands on
     # it — and re-running add-node resumes from this post phase.
     - name: "kubernetes | add-node | Lift add-node pending taint"
-      ansible.builtin.command:
-        argv: [kubectl, taint, node, "{{ item }}", "{{ _add_node_pending_taint }}:NoSchedule-"]
-      environment:
-        KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+      kubernetes.core.k8s_taint:
+        state: absent
+        name: "{{ item }}"
+        taints:
+          - key: "{{ _add_node_pending_taint }}"
+            effect: NoSchedule
+        kubeconfig: "{{ kubernetes_kubeconfig }}"
       register: _add_node_untaint
-      changed_when: _add_node_untaint.rc == 0
-      failed_when: _add_node_untaint.rc != 0 and 'not found' not in _add_node_untaint.stderr
+      failed_when:
+        - _add_node_untaint.failed | default(false)
+        - "'not found' not in (_add_node_untaint.msg | default('') | lower)"
       loop: "{{ _added_nodes_list }}"
       when: _add_node_pending_taint | default('') | length > 0
 
