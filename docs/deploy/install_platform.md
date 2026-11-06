@@ -2,7 +2,7 @@
 
 [← Docs Index](../README.md)
 
-This guide walks you through installing Intel® AI for Enterprise Solutions on-premises, step by step, from bare metal to a running self-hosted AI stack. No Kubernetes experience needed.
+This guide walks you through installing Toolkit Manager on-premises, step by step, from bare metal to a running self-hosted AI stack. No Kubernetes experience needed.
 
 ---
 
@@ -13,8 +13,8 @@ The installer sets up these layers automatically, in dependency order:
 ```
 1. Infrastructure                — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
 2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability
-3. Inference                     — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
-4. Intel AI for Enterprise RAG   — opt-in RAG layer (vector DB, ingestion, chat, UI) — requires init erag + install erag
+3. Intel® Inference Toolkit     — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
+4. Intel® Chatbot Toolkit   — opt-in (vector DB, ingestion, chat, UI) — requires init erag + install erag
 ```
 
 You run **one command** and everything is installed.
@@ -984,9 +984,9 @@ source ./ext/enterprise.ai-inference/model_manager/scripts/get-keycloak-token.sh
 
 ---
 
-## Deploying Intel® AI for Enterprise RAG
+## Deploying Intel® Chatbot Toolkit
 
-Intel AI for Enterprise RAG adds document ingestion, vector search, RAG pipelines, and a web UI on top of the inference layer. It is opt-in and requires a separate initialization and installation.
+Intel® Chatbot Toolkit adds document ingestion, vector search, RAG pipelines, and a web UI on top of the inference layer. It is opt-in and requires a separate initialization and installation.
 
 **Quick path:**
 
@@ -995,9 +995,9 @@ Intel AI for Enterprise RAG adds document ingestion, vector search, RAG pipeline
 ./es_auto_installer.sh install erag --env <name>
 ```
 
-The `init erag` command clones the inference and Intel AI for Enterprise RAG repositories (dependencies first), seeds `env/<name>/config.erag.yaml` from the selected pipeline flavour (default: `chatqna`), and records the provisioned layer in `env/<name>/.solutions.yaml`. The `install erag` command automatically pulls all dependencies (infrastructure → platform → inference) if not already deployed, then installs the RAG application layer.
+The `init erag` command clones the inference and Intel® Chatbot Toolkit repositories (dependencies first), seeds `env/<name>/config.erag.yaml` from the selected pipeline flavour (default: `chatqna`), and records the provisioned layer in `env/<name>/.solutions.yaml`. The `install erag` command automatically pulls all dependencies (infrastructure → platform → inference) if not already deployed, then installs the RAG application layer.
 
-**See the full guide:** [Getting Started with RAG](../quickstart/getting_started_rag.md) covers prerequisites, flavour selection, per-layer install and teardown, configuration, and troubleshooting.
+**See the full guide:** [Getting Started with Intel® Chatbot Toolkit](../quickstart/getting_started_rag.md) covers prerequisites, flavour selection, per-layer install and teardown, configuration, and troubleshooting.
 
 ---
 

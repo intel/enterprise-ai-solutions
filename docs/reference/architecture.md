@@ -4,7 +4,7 @@
 
 ## Overview
 
-Intel® AI for Enterprise Solutions is a modular, extensible deployment framework for a self-hosted Kubernetes cluster, LLM inference serving stack, and opt-in applications — deployable on-premises, air-gapped, or in a private cloud.
+Toolkit Manager is a modular, extensible deployment framework for a self-hosted Kubernetes cluster, LLM inference serving stack, and opt-in applications — deployable on-premises, air-gapped, or in a private cloud.
 
 This repository provides:
 - **Infrastructure layer** - Kubernetes (via Kubespray), storage (local-path, NFS, Ceph or NetApp ONTAP via Trident)
@@ -24,7 +24,7 @@ External solution repositories (e.g., `enterprise-inference`, `enterprise-rag`) 
 
 ## Layer Architecture
 
-Intel® AI for Enterprise Solutions installs in four ordered layers, each depending on the one before it:
+Toolkit Manager installs in four ordered layers, each depending on the one before it:
 
 ```
 infrastructure  →  platform  →  inference  →  erag (opt-in)
@@ -57,7 +57,7 @@ infrastructure  →  platform  →  inference  →  erag (opt-in)
 
 ## Execution Flow
 
-A single `es_auto_installer.sh install` invocation is how Intel® AI for Enterprise Solutions resolves components and dispatches Ansible for every layer:
+A single `es_auto_installer.sh install` invocation is how Toolkit Manager resolves components and dispatches Ansible for every layer:
 
 ```
 ./es_auto_installer.sh install inference --env local
@@ -111,7 +111,7 @@ playbooks/site.yaml (universal dispatcher)
 │   ├─ role: llm_services         → tasks/install.yaml (runtimes + default models)
 │   └─ role: nri_cpu_balloons     → tasks/install.yaml (CPU pinning — only when cpu_policy=nri-balloons)
 │
-└─ [Intel AI for Enterprise RAG Layer] (opt-in, not included by `install inference`)
+└─ [Intel® Chatbot Toolkit] (opt-in, not included by `install inference`)
     └─ roles from ext/enterprise.ai-erag (15 components: app_inference_models, app_pre_install,
        app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats,
        app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher,
@@ -122,7 +122,7 @@ playbooks/site.yaml (universal dispatcher)
 
 ## Repository Structure
 
-Intel® AI for Enterprise Solutions spans this repository plus external solution repositories that plug into it.
+Toolkit Manager spans this repository plus external solution repositories that plug into it.
 
 ### enterprise-ai-solutions
 
@@ -280,7 +280,7 @@ enterprise-inference/
 
 ## Key Design Patterns
 
-These patterns are what let Intel® AI for Enterprise Solutions stay modular — new components, repos, and actions plug in without touching the dispatcher.
+These patterns are what let Toolkit Manager stay modular — new components, repos, and actions plug in without touching the dispatcher.
 
 ### Action Dispatch
 
@@ -300,7 +300,7 @@ This means adding a new action (e.g., `upgrade`) only requires adding CLI suppor
 
 ### Cross-Repo Role Discovery
 
-External repos are declared in per-layer manifests at `configs/repos/repos.<layer>.yaml` and cloned under `ext/<dest>/` on first run. For example, [`configs/repos/repos.erag.yaml`](../../configs/repos/repos.erag.yaml) declares both the inference and Intel® AI for Enterprise RAG repositories needed for that layer. Each entry may set `deployment_subdir` to locate the Ansible tree inside the repo:
+External repos are declared in per-layer manifests at `configs/repos/repos.<layer>.yaml` and cloned under `ext/<dest>/` on first run. For example, [`configs/repos/repos.erag.yaml`](../../configs/repos/repos.erag.yaml) declares both the inference and Intel® Chatbot Toolkit repositories needed for that layer. Each entry may set `deployment_subdir` to locate the Ansible tree inside the repo:
 
 ```yaml
 repos:
@@ -631,7 +631,7 @@ External repos live under `ext/<dest>/` and are cloned on first run based on per
 
 ## CLI Usage
 
-All Intel® AI for Enterprise Solutions commands run from the repository root:
+All Toolkit Manager commands run from the repository root:
 
 ```bash
 # One-time machine setup (installs Python 3.11+, yq)
@@ -640,10 +640,10 @@ All Intel® AI for Enterprise Solutions commands run from the repository root:
 # Create a new environment
 ./es_auto_installer.sh init inference
 
-# Create environment with the Intel AI for Enterprise RAG solution
+# Create environment with the Intel® Chatbot Toolkit solution
 ./es_auto_installer.sh init erag --env myenv
 
-# Create environment with a specific Intel AI for Enterprise RAG pipeline flavour
+# Create environment with a specific Intel® Chatbot Toolkit pipeline flavour
 ./es_auto_installer.sh init erag --flavour docsum
 
 # Show available layers and components
@@ -661,7 +661,7 @@ All Intel® AI for Enterprise Solutions commands run from the repository root:
 # Install a layer
 ./es_auto_installer.sh install platform --env local
 
-# Install opt-in Intel AI for Enterprise RAG layer
+# Install opt-in Intel® Chatbot Toolkit
 ./es_auto_installer.sh install erag --env myenv
 
 # Teardown everything (cluster included)
@@ -692,7 +692,7 @@ All Intel® AI for Enterprise Solutions commands run from the repository root:
 
 ## Version Updates
 
-Every Intel® AI for Enterprise Solutions component version is pinned in config, not hardcoded — to update one:
+Every Toolkit Manager component version is pinned in config, not hardcoded — to update one:
 
 1. Edit **one line** in `env/<name>/global_config.yaml`:
    ```yaml
@@ -713,7 +713,7 @@ Alternatively, override at runtime without editing files:
 
 ## Extensibility
 
-Intel® AI for Enterprise Solutions is designed to grow without changes to this repo — add roles, repos, models, runtimes, or actions using the patterns below.
+Toolkit Manager is designed to grow without changes to this repo — add roles, repos, models, runtimes, or actions using the patterns below.
 
 ### Adding a New Role
 
@@ -782,7 +782,7 @@ ext/enterprise.ai-inference/roles/llm_services/files/runtimes/my-runtime.yaml
 
 ## Safety Features
 
-Intel® AI for Enterprise Solutions builds these safeguards into every install and teardown run:
+Toolkit Manager builds these safeguards into every install and teardown run:
 
 | Feature | How |
 |---------|-----|
