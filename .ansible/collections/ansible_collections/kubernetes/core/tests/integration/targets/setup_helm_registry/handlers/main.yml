@@ -1,3 +1,0 @@
----
-- name: Teardown registry
-  include_tasks: teardown_registry.yml
