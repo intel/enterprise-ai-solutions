@@ -16,11 +16,14 @@ All `es_auto_installer.sh` and `model-manager` commands for Toolkit Manager run 
 
 ### `configure`
 
-One-time machine setup. Installs Python 3.11+, yq, kubectl, and helm into `/usr/local/bin`. Skips tools already present. Requires sudo. Run once per machine.
+One-time machine setup. Installs Python 3.11+, yq, kubectl, and helm into `/usr/local/bin`. Skips tools already present, except a kubectl older than the pinned version, which it replaces. Requires sudo. Run once per machine; `--force` skips the confirmation prompt for unattended runs.
 
 ```bash
 ./es_auto_installer.sh configure
+./es_auto_installer.sh configure --force   # no prompt, e.g. from a script or CI
 ```
+
+`kubectl` and `helm` are needed by `install`, and by any other action while a cluster is there. A teardown after the cluster is gone (for example rack-scale node steps after the Kubespray reset, which removes `/usr/local/bin/kubectl`) runs without them.
 
 ---
 
