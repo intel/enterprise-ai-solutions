@@ -13,7 +13,7 @@ repos:
   - layer: "inference"
     url: "https://github.com/intel/enterprise-inference"
     dest: "enterprise.ai-inference"
-    rev: "f519b3576f3f08440696848911ddaf29525b70e6" # release-1.1 (#53, LiteLLM v1.84.0)
+    rev: "d035b1ef1981fbf5084ff05c9a337e620478bb87" # release-1.1 
     deployment_subdir: ""
     config_dir: ""
     default_flavour: ""
@@ -22,7 +22,7 @@ repos:
   - layer: "agent-toolkit"
     url: "https://github.com/intel/enterprise-agent-toolkit"
     dest: "enterprise.agent-toolkit"
-    rev: "036b66234801e9bd950afd90830821859780d668" # release-2.0.0 (#19)
+    rev: "7b827e2d95cec826a20c7e3f5a30eb4818ed2992" # release-2.0.0 
     deployment_subdir: ""
     config_dir: ""
     default_flavour: ""
