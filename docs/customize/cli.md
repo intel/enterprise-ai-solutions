@@ -112,7 +112,7 @@ Remove components in reverse dependency order. Configuration files and environme
 ./es_auto_installer.sh teardown infrastructure --skip erag --env local
 ```
 
-After the Kubespray reset, the teardown also removes what reset leaves on each node: kube-proxy's nftables tables, the CNI's iptables chains and ipsets, containerd's config, the entries the stack added to `/etc/hosts`, and the volume data under `/opt/local-path-provisioner` (model weights, databases, metrics). To keep the volume data, for example to reuse downloaded model weights:
+After the Kubespray reset, the teardown also removes what reset leaves on each node: kube-proxy's nftables tables, the CNI's iptables chains and ipsets, containerd's config, the entries the stack added to `/etc/hosts` (a hostname line the teardown adds for sudo stays while the hostname needs it), and the volume data under `/opt/local-path-provisioner` (model weights, databases, metrics). To keep the volume data, for example to reuse downloaded model weights:
 
 ```bash
 ./es_auto_installer.sh teardown infrastructure --env local -- -e kubernetes_teardown_purge_volumes=false
