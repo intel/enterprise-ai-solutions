@@ -61,31 +61,6 @@
       loop_control:
         label: "{{ item }}"
 
-    - name: "kubernetes | SSH pre-flight | Check internet on cluster nodes"
-      ansible.builtin.uri:
-        url: https://github.com
-        method: GET
-        timeout: 10
-        status_code: [200, 301, 302]
-      delegate_to: "{{ item }}"
-      loop: "{{ groups['kube_control_plane'] | default([]) | union(groups['kube_node'] | default([])) | unique }}"
-      loop_control:
-        label: "{{ item }}"
-      environment:
-        http_proxy: "{{ http_proxy | default('') }}"
-        https_proxy: "{{ https_proxy | default('') }}"
-        no_proxy: "{{ no_proxy | default('') }}"
-      failed_when: false
-      register: _inet_results
-
-    - name: "kubernetes | SSH pre-flight | Report nodes without internet"
-      ansible.builtin.debug:
-        msg: "WARNING: {{ item.item }} cannot reach https://github.com — check proxy settings"
-      loop: "{{ _inet_results.results | default([]) }}"
-      loop_control:
-        label: "{{ item.item }}"
-      when: item.status | default(0) not in [200, 301, 302]
-
 # =====================================================================
 # PHASE: post-kubespray — kubeconfig + validation only
 # =====================================================================
@@ -183,6 +158,13 @@
     msg: "Kubernetes cluster already running. Skipping."
 
 # --- Install via Kubespray ---
+# --- Node preflight: read-only checks on every node before Kubespray runs ---
+- name: "kubernetes | Node preflight"
+  ansible.builtin.include_tasks: node_preflight.yaml
+  when:
+    - _k8s_existing.rc != 0
+    - kubernetes_node_preflight | bool
+
 - name: "kubernetes | Install via Kubespray"
   when: _k8s_existing.rc != 0
   block:
