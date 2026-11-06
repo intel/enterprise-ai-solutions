@@ -132,3 +132,19 @@ kubernetes_disable_swap: true
 kubernetes_disable_firewall: false
 kubernetes_load_kernel_modules: true
 kubernetes_registry_enabled: false
+
+# --- Node preflight (tasks/node_preflight.yaml) ---
+# Read-only checks on every cluster node before Kubespray runs, on a fresh
+# install only. The install stops once, listing every failed check. Turn one
+# check off by its ID (N1-N19, see filter_plugins/node_preflight.py), e.g. a
+# site with its own package mirror skips the internet check: [N8].
+kubernetes_node_preflight: true
+kubernetes_node_preflight_skip: []
+kubernetes_node_preflight_min_free_gib: 20       # under /var/lib/containerd: below this, stop
+kubernetes_node_preflight_warn_free_gib: 50      # ...and below this, warn
+kubernetes_node_preflight_max_used_pct: 90       # on / and /var/lib/containerd
+kubernetes_node_preflight_etcd_warn_free_gib: 10
+kubernetes_node_preflight_max_clock_skew_s: 60   # against the deploy node: stop
+kubernetes_node_preflight_warn_clock_skew_s: 5
+kubernetes_node_preflight_dns_names: [registry.k8s.io, github.com, quay.io, docker.io, ghcr.io]
+kubernetes_node_preflight_urls: ["https://github.com", "https://registry.k8s.io/v2/"]

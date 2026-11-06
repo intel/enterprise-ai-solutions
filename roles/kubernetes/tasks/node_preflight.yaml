@@ -1,0 +1,119 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Kubernetes — Node preflight (before Kubespray)
+# =============================================================================
+# Read-only checks on every cluster node before the Kubespray run, so a node
+# that would fail it halfway through stops the install now, named, with a fix:
+#   time sync and skew, disk, gateway, DNS, internet through the proxy, sudo,
+#   another cluster's config, ports held by other programs, package manager,
+#   plus warnings (our own leftovers, firewall, Xeon tuning) and a node summary.
+#   Rack-scale only: the OS release. Ceph only: the OSD disks.
+# Each node runs files/node_preflight_probe.py once; the rules are in
+# filter_plugins/node_preflight.py. Every node is checked before the install
+# stops, so one run lists every failure.
+# =============================================================================
+
+- name: "kubernetes | node preflight | Plan the checks"
+  vars:
+    _np_proxy_url: "{{ https_proxy | default('') or http_proxy | default('') }}"
+  ansible.builtin.set_fact:
+    # A fresh env's seeded inventory is a localhost placeholder, and on rack-scale
+    # fabric_inventory adds the real nodes next to it. Probe localhost only when
+    # it is the only node, so a deploy node outside the cluster is never checked.
+    _np_nodes: >-
+      {%- set n = ((groups['kube_control_plane'] | default([]))
+                   + (groups['kube_node'] | default([]))) | unique | list -%}
+      {{ (n | reject('equalto', 'localhost') | list) or ['localhost'] }}
+    _np_proxy_host: >-
+      {{ ((_np_proxy_url if '://' in _np_proxy_url else 'http://' ~ _np_proxy_url) | urlsplit('hostname'))
+         if _np_proxy_url | length > 0 else '' }}
+    _np_ceph: "{{ (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph' }}"
+    # Where this env's API server can be reached: a kubelet.conf pointing elsewhere
+    # belongs to another cluster. Kubespray's workers use a local proxy (localhost).
+    _np_api_hosts: >-
+      {%- set out = ['localhost', '127.0.0.1', '::1', 'lb-apiserver.kubernetes.local'] -%}
+      {%- for h in groups['kube_control_plane'] | default([]) -%}
+      {%- set _ = out.append(h) -%}
+      {%- for k in ['ip', 'access_ip', 'ansible_host', 'node_hostname'] if hostvars[h][k] is defined -%}
+      {%- set _ = out.append(hostvars[h][k] | string) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out | unique }}
+
+- name: "kubernetes | node preflight | Probe each node"
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/node_preflight_probe.py"
+    executable: python3
+  delegate_to: "{{ item }}"
+  become: true
+  vars:
+    _np_cp: "{{ item in groups['kube_control_plane'] | default([]) or item in groups['etcd'] | default([]) }}"
+    _np_spec:
+      controller_epoch: "{{ now().timestamp() }}"
+      etcd: "{{ item in groups['etcd'] | default([]) }}"
+      ports: >-
+        {{ ([6443, 2379, 2380, 10257, 10259] if _np_cp | bool else []) + [10250]
+           + ([179] if (rack_scale_calico_mode | default('')) == 'bgp' else []) }}
+      dns_names: "{{ ([_np_proxy_host] if _np_proxy_host | length > 0 else []) + kubernetes_node_preflight_dns_names }}"
+      urls: "{{ kubernetes_node_preflight_urls }}"
+      ceph_devices: >-
+        {{ ((rook_ceph_devices | default({})).get(item)
+            or (rook_ceph_devices | default({})).get(hostvars[item].node_hostname | default(item))
+            or []) if _np_ceph | bool else [] }}
+      skip: "{{ kubernetes_node_preflight_skip }}"
+  environment:
+    NODE_PREFLIGHT_SPEC: "{{ _np_spec | to_json }}"
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('') }}"
+    HTTP_PROXY: "{{ http_proxy | default('') }}"
+    HTTPS_PROXY: "{{ https_proxy | default('') }}"
+    NO_PROXY: "{{ no_proxy | default('') }}"
+  loop: "{{ _np_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _np_probe
+  changed_when: false
+  failed_when: false
+
+- name: "kubernetes | node preflight | Evaluate"
+  ansible.builtin.set_fact:
+    _np: >-
+      {{ _np_probe.results | node_preflight_evaluate({
+           'skip': kubernetes_node_preflight_skip,
+           'local': not (_k8s_needs_ssh | bool),
+           'rack_scale': rack_scale_enabled | default(false) | bool,
+           'ceph': _np_ceph | bool,
+           'proxy_host': _np_proxy_host,
+           'api_hosts': _np_api_hosts,
+           'min_free_gib': kubernetes_node_preflight_min_free_gib | int,
+           'warn_free_gib': kubernetes_node_preflight_warn_free_gib | int,
+           'max_used_pct': kubernetes_node_preflight_max_used_pct | int,
+           'etcd_warn_free_gib': kubernetes_node_preflight_etcd_warn_free_gib | int,
+           'max_skew_s': kubernetes_node_preflight_max_clock_skew_s | float,
+           'warn_skew_s': kubernetes_node_preflight_warn_clock_skew_s | float}) }}
+
+- name: "kubernetes | node preflight | Results"
+  ansible.builtin.debug:
+    msg: "{{ _np.table }}"
+
+- name: "kubernetes | node preflight | Save the results"
+  ansible.builtin.copy:
+    content: "{{ _np.rows | to_nice_json }}"
+    dest: "{{ log_dir | default((env_dir | default(playbook_dir)) ~ '/logs') }}/node-preflight-{{ now().strftime('%Y%m%d-%H%M%S') }}.json"
+    mode: "0644"
+  failed_when: false
+
+- name: "kubernetes | node preflight | Stop on failed checks"
+  ansible.builtin.fail:
+    msg: |-
+      Node preflight: {{ _np.failures | length }} check(s) failed; Kubespray did not start.
+      {% for r in _np.failures %}
+      - {{ r.node }}: {{ r.id }} {{ r.check }}: {{ r.evidence }}
+        Fix: {{ r.hint }}
+      {% endfor %}
+      Fix these and re-run. To skip a check, set kubernetes_node_preflight_skip (e.g. [{{ _np.failures | map(attribute='id') | unique | join(', ') }}]) in global_config.yaml.
+  when: _np.failures | length > 0
