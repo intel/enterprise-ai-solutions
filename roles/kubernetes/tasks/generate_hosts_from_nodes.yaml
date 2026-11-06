@@ -26,18 +26,35 @@
     # Catches a typo'd copy-paste entry (same ip or hostname reused across two
     # nodes) before it reaches Kubespray, where it would show up as a much
     # less obvious failure (or worse, silently join the wrong host twice).
-    - name: "kubernetes | nodes → inventory | Validate no duplicate hostname/ip"
+    # An identical entry under both nodes_control_plane and nodes_workers is
+    # allowed: that is how a control-plane node is also made a worker (common
+    # on small clusters). Identical entries are collapsed first, so only
+    # conflicting reuse (same hostname, different ip/ssh settings, or two
+    # hostnames on one ip) is left to fail here.
+    - name: "kubernetes | nodes → inventory | Validate no conflicting hostname/ip"
       vars:
-        _all_nodes: "{{ nodes_control_plane + (nodes_workers | default([])) }}"
+        _unique_nodes: "{{ (nodes_control_plane + (nodes_workers | default([]))) | unique }}"
+        _hostnames: "{{ _unique_nodes | map(attribute='hostname') | list }}"
+        _ips: "{{ _unique_nodes | map(attribute='ip') | list }}"
+        # Values used by more than one distinct entry, for the message below.
+        _conflicts: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for v in (_hostnames + _ips) | unique -%}
+          {%- if ((_hostnames + _ips) | select('equalto', v) | list | length) > 1 -%}
+          {%- set ns.out = ns.out + [v] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out | join(', ') }}
       ansible.builtin.assert:
         that:
-          - (_all_nodes | map(attribute='hostname') | list | length) == (_all_nodes | map(attribute='hostname') | unique | list | length)
-          - (_all_nodes | map(attribute='ip') | list | length) == (_all_nodes | map(attribute='ip') | unique | list | length)
+          - (_hostnames | length) == (_hostnames | unique | length)
+          - (_ips | length) == (_ips | unique | length)
         fail_msg: >-
-          Duplicate hostname or ip across nodes_control_plane/nodes_workers in nodes.yaml:
-          {{ _all_nodes | map(attribute='hostname') | list }} /
-          {{ _all_nodes | map(attribute='ip') | list }}
-          — each node must have a unique hostname and ip.
+          Conflicting node entries in nodes.yaml for: {{ _conflicts }}.
+          Each is used by more than one distinct entry across
+          nodes_control_plane/nodes_workers. A node listed under both must be
+          an identical entry in both; otherwise each node needs its own
+          hostname and ip.
 
     - name: "kubernetes | nodes → inventory | Set template vars"
       ansible.builtin.set_fact:

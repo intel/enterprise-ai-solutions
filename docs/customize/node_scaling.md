@@ -30,6 +30,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 |---|---|
 | Installer-managed cluster, no ERAG deployed | Yes |
 | Adding worker node(s) via `add-node` | Yes |
+| A control-plane node that is also a worker (an identical entry under both `nodes_control_plane` and `nodes_workers`) | Yes — `add-node`/`remove-node` treat it as control-plane: it is removed only by deleting it from both lists, and changing its role (worker on/off) needs `install kubernetes`, not either action |
 | Removing node(s) via `remove-node` (except the first control-plane/etcd host) | Yes |
 
 ## What's not supported
@@ -40,6 +41,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 | Adding control-plane/etcd node(s) via `add-node` | Kubespray's `scale.yml` cannot add control-plane/etcd members — use `install kubernetes` instead (re-runs `cluster.yml`) |
 | Removing the first control-plane/etcd node via `remove-node` | Kubespray refuses to remove it directly — reorder `nodes_control_plane` and re-run `install kubernetes` first |
 | Cluster with ERAG deployed | Both actions only ever touch the `kubernetes` component — ERAG's own Helm/pipeline config is never re-applied, so any node-specific placement it relies on isn't accounted for |
+| Hand-edited inventory (`env/<name>/inventory/hosts.yaml`, no `nodes.yaml`) | Both actions find their target node(s), SSH details and control-plane membership from `nodes.yaml`; without it they stop before doing anything. Convert the inventory to `nodes.yaml` first |
 
 
 ## Adding worker nodes
@@ -59,7 +61,13 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
    ./es_auto_installer.sh add-node --env <name>
    ```
 
-3. Behind the scenes: the inventory is regenerated from `nodes.yaml`, the new hostname(s) are diffed against the live cluster, the new node(s) go through a pre-flight (SSH reachability, not-already-joined, control-plane API server reachability, internet/proxy reachability — see [Safety](#safety) below; fails fast here rather than deep inside a 10+ minute Kubespray run), Kubespray's `scale.yml` is run limited to the new node(s) + control-plane (its cert-refresh play runs there), then the kubelet CPU reservation and `workload-class` topology label are applied to just the new node(s), and the installer waits for them to go `Ready`. If CPU pinning (`nri_cpu_balloons`) is installed, each new node then gets its own `node.<NAME>` BalloonsPolicy and `nri.intel.com/*` labels, generated from its own probed NUMA/CPU topology — the Helm release, the cluster `default` policy, and every existing node's policy and labels are not touched, so models already running elsewhere are not re-pinned. Each new node joins with a `ei.intel.com/add-node-pending:NoSchedule` taint (set by the kubelet at registration, so there is no window without it), which is removed only as the last step once all of the above is in place: until then no model pods are scheduled there and the NRI balloons agent does not start, so the node never runs on the cluster `default` policy. If any step fails, the node stays tainted; re-running `./es_auto_installer.sh add-node` detects it and resumes from the post phase.
+3. What `add-node` does:
+   1. Regenerates the inventory and diffs `nodes.yaml` against the live cluster to find the new node(s).
+   2. Runs a pre-flight on them: SSH, not already joined, API server and internet reachability (see [Safety](#safety)).
+   3. Computes their kubelet CPU reservation, then runs Kubespray `scale.yml` for just the new node(s).
+   4. Applies the `workload-class` label (and NFS export, on NFS storage), waits for `Ready`, and — if `nri_cpu_balloons` is installed — creates each node's own `node.<NAME>` BalloonsPolicy. Existing nodes and running models are not touched.
+
+   New nodes join with an `ei.intel.com/add-node-pending:NoSchedule` taint that is removed only after the last step, so nothing is scheduled on a half-configured node. If a step fails, re-run `add-node` to resume.
 
 ### Control-plane nodes are not supported by `add-node`
 

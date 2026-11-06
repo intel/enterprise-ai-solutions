@@ -1780,16 +1780,16 @@ $(sed 's/^/  /' <<< "$sim_findings")
     fi
     ok "  preflight simulation: ok (capacity / spread / local-data / last-capable-node)"
 
-    # Last-worker warning: "worker" here means live and NOT in kube_control_plane,
-    # not kube_node membership — kube_node mirrors kube_control_plane in
-    # single-node mode (see hosts.yaml.j2), which would otherwise make every
-    # single-node cluster look like it's losing "a worker" on its own control
-    # -plane node. Only a warning: dropping to zero workers is exactly what
-    # single-node mode already is, and is fine when the control-plane node
-    # isn't tainted (see _cp_tainted_nodes).
-    local live_cp live_workers remaining_workers
-    live_cp=$(_inventory_group kube_control_plane | sort -u)
-    live_workers=$(comm -23 <(printf '%s\n' "$live") <(printf '%s\n' "$live_cp") | grep -v '^$' || true)
+    # Last-worker warning: "worker" here means live and in kube_node (read from
+    # the not-yet-regenerated inventory), so a control-plane node that is also
+    # listed under nodes_workers counts — Kubespray leaves those untainted.
+    # kube_node also mirrors kube_control_plane when nodes_workers is empty
+    # (see hosts.yaml.j2); those nodes are untainted too, and the single-node
+    # case can't reach here (its only node is the first control-plane, refused
+    # above). Only a warning: dropping to zero workers is a valid topology when
+    # the control-plane node isn't tainted (see _cp_tainted_nodes).
+    local live_workers remaining_workers
+    live_workers=$(comm -12 <(printf '%s\n' "$live") <(_inventory_group kube_node | sort -u) | grep -v '^$' || true)
     remaining_workers=$(comm -23 <(printf '%s\n' "$live_workers") <(printf '%s\n' "$removed") | grep -v '^$' || true)
     if [[ -n "$live_workers" && -z "$remaining_workers" ]]; then
         local tainted_cp; tainted_cp=$(_cp_tainted_nodes)
