@@ -42,7 +42,7 @@
     - name: "metrics_server | Mesh exception for the apiserver"
       when: istio_enabled | default(false) | bool
       block:
-        - name: "metrics_server | Read node internal IPs"
+        - name: "metrics_server | Read the nodes (apiserver source addresses)"
           kubernetes.core.k8s_info:
             kind: Node
           register: _ms_nodes
@@ -65,13 +65,6 @@
 
         # Node addresses are a snapshot; re-running the role refreshes them.
         - name: "metrics_server | Restrict 10250 to the apiserver"
-          vars:
-            _ms_tunnel_annotations:
-              - projectcalico.org/IPv4VXLANTunnelAddr
-              - projectcalico.org/IPv4IPIPTunnelAddr
-              - projectcalico.org/IPv4WireguardInterfaceAddr
-              - projectcalico.org/IPv6VXLANTunnelAddr
-              - projectcalico.org/IPv6WireguardInterfaceAddr
           kubernetes.core.k8s:
             state: present
             definition:
@@ -87,13 +80,7 @@
                 rules:
                   - from:
                       - source:
-                          ipBlocks: >-
-                            {{ ((_ms_nodes.resources | map(attribute='status.addresses') | flatten
-                                 | selectattr('type', 'eq', 'InternalIP') | map(attribute='address') | list)
-                                + (_ms_nodes.resources | map(attribute='metadata.annotations', default={})
-                                   | map('dict2items') | flatten | selectattr('key', 'in', _ms_tunnel_annotations)
-                                   | map(attribute='value') | list))
-                               | unique | list }}
+                          ipBlocks: "{{ _ms_nodes.resources | apiserver_source_ips }}"
                     to:
                       - operation:
                           ports: ["10250"]
