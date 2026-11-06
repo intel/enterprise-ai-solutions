@@ -55,6 +55,15 @@ readonly HELM_VERSION="v3.20.2"
 # Valid CLI actions.
 readonly -a ACTIONS=(configure show init install teardown validate status add-node remove-node)
 
+# add-node registers each new node with this NoSchedule taint (kubelet
+# registerWithTaints, so it is there from the node's first moment) and its
+# post phase removes it as the very last step. Until then nothing without a
+# matching toleration lands on the node — in particular no model pods, and no
+# NRI balloons agent, which would otherwise start on the cluster `default`
+# BalloonsPolicy before the node's own node.<NAME> CR exists. A node still
+# carrying it is an unfinished add-node; re-running add-node resumes it.
+readonly ADD_NODE_PENDING_TAINT="ei.intel.com/add-node-pending"
+
 # =============================================================================
 # Mutable globals — every one of these, and nothing else, is written after startup
 # =============================================================================
@@ -1255,7 +1264,12 @@ run_kubespray() {
     local pb="$ks_dir/cluster.yml" extra=() limit_args=()
     case "$action" in
         teardown) pb="$ks_dir/reset.yml";       extra=(-e '{"reset_confirmation": true}') ;;
-        scale)    pb="$ks_dir/scale.yml";       limit_args=(--limit="${arg2},kube_control_plane") ;;
+        scale)    pb="$ks_dir/scale.yml";       limit_args=(--limit="${arg2},kube_control_plane")
+                  # Register only the new node(s) with the pending taint (see
+                  # ADD_NODE_PENDING_TAINT). Templated per host, so the
+                  # control-plane hosts in --limit get {} — no kubelet change.
+                  extra=(-e "{\"kubelet_config_extra_args\": \"{{ {'registerWithTaints': [{'key': '${ADD_NODE_PENDING_TAINT}', 'effect': 'NoSchedule'}]} if inventory_hostname in ('${arg2}' | split(',')) else {} }}\"}")
+                  ;;
         remove)   pb="$ks_dir/remove-node.yml"; extra=(-e "node=${arg2}" -e '{"skip_confirmation": true}')
                   # --node-lost: the node is already gone (NotReady, possibly
                   # unreachable) — there is nothing to drain, and no SSH path
@@ -1374,6 +1388,15 @@ _inventory_group() {
 # KUBECONFIG is already exported by main() before either action runs.
 _live_nodes() {
     kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null
+}
+
+# _add_node_pending_nodes — joined nodes still carrying ADD_NODE_PENDING_TAINT,
+# i.e. whose add-node post phase never completed. One name per line.
+_add_node_pending_nodes() {
+    kubectl get nodes -o json 2>/dev/null \
+        | yq -p json -r ".items[]
+            | select((.spec.taints // []) | map(select(.key == \"${ADD_NODE_PENDING_TAINT}\")) | length > 0)
+            | .metadata.name" 2>/dev/null || true
 }
 
 # _not_ready_nodes — names of nodes whose Ready condition is not True, one
@@ -1551,26 +1574,6 @@ _ssh_preflight_check() {
     ssh "${ssh_opts[@]}" "$target" true 2>&1
 }
 
-# _nri_balloons_enabled — mirrors the nri_cpu_balloons component's own
-# `enabled:` expression (configs/components.yaml) so the add-node/remove-node
-# reminder below only fires when that component is actually active.
-_nri_balloons_enabled() {
-    [[ -f "$GLOBAL_CONFIG" ]] && command -v yq &>/dev/null || return 1
-    local policy accel
-    policy=$(yq -r '.kubernetes_cpu_policy // "nri-balloons"' "$GLOBAL_CONFIG" 2>/dev/null)
-    accel=$(yq -r '.kubernetes_accelerator // "cpu"' "$GLOBAL_CONFIG" 2>/dev/null)
-    [[ "$policy" == "nri-balloons" && "$accel" == "cpu" ]]
-}
-
-# _nri_balloons_reminder — add-node/remove-node only ever touch the kubernetes
-# component; nri_cpu_balloons (CPU pinning) is a separate component and is
-# NOT re-applied automatically. Surface that instead of leaving the new/
-# removed node(s) silently running on a stale or missing balloon policy.
-_nri_balloons_reminder() {
-    _nri_balloons_enabled || return 0
-    warn "  nri_cpu_balloons was not re-applied — it's a separate component and is not touched by ${ACTION}. Run './$(basename "$0") install --env ${ENV_NAME} nri_cpu_balloons' to refresh CPU-pinning policy for the current node set."
-}
-
 # do_add_node — scale worker node(s) into an existing cluster (Kubespray scale.yml).
 do_add_node() {
     _require_nodes_yaml_defined
@@ -1579,6 +1582,25 @@ do_add_node() {
     declared=$(_nodes_yaml_hostnames | sort -u)
     live=$(_live_nodes | sort -u)
     added=$(comm -23 <(printf '%s\n' "$declared") <(printf '%s\n' "$live") | grep -v '^$' || true)
+
+    # Joined, but the post phase never finished (it removes the pending taint
+    # as its last step) — e.g. it failed, or the run was interrupted. Such a
+    # node is already in the live cluster, so the diff above can't see it.
+    local pending pending_csv
+    pending=$(_add_node_pending_nodes | sort -u)
+    pending_csv="${pending//$'\n'/,}"
+
+    if [[ -z "$added" && -n "$pending" ]]; then
+        info "add-node: resuming unfinished node(s) (still tainted ${ADD_NODE_PENDING_TAINT}): ${pending_csv//,/, }"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            info "  would run: add-node post phase only (no scale.yml)"
+            exit 0
+        fi
+        confirm "About to run the add-node post phase for: ${pending_csv//,/, }"
+        run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${pending_csv}" \
+            -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}" "${EXTRA_VARS[@]}"
+        return 0
+    fi
 
     if [[ -z "$added" ]]; then
         ok "add-node: nothing to do — nodes.yaml matches the live cluster."
@@ -1610,8 +1632,24 @@ do_add_node() {
 ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or fix ssh_user/ssh_key in nodes.yaml, then retry."
     fi
 
+    # run_kubespray scale passes kubelet_config_extra_args to register the new
+    # node(s) with the pending taint; the env's own kubespray_extra files are
+    # passed after it and would silently replace it (and with it the taint).
+    local _ks_f
+    for _ks_f in "$ENV_DIR/kubespray_extra_auto.yml" "$ENV_DIR/kubespray_extra.yml"; do
+        [[ -f "$_ks_f" ]] && [[ "$(yq -r 'has("kubelet_config_extra_args")' "$_ks_f" 2>/dev/null)" == "true" ]] \
+            && err "add-node: ${_ks_f} sets kubelet_config_extra_args, which would override the
+  ${ADD_NODE_PENDING_TAINT} registration taint add-node relies on. Move those settings
+  out of it (or merge registerWithTaints in yourself) before running add-node."
+    done
+
+    # Finish any earlier, unfinished node(s) in the same post phase.
+    local post_csv="$added_csv"
+    [[ -n "$pending_csv" ]] && post_csv+=",${pending_csv}"
+
     if [[ "$DRY_RUN" == "true" ]]; then
         info "  would run: scale.yml --limit=${added_csv},kube_control_plane"
+        [[ -n "$pending_csv" ]] && info "  and resume unfinished node(s): ${pending_csv//,/, }"
         exit 0
     fi
 
@@ -1622,8 +1660,8 @@ ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or f
     # SSH/internet pre-flight can scope to just the new node(s).
     run site "${vars[@]}" -e "_scale_phase=prep" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
     run_kubespray scale "$added_csv"
-    run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
-    _nri_balloons_reminder
+    run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${post_csv}" \
+        -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}" "${EXTRA_VARS[@]}"
 }
 
 # do_remove_node — remove node(s) from an existing cluster (Kubespray remove-node.yml).
@@ -1768,13 +1806,13 @@ $(sed 's/^/  /' <<< "$sim_findings")
     # them (see roles/kubernetes/tasks/remove-node.yaml for why).
     run site "${vars[@]}" -e "_scale_phase=prep" "${EXTRA_VARS[@]}"
     run_kubespray remove "$removed_csv"
-    # Only now regenerate the inventory, dropping the removed node(s).
-    run site "${vars[@]}" -e "_scale_phase=post" "${EXTRA_VARS[@]}"
+    # Only now regenerate the inventory, dropping the removed node(s), and
+    # delete their now-orphaned node.<NAME> BalloonsPolicy CR(s).
+    run site "${vars[@]}" -e "_scale_phase=post" -e "_removed_nodes=${removed_csv}" "${EXTRA_VARS[@]}"
 
     for n in ${removed//$'\n'/ }; do
         rm -f "${ENV_INVENTORY_DIR}/host_vars/${n}.yml"
     done
-    _nri_balloons_reminder
 
     # Health verdict: the node is already gone at this point — reset ran,
     # its etcd membership (if any) is already removed — so there is nothing

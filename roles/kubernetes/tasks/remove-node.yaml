@@ -15,8 +15,9 @@
 #   Phase 2: es_auto_installer.sh runs Kubespray remove-node.yml directly
 #            (live output) against the still-unregenerated inventory.
 #   Phase 3 (_scale_phase=post): NOW regenerate the inventory from nodes.yaml,
-#            so the removed node(s) are finally dropped. es_auto_installer.sh
-#            then deletes their now-stale host_vars file(s).
+#            so the removed node(s) are finally dropped, and delete their
+#            now-orphaned node.<NAME> BalloonsPolicy CR(s) (_removed_nodes).
+#            es_auto_installer.sh then deletes their now-stale host_vars file(s).
 #
 # BYO clusters are refused — a bring-your-own cluster is not managed by
 # Kubespray at all. Kubespray also refuses to remove the first
@@ -34,6 +35,43 @@
   block:
     - name: "kubernetes | remove-node | Regenerate inventory from nodes.yaml"
       ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+
+    # A removed node's node.<NAME> BalloonsPolicy CR outlives it, and the NRI
+    # plugin matches CRs by node name: a later node joining under the same
+    # name would pick up this one — written for the old hardware — the moment
+    # its balloons agent starts. Deleted here rather than left for the next
+    # `install nri_cpu_balloons`. Only for nodes whose Node object is really
+    # gone, so a removal that didn't complete can never strip a live node's
+    # policy. Skipped when balloons isn't installed (no CRD); an already-absent
+    # CR is a no-op under state: absent.
+    - name: "kubernetes | remove-node | Check for BalloonsPolicy CRD"
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: balloonspolicies.config.nri
+      register: _remove_node_bp_crd
+      when: _removed_nodes | default('') | length > 0
+
+    - name: "kubernetes | remove-node | List remaining cluster nodes"
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: _remove_node_live_nodes
+      when: (_remove_node_bp_crd.resources | default([]) | length) > 0
+
+    - name: "kubernetes | remove-node | Delete removed node(s)' BalloonsPolicy CR"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: config.nri/v1alpha1
+        kind: BalloonsPolicy
+        namespace: kube-system
+        name: "node.{{ item }}"
+      loop: >-
+        {{ _removed_nodes | default('') | split(',') | reject('equalto', '')
+           | reject('in', _remove_node_live_nodes.resources | default([]) | map(attribute='metadata.name') | list)
+           | list }}
+      loop_control:
+        label: "node.{{ item }}"
+      when: (_remove_node_bp_crd.resources | default([]) | length) > 0
 
     - name: "kubernetes | remove-node | Post phase complete"
       ansible.builtin.debug:

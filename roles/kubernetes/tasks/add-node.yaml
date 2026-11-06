@@ -96,6 +96,56 @@
       delay: 10
       changed_when: false
 
+    # Without its own node.<NAME> CR, a new node's balloons agent runs on the
+    # cluster `default` CR — sized for whichever node was most capable when
+    # nri_cpu_balloons last ran, not for this one. The node is still under the
+    # add-node pending taint here, so that agent (no tolerations) hasn't
+    # started yet; creating the CR now means it finds its own policy the
+    # moment the taint is lifted below, and never runs on `default` at all.
+    # Scoped to the new node(s): the Helm release, the default CR and every
+    # existing node's CR/labels are left untouched (see install_advanced.yaml).
+    # Runs only once the node is Ready, since the topology probe pod (which
+    # does tolerate the taint) has to schedule there, and only if the
+    # component is already installed — before that, `install nri_cpu_balloons`
+    # covers every node anyway.
+    - name: "kubernetes | add-node | Check whether NRI balloons is installed"
+      kubernetes.core.k8s_info:
+        api_version: config.nri/v1alpha1
+        kind: BalloonsPolicy
+        namespace: kube-system
+        name: default
+      register: _add_node_nri_default
+      failed_when: false
+      when:
+        - (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons'
+        - (kubernetes_accelerator | default('cpu')) == 'cpu'
+
+    - name: "kubernetes | add-node | Per-node NRI balloon policy for new node(s)"
+      ansible.builtin.include_role:
+        name: nri_cpu_balloons
+        tasks_from: install_advanced.yaml
+        # tasks_from skips the role's main.yaml dispatcher, which is what
+        # normally loads these platform values.
+        vars_from: "{{ cluster_distribution }}.yaml"
+      vars:
+        _nri_scope_nodes: "{{ _added_nodes_list }}"
+      when: (_add_node_nri_default.resources | default([]) | length) > 0
+
+    # Last step on purpose: everything the node needs before it may take
+    # workloads (labels, NFS export, its own balloons CR) is in place above.
+    # If anything earlier failed, the node keeps the taint — nothing lands on
+    # it — and re-running add-node resumes from this post phase.
+    - name: "kubernetes | add-node | Lift add-node pending taint"
+      ansible.builtin.command:
+        argv: [kubectl, taint, node, "{{ item }}", "{{ _add_node_pending_taint }}:NoSchedule-"]
+      environment:
+        KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+      register: _add_node_untaint
+      changed_when: _add_node_untaint.rc == 0
+      failed_when: _add_node_untaint.rc != 0 and 'not found' not in _add_node_untaint.stderr
+      loop: "{{ _added_nodes_list }}"
+      when: _add_node_pending_taint | default('') | length > 0
+
     - name: "kubernetes | add-node | New node(s) ready"
       ansible.builtin.debug:
         msg: "Added and Ready: {{ _added_nodes_list | join(', ') }}"

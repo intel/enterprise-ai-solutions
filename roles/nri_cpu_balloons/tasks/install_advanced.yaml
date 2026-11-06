@@ -15,6 +15,12 @@
 #      CRs (node.<NAME>) carrying that node's own topology.
 #
 # install.yaml owns the skip-on-non-cpu guard before dispatching here.
+#
+# Scoped mode: add-node's post phase includes this file directly with
+# `_nri_scope_nodes` set to the newly joined node(s). Only steps 1–3 and the
+# per-node CRs/labels run, for just those node(s); the Helm release, the
+# `default` CR, and stale-CR/label pruning are skipped, so no other node's
+# policy (or the plugin DaemonSet) is touched.
 # =============================================================================
 
 - name: "nri_cpu_balloons | Banner"
@@ -144,87 +150,94 @@
     state: directory
     mode: "0755"
 
-- name: "nri_cpu_balloons | Render values file"
-  ansible.builtin.template:
-    src: "advanced-balloon-values.yaml.j2"
-    dest: "{{ nri_tmp_dir }}/nri-values.yaml"
-    mode: "0644"
-  vars:
-    nri_generated_balloon_types: "{{ _nri_generated_balloon_types }}"
-    nri_actual_reserved_count: "{{ _nri_actual_reserved_count }}"
-    nri_detected_total_cpus: "{{ _nri_detected_total_cpus }}"
-    nri_detected_numa_nodes: "{{ _nri_detected_numa_nodes }}"
-    nri_max_tp_size: "{{ _nri_max_tp_size }}"
-    nri_reserved_mode: "{{ _nri_reserved_mode | trim }}"
-    nri_workload_cpus: >-
-      {{ (_nri_detected_total_cpus | int) - (_nri_actual_reserved_count | int) }}
+# Steps 4–5 render and apply the cluster-wide pieces (values file, ConfigMap,
+# Helm release → `default` CR). Scoped mode (add-node) must leave those exactly
+# as they are — in that mode the topology facts cover only the scoped node(s).
+- name: "nri_cpu_balloons | Cluster-wide release (skipped when scoped to node(s))"
+  when: not (_nri_scoped | default(false) | bool)
+  block:
+    - name: "nri_cpu_balloons | Render values file"
+      ansible.builtin.template:
+        src: "advanced-balloon-values.yaml.j2"
+        dest: "{{ nri_tmp_dir }}/nri-values.yaml"
+        mode: "0644"
+      vars:
+        nri_generated_balloon_types: "{{ _nri_generated_balloon_types }}"
+        nri_actual_reserved_count: "{{ _nri_actual_reserved_count }}"
+        nri_detected_total_cpus: "{{ _nri_detected_total_cpus }}"
+        nri_detected_numa_nodes: "{{ _nri_detected_numa_nodes }}"
+        nri_max_tp_size: "{{ _nri_max_tp_size }}"
+        nri_reserved_mode: "{{ _nri_reserved_mode | trim }}"
+        nri_workload_cpus: >-
+          {{ (_nri_detected_total_cpus | int) - (_nri_actual_reserved_count | int) }}
 
-# --- Step 5: install/upgrade ---
-- name: "nri_cpu_balloons | Add Helm repo"
-  kubernetes.core.helm_repository:
-    name: "{{ nri_cpu_balloons.helm.repo_name }}"
-    repo_url: "{{ nri_cpu_balloons.helm.repo_url }}"
-    state: present
-  environment:
-    HTTP_PROXY: "{{ http_proxy | default('') }}"
-    HTTPS_PROXY: "{{ https_proxy | default('') }}"
-    NO_PROXY: "{{ no_proxy | default('') }}"
-  retries: 3
-  delay: 10
-  register: _nri_helm_repo
-  until: _nri_helm_repo is succeeded
+    # --- Step 5: install/upgrade ---
+    - name: "nri_cpu_balloons | Add Helm repo"
+      kubernetes.core.helm_repository:
+        name: "{{ nri_cpu_balloons.helm.repo_name }}"
+        repo_url: "{{ nri_cpu_balloons.helm.repo_url }}"
+        state: present
+      environment:
+        HTTP_PROXY: "{{ http_proxy | default('') }}"
+        HTTPS_PROXY: "{{ https_proxy | default('') }}"
+        NO_PROXY: "{{ no_proxy | default('') }}"
+      retries: 3
+      delay: 10
+      register: _nri_helm_repo
+      until: _nri_helm_repo is succeeded
 
-- name: "nri_cpu_balloons | Ensure namespace exists"
-  kubernetes.core.k8s:
-    kind: Namespace
-    name: "{{ nri_cpu_balloons.namespace }}"
-    state: present
+    - name: "nri_cpu_balloons | Ensure namespace exists"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ nri_cpu_balloons.namespace }}"
+        state: present
 
-- name: "nri_cpu_balloons | Apply policy ConfigMap"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "nri-resource-policy-balloons-config"
+    - name: "nri_cpu_balloons | Apply policy ConfigMap"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "nri-resource-policy-balloons-config"
+            namespace: "{{ nri_cpu_balloons.namespace }}"
+            labels:
+              app.kubernetes.io/name: nri-resource-policy-balloons
+          data:
+            "values.yaml": "{{ lookup('file', nri_tmp_dir ~ '/nri-values.yaml') }}"
+
+    - name: "nri_cpu_balloons | Install / upgrade Helm release"
+      kubernetes.core.helm:
+        name: "{{ nri_cpu_balloons.helm.release_name }}"
+        chart_ref: "{{ nri_cpu_balloons.helm.repo_name }}/{{ nri_cpu_balloons.helm.chart_name }}"
+        chart_version: "{{ nri_cpu_balloons.helm.chart_version }}"
+        release_namespace: "{{ nri_cpu_balloons.namespace }}"
+        create_namespace: true
+        values_files:
+          - "{{ nri_tmp_dir }}/nri-values.yaml"
+        wait: "{{ helm_wait }}"
+        timeout: "{{ nri_cpu_balloons.installation_timeout }}s"
+      environment:
+        HTTP_PROXY: "{{ http_proxy | default('') }}"
+        HTTPS_PROXY: "{{ https_proxy | default('') }}"
+        NO_PROXY: "{{ no_proxy | default('') }}"
+      register: helm_install_result
+      until: helm_install_result is succeeded
+      retries: "{{ helm_retries }}"
+      delay: 15
+
+    - name: "nri_cpu_balloons | Wait for DaemonSet readiness"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: "{{ nri_cpu_balloons.helm.release_name }}"
         namespace: "{{ nri_cpu_balloons.namespace }}"
-        labels:
-          app.kubernetes.io/name: nri-resource-policy-balloons
-      data:
-        "values.yaml": "{{ lookup('file', nri_tmp_dir ~ '/nri-values.yaml') }}"
-
-- name: "nri_cpu_balloons | Install / upgrade Helm release"
-  kubernetes.core.helm:
-    name: "{{ nri_cpu_balloons.helm.release_name }}"
-    chart_ref: "{{ nri_cpu_balloons.helm.repo_name }}/{{ nri_cpu_balloons.helm.chart_name }}"
-    release_namespace: "{{ nri_cpu_balloons.namespace }}"
-    create_namespace: true
-    values_files:
-      - "{{ nri_tmp_dir }}/nri-values.yaml"
-    wait: "{{ helm_wait }}"
-    timeout: "{{ nri_cpu_balloons.installation_timeout }}s"
-  environment:
-    HTTP_PROXY: "{{ http_proxy | default('') }}"
-    HTTPS_PROXY: "{{ https_proxy | default('') }}"
-    NO_PROXY: "{{ no_proxy | default('') }}"
-  register: helm_install_result
-  until: helm_install_result is succeeded
-  retries: "{{ helm_retries }}"
-  delay: 15
-
-- name: "nri_cpu_balloons | Wait for DaemonSet readiness"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: DaemonSet
-    name: "{{ nri_cpu_balloons.helm.release_name }}"
-    namespace: "{{ nri_cpu_balloons.namespace }}"
-  register: _nri_ds
-  until:
-    - _nri_ds.resources | length > 0
-    - (_nri_ds.resources[0].status.numberReady | default(0) | int) >= 1
-  retries: 30
-  delay: 10
+      register: _nri_ds
+      until:
+        - _nri_ds.resources | length > 0
+        - (_nri_ds.resources[0].status.numberReady | default(0) | int) >= 1
+      retries: 30
+      delay: 10
 
 # -----------------------------------------------------------------------------
 # Phase 7: per-node BalloonsPolicy CRs.
@@ -256,11 +269,67 @@
   loop_control:
     label: "{{ item.key }}"
 
+# -----------------------------------------------------------------------------
+# No-reshuffle guard. Changing a live node.<NAME> CR makes that node's agent
+# re-balance its balloons on the spot, which can move running model
+# containers onto different CPUs. So an existing CR whose spec would change
+# (profile/max-TP edit, BIOS/SNC change, role template change, ...) is HELD:
+# not applied, its labels left as they are, and the diff printed — unless the
+# operator opts in with nri_update_existing_node_policies=true. Nodes in
+# add-node's scope are always updated: nothing is running on them yet, and a
+# CR left behind by an earlier node of the same name may describe different
+# hardware. Brand-new CRs and unchanged ones are applied as usual.
+# The dry run is a server-side apply diff, i.e. exactly what the real apply
+# below would change.
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | List existing per-node BalloonsPolicy CRs"
+  kubernetes.core.k8s_info:
+    api_version: config.nri/v1alpha1
+    kind: BalloonsPolicy
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _nri_existing_policies
+
+- name: "nri_cpu_balloons | Dry-run existing per-node BalloonsPolicy CRs"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ nri_tmp_dir }}/balloonspolicy.node.{{ item.key }}.yaml"
+  check_mode: true
+  diff: true
+  register: _nri_cr_dryrun
+  loop: >-
+    {{ _nri_per_node_topology | dict2items
+       | selectattr('key', 'in', _nri_existing_policies.resources
+                                 | map(attribute='metadata.name')
+                                 | map('regex_replace', '^node[.]', '') | list)
+       | list }}
+  loop_control:
+    label: "node.{{ item.key }}"
+
+- name: "nri_cpu_balloons | Decide which per-node CRs to apply"
+  vars:
+    _changed: "{{ _nri_cr_dryrun.results | default([]) | selectattr('changed') | map(attribute='item.key') | list }}"
+    _allowed: >-
+      {{ _changed if (nri_update_existing_node_policies | default(false) | bool)
+         else (_changed | intersect(_nri_scope_nodes_list | default([]))) }}
+  ansible.builtin.set_fact:
+    _nri_held_nodes: "{{ _changed | difference(_allowed) }}"
+    _nri_apply_nodes: "{{ _nri_per_node_topology.keys() | list | difference(_changed | difference(_allowed)) }}"
+
+- name: "nri_cpu_balloons | WARNING — existing node policies held (would reshuffle running pods)"
+  when: _nri_held_nodes | length > 0
+  ansible.builtin.debug:
+    msg:
+      - "NOT applied: {{ _nri_held_nodes | map('regex_replace', '^', 'node.') | join(', ') }}"
+      - "Their regenerated spec differs from the live one (diff in the dry-run task above)."
+      - "Applying it re-balances that node's balloons and can move running model containers"
+      - "to different CPUs. Labels on these node(s) were left unchanged too."
+      - "To apply anyway (maintenance window): -e nri_update_existing_node_policies=true"
+
 - name: "nri_cpu_balloons | Apply per-node BalloonsPolicy CRs"
   kubernetes.core.k8s:
     state: present
     src: "{{ nri_tmp_dir }}/balloonspolicy.node.{{ item.key }}.yaml"
-  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop: "{{ _nri_per_node_topology | dict2items | selectattr('key', 'in', _nri_apply_nodes) | list }}"
   loop_control:
     label: "node.{{ item.key }} (max_tp={{ item.value.max_tp }}, reserved={{ item.value.reserved_count | default('?') }})"
   register: _nri_node_policies
@@ -307,77 +376,115 @@
       retries: 30
       delay: 10
 
+# Label every applied node with its NRI balloon capability so K8s scheduling
+# (nodeSelector / affinity) and the model-manager pre-flight check can keep
+# TP=N workloads off nodes with max_tp<N. Labels are namespaced under
+# `nri.intel.com/` for clear ownership and are removed by teardown.yaml.
+# Held nodes keep their old labels so they keep matching their (old) CR.
+- name: "nri_cpu_balloons | Label nodes with NRI capability"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.key }}"
+    definition:
+      metadata:
+        labels:
+          nri.intel.com/balloons-enabled: "true"
+          nri.intel.com/max-tp: "{{ item.value.max_tp | string }}"
+          nri.intel.com/numa-nodes: "{{ item.value.numa | string }}"
+          nri.intel.com/physical-cpus: "{{ item.value.physical_cpus | string }}"
+  loop: "{{ _nri_per_node_topology | dict2items | selectattr('key', 'in', _nri_apply_nodes) | list }}"
+  loop_control:
+    label: "{{ item.key }} (max_tp={{ item.value.max_tp }})"
+
 # -----------------------------------------------------------------------------
 # Drift / scale-down reconciliation.
 # If a node was removed from the cluster since the last role run, its
 # `node.<NAME>` BalloonsPolicy CR is now orphaned — the NRI DaemonSet pod that
 # consumed it is gone, but the CR stays forever and would shadow `default` if
 # a new node with the same name were ever added back. Prune any `node.*` CRs
-# whose name is not in the currently-discovered topology. The fresh `default`
-# CR (managed by helm) and group.* CRs (operator-managed) are left untouched.
+# whose Node no longer exists in the cluster. The fresh `default` CR (managed
+# by helm) and group.* CRs (operator-managed) are left untouched.
 # -----------------------------------------------------------------------------
-- name: "nri_cpu_balloons | List existing per-node BalloonsPolicy CRs"
-  kubernetes.core.k8s_info:
-    api_version: config.nri/v1alpha1
-    kind: BalloonsPolicy
-    namespace: "{{ nri_cpu_balloons.namespace }}"
-  register: _nri_existing_policies
-  failed_when: false
+# The label strip below treats "not in _nri_per_node_topology" as stale. In
+# scoped mode that map holds only the scoped node(s), so it would strip every
+# other node's labels — skip the whole block there.
+- name: "nri_cpu_balloons | Prune stale CRs / labels (skipped when scoped to node(s))"
+  when: not (_nri_scoped | default(false) | bool)
+  block:
+    # "Not probed this run" is not the same as "gone": a worker that picked up
+    # a NoSchedule taint gets no probe pod, and deleting its CR would drop it
+    # onto `default` — re-balancing every model running there. Only CRs whose
+    # Node object no longer exists are pruned; the rest are reported and kept.
+    - name: "nri_cpu_balloons | List cluster nodes"
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: _nri_cluster_nodes
 
-- name: "nri_cpu_balloons | Compute stale per-node BalloonsPolicy CRs"
-  vars:
-    _current_node_cr_names: >-
-      {{ (_nri_per_node_topology | dict2items) | map(attribute='key') | map('regex_replace', '^', 'node.') | list }}
-    _all_node_crs: >-
-      {{ (_nri_existing_policies.resources | default([]))
-         | selectattr('metadata.name', 'match', '^node\\.')
-         | map(attribute='metadata.name') | list }}
-  ansible.builtin.set_fact:
-    _nri_stale_node_crs: "{{ _all_node_crs | difference(_current_node_cr_names) }}"
+    - name: "nri_cpu_balloons | Compute stale per-node BalloonsPolicy CRs"
+      vars:
+        _current_node_cr_names: >-
+          {{ (_nri_per_node_topology | dict2items) | map(attribute='key') | map('regex_replace', '^', 'node.') | list }}
+        _live_node_cr_names: >-
+          {{ _nri_cluster_nodes.resources | map(attribute='metadata.name') | map('regex_replace', '^', 'node.') | list }}
+        _all_node_crs: >-
+          {{ (_nri_existing_policies.resources | default([]))
+             | selectattr('metadata.name', 'match', '^node[.]')
+             | map(attribute='metadata.name') | list }}
+      ansible.builtin.set_fact:
+        _nri_stale_node_crs: "{{ _all_node_crs | difference(_current_node_cr_names) | difference(_live_node_cr_names) }}"
+        _nri_unprobed_node_crs: "{{ _all_node_crs | difference(_current_node_cr_names) | intersect(_live_node_cr_names) }}"
 
-- name: "nri_cpu_balloons | Delete stale per-node BalloonsPolicy CRs"
-  kubernetes.core.k8s:
-    state: absent
-    api_version: config.nri/v1alpha1
-    kind: BalloonsPolicy
-    namespace: "{{ nri_cpu_balloons.namespace }}"
-    name: "{{ item }}"
-  loop: "{{ _nri_stale_node_crs }}"
-  loop_control:
-    label: "{{ item }} (node no longer in cluster)"
-  when: _nri_stale_node_crs | length > 0
-  failed_when: false
+    - name: "nri_cpu_balloons | Kept CRs of nodes that were not probed"
+      when: _nri_unprobed_node_crs | length > 0
+      ansible.builtin.debug:
+        msg: >-
+          Kept (node still exists, but got no probe pod — tainted?):
+          {{ _nri_unprobed_node_crs | join(', ') }}. Not regenerated this run.
 
-# -----------------------------------------------------------------------------
-# Also strip nri.intel.com/* labels from any node that USED to be labeled by
-# this role but is no longer ei-inference-eligible (e.g. cordoned, label
-# removed, role re-targeted). Current nodes are already (re-)labeled by
-# generate_balloon_types.yaml.
-# -----------------------------------------------------------------------------
-- name: "nri_cpu_balloons | List nodes currently carrying nri.intel.com/balloons-enabled"
-  kubernetes.core.k8s_info:
-    kind: Node
-    label_selectors:
-      - "nri.intel.com/balloons-enabled=true"
-  register: _nri_labeled_nodes
-  failed_when: false
+    - name: "nri_cpu_balloons | Delete stale per-node BalloonsPolicy CRs"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: config.nri/v1alpha1
+        kind: BalloonsPolicy
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+        name: "{{ item }}"
+      loop: "{{ _nri_stale_node_crs }}"
+      loop_control:
+        label: "{{ item }} (node no longer in cluster)"
+      when: _nri_stale_node_crs | length > 0
+      failed_when: false
 
-- name: "nri_cpu_balloons | Strip NRI labels from nodes no longer in topology"
-  kubernetes.core.k8s:
-    state: patched
-    kind: Node
-    name: "{{ item.metadata.name }}"
-    definition:
-      metadata:
-        labels:
-          nri.intel.com/balloons-enabled: null
-          nri.intel.com/max-tp: null
-          nri.intel.com/numa-nodes: null
-          nri.intel.com/physical-cpus: null
-  loop: "{{ (_nri_labeled_nodes.resources | default([])) | rejectattr('metadata.name', 'in', _nri_per_node_topology.keys() | list) | list }}"
-  loop_control:
-    label: "{{ item.metadata.name }} (no longer in topology)"
-  failed_when: false
+    # -----------------------------------------------------------------------------
+    # Also strip nri.intel.com/* labels from any node that USED to be labeled by
+    # this role but is no longer ei-inference-eligible (e.g. cordoned, label
+    # removed, role re-targeted). Current nodes are already (re-)labeled by
+    # generate_balloon_types.yaml.
+    # -----------------------------------------------------------------------------
+    - name: "nri_cpu_balloons | List nodes currently carrying nri.intel.com/balloons-enabled"
+      kubernetes.core.k8s_info:
+        kind: Node
+        label_selectors:
+          - "nri.intel.com/balloons-enabled=true"
+      register: _nri_labeled_nodes
+      failed_when: false
+
+    - name: "nri_cpu_balloons | Strip NRI labels from nodes no longer in topology"
+      kubernetes.core.k8s:
+        state: patched
+        kind: Node
+        name: "{{ item.metadata.name }}"
+        definition:
+          metadata:
+            labels:
+              nri.intel.com/balloons-enabled: null
+              nri.intel.com/max-tp: null
+              nri.intel.com/numa-nodes: null
+              nri.intel.com/physical-cpus: null
+      loop: "{{ (_nri_labeled_nodes.resources | default([])) | rejectattr('metadata.name', 'in', _nri_per_node_topology.keys() | list) | list }}"
+      loop_control:
+        label: "{{ item.metadata.name }} (no longer in topology)"
+      failed_when: false
 
 - name: "nri_cpu_balloons | Per-node BalloonsPolicy summary"
   ansible.builtin.debug:
@@ -385,12 +492,18 @@
       ============================================================
       Per-node BalloonsPolicy CRs reconciled
       ============================================================
-      Applied / refreshed ({{ _nri_per_node_topology | length }}):
-      {% for n, meta in _nri_per_node_topology | dictsort %}
+      Applied / refreshed ({{ _nri_apply_nodes | length }}):
+      {% for n, meta in _nri_per_node_topology | dictsort if n in _nri_apply_nodes %}
         - node.{{ n }}: max_tp={{ meta.max_tp }}, reserved={{ meta.reserved_count | default('?') }}, numa={{ meta.numa }}
       {% endfor %}
-      Pruned stale ({{ _nri_stale_node_crs | length }}):
-      {% for n in _nri_stale_node_crs %}
+      Held — spec changed, not applied ({{ _nri_held_nodes | length }}):
+      {% for n in _nri_held_nodes %}
+        - node.{{ n }}
+      {% else %}
+        - (none)
+      {% endfor %}
+      Pruned stale ({{ _nri_stale_node_crs | default([]) | length }}):
+      {% for n in _nri_stale_node_crs | default([]) %}
         - {{ n }}
       {% else %}
         - (none)
@@ -401,36 +514,39 @@
       ============================================================
 
 # --- Step 6: export metadata for downstream consumers (model_manager) ---
-- name: "nri_cpu_balloons | Export policy stats"
-  ansible.builtin.set_stats:
-    data:
-      nri_max_tp_size: "{{ _nri_max_tp_size }}"
-      nri_detected_numa_nodes: "{{ _nri_detected_numa_nodes }}"
-      nri_detected_total_cpus: "{{ _nri_detected_total_cpus }}"
-      nri_actual_reserved_count: "{{ _nri_actual_reserved_count }}"
-      nri_reserved_cpu_list: "{{ _nri_reserved_cpu_list }}"
-      nri_deployment_profile: "{{ nri_deployment_profile }}"
-      # Hint for model_manager: produce vllm-balloon-tp<N> annotations.
-      cpu_balloon_annotation_template:
-        "{{ nri_cpu_balloon_annotation_key }}": "vllm-balloon-tp{TP}"
-    aggregate: false
+- name: "nri_cpu_balloons | Cluster-wide stats and summary (skipped when scoped to node(s))"
+  when: not (_nri_scoped | default(false) | bool)
+  block:
+    - name: "nri_cpu_balloons | Export policy stats"
+      ansible.builtin.set_stats:
+        data:
+          nri_max_tp_size: "{{ _nri_max_tp_size }}"
+          nri_detected_numa_nodes: "{{ _nri_detected_numa_nodes }}"
+          nri_detected_total_cpus: "{{ _nri_detected_total_cpus }}"
+          nri_actual_reserved_count: "{{ _nri_actual_reserved_count }}"
+          nri_reserved_cpu_list: "{{ _nri_reserved_cpu_list }}"
+          nri_deployment_profile: "{{ nri_deployment_profile }}"
+          # Hint for model_manager: produce vllm-balloon-tp<N> annotations.
+          cpu_balloon_annotation_template:
+            "{{ nri_cpu_balloon_annotation_key }}": "vllm-balloon-tp{TP}"
+        aggregate: false
 
-- name: "nri_cpu_balloons | Final summary"
-  ansible.builtin.debug:
-    msg:
-      - "================================================================="
-      - "NRI Balloon Policy deployed"
-      - "================================================================="
-      - "NUMA nodes (max):  {{ _nri_detected_numa_nodes }}"
-      - "Physical CPUs:     {{ _nri_detected_total_cpus }}"
-      - "Reserved cpuset:   {{ _nri_reserved_cpu_list }} ({{ _nri_actual_reserved_count }} CPUs)"
-      - "Deployment profile: {{ nri_deployment_profile }}"
-      - "Max TP size:       {{ _nri_max_tp_size }}"
-      - "Balloon types:     vllm-balloon-tp1{% if (_nri_max_tp_size | int) >= 2 %}, -tp2{% endif %}{% if (_nri_max_tp_size | int) >= 4 %}, -tp4{% endif %}{% if (_nri_max_tp_size | int) >= 8 %}, -tp8{% endif %}"
-      - ""
-      - "Pods should be annotated with:"
-      - "  {{ nri_cpu_balloon_annotation_key }}: vllm-balloon-tp<N>"
-      - "================================================================="
+    - name: "nri_cpu_balloons | Final summary"
+      ansible.builtin.debug:
+        msg:
+          - "================================================================="
+          - "NRI Balloon Policy deployed"
+          - "================================================================="
+          - "NUMA nodes (max):  {{ _nri_detected_numa_nodes }}"
+          - "Physical CPUs:     {{ _nri_detected_total_cpus }}"
+          - "Reserved cpuset:   {{ _nri_reserved_cpu_list }} ({{ _nri_actual_reserved_count }} CPUs)"
+          - "Deployment profile: {{ nri_deployment_profile }}"
+          - "Max TP size:       {{ _nri_max_tp_size }}"
+          - "Balloon types:     vllm-balloon-tp1{% if (_nri_max_tp_size | int) >= 2 %}, -tp2{% endif %}{% if (_nri_max_tp_size | int) >= 4 %}, -tp4{% endif %}{% if (_nri_max_tp_size | int) >= 8 %}, -tp8{% endif %}"
+          - ""
+          - "Pods should be annotated with:"
+          - "  {{ nri_cpu_balloon_annotation_key }}: vllm-balloon-tp<N>"
+          - "================================================================="
 
 - name: "nri_cpu_balloons | Clean up tmp dir"
   ansible.builtin.file:
