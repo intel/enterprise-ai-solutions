@@ -77,16 +77,17 @@
   # Same as the ECMP reload above.
   failed_when: false
 
-- name: "fabric_sysctl | teardown | Re-save iptables after rule removal"
-  ansible.builtin.shell: >
-    set -o pipefail;
-    if [ -d /etc/iptables ]; then iptables-save > /etc/iptables/rules.v4;
-    elif [ -d /etc/sysconfig ]; then iptables-save > /etc/sysconfig/iptables; fi
-  args:
-    executable: /bin/bash
-  delegate_to: "{{ item }}"
+# This pass runs after the kubespray reset, which flushes every table
+# (flush_iptables), so iptables-save here would write empty tables over the
+# operator's saved rules. Only this role's lines come out of the saved file;
+# a file that is not there stays absent.
+- name: "fabric_sysctl | teardown | Remove fabric transit rules from the saved rules"
+  ansible.builtin.lineinfile:
+    path: "{{ item.1 }}"
+    regexp: '^-A FORWARD .*--comment "?ai-solutions: fabric transit '
+    state: absent
+  delegate_to: "{{ item.0 }}"
   become: true
-  loop: "{{ groups['fabric_routers'] | default([]) }}"
+  loop: "{{ groups['fabric_routers'] | default([]) | product(['/etc/iptables/rules.v4', '/etc/sysconfig/iptables']) | list }}"
   loop_control:
-    label: "{{ item }}"
-  changed_when: true
+    label: "{{ item.0 }}: {{ item.1 }}"
