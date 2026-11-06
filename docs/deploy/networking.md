@@ -2,13 +2,13 @@
 
 [← Docs Index](../README.md)
 
-Complete guide to network topology, IP allocation, and request routing in the Intel® AI for Enterprise Solutions stack.
+Complete guide to network topology, IP allocation, and request routing in a stack Toolkit Manager installs and operates.
 
 ---
 
 ## Overview
 
-Intel® AI for Enterprise Solutions provides **external access to AI inference endpoints** through a multi-layer architecture:
+A stack that Toolkit Manager installs and operates provides **external access to AI inference endpoints** through a multi-layer architecture:
 
 ```
 External Client
@@ -26,7 +26,7 @@ KServe Predictor Pod (vLLM inference)
 
 ## Layer 1: MetalLB — LoadBalancer IP Assignment
 
-MetalLB is the component that gives Intel® AI for Enterprise Solutions LoadBalancer IPs on bare-metal, on-premises clusters that have no cloud load balancer to call.
+MetalLB is the component that gives the stack LoadBalancer IPs on bare-metal clusters that have no cloud load balancer to call.
 
 ### Purpose
 
@@ -103,7 +103,7 @@ MetalLB operates in **Layer 2 mode** by default:
 
 ## Layer 2: Envoy Gateway — Ingress & Routing
 
-Envoy Gateway is the ingress and auth-enforcement point for every request Intel® AI for Enterprise Solutions serves.
+Envoy Gateway is the ingress and auth-enforcement point for every request the stack serves.
 
 ### Purpose
 
@@ -201,7 +201,7 @@ spec:
 
 ## Layer 3: KServe — Model Serving
 
-KServe is the model-serving layer Intel® AI for Enterprise Solutions uses to run vLLM and OpenVINO™ Model Server workloads on Kubernetes.
+KServe is the model-serving layer the stack uses to run vLLM and OpenVINO™ Model Server workloads on Kubernetes.
 
 ### HTTPRoute Auto-Creation
 
@@ -255,7 +255,7 @@ spec:
 
 ## Layer 4: Istio Ambient — Service Mesh (mTLS)
 
-In Intel® AI for Enterprise Solutions, all workload namespaces are enrolled in **Istio ambient mode**. This provides transparent mutual TLS (mTLS) between pods via the `ztunnel` DaemonSet — no sidecars injected.
+In a stack Toolkit Manager installs, all workload namespaces are enrolled in **Istio ambient mode**. This provides transparent mutual TLS (mTLS) between pods via the `ztunnel` DaemonSet — no sidecars injected.
 
 - **L4 (ztunnel)**: Automatic mTLS for all east-west pod traffic. Zero config, zero application changes.
 - **Enforcement is STRICT**: a mesh-wide `PeerAuthentication` named `default` in `istio-system` (`mtls.mode: STRICT`) makes ztunnel **reject any plaintext inbound** to a mesh workload. Configurable via `istio_mtls_mode`; applied by the platform `istio` role.
@@ -273,7 +273,7 @@ The ambient mesh is transparent to the request flow described below — it adds 
 
 ## Complete Request Flow
 
-Here is every hop an inference request takes through Intel® AI for Enterprise Solutions, from the external client to the vLLM predictor pod and back.
+Here is every hop an inference request takes through the stack, from the external client to the vLLM predictor pod and back.
 
 ### Scenario: Client Requests Inference
 
@@ -395,7 +395,7 @@ Here is every hop an inference request takes through Intel® AI for Enterprise S
 
 ## Multi-Node Network Topology
 
-A typical multi-node Intel® AI for Enterprise Solutions deployment on-premises looks like this at the network layer.
+A typical multi-node stack that Toolkit Manager installs looks like this at the network layer.
 
 ### Example: 1 Master + 2 Workers
 
@@ -472,7 +472,7 @@ A typical multi-node Intel® AI for Enterprise Solutions deployment on-premises 
 
 ## Multi-Master HA Topology
 
-For production, high-availability Intel® AI for Enterprise Solutions clusters, MetalLB fails over across multiple control-plane nodes instead of relying on a single master.
+For production, high-availability clusters that Toolkit Manager installs, MetalLB fails over across multiple control-plane nodes instead of relying on a single master.
 
 ### Example: 3 Masters + 2 Workers
 
@@ -521,7 +521,7 @@ For production, high-availability Intel® AI for Enterprise Solutions clusters, 
 
 ## External Access Configuration
 
-To reach an Intel® AI for Enterprise Solutions cluster from outside the private network, configure DNS and firewall rules as follows.
+To reach a cluster that Toolkit Manager installed from outside the private network, configure DNS and firewall rules as follows.
 
 ### DNS Setup
 
@@ -589,7 +589,7 @@ backend k8s_masters
 
 ## Performance Optimization
 
-Intel® AI for Enterprise Solutions' networking defaults are already tuned for near-zero overhead; the patterns below explain why and how to go further.
+The networking defaults Toolkit Manager applies are already tuned for near-zero overhead; the patterns below explain why and how to go further.
 
 ### Zero-Overhead Pattern
 
@@ -647,7 +647,7 @@ spec:
 
 ## Troubleshooting
 
-Diagnostic commands for the networking layer of Intel® AI for Enterprise Solutions, in the order a request travels.
+Diagnostic commands for the networking layer of a stack Toolkit Manager installed, in the order a request travels.
 
 ### Check MetalLB IP allocation
 ```bash
@@ -689,7 +689,7 @@ curl -k -H "Authorization: Bearer $TOKEN" \
 
 ## Summary
 
-Intel® AI for Enterprise Solutions networking follows a small set of principles that keep on-premises deployments fast and simple to operate.
+Networking in a stack Toolkit Manager installs follows a small set of principles that keep deployments fast and simple to operate.
 
 **Key Principles:**
 

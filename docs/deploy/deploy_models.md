@@ -2,7 +2,7 @@
 
 [← Docs Index](../README.md)
 
-How to deploy, access, and manage self-hosted LLM inference on Intel® AI for Enterprise Solutions using the `model-manager` CLI.
+How to deploy, access, and manage self-hosted LLM inference on Toolkit Manager using the `model-manager` CLI.
 
 ---
 
