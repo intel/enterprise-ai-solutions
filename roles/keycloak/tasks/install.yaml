@@ -65,6 +65,10 @@
 - name: "keycloak | Reconcile and publish"
   ansible.builtin.include_tasks: expose.yaml
 
+# ── Master realm: served at the port-forward only ────────────────────────────
+- name: "keycloak | Master realm"
+  ansible.builtin.include_tasks: master_realm.yaml
+
 # ── Platform SSO realm (people sign in here for every platform UI) ───────────
 - name: "keycloak | Platform SSO realm"
   ansible.builtin.include_tasks: platform_realm.yaml
