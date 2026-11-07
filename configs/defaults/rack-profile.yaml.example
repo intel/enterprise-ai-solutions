@@ -96,7 +96,7 @@ racks:
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 storage:
-  ceph_fabric_nic: ens801f0           # NIC that Ceph daemons bind to
+  ceph_fabric_nic: ens801f0           # optional; Ceph binds by address (the networks below)
   ceph_public_network: 10.201.1.0/28
   ceph_cluster_network: 10.201.1.0/28
 
@@ -142,7 +142,7 @@ storage:
 #         fabric_nics:
 #           - nic: ens801f0
 #             fabric_ip: 10.201.0.10
-#             leaf: leaf-a             # which ToR switch this NIC connects to
+#             leaf: leaf-a             # optional: derived from the leaf whose fabric_subnet holds fabric_ip
 #           - nic: ens801f1
 #             fabric_ip: 10.202.0.10
 #             leaf: leaf-b             # dual-homed for ECMP

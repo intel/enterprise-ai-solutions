@@ -130,6 +130,27 @@
     tasks_from: facts.yaml
   when: rack_scale_enabled | default(false) | bool
 
+# fabric_inventory writes the Kubespray inventory from rack-profile.yaml. The
+# kubernetes role re-renders the same hosts.yaml from nodes.yaml whenever
+# nodes_control_plane is set, so nodes there would replace the rack-scale
+# inventory and its fabric groups. Install only: that is when it is rendered.
+- name: "Preflight - Rack scale: fail if nodes.yaml also defines nodes"
+  ansible.builtin.fail:
+    msg: >-
+      rack_scale_enabled is true, so the nodes come from rack-profile.yaml, but
+      {{ _nodes_yaml_set | join(' and ') }} {{ 'is' if _nodes_yaml_set | length == 1 else 'are' }}
+      also set (nodes.yaml or global_config.yaml). The kubernetes role would
+      overwrite the rack-scale inventory with those nodes. Remove them from
+      {{ env_dir | default('env/<env>') }}/nodes.yaml, or set rack_scale_enabled: false.
+  vars:
+    _nodes_yaml_set: >-
+      {{ (['nodes_control_plane'] if nodes_control_plane | default([], true) | length > 0 else [])
+         + (['nodes_workers'] if nodes_workers | default([], true) | length > 0 else []) }}
+  when:
+    - rack_scale_enabled | default(false) | bool
+    - component_action | default('install') == 'install'
+    - _nodes_yaml_set | length > 0
+
 # ── Connectivity check (install only) ────────────────────────────────────────
 
 - name: "Preflight - Proxy: fail fast if proxy set without no_proxy"
