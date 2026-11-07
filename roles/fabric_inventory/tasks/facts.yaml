@@ -48,6 +48,59 @@
             rook_ceph_public_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_public_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
             rook_ceph_cluster_network: "{{ (_rack_parsed.ceph_yml | regex_search('ceph_cluster_network:\\s*\"([^\"]+)\"', '\\1') | default([''], true)) | first | default('') }}"
 
+        # On rack-scale, storage.nodes in rack-profile.yaml is the only source of the
+        # Ceph OSD devices. A rook_ceph_devices in global_config.yaml is an extra var,
+        # which set_fact cannot override, so a different one stops the run below
+        # rather than being used.
+        - name: "fabric_inventory | facts | Export the Ceph devices from the rack profile"
+          ansible.builtin.set_fact:
+            rook_ceph_devices: "{{ _rack_parsed.summary.ceph_devices }}"
+          when: _rack_parsed.summary.ceph_devices | length > 0
+
+        # Here rather than in the rook role, so a missing or conflicting device list
+        # stops the install before Kubespray, not after it.
+        - name: "fabric_inventory | facts | Fail if rack-profile.yaml lists no Ceph devices"
+          ansible.builtin.fail:
+            msg: >-
+              storage_backend is ceph, but rack-profile.yaml lists no Ceph OSD devices.
+              Add each storage node and its devices under storage.nodes, for example
+              storage: {nodes: [{name: ceph1, devices: [nvme1n1]}]}.
+              {{ 'Move the devices from rook_ceph_devices in global_config.yaml there, then
+              delete it from global_config.yaml.' if rook_ceph_devices | default({}) | length > 0 else '' }}
+          when:
+            - (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph'
+            - component_action | default('install') == 'install'
+            - _rack_parsed.summary.ceph_devices | length == 0
+
+        # Teardown without devices still removes Ceph; only the disk wipe needs
+        # them. Stop when a wipe was asked for, rather than skip it silently.
+        - name: "fabric_inventory | facts | Fail if a Ceph disk wipe is asked for without devices"
+          ansible.builtin.fail:
+            msg: >-
+              rook_ceph_teardown_wipe_devices is true, but rack-profile.yaml lists no
+              Ceph OSD devices, so the disks cannot be wiped. Add the storage nodes'
+              devices back under storage.nodes, or set rook_ceph_teardown_wipe_devices:
+              false to tear down without wiping (the disks then need wiping by hand
+              before Ceph is installed again).
+          when:
+            - (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph'
+            - component_action | default('install') == 'teardown'
+            - rook_ceph_teardown_wipe_devices | default(false) | bool
+            - _rack_parsed.summary.ceph_devices | length == 0
+
+        - name: "fabric_inventory | facts | Fail if global_config.yaml lists different Ceph devices"
+          ansible.builtin.fail:
+            msg: >-
+              rook_ceph_devices in global_config.yaml ({{ rook_ceph_devices }}) differs
+              from storage.nodes in rack-profile.yaml ({{ _rack_parsed.summary.ceph_devices }}).
+              On rack-scale the rack profile is the only source of the Ceph devices:
+              delete rook_ceph_devices from global_config.yaml.
+          when:
+            - (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph'
+            - component_action | default('install') in ['install', 'teardown']
+            - _rack_parsed.summary.ceph_devices | length > 0
+            - rook_ceph_devices != _rack_parsed.summary.ceph_devices
+
         # Behind a corporate proxy the fabric subnets must be in no_proxy, or
         # Kubespray and API calls to fabric IPs go through the proxy. no_proxy
         # arrives from global_config.yaml as an extra var, which set_fact

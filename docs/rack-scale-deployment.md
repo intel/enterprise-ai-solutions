@@ -102,10 +102,14 @@ vim env/rack/rack-profile.yaml            # edit for your hardware — see below
 > inventory from your rack profile.
 
 > [!Important]
-> **Ceph storage:** `rook_ceph_devices` must still be set in `global_config.yaml`
-> even though storage nodes and devices are defined in `rack-profile.yaml`. The
-> Ceph network CIDRs are derived automatically from the profile, but the device
-> list is not yet. This duplication will be removed in a future release.
+> **Ceph storage:** the OSD devices and the Ceph networks both come from the
+> `storage` section of `rack-profile.yaml`; set only `storage_backend: ceph` in
+> `global_config.yaml`. A device can be a bare name (`nvme1n1`) or a path under
+> `/dev`. With `storage_backend: ceph`, install stops before Kubespray if the profile
+> lists no devices, and install and teardown stop if `global_config.yaml` still sets a
+> different `rook_ceph_devices`. Delete `rook_ceph_devices` from `global_config.yaml`.
+> Teardown also stops when `rook_ceph_teardown_wipe_devices: true` asks for a disk wipe
+> but the profile lists no devices.
 
 ---
 
@@ -204,9 +208,9 @@ storage:
   ceph_public_network: 10.201.1.0/28    # client → OSD traffic
   ceph_cluster_network: 10.201.1.0/28   # OSD → OSD replication
 
-  nodes:
+  nodes:                                 # the Ceph storage nodes and their OSD devices
     - name: master1                      # must match a node name above
-      devices: [nvme1n1]                 # raw block devices (NEVER the OS disk)
+      devices: [nvme1n1]                 # raw block devices (NEVER the OS disk); nvme1n1 or /dev/...
     - name: master2
       devices: [nvme1n1]
 ```
@@ -518,6 +522,10 @@ and continue.
 | BGP sessions not Established (Clos) | Leaf switch misconfigured | Verify `peer_ip`, `asn`, and `fabric_subnet` match the switch config |
 | `topology=l2 does not use leafs` | L2 profile has `leafs:` block | Remove the `leafs:` section — L2 is a flat broadcast domain |
 | `topology=none ... has fabric_nics` | None profile has fabric NICs | Remove `fabric_nics` from all nodes — topology=none uses mgmt_ip only |
+| `storage.nodes entry 'X' is not a node defined under racks` / `needs a non-empty devices list` | Storage section out of step with the racks | Use the node names from `racks`, and give each storage node its OSD devices |
+| `storage_backend is ceph, but rack-profile.yaml lists no Ceph OSD devices` | Devices not in the profile (or still only in `global_config.yaml`) | Add `storage.nodes` with each storage node's devices to `rack-profile.yaml` |
+| `rook_ceph_devices in global_config.yaml ... differs from storage.nodes` | Devices set in two places | Delete `rook_ceph_devices` from `global_config.yaml`; the rack profile is the only source |
+| `rook_ceph_teardown_wipe_devices is true, but rack-profile.yaml lists no Ceph OSD devices` | Disk wipe asked for, devices gone from the profile | Add the devices back to `storage.nodes`, or set `rook_ceph_teardown_wipe_devices: false` and wipe the disks by hand |
 | `topology=none ... calico_mode must be vxlan` | None + BGP | Change `calico_mode: vxlan` — no fabric to run BGP over |
 
 ---
