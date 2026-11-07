@@ -58,9 +58,13 @@ failed rack-scale install.
   sets the renderer for the fabric NICs on every node. Keep the default
   `networkd`: it works whether or not NetworkManager runs for a node's other
   NICs, because netplan then tells NetworkManager to leave the fabric NICs
-  alone. No saved NetworkManager profile may configure a fabric NIC; the
-  fabric step stops early and names the profile if one does. Use
-  `NetworkManager` only if it is enabled on every node.
+  alone. No saved NetworkManager profile may configure a fabric NIC, and no
+  other netplan file may give one an address, DHCP, routes or a new name, or
+  put it in a bond or bridge (cloud-init's `50-cloud-init.yaml` often does):
+  netplan merges it with the fabric file. The fabric step stops early and
+  names the file; `rack_scale_netplan_allow_other_definitions: true` turns
+  that into a warning. Use `NetworkManager` only if it is enabled on every
+  node.
 - **Storage disks:** the disks listed for Ceph must be empty, not mounted, and
   not the OS disk. NVMe device names can change across reboots, so check
   `lsblk` on each node right before deploying.

@@ -47,6 +47,12 @@
 # configuration for a fabric NIC, used to fail later with a misleading
 # "address not present" error.
 #
+# Any other netplan file that configures a fabric NIC (cloud-init's
+# 50-cloud-init.yaml, an installer's bond or bridge) conflicts as well: netplan
+# merges it with the fabric file, so the NIC ends up with both sets of
+# addresses or is claimed by a bond. A definition that configures nothing
+# (dhcp4: no, optional: true) is harmless.
+#
 # NetworkManager running next to networkd is fine: for renderer networkd,
 # netplan also tells NetworkManager to leave the fabric NICs alone, so
 # NetworkManager can keep the node's other NICs. What conflicts is a saved
@@ -90,11 +96,20 @@
         for dev, d in eths.items():
             if not isinstance(d, dict):
                 continue
-            if (d.get('renderer') or eths.get('renderer') or net.get('renderer')) != 'NetworkManager':
-                continue
             m = d.get('match') or {}
-            for n in claimed(m.get('name') if m else dev, m.get('macaddress')):
-                print("nmprof=%s in %s (profile '%s')" % (n, f, (d.get('networkmanager') or {}).get('name', dev)))
+            hits = claimed(m.get('name') if m else dev, m.get('macaddress'))
+            if (d.get('renderer') or eths.get('renderer') or net.get('renderer')) == 'NetworkManager':
+                for n in hits:
+                    print("nmprof=%s in %s (profile '%s')" % (n, f, (d.get('networkmanager') or {}).get('name', dev)))
+                continue
+            keys = [k for k in ('addresses', 'dhcp4', 'dhcp6', 'routes', 'gateway4', 'gateway6', 'set-name') if d.get(k)]
+            for n in hits if keys else []:
+                print("netplandef=%s in %s ('%s' sets %s)" % (n, f, dev, ', '.join(keys)))
+        for kind in ('bonds', 'bridges'):
+            for dev, d in (net.get(kind) or {}).items():
+                for n in nics:
+                    if isinstance(d, dict) and n in (d.get('interfaces') or []):
+                        print("netplandef=%s in %s (member of %s '%s')" % (n, f, kind[:-1], dev))
     # NetworkManager keyfiles
     for f in sorted(glob.glob('/etc/NetworkManager/system-connections/*')):
         c = configparser.ConfigParser(interpolation=None, strict=False)
@@ -145,6 +160,43 @@
       delete '<profile>', or remove the file if NetworkManager is not running)
       and re-run. NetworkManager can keep managing the node's other NICs.
   when: _nm_profiles | length > 0
+  loop: "{{ _netplan_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "fabric_netplan | Fail if another netplan file configures a fabric NIC"
+  vars:
+    # "<nic> in <file> ('<entry>' sets <keys>)" or "(member of bond '<name>')"
+    _other_defs: "{{ item.stdout_lines | select('match', '^netplandef=') | map('regex_replace', '^netplandef=', '') | list }}"
+  ansible.builtin.fail:
+    msg: >-
+      On {{ item.item }} ({{ hostvars[item.item].node_hostname | default(item.item) }})
+      another netplan file configures a fabric NIC:
+      {{ _other_defs | join('; ') }}. netplan merges it with
+      {{ rack_scale_netplan_dest }}, so the NIC would carry both configurations
+      (for example a second address). Remove the NIC from that file (for
+      cloud-init, also stop it rewriting the file: set
+      network: {config: disabled} in /etc/cloud/cloud.cfg.d/) and re-run, or
+      set rack_scale_netplan_allow_other_definitions: true to continue with a
+      warning.
+  when:
+    - _other_defs | length > 0
+    - not (rack_scale_netplan_allow_other_definitions | bool)
+  loop: "{{ _netplan_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: "fabric_netplan | Warn that another netplan file configures a fabric NIC"
+  vars:
+    _other_defs: "{{ item.stdout_lines | select('match', '^netplandef=') | map('regex_replace', '^netplandef=', '') | list }}"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: on {{ item.item }} another netplan file configures a fabric NIC:
+      {{ _other_defs | join('; ') }}. Continuing because
+      rack_scale_netplan_allow_other_definitions is true.
+  when:
+    - _other_defs | length > 0
+    - rack_scale_netplan_allow_other_definitions | bool
   loop: "{{ _netplan_probe.results }}"
   loop_control:
     label: "{{ item.item }}"
