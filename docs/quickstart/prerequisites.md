@@ -61,6 +61,19 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 
 ---
 
+## Existing container runtimes
+
+When the installer builds the cluster (any install that isn't onto an existing cluster), Kubespray installs
+containerd and **removes Docker** from every node where it is running. All containers are stopped and removed, the
+docker and containerd packages are uninstalled, and `/var/lib/docker` (every pulled image) and `/etc/docker` are deleted.
+
+The installer checks for this before it changes anything on the hosts. It lists the nodes and asks before going on;
+`--force` answers yes. Without a terminal (CI) it stops, unless you pass `--force` or set
+`kubernetes_docker_removal_ack: true` in `global_config.yaml`. To keep your images, back them up first (`docker save`), or install onto a cluster you already
+run by setting `existing_kubernetes` in `global_config.yaml`. In that case Kubespray never runs.
+
+---
+
 ## Credentials
 
 - **Hugging Face token** — required only for gated models (Llama, Mistral, Gemma, etc.). Get one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (free account). Export as `HF_TOKEN=hf_...` before deploying those models.
