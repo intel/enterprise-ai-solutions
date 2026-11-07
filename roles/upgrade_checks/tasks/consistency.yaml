@@ -1,0 +1,87 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# A layer's data-consistency probes, listed in data_consistency.yaml next to its
+# components.yaml (format: docs/reference/adding_solutions.md). Parameters, set
+# by the caller (playbooks/includes/run_layer.yaml):
+#   upgrade_record_layer:       layer whose stores are counted
+#   upgrade_consistency_phase:  pre (before the first mutation) | post (after
+#                               the last; gives the verdict) | end (removes the
+#                               temporary files)
+- name: "upgrade_checks | Remove the {{ upgrade_record_layer }} data-consistency temporary files"
+  ansible.builtin.file:
+    path: "{{ upgrade_consistency_tmp_dir }}"
+    state: absent
+  when: upgrade_consistency_phase == 'end'
+
+- name: "upgrade_checks | Count the {{ upgrade_record_layer }} stores"
+  when: upgrade_consistency_phase in ['pre', 'post']
+  block:
+    - name: "upgrade_checks | Find the {{ upgrade_record_layer }} probe list"
+      ansible.builtin.set_fact:
+        _probe_list: "{{ _probe_file if _layer_dirs.get(upgrade_record_layer) and _probe_file is file else '' }}"
+        _probe_counts: {}
+      vars:
+        _probe_file: "{{ _layer_dirs.get(upgrade_record_layer) }}/data_consistency.yaml"
+
+    # Also for a layer that no longer ships probes: no snapshot outlives its run.
+    - name: "upgrade_checks | Remove the {{ upgrade_record_layer }} snapshots of the previous run"
+      ansible.builtin.file:
+        path: "{{ upgrade_report_dir }}/{{ upgrade_record_layer }}-consistency-{{ _snapshot_phase }}.yaml"
+        state: absent
+      loop: [pre, post]
+      loop_control:
+        loop_var: _snapshot_phase
+      when: upgrade_consistency_phase == 'pre'
+
+    - name: "upgrade_checks | Take the {{ upgrade_record_layer }} {{ upgrade_consistency_phase }}-run snapshot"
+      when: _probe_list | length > 0
+      block:
+        - name: "upgrade_checks | Create the data-consistency temporary directory"
+          ansible.builtin.file:
+            path: "{{ upgrade_consistency_tmp_dir }}"
+            state: directory
+            mode: "0700"
+
+        # The loop is templated before the block's when: guard the lookup.
+        - name: "upgrade_checks | Run the {{ upgrade_record_layer }} probes"
+          ansible.builtin.include_tasks: consistency_probe.yaml
+          loop: "{{ (lookup('ansible.builtin.file', _probe_list) | from_yaml).probes | default([]) if _probe_list else [] }}"
+          loop_control:
+            loop_var: upgrade_consistency_probe
+
+        - name: "upgrade_checks | Create the report directory"
+          ansible.builtin.include_tasks: report_dir.yaml
+
+        - name: "upgrade_checks | Write {{ upgrade_record_layer }}-consistency-{{ upgrade_consistency_phase }}.yaml"
+          ansible.builtin.copy:
+            dest: "{{ upgrade_report_dir }}/{{ upgrade_record_layer }}-consistency-{{ upgrade_consistency_phase }}.yaml"
+            content: >-
+              {{ {'layer': upgrade_record_layer,
+                  'phase': upgrade_consistency_phase,
+                  'takenAt': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                  'stores': _probe_counts} | to_nice_yaml(indent=2, sort_keys=false) }}
+            mode: "0644"
+
+    # None, not {}: a layer without probes is skipped, never compared as empty.
+    - name: "upgrade_checks | Keep the {{ upgrade_record_layer }} pre-run counts"
+      ansible.builtin.set_fact:
+        _layer_consistency_pre: "{{ _layer_consistency_pre | default({}) | combine({upgrade_record_layer: _probe_counts if _probe_list else none}) }}"
+      when: upgrade_consistency_phase == 'pre'
+
+    - name: "upgrade_checks | Give the {{ upgrade_record_layer }} data-consistency verdict"
+      ansible.builtin.set_fact:
+        _layer_consistency: >-
+          {{ _layer_consistency | default({}) | combine({upgrade_record_layer:
+               _layer_consistency_pre.get(upgrade_record_layer)
+               | consistency_verdict(_probe_counts, upgrade_record_layer, _layer_supports_upgrade[upgrade_record_layer])}) }}
+      when: upgrade_consistency_phase == 'post'
+
+    - name: "upgrade_checks | Show the {{ upgrade_record_layer }} data-consistency verdict"
+      ansible.builtin.debug:
+        msg: >-
+          {{ upgrade_record_layer }} data-consistency: {{ _layer_consistency[upgrade_record_layer].verdict }}
+          {{- ' (gating)' if _layer_consistency[upgrade_record_layer].gating
+              else ' (advisory)' if _layer_consistency[upgrade_record_layer].verdict == 'blocking' else '' }}
+          — {{ _layer_consistency[upgrade_record_layer].reason }}
+      when: upgrade_consistency_phase == 'post'

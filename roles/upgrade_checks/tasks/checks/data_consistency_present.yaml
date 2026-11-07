@@ -1,0 +1,13 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# A gating layer (supports.upgrade: true) with no data_consistency.yaml cannot be
+# compared before and after; refuse before anything runs rather than halt after
+# (consistency_verdict, which judges the comparison itself, stays untouched).
+- name: "upgrade_checks | data-consistency-present"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: >-
+      {{ _upgrade_verdicts + [item | data_consistency_present_verdict(_layer_supports_upgrade[item], _present)] }}
+  vars:
+    _present: "{{ ((_layer_dirs[item] ~ '/data_consistency.yaml') is file) if _layer_dirs.get(item) else false }}"
+  loop: "{{ _check_layers }}"
