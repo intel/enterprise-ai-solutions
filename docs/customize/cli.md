@@ -2,7 +2,7 @@
 
 [← Docs Index](../README.md)
 
-All `es_auto_installer.sh` and `model-manager` commands for Intel® AI for Enterprise Solutions run from the repo root.
+All `es_auto_installer.sh` and `model-manager` commands for Toolkit Manager run from the repo root.
 
 ```
 ./es_auto_installer.sh <action> [target] [--env <name>] [options]
@@ -30,9 +30,9 @@ Create a new environment directory and seed it with configuration for the specif
 
 ```bash
 ./es_auto_installer.sh init inference                    # standard inference stack
-./es_auto_installer.sh init erag                         # inference + Intel AI for Enterprise RAG (default chatqna flavour)
-./es_auto_installer.sh init erag --flavour docsum        # Intel AI for Enterprise RAG with docsum pipeline preset
-./es_auto_installer.sh init agent-toolkit                # inference + Intel Agent Toolkit
+./es_auto_installer.sh init erag                         # inference + Intel® Chatbot Toolkit (default chatqna flavour)
+./es_auto_installer.sh init erag --flavour docsum        # Intel® Chatbot Toolkit with docsum pipeline preset
+./es_auto_installer.sh init agent-toolkit                # inference + Intel® Agent Toolkit
 ./es_auto_installer.sh init erag --env prod              # seed env/prod/ instead of env/local/
 ./es_auto_installer.sh init inference --upgrade          # move already-cloned repos to pinned revs
 ```
@@ -65,10 +65,10 @@ Deploy components. Dependencies are resolved automatically.
 # A single component, skipping dependencies
 ./es_auto_installer.sh install metallb --only --env local
 
-# Opt-in Intel AI for Enterprise RAG layer (requires init erag first)
+# Opt-in Intel® Chatbot Toolkit (requires init erag first)
 ./es_auto_installer.sh install erag --env local
 
-# Opt-in Intel Agent Toolkit layer (requires init agent-toolkit first)
+# Opt-in Intel® Agent Toolkit (requires init agent-toolkit first)
 ./es_auto_installer.sh install agent-toolkit --env local
 
 # Override a config value at runtime (no file edit needed)
@@ -107,7 +107,7 @@ Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `
 # Remove a single component
 ./es_auto_installer.sh teardown keycloak --env local
 
-# Remove the Intel AI for Enterprise RAG layer (keeps platform and inference)
+# Remove the Intel® Chatbot Toolkit (keeps platform and inference)
 ./es_auto_installer.sh teardown erag --env local
 
 # Remove a layer but skip dependencies (e.g., tear down cluster without uninstalling erag first)

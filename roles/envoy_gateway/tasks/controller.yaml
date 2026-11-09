@@ -215,6 +215,10 @@
           replicas: "{{ gateway_envoy_replicas | int }}"
         envoyService:
           type: ClusterIP
+    _eg_workload: "{{ 'envoyDaemonSet' if _envoy_gateway_proxy_shape == 'controlplane_daemonset' else 'envoyDeployment' }}"
+    _eg_image: >-
+      {{ {_eg_workload: {'container': {'image': gateway_platform.envoy_proxy_image}}}
+         if gateway_platform.envoy_proxy_image | default('') | length > 0 else {} }}
   kubernetes.core.k8s:
     state: present
     definition:
@@ -226,7 +230,7 @@
       spec:
         provider:
           type: Kubernetes
-          kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] }}"
+          kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"
 
 - name: "envoy_gateway | Create GatewayClass"
   kubernetes.core.k8s:

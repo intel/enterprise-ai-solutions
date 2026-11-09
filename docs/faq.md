@@ -2,13 +2,13 @@
 
 [← Docs Index](README.md)
 
-Short answers with links to the full detail. New here? Start with [Meet Intel® AI for Enterprise Solutions](meet/meet.md).
+Short answers with links to the full detail. New here? Start with [Meet Toolkit Manager](meet/meet.md).
 
 ---
 
 ## Getting started
 
-### What does Intel® AI for Enterprise Solutions actually install?
+### What does Toolkit Manager actually install?
 
 A complete, self-hosted AI platform: Kubernetes, storage, service mesh, ingress, identity, observability, model serving, and an AI gateway that exposes OpenAI-compatible endpoints. Optionally, the retrieval-augmented generation application on top. One script, `es_auto_installer.sh`, drives all of it.
 
@@ -34,7 +34,7 @@ No. Inference runs on Intel® Xeon® CPUs, with NUMA-aware CPU pinning and vLLM 
 
 ### How long does a full install take?
 
-Roughly 15 to 20 minutes for infrastructure, platform, and inference on a single node, plus model download time. The RAG layer adds another 10 to 20 minutes.
+Roughly 15 to 20 minutes for infrastructure, platform, and inference on a single node, plus model download time. Intel® Chatbot Toolkit adds another 10 to 20 minutes.
 
 ---
 
