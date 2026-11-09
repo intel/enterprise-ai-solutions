@@ -123,8 +123,9 @@ probes:                                  # run in this order
 
 Each probe is included in the installer's play with the env's configuration loaded (not the
 defaults of your roles; it may `include_role` them). It gets `data_consistency_phase` (`pre` or
-`post`) and `data_consistency_tmp_dir` (removed when the layer's run ends), must not change
-anything, and sets `data_consistency_counts` to one entry per store it counts:
+`post`), `data_consistency_tmp_dir` (removed when the layer's run ends) and
+`data_consistency_layer_dir` (the absolute path of the layer's directory, the one holding
+`components.yaml`, for files the probe ships beside it), must not change anything, and sets `data_consistency_counts` to one entry per store it counts:
 
 ```yaml
 - name: Report the counts

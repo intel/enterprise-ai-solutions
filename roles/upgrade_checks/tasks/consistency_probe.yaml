@@ -14,6 +14,7 @@
       vars:
         data_consistency_phase: "{{ upgrade_consistency_phase }}"
         data_consistency_tmp_dir: "{{ upgrade_consistency_tmp_dir }}"
+        data_consistency_layer_dir: "{{ _layer_dirs[upgrade_record_layer] }}"
 
     - name: "upgrade_checks | Keep the counts of {{ upgrade_consistency_probe }}"
       ansible.builtin.set_fact:
