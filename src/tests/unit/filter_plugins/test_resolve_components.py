@@ -80,9 +80,9 @@ def test_teardown_pulls_in_used_by_from_unreached_layer():
     assert got == ["langfuse", "seaweedfs"]
 
 
-def test_teardown_disabled_staying_user_does_not_keep_it():
-    components = fixture(lf=False)
-    assert "seaweedfs" in teardown(components, "observability", include_deps=False)
+def test_teardown_staying_user_disabled_by_string_does_not_keep_it():
+    components = fixture(lf="False")
+    assert teardown(components, "observability", include_deps=False) == ["observability", "seaweedfs"]
 
 
 def test_teardown_skip_removes_used_by_again():

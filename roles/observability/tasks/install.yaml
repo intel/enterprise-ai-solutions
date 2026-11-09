@@ -35,7 +35,7 @@
   ansible.builtin.include_tasks: object_store_credentials.yaml
 
 - name: "observability | Grafana sign-in client"
-  when: _obs_grafana_sso | bool
+  when: observability_grafana_sso | bool
   block:
     - name: "observability | Keycloak client for Grafana"
       ansible.builtin.include_role:

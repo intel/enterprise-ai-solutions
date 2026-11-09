@@ -227,4 +227,4 @@
     tasks_from: check_sign_in.yaml
   vars:
     keycloak_sign_in: {name: Grafana, url: "{{ observability_grafana_url }}/"}
-  when: _obs_grafana_sso | bool and observability_gateway_publish | bool
+  when: observability_grafana_sso | bool and observability_gateway_publish | bool

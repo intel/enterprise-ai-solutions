@@ -273,11 +273,11 @@
             # right ownership on the volume, so the pre-chown is redundant.
             initChownData:
               enabled: false
-            grafana.ini: "{{ _ini | combine(_obs_grafana_ini_sso if _obs_grafana_sso | bool else {}, recursive=true) }}"
+            grafana.ini: "{{ _ini | combine(_obs_grafana_ini_sso if observability_grafana_sso | bool else {}, recursive=true) }}"
             # Client secret from its Secret, never in the Helm values.
             envValueFrom: >-
               {{ {'GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET': {'secretKeyRef': {'name': 'grafana-sso', 'key': 'client-secret'}}}
-                 if _obs_grafana_sso | bool else {} }}
+                 if observability_grafana_sso | bool else {} }}
             plugins:
               - grafana-metricsdrilldown-app
               - grafana-lokiexplore-app
@@ -660,13 +660,13 @@
   ansible.builtin.debug:
     msg: >-
       Grafana still runs with older settings (expected root_url {{ observability_grafana_url }}/,
-      Keycloak sign-in {{ 'on' if _obs_grafana_sso | bool else 'off' }}). Reinstall it:
+      Keycloak sign-in {{ 'on' if observability_grafana_sso | bool else 'off' }}). Reinstall it:
       teardown observability, then install observability.
   when:
     - _ini['grafana.ini'] is defined
     - (observability_grafana_url ~ '/') not in _ini['grafana.ini']
-      or (_obs_grafana_sso | bool) != ('[auth.generic_oauth]' in _ini['grafana.ini'])
-      or (_obs_grafana_sso | bool and (observability_grafana_url ~ '/oauth2/logout') not in _ini['grafana.ini'])
+      or (observability_grafana_sso | bool) != ('[auth.generic_oauth]' in _ini['grafana.ini'])
+      or (observability_grafana_sso | bool and (observability_grafana_url ~ '/oauth2/logout') not in _ini['grafana.ini'])
 
 - name: "observability | Publish Grafana"
   ansible.builtin.include_tasks: grafana_route.yaml
