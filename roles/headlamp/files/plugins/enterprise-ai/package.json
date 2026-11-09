@@ -37,7 +37,18 @@
     "vitest": "4.1.12",
     "@vitest/coverage-istanbul": "4.1.12",
     "@vitest/mocker": "4.1.12",
-    "webpack-dev-middleware": "7.4.6"
+    "webpack-dev-middleware": "7.4.6",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.5"
+    },
+    "@joshwooding/vite-plugin-react-docgen-typescript": {
+      "glob": "14.0.4"
+    },
+    "quick-temp": {
+      "rimraf": {
+        "glob": "14.0.4"
+      }
+    }
   },
   "devDependencies": {
     "@kinvolk/headlamp-plugin": "0.14.0"
