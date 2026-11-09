@@ -6,6 +6,7 @@ import os
 import sys
 
 import pytest
+import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "filter_plugins"))
 
@@ -92,6 +93,18 @@ def test_core_record_not_legacy_and_kept():
     assert lifted["dependencies"] == {"infrastructure": "1.1.0"}
     assert lifted["installedBy"]["installerVersion"] == "1.1.0"
     assert lifted["haltReason"] == "component-failed"
+
+
+def test_record_write_replaces_the_configmap():
+    # A merge patch would keep the labels of a legacy record core takes over.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "roles", "upgrade_checks", "tasks", "record.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    block = next(t for t in tasks if "block" in t)["block"]
+    write = next(t for t in block if t["kubernetes.core.k8s"]["state"] == "present")
+    assert write["kubernetes.core.k8s"]["force"] is True
+    assert write["kubernetes.core.k8s"]["definition"]["metadata"]["labels"] == "{{ upgrade_record_labels }}"
 
 
 @pytest.mark.parametrize("data, expected", [

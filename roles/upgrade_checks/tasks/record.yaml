@@ -72,6 +72,8 @@
     - name: "upgrade_checks | Write the {{ upgrade_record_layer }} record as {{ upgrade_record_status }}"
       kubernetes.core.k8s:
         state: present
+        # Replace, not merge: a legacy record taken over must lose the labels its layer wrote.
+        force: true
         definition:
           apiVersion: v1
           kind: ConfigMap
