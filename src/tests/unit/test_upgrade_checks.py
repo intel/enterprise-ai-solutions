@@ -108,6 +108,29 @@ def test_record_write_replaces_the_configmap():
     assert write["kubernetes.core.k8s"]["definition"]["metadata"]["labels"] == "{{ upgrade_record_labels }}"
 
 
+def _tasks(tasks):
+    for task in tasks:
+        yield task
+        for key in ("block", "rescue", "always"):
+            yield from _tasks(task.get(key, []))
+
+
+@pytest.mark.parametrize("consistency_halt", [True, False])
+def test_halted_write_never_passes_omit_as_the_halt_reason(consistency_halt):
+    # omit is only valid as a module argument; in include_role vars it reaches record.yaml as a string.
+    jinja2 = pytest.importorskip("jinja2")
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "playbooks", "includes", "run_layer.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    write = next(t for t in _tasks(tasks) if t.get("name") == "Record {{ layer }} as halted")
+    omit = "__omit_place_holder__"
+    reason = jinja2.Template(write["vars"]["upgrade_record_halt_reason"]).render(
+        _layer_consistency_halt=consistency_halt, omit=omit)
+    assert omit not in reason
+    assert reason == ("data-consistency" if consistency_halt else "")
+
+
 @pytest.mark.parametrize("data, expected", [
     ({"layer_version": "1.1.0"}, "1.1.0"),
     ({"solution_version": "3.0.0"}, "3.0.0"),
