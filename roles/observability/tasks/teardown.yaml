@@ -297,13 +297,12 @@
       failed_when: false
 
     # The namespace takes them along on OpenShift; the Helm stack's go explicitly,
-    # as before. SeaweedFS's stay with it.
+    # as before. SeaweedFS's are its own role's (found by name, as there).
     - name: "observability | List PVCs"
       kubernetes.core.k8s_info:
         api_version: v1
         kind: PersistentVolumeClaim
         namespace: "{{ observability_namespace }}"
-        label_selectors: "{{ ['app.kubernetes.io/name!=seaweedfs'] if _obs_keep_namespace | bool else [] }}"
       register: _obs_pvcs
       when: not _observability_from_olm | bool or _obs_keep_namespace | bool
       failed_when: false
@@ -315,7 +314,7 @@
         name: "{{ item.metadata.name }}"
         namespace: "{{ observability_namespace }}"
         state: absent
-      loop: "{{ _obs_pvcs.resources | default([]) }}"
+      loop: "{{ _obs_pvcs.resources | default([]) | rejectattr('metadata.name', 'search', _obs_seaweedfs_fullname) | list }}"
       loop_control:
         label: "{{ item.metadata.name }}"
       failed_when: false

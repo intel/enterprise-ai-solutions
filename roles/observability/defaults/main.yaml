@@ -54,7 +54,6 @@ observability_grafana_sso: "{{ keycloak_enabled | default(true) | bool }}"
 observability_grafana_oidc_client_id: "grafana"
 # Groups the gateway admits; empty admits every signed-in realm user.
 observability_grafana_allowed_groups: []
-_obs_grafana_sso: "{{ observability_grafana_sso | bool }}"
 # Grafana's settings for it, on both stacks (strings: the Grafana CR takes no others).
 # The browser goes to Keycloak's public URL; Grafana's own calls stay in-cluster.
 _obs_grafana_oidc: "{{ keycloak_client_issuer | default('') }}/protocol/openid-connect"

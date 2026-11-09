@@ -55,11 +55,11 @@
 - name: "observability | Remove the other Grafana gateway policy"
   ansible.builtin.include_role:
     name: gateway
-    tasks_from: "{{ 'route_auth_exempt.yaml' if _obs_grafana_sso | bool else 'route_sso.yaml' }}"
+    tasks_from: "{{ 'route_auth_exempt.yaml' if observability_grafana_sso | bool else 'route_sso.yaml' }}"
   vars:
     gateway_route_name: grafana
     gateway_route_namespace: "{{ observability_namespace }}"
-    gateway_route_policy_name: "{{ 'grafana-no-auth' if _obs_grafana_sso | bool else 'grafana-sso' }}"
+    gateway_route_policy_name: "{{ 'grafana-no-auth' if observability_grafana_sso | bool else 'grafana-sso' }}"
     gateway_route_state: absent
   when: observability_gateway_publish | bool
 
@@ -78,7 +78,7 @@
       client_secret_name: grafana-sso
       redirect_url: "{{ observability_grafana_url }}/oauth2/callback"
       allowed_groups: "{{ observability_grafana_allowed_groups }}"
-  when: observability_gateway_publish | bool and _obs_grafana_sso | bool
+  when: observability_gateway_publish | bool and observability_grafana_sso | bool
 
 - name: "observability | Bypass gateway auth for Grafana (Keycloak sign-in off)"
   ansible.builtin.include_role:
@@ -88,4 +88,4 @@
     gateway_route_name: grafana
     gateway_route_namespace: "{{ observability_namespace }}"
     gateway_route_policy_name: grafana-no-auth
-  when: observability_gateway_publish | bool and not (_obs_grafana_sso | bool)
+  when: observability_gateway_publish | bool and not (observability_grafana_sso | bool)

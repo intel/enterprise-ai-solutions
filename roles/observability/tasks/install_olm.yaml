@@ -428,7 +428,7 @@
       volumeMounts: >-
         {{ [{'name': 'sc-dashboard-volume', 'mountPath': '/tmp/dashboards'},
             {'name': 'sc-dashboard-provider', 'mountPath': '/etc/grafana/provisioning/dashboards'}]
-           + ([{'name': 'grafana-sso', 'mountPath': '/etc/grafana-sso', 'readOnly': true}] if _obs_grafana_sso | bool else []) }}
+           + ([{'name': 'grafana-sso', 'mountPath': '/etc/grafana-sso', 'readOnly': true}] if observability_grafana_sso | bool else []) }}
     # One sidecar per label: ours from every namespace, OpenShift's Kubernetes
     # dashboards from openshift-config-managed.
     _obs_os_sidecar_env:
@@ -485,10 +485,10 @@
           auth: >-
             {{ {'login_maximum_lifetime_duration': '3h', 'login_maximum_inactive_lifetime_duration': '30m',
                 'token_rotation_interval_minutes': '10'}
-               | combine(_obs_grafana_ini_sso.auth if _obs_grafana_sso | bool else {}) }}
+               | combine(_obs_grafana_ini_sso.auth if observability_grafana_sso | bool else {}) }}
           auth.generic_oauth: >-
             {{ _obs_grafana_ini_sso['auth.generic_oauth'] | combine({'client_secret': '$__file{/etc/grafana-sso/client-secret}'})
-               if _obs_grafana_sso | bool else {'enabled': 'false'} }}
+               if observability_grafana_sso | bool else {'enabled': 'false'} }}
         persistentVolumeClaim:
           spec:
             accessModes: [ReadWriteOnce]
@@ -507,7 +507,7 @@
                   {{ [{'name': 'grafana-data', 'persistentVolumeClaim': {'claimName': observability_openshift_grafana_name ~ '-pvc'}},
                       {'name': 'sc-dashboard-volume', 'emptyDir': {}},
                       {'name': 'sc-dashboard-provider', 'configMap': {'name': 'grafana-dashboard-provider'}}]
-                     + ([{'name': 'grafana-sso', 'secret': {'secretName': 'grafana-sso'}}] if _obs_grafana_sso | bool else []) }}
+                     + ([{'name': 'grafana-sso', 'secret': {'secretName': 'grafana-sso'}}] if observability_grafana_sso | bool else []) }}
                 containers: "{{ [_obs_os_grafana_container] + _obs_os_sidecar_containers }}"
 
 - name: "observability | olm | Datasources (same uids as on K8s)"
