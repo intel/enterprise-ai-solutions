@@ -9,49 +9,11 @@
 # dashboards and Grafana route.
 # =============================================================================
 
-- name: "observability | Check the cluster's operators and monitoring"
+# The operators and user-workload monitoring: preflight checks them
+# (configs/openshift_prerequisites.yaml).
+- name: "observability | Pick the OpenShift StorageClass"
   when: _observability_from_olm | bool
   block:
-    - name: "observability | Check the operators' CRDs"
-      kubernetes.core.k8s_info:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-        name: "{{ item.crd }}"
-      loop: "{{ observability_openshift_required_crds }}"
-      loop_control:
-        label: "{{ item.operator }}"
-      register: _obs_os_crds
-
-    - name: "observability | Operators are installed"
-      ansible.builtin.assert:
-        that: _obs_os_missing | length == 0
-        fail_msg: >-
-          Install from OperatorHub first: {{ _obs_os_missing | join(', ') }}.
-          See docs/deploy/openshift.md, or set observability_enabled: false.
-        quiet: true
-      vars:
-        _obs_os_missing: >-
-          {{ _obs_os_crds.results | selectattr('resources', 'equalto', []) | map(attribute='item.operator') | list }}
-
-    - name: "observability | Read cluster monitoring config"
-      kubernetes.core.k8s_info:
-        kind: ConfigMap
-        name: cluster-monitoring-config
-        namespace: openshift-monitoring
-      register: _obs_os_cmc
-
-    - name: "observability | User-workload monitoring is on"
-      ansible.builtin.assert:
-        that: (_obs_os_cmc_config.enableUserWorkload | default(false)) | bool
-        fail_msg: >-
-          User-workload monitoring is off, so nothing scrapes the installer's services.
-          Set enableUserWorkload: true in openshift-monitoring/cluster-monitoring-config
-          (see docs/deploy/openshift.md), or set observability_enabled: false.
-        quiet: true
-      vars:
-        _obs_os_cmc_config: >-
-          {{ ((_obs_os_cmc.resources | first | default({})).data | default({}))['config.yaml'] | default('{}') | from_yaml or {} }}
-
     # cluster_default_storageclass: set by preflight.
     - name: "observability | Pick the StorageClass"
       ansible.builtin.set_fact:
@@ -71,6 +33,33 @@
 
 - name: "observability | Load object_store credentials"
   ansible.builtin.include_tasks: object_store_credentials.yaml
+
+- name: "observability | Grafana sign-in client"
+  when: _obs_grafana_sso | bool
+  block:
+    - name: "observability | Keycloak client for Grafana"
+      ansible.builtin.include_role:
+        name: keycloak
+        tasks_from: oidc_client.yaml
+      vars:
+        keycloak_client:
+          id: "{{ observability_grafana_oidc_client_id }}"
+          redirect_uris: ["{{ observability_grafana_url }}/login/generic_oauth", "{{ observability_grafana_url }}/oauth2/callback"]
+          post_logout_uris: ["{{ observability_grafana_url }}/login"]
+
+    - name: "observability | Grafana client secret"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: grafana-sso
+            namespace: "{{ observability_namespace }}"
+          type: Opaque
+          stringData:
+            client-secret: "{{ keycloak_client_secret }}"
+      no_log: true
 
 - name: "observability | Install the stack"
   ansible.builtin.include_tasks: "{{ 'install_olm.yaml' if _observability_from_olm | bool else 'install_helm.yaml' }}"

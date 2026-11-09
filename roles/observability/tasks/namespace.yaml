@@ -1,8 +1,4 @@
 ---
-# =============================================================================
-# Observability — namespace and its mesh label (K8s and OpenShift)
-# =============================================================================
-
 - name: "observability | namespace | Create namespace"
   kubernetes.core.k8s:
     state: present

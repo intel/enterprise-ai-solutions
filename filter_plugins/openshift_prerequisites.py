@@ -142,9 +142,11 @@ def _approve_hint(plan):
 
 
 def _check_apis(row, req, apis):
-    if not apis:
+    wanted = req.get("apis") or []
+    if wanted and not apis:
+        row.add(WARN, "UNVERIFIED", "cannot list the served APIs: %s not checked" % ", ".join(wanted))
         return
-    missing = [a for a in req.get("apis") or [] if a not in apis]
+    missing = [a for a in wanted if a not in apis]
     if missing:
         row.add(FAIL, "MISSING", "the cluster does not serve %s" % ", ".join(missing))
 

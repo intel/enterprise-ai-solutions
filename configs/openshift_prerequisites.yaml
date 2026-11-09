@@ -154,8 +154,7 @@ openshift_prerequisites:
         fields: {status.phase: Ready, spec.components.kserve.managementState: Managed}
         conditions: {KserveLLMInferenceServiceDependencies: "True"}
 
-  # Observability (steps 12–17). The observability role checks the same CRDs itself,
-  # but only when the component runs; here a missing operator stops the run before it starts.
+  # Observability (steps 12–17). The observability role relies on these rows.
   - name: user_workload_monitoring
     title: User-workload monitoring
     doc: "#12-user-workload-monitoring"
