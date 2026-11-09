@@ -291,7 +291,8 @@
         name: "{{ item }}"
         namespace: "{{ observability_namespace }}"
         state: absent
-      loop: [observability-credentials, grafana-admin-credentials, grafana-sso]
+      # kube-prometheus-stack-admission: a Helm hook's, so the uninstall leaves it.
+      loop: [observability-credentials, grafana-admin-credentials, grafana-sso, kube-prometheus-stack-admission]
       when: _obs_keep_namespace | bool
       failed_when: false
 
