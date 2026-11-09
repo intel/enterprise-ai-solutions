@@ -41,13 +41,21 @@
   failed_when: false
   when: cluster_apis | default([]) | length == 0
 
+- name: "Preflight - OpenShift: served APIs, packages and wanted StorageClass"
+  ansible.builtin.set_fact:
+    _prq_apis: "{{ cluster_apis if cluster_apis | default([]) | length > 0 else (_prq_info.apis | default({})).keys() | list }}"
+    _prq_packages: "{{ _prq_needed | selectattr('package', 'defined') | map(attribute='package') | list }}"
+    _prq_sc_wanted: >-
+      {{ storage_custom_storageclass | default('', true) | string | trim
+         if (_resolved_storage_backend | default(storage_backend | default(''))) == 'custom' else '' }}
+
 - name: "Preflight - OpenShift: read Subscriptions"
   kubernetes.core.k8s_info:
     api_version: operators.coreos.com/v1alpha1
     kind: Subscription
   register: _prq_subs
   failed_when: false
-  when: _prq_needed | selectattr('package', 'defined') | list | length > 0
+  when: _prq_packages | length > 0
 
 - name: "Preflight - OpenShift: read OLM v1 ClusterExtensions"
   kubernetes.core.k8s_info:
@@ -56,10 +64,8 @@
   register: _prq_exts
   failed_when: false
   when:
-    - _prq_needed | selectattr('package', 'defined') | list | length > 0
-    - "'olm.operatorframework.io/v1' in (_prq_apis | default(cluster_apis))"
-  vars:
-    _prq_apis: "{{ (_prq_info.apis | default({})).keys() | list if cluster_apis | default([]) | length == 0 else cluster_apis }}"
+    - _prq_packages | length > 0
+    - "'olm.operatorframework.io/v1' in _prq_apis"
 
 - name: "Preflight - OpenShift: read the installed CSVs"
   kubernetes.core.k8s_info:
@@ -71,7 +77,7 @@
   failed_when: false
   loop: >-
     {{ _prq_subs.resources | default([])
-       | selectattr('spec.name', 'in', _prq_needed | selectattr('package', 'defined') | map(attribute='package') | list)
+       | selectattr('spec.name', 'in', _prq_packages)
        | selectattr('status.installedCSV', 'defined') | list }}
   loop_control:
     label: "{{ item.metadata.namespace }}/{{ item.status.installedCSV }}"
@@ -88,7 +94,7 @@
   failed_when: false
   loop: >-
     {{ _prq_subs.resources | default([])
-       | selectattr('spec.name', 'in', _prq_needed | selectattr('package', 'defined') | map(attribute='package') | list)
+       | selectattr('spec.name', 'in', _prq_packages)
        | selectattr('status.installPlanRef.name', 'defined') | list }}
   loop_control:
     label: "{{ item.metadata.namespace }}/{{ item.status.installPlanRef.name }}"
@@ -107,10 +113,6 @@
 
 - name: "Preflight - OpenShift: storage"
   when: _prq_needed | selectattr('storage', 'defined') | list | length > 0
-  vars:
-    _prq_sc_wanted: >-
-      {{ storage_custom_storageclass | default('', true) | string | trim
-         if (_resolved_storage_backend | default(storage_backend | default(''))) == 'custom' else '' }}
   block:
     - name: "Preflight - OpenShift: read StorageClasses"
       kubernetes.core.k8s_info:
@@ -212,7 +214,7 @@
 - name: "Preflight - OpenShift: evaluate"
   vars:
     _prq_storage:
-      class: "{{ _prq_sc_wanted | default('') }}"
+      class: "{{ _prq_sc_wanted }}"
       list: "{{ _prq_sc | default({}) }}"
       probe: >-
         {{ {'pvc': _prq_probe_pvc | default({'msg': _prq_probe_error | default('not created')}),
@@ -221,15 +223,12 @@
             'timeout': openshift_prereq_probe_timeout | default(30)}
            if (_prq_sc | default({})).resources is not defined
               and openshift_prereq_storage_probe | default(true) | bool else {} }}
-    _prq_sc_wanted: >-
-      {{ storage_custom_storageclass | default('', true) | string | trim
-         if (_resolved_storage_backend | default(storage_backend | default(''))) == 'custom' else '' }}
   ansible.builtin.set_fact:
     _prq_report: >-
       {{ _prq_needed | openshift_prereq_report(
            platform=openshift_prerequisites_platform,
            distribution_version=cluster_distribution_version | default(''),
-           apis=cluster_apis if cluster_apis | default([]) | length > 0 else (_prq_info.apis | default({})).keys() | list,
+           apis=_prq_apis,
            subscriptions=_prq_subs | default({}),
            extensions=_prq_exts | default({}),
            csvs=_prq_csvs | default({}),

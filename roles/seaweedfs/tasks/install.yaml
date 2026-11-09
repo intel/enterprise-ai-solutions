@@ -101,7 +101,6 @@
 
 - name: "seaweedfs | Deploy SeaweedFS"
   vars:
-    # Fixed UID/GID on K8s only (vars/<platform>.yaml).
     _pod_security_context: >-
       {{ {'enabled': true, 'runAsNonRoot': true, 'seccompProfile': {'type': 'RuntimeDefault'}} | combine(_seaweedfs_pod_ids) }}
     _container_security_context: >-

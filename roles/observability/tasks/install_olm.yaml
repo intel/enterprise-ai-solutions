@@ -1,8 +1,8 @@
 ---
 # =============================================================================
 # Observability — the OperatorHub stack (install.yaml, _observability_from_olm true)
-# The admin installs the operators from OperatorHub (observability_openshift_required_crds)
-# and turns on user-workload monitoring; this file creates only their instances,
+# The admin installs the operators from OperatorHub and turns on user-workload
+# monitoring (preflight checks both, configs/openshift_prerequisites.yaml); this file creates only their instances,
 # all in observability_namespace:
 #   metrics  cluster monitoring + user-workload monitoring, read through Thanos Querier
 #   logs     ClusterLogForwarder (Logging) → LokiStack (Loki Operator) on the object store
@@ -418,14 +418,17 @@
     _obs_os_grafana_container:
       name: grafana
       env: "{{ _obs_os_admin_env + _obs_os_proxy_env }}"
-      # Keycloak sign-in, written by the erag layer (app_keycloak_config).
+      # The erag layer's sign-in (app_keycloak_config) overrides the platform's:
+      # GF_* variables win over the config, so the client secret is read from a
+      # file, not set as a variable.
       envFrom:
         - secretRef:
             name: grafana-sso-env
             optional: true
-      volumeMounts:
-        - {name: sc-dashboard-volume, mountPath: /tmp/dashboards}
-        - {name: sc-dashboard-provider, mountPath: /etc/grafana/provisioning/dashboards}
+      volumeMounts: >-
+        {{ [{'name': 'sc-dashboard-volume', 'mountPath': '/tmp/dashboards'},
+            {'name': 'sc-dashboard-provider', 'mountPath': '/etc/grafana/provisioning/dashboards'}]
+           + ([{'name': 'grafana-sso', 'mountPath': '/etc/grafana-sso', 'readOnly': true}] if _obs_grafana_sso | bool else []) }}
     # One sidecar per label: ours from every namespace, OpenShift's Kubernetes
     # dashboards from openshift-config-managed.
     _obs_os_sidecar_env:
@@ -479,10 +482,13 @@
           plugins:
             plugin_admin_enabled: "true"
             preinstall: grafana-metricsdrilldown-app,grafana-lokiexplore-app,grafana-exploretraces-app,grafana-pyroscope-app
-          auth:
-            login_maximum_lifetime_duration: 3h
-            login_maximum_inactive_lifetime_duration: 30m
-            token_rotation_interval_minutes: "10"
+          auth: >-
+            {{ {'login_maximum_lifetime_duration': '3h', 'login_maximum_inactive_lifetime_duration': '30m',
+                'token_rotation_interval_minutes': '10'}
+               | combine(_obs_grafana_ini_sso.auth if _obs_grafana_sso | bool else {}) }}
+          auth.generic_oauth: >-
+            {{ _obs_grafana_ini_sso['auth.generic_oauth'] | combine({'client_secret': '$__file{/etc/grafana-sso/client-secret}'})
+               if _obs_grafana_sso | bool else {'enabled': 'false'} }}
         persistentVolumeClaim:
           spec:
             accessModes: [ReadWriteOnce]
@@ -497,15 +503,11 @@
               type: Recreate
             template:
               spec:
-                volumes:
-                  - name: grafana-data
-                    persistentVolumeClaim:
-                      claimName: "{{ observability_openshift_grafana_name }}-pvc"
-                  - name: sc-dashboard-volume
-                    emptyDir: {}
-                  - name: sc-dashboard-provider
-                    configMap:
-                      name: grafana-dashboard-provider
+                volumes: >-
+                  {{ [{'name': 'grafana-data', 'persistentVolumeClaim': {'claimName': observability_openshift_grafana_name ~ '-pvc'}},
+                      {'name': 'sc-dashboard-volume', 'emptyDir': {}},
+                      {'name': 'sc-dashboard-provider', 'configMap': {'name': 'grafana-dashboard-provider'}}]
+                     + ([{'name': 'grafana-sso', 'secret': {'secretName': 'grafana-sso'}}] if _obs_grafana_sso | bool else []) }}
                 containers: "{{ [_obs_os_grafana_container] + _obs_os_sidecar_containers }}"
 
 - name: "observability | olm | Datasources (same uids as on K8s)"
@@ -576,31 +578,24 @@
   loop_control:
     label: "{{ item.datasource.name }}"
 
-# ── Wait ─────────────────────────────────────────────────────────────────────
-
 - name: "observability | olm | Wait for the instances"
+  vars:
+    _r: "{{ item.ready | default(item) }}"
   kubernetes.core.k8s_info:
-    api_version: "{{ item.api_version }}"
-    kind: "{{ item.kind }}"
-    name: "{{ item.name }}"
+    api_version: "{{ _r.api_version }}"
+    kind: "{{ _r.kind }}"
+    name: "{{ _r.name }}"
     namespace: "{{ observability_namespace }}"
   register: _obs_os_ready
   until: >-
     (_obs_os_ready.resources | default([])) | length > 0
     and (((_obs_os_ready.resources | first).status | default({})).conditions | default([])
-         | selectattr('type', 'equalto', item.condition) | selectattr('status', 'equalto', 'True') | list | length > 0)
+         | selectattr('type', 'equalto', _r.condition) | selectattr('status', 'equalto', 'True') | list | length > 0)
   retries: 60
   delay: 10
-  loop:
-    - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki, condition: Ready}
-    - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready}
-    - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo, condition: Ready}
-    - {api_version: apps/v1, kind: Deployment, name: opentelemetry-collector, condition: Available}
-    - {api_version: apps/v1, kind: Deployment, name: "{{ observability_openshift_grafana_name }}-deployment", condition: Available}
+  loop: "{{ observability_openshift_instances }}"
   loop_control:
     label: "{{ item.kind }} {{ item.name }}"
-
-# ── Gateway route ────────────────────────────────────────────────────────────
 
 - name: "observability | olm | Publish Grafana"
   ansible.builtin.include_tasks: grafana_route.yaml

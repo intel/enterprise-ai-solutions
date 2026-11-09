@@ -54,9 +54,32 @@ observability_grafana_sso: "{{ keycloak_enabled | default(true) | bool }}"
 observability_grafana_oidc_client_id: "grafana"
 # Groups the gateway admits; empty admits every signed-in realm user.
 observability_grafana_allowed_groups: []
-# The Helm stack only: on OpenShift the erag layer signs Grafana in
-# (grafana-sso-env, install_olm.yaml).
-_obs_grafana_sso: "{{ observability_grafana_sso | bool and not _observability_from_olm | bool }}"
+_obs_grafana_sso: "{{ observability_grafana_sso | bool }}"
+# Grafana's settings for it, on both stacks (strings: the Grafana CR takes no others).
+# The browser goes to Keycloak's public URL; Grafana's own calls stay in-cluster.
+_obs_grafana_oidc: "{{ keycloak_client_issuer | default('') }}/protocol/openid-connect"
+_obs_grafana_oidc_internal: "{{ keycloak_client_issuer_internal | default('') }}/protocol/openid-connect"
+_obs_grafana_ini_sso:
+  auth:
+    # The gateway clears its cookies and ends the Keycloak session.
+    signout_redirect_url: "{{ observability_grafana_url }}/oauth2/logout"
+  auth.generic_oauth:
+    enabled: "true"
+    name: Keycloak
+    auto_login: "true"
+    allow_sign_up: "true"
+    client_id: "{{ observability_grafana_oidc_client_id }}"
+    scopes: openid profile email
+    use_pkce: "true"
+    use_refresh_token: "true"
+    auth_url: "{{ _obs_grafana_oidc }}/auth"
+    token_url: "{{ _obs_grafana_oidc_internal }}/token"
+    api_url: "{{ _obs_grafana_oidc_internal }}/userinfo"
+    login_attribute_path: preferred_username
+    name_attribute_path: name
+    # Re-evaluated at every login, so leaving the group removes admin.
+    role_attribute_path: >-
+      contains(groups[*], '{{ keycloak_client_admin_group | default('') }}') && 'Admin' || 'Viewer'
 
 # ── Prometheus retention & storage ───────────────────────────────────────────
 observability_prometheus_retention: "30d"
@@ -115,12 +138,6 @@ observability_wait_timeout: "600s"
 # The admin installs the operators from OperatorHub; this role only creates their
 # instances in observability_namespace. Metrics come from the cluster's own
 # monitoring (user-workload monitoring must be on), queried through Thanos Querier.
-observability_openshift_required_crds:
-  - {crd: lokistacks.loki.grafana.com, operator: Loki Operator}
-  - {crd: clusterlogforwarders.observability.openshift.io, operator: Red Hat OpenShift Logging}
-  - {crd: grafanas.grafana.integreatly.org, operator: Grafana Operator}
-  - {crd: tempomonolithics.tempo.grafana.com, operator: Tempo Operator}
-  - {crd: opentelemetrycollectors.opentelemetry.io, operator: Red Hat build of OpenTelemetry}
 
 # LokiStack size: 1x.pico is the smallest supported; 1x.demo for test clusters.
 observability_openshift_loki_size: "1x.pico"
@@ -139,3 +156,17 @@ observability_openshift_grafana_storage_size: "5Gi"
 # Loads the grafana_dashboard="1" ConfigMaps from every namespace, as the Grafana
 # of kube-prometheus-stack does on K8s, and OpenShift's own Kubernetes dashboards.
 observability_openshift_sidecar_image: "quay.io/kiwigrid/k8s-sidecar:2.7.3"
+# The operator instances, in install order; teardown deletes them in reverse.
+# ready: the object whose condition shows the instance is up, if not the instance.
+observability_openshift_instances:
+  - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki, condition: Ready}
+  - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready}
+  - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo, condition: Ready}
+  - api_version: opentelemetry.io/v1beta1
+    kind: OpenTelemetryCollector
+    name: opentelemetry
+    ready: {api_version: apps/v1, kind: Deployment, name: opentelemetry-collector, condition: Available}
+  - api_version: grafana.integreatly.org/v1beta1
+    kind: Grafana
+    name: "{{ observability_openshift_grafana_name }}"
+    ready: {api_version: apps/v1, kind: Deployment, name: "{{ observability_openshift_grafana_name }}-deployment", condition: Available}

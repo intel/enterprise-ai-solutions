@@ -5,7 +5,26 @@
 # kube-prometheus-stack. With _observability_from_olm only the instances
 # install_olm.yaml created go; the operators, their CRDs and the cluster's
 # monitoring belong to the admin and stay.
+# The telemetry SeaweedFS shares the namespace. While it stays (Langfuse still
+# uses it: used_by in configs/components.yaml), so does the namespace, and only
+# this role's own objects and PVCs go.
 # =============================================================================
+
+- name: "observability | Look for the telemetry SeaweedFS outside the plan"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ object_store_credentials_secret }}"
+    namespace: "{{ object_store_namespace }}"
+  register: _obs_td_object_store
+  failed_when: false
+  when:
+    - object_store_namespace == observability_namespace
+    - "'seaweedfs' not in (_active_components | default([]) | map(attribute='name'))"
+
+- name: "observability | Keep the namespace for the telemetry SeaweedFS"
+  ansible.builtin.set_fact:
+    _obs_keep_namespace: "{{ _obs_td_object_store.resources | default([]) | length > 0 }}"
 
 - name: "observability | Check if any release exists"
   kubernetes.core.helm_info:
@@ -52,6 +71,23 @@
         kind: APIService
         name: v1beta1.custom.metrics.k8s.io
         state: absent
+      failed_when: false
+
+    - name: "observability | Delete the mesh policies"
+      kubernetes.core.k8s:
+        api_version: security.istio.io/v1
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ observability_namespace }}"
+        state: absent
+      loop:
+        - {kind: PeerAuthentication, name: allow-webhook-operator}
+        - {kind: PeerAuthentication, name: allow-metrics-adapter}
+        - {kind: AuthorizationPolicy, name: authz-webhook-operator}
+        - {kind: AuthorizationPolicy, name: authz-metrics-adapter}
+      loop_control:
+        label: "{{ item.kind }} {{ item.name }}"
+      when: _obs_keep_namespace | bool
       failed_when: false
 
     # ── Gateway route ─────────────────────────────────────────────────────────
@@ -151,37 +187,6 @@
         label: "{{ item.metadata.name }}"
       failed_when: false
 
-    # ── PVCs (data is gone on teardown) ───────────────────────────────────────
-
-    - name: "observability | List PVCs in monitoring namespace"
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: PersistentVolumeClaim
-        namespace: "{{ observability_namespace }}"
-      register: _obs_pvcs
-      failed_when: false
-
-    - name: "observability | Delete PVCs"
-      kubernetes.core.k8s:
-        api_version: v1
-        kind: PersistentVolumeClaim
-        name: "{{ item.metadata.name }}"
-        namespace: "{{ observability_namespace }}"
-        state: absent
-      loop: "{{ _obs_pvcs.resources | default([]) }}"
-      loop_control:
-        label: "{{ item.metadata.name }}"
-      failed_when: false
-
-    # ── Namespace ─────────────────────────────────────────────────────────────
-
-    - name: "observability | Delete namespace"
-      kubernetes.core.k8s:
-        kind: Namespace
-        name: "{{ observability_namespace }}"
-        state: absent
-      failed_when: false
-
 # ── The OperatorHub stack ────────────────────────────────────────────────────
 # Its instances go first, so each operator cleans up what it made.
 
@@ -215,12 +220,7 @@
         namespace: "{{ observability_namespace }}"
         state: absent
         wait: true
-      loop:
-        - {api_version: grafana.integreatly.org/v1beta1, kind: Grafana, name: "{{ observability_openshift_grafana_name }}"}
-        - {api_version: opentelemetry.io/v1beta1, kind: OpenTelemetryCollector, name: opentelemetry}
-        - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo}
-        - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs}
-        - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki}
+      loop: "{{ observability_openshift_instances | reverse | list }}"
       loop_control:
         label: "{{ item.kind }} {{ item.name }}"
       failed_when: false
@@ -246,10 +246,89 @@
         label: "{{ item.kind }} {{ observability_namespace }}-{{ item.name }}"
       failed_when: false
 
-    - name: "observability | olm | Delete namespace"
+    - name: "observability | olm | Find the datasources"
+      kubernetes.core.k8s_info:
+        api_version: grafana.integreatly.org/v1beta1
+        kind: GrafanaDatasource
+        namespace: "{{ observability_namespace }}"
+      register: _obs_os_datasources
+      when: _obs_keep_namespace | bool
+      failed_when: false
+
+    - name: "observability | olm | Delete the datasources and the stack's accounts"
+      kubernetes.core.k8s:
+        api_version: "{{ item.apiVersion }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ observability_namespace }}"
+        state: absent
+      loop: "{{ _obs_os_datasources.resources | default([]) + _obs_os_own }}"
+      vars:
+        _obs_os_own:
+          - {apiVersion: v1, kind: ConfigMap, metadata: {name: grafana-dashboard-provider}}
+          - {apiVersion: v1, kind: Secret, metadata: {name: logging-loki-s3}}
+          - {apiVersion: v1, kind: Secret, metadata: {name: tempo-s3}}
+          - {apiVersion: v1, kind: Secret, metadata: {name: grafana-datasources-token}}
+          - {apiVersion: v1, kind: ServiceAccount, metadata: {name: log-collector}}
+          - {apiVersion: v1, kind: ServiceAccount, metadata: {name: otel-collector}}
+          - {apiVersion: v1, kind: ServiceAccount, metadata: {name: grafana-datasources}}
+      loop_control:
+        label: "{{ item.kind }} {{ item.metadata.name }}"
+      when: _obs_keep_namespace | bool
+      failed_when: false
+
+# ── Both stacks: credentials, PVCs and the namespace ─────────────────────────
+
+- name: "observability | Credentials, PVCs and namespace"
+  when: >-
+    (_obs_os_ns.resources | default([]) | length > 0) if _observability_from_olm | bool
+    else _obs_prom_check.status is defined
+  block:
+    - name: "observability | Delete the credentials in a namespace that stays"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Secret
+        name: "{{ item }}"
+        namespace: "{{ observability_namespace }}"
+        state: absent
+      loop: [observability-credentials, grafana-admin-credentials, grafana-sso]
+      when: _obs_keep_namespace | bool
+      failed_when: false
+
+    # The namespace takes them along on OpenShift; the Helm stack's go explicitly,
+    # as before. SeaweedFS's stay with it.
+    - name: "observability | List PVCs"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        namespace: "{{ observability_namespace }}"
+        label_selectors: "{{ ['app.kubernetes.io/name!=seaweedfs'] if _obs_keep_namespace | bool else [] }}"
+      register: _obs_pvcs
+      when: not _observability_from_olm | bool or _obs_keep_namespace | bool
+      failed_when: false
+
+    - name: "observability | Delete PVCs"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: "{{ item.metadata.name }}"
+        namespace: "{{ observability_namespace }}"
+        state: absent
+      loop: "{{ _obs_pvcs.resources | default([]) }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+
+    - name: "observability | Keep the namespace"
+      ansible.builtin.debug:
+        msg: "Namespace {{ observability_namespace }} stays: the telemetry SeaweedFS in it is still used."
+      when: _obs_keep_namespace | bool
+
+    - name: "observability | Delete namespace"
       kubernetes.core.k8s:
         kind: Namespace
         name: "{{ observability_namespace }}"
         state: absent
-        wait: true
+        wait: "{{ _observability_from_olm | bool }}"
+      when: not _obs_keep_namespace | bool
       failed_when: false
