@@ -24,13 +24,13 @@ BLUESTORE_OFFSETS_GIB = (0, 1, 10, 100, 1000)
 
 
 def run(args, timeout=10):
-    """(rc, output) of a command found on PATH; (None, '') when it isn't installed."""
+    """(rc, output) of a command found on PATH, in the C locale; (None, '') when it isn't installed."""
     path = shutil.which(args[0])
     if not path:
         return None, ""
     try:
         res = subprocess.run([path] + list(args[1:]), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             universal_newlines=True, timeout=timeout)
+                             universal_newlines=True, timeout=timeout, env=dict(os.environ, LC_ALL="C"))
         return res.returncode, res.stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return None, str(exc)
@@ -93,10 +93,12 @@ def gateway():
     for port in (22, 443):
         try:
             socket.create_connection((gw, port), timeout=3).close()
-            result.update(reachable=True, via="tcp/%d" % port)
-            return result
+        except ConnectionRefusedError:
+            pass  # the gateway answered
         except OSError:
             continue
+        result.update(reachable=True, via="tcp/%d" % port)
+        return result
     return result
 
 
@@ -138,6 +140,8 @@ def reach(urls, timeout=10):
                 out[url] = {"ok": True}
         except (urllib.error.URLError, OSError) as exc:
             out[url] = {"ok": False, "error": str(getattr(exc, "reason", exc))}
+        except ValueError:
+            out[url] = {"ok": False, "error": "not a URL, it needs https://"}
     return out
 
 
@@ -151,7 +155,7 @@ def addresses():
 def kube_leftovers():
     def server(conf):
         match = re.search(r"^\s*server:\s*(\S+)", read(conf), re.M)
-        return match.group(1) if match else None
+        return match.group(1).strip("'\"") if match else None
 
     rc, out = run(["systemctl", "is-active", "kubelet"])
     manifests = "/etc/kubernetes/manifests"
@@ -175,6 +179,8 @@ def kube_leftovers():
 def listeners(ports):
     """Owners of the listening TCP sockets on the given ports (needs root for names)."""
     rc, out = run(["ss", "-H", "-ltnp"])
+    if rc != 0:
+        raise RuntimeError("ss: %s; ports not checked" % (out or "not installed"))
     found = []
     for line in (out or "").splitlines():
         cols = line.split()

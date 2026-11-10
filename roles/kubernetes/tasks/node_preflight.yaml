@@ -7,7 +7,7 @@
     _np_proxy_url: "{{ https_proxy | default('') or http_proxy | default('') }}"
     _np_cp: "{{ groups['kube_control_plane'] | default([]) }}"
   ansible.builtin.set_fact:
-    _np_log_dir: "{{ log_dir | default((env_dir | default(playbook_dir)) ~ '/logs') }}"
+    _np_skip: "{{ kubernetes_node_preflight_skip | node_preflight_skip }}"
     _np_proxy_host: >-
       {{ ((_np_proxy_url if '://' in _np_proxy_url else 'http://' ~ _np_proxy_url) | urlsplit('hostname'))
          if _np_proxy_url | length > 0 else '' }}
@@ -15,7 +15,7 @@
     # A kubelet.conf pointing elsewhere belongs to another cluster. Kubespray's
     # workers reach the API server through a local proxy (localhost).
     _np_api_hosts: >-
-      {{ (['localhost', '127.0.0.1', '::1', 'lb-apiserver.kubernetes.local'] + _np_cp
+      {{ (['localhost', '127.0.0.1', '::1', apiserver_loadbalancer_domain_name | default('lb-apiserver.kubernetes.local')] + _np_cp
           + _np_cp | map('extract', hostvars) | map(attribute='ip', default='') | list
           + _np_cp | map('extract', hostvars) | map(attribute='access_ip', default='') | list
           + _np_cp | map('extract', hostvars) | map(attribute='ansible_host', default='') | list
@@ -43,15 +43,11 @@
         {{ ((rook_ceph_devices | default({})).get(item)
             or (rook_ceph_devices | default({})).get(hostvars[item].node_hostname | default(item))
             or []) if _np_ceph | bool else [] }}
-      skip: "{{ kubernetes_node_preflight_skip }}"
+      skip: "{{ _np_skip }}"
+  # The proxy settings come from the play's environment (playbooks/site.yaml).
   environment:
     NODE_PREFLIGHT_SPEC: "{{ _np_spec | to_json }}"
-    http_proxy: "{{ http_proxy | default('') }}"
-    https_proxy: "{{ https_proxy | default('') }}"
-    no_proxy: "{{ no_proxy | default('') }}"
-    HTTP_PROXY: "{{ http_proxy | default('') }}"
-    HTTPS_PROXY: "{{ https_proxy | default('') }}"
-    NO_PROXY: "{{ no_proxy | default('') }}"
+  timeout: 300
   loop: "{{ _k8s_nodes or ['localhost'] }}"
   loop_control:
     label: "{{ item }}"
@@ -63,7 +59,7 @@
   ansible.builtin.set_fact:
     _np: >-
       {{ _np_probe.results | node_preflight_evaluate({
-           'skip': kubernetes_node_preflight_skip,
+           'skip': _np_skip,
            'local': not (_k8s_needs_ssh | bool),
            'rack_scale': rack_scale_enabled | default(false) | bool,
            'ceph': _np_ceph | bool,
@@ -83,14 +79,14 @@
 
 - name: "kubernetes | node preflight | Results directory"
   ansible.builtin.file:
-    path: "{{ _np_log_dir }}"
+    path: "{{ log_dir }}"
     state: directory
     mode: "0755"
 
 - name: "kubernetes | node preflight | Save the results"
   ansible.builtin.copy:
     content: "{{ _np.rows | to_nice_json }}"
-    dest: "{{ _np_log_dir }}/node-preflight-{{ now().strftime('%Y%m%d-%H%M%S') }}.json"
+    dest: "{{ log_dir }}/node-preflight-{{ now().strftime('%Y%m%d-%H%M%S') }}.json"
     mode: "0644"
 
 - name: "kubernetes | node preflight | Stop on failed checks"

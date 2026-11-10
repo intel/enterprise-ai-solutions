@@ -100,6 +100,7 @@ CASES = [
     ("N8 proxy 407", lambda d: d["urls"]["https://github.com"].update(ok=False, error="proxy authentication required"),
      {}, "N8", "FAIL"),
     ("N8 skipped", lambda d: d["urls"]["https://github.com"].update(ok=False), {"skip": ["N8"]}, "N8", "SKIP"),
+    ("N8 skipped, so not probed", lambda d: d.pop("urls"), {"skip": ["N8"]}, "N8", "SKIP"),
     ("N9 not root after become", lambda d: d.update(euid=1000), {}, "N9", "FAIL"),
     ("N10 kubelet.conf of another cluster", lambda d: d["kube"].update(kubelet_conf_server="https://198.51.100.9:6443"),
      {}, "N10", "FAIL"),
@@ -149,13 +150,31 @@ def test_check(change, ctx, cid, expected):
     assert status(changed(change), cid, **ctx) == expected
 
 
-@pytest.mark.parametrize("result, cid", [
-    ({"failed": True, "msg": "Missing sudo password"}, "N9"),
-    ({"failed": True, "msg": "/bin/sh: python3: not found", "rc": 127}, "N0"),
+@pytest.mark.parametrize("result, cid, evidence", [
+    ({"failed": True, "msg": "Missing sudo password"}, "N9", "Missing sudo password"),
+    ({"failed": True, "msg": "/bin/sh: python3: not found", "rc": 127}, "N0", "/bin/sh: python3: not found"),
+    # The script ran and failed: its output says why, Ansible's msg does not.
+    ({"failed": True, "msg": "non-zero return code", "rc": 127, "stdout": "/bin/sh: 1: python3: not found\r\n",
+      "stderr": "Shared connection to n1 closed.\r\n"}, "N0", "/bin/sh: 1: python3: not found"),
+    ({"failed": True, "msg": "non-zero return code", "rc": 1, "stdout": "",
+      "stderr": "sudo: a password is required"}, "N9", "sudo: a password is required"),
 ])
-def test_probe_that_could_not_run(result, cid):
+def test_probe_that_could_not_run(result, cid, evidence):
     out = rules.node_preflight_evaluate([{"item": "n1", "stdout": "", **result}], CTX)
-    assert [(r["id"], r["status"]) for r in out["rows"]] == [(cid, "FAIL")]
+    assert [(r["id"], r["status"], r["evidence"]) for r in out["rows"]] == [(cid, "FAIL", evidence)]
+
+
+@pytest.mark.parametrize("value, expected", [
+    (["N8"], ["N8"]), (["n8", " N7 "], ["N7", "N8"]), ("n8", ["N8"]), ("N7,n8", ["N7", "N8"]),
+    ("", []), (None, []), ([], []),
+])
+def test_skip_list_is_normalised(value, expected):
+    assert rules.node_preflight_skip(value) == expected
+
+
+def test_run_uses_the_c_locale(monkeypatch):
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    assert probe.run(["sh", "-c", 'printf %s "$LC_ALL"']) == (0, "C")
 
 
 def _fake_run(answers):
@@ -227,6 +246,13 @@ LISTEN 0      4096         0.0.0.0:22         0.0.0.0:* users:(("sshd",pid=1,fd=
 LISTEN 0      128          0.0.0.0:2379       0.0.0.0:*"""
 
 
+@pytest.mark.parametrize("answer", [(None, ""), (1, "ss: invalid option -- 'H'")])
+def test_listeners_without_a_working_ss_is_a_probe_error(monkeypatch, answer):
+    monkeypatch.setattr(probe, "run", _fake_run({"ss": answer}))
+    with pytest.raises(RuntimeError, match="ports not checked"):
+        probe.listeners({6443})
+
+
 def test_listeners_parses_ss(monkeypatch):
     monkeypatch.setattr(probe, "run", _fake_run({"ss": (0, SS)}))
     assert probe.listeners({6443, 10250, 10257, 2379}) == [
@@ -260,6 +286,34 @@ def test_reach_maps_answers(monkeypatch, answer, expected):
         raise probe.urllib.error.HTTPError(url, answer, "x", {}, None)
     monkeypatch.setattr(probe.urllib.request, "urlopen", urlopen)
     assert probe.reach(["https://example.com"]) == {"https://example.com": expected}
+
+
+def test_reach_reports_a_url_without_a_scheme():
+    assert probe.reach(["github.com"]) == {"github.com": {"ok": False, "error": "not a URL, it needs https://"}}
+
+
+@pytest.mark.parametrize("error, expected", [
+    (ConnectionRefusedError, {"reachable": True, "via": "tcp/22"}),
+    (TimeoutError, {"reachable": False, "via": None}),
+])
+def test_gateway_that_refuses_tcp_answered(monkeypatch, error, expected):
+    monkeypatch.setattr(probe, "run", _fake_run({"ip": (0, "default via 192.0.2.1 dev eth0 proto static"),
+                                                  "ping": (1, "100% packet loss")}))
+
+    def connect(addr, timeout):
+        raise error()
+    monkeypatch.setattr(probe.socket, "create_connection", connect)
+    assert probe.gateway() == {"ip": "192.0.2.1", "dev": "eth0", **expected}
+
+
+def test_kubeconfig_server_may_be_quoted(monkeypatch):
+    confs = {"/etc/kubernetes/kubelet.conf": 'clusters:\n- cluster:\n    server: "https://192.0.2.10:6443"\n',
+             "/etc/kubernetes/admin.conf": "    server: 'https://[fd00::10]:6443'\n"}
+    monkeypatch.setattr(probe, "read", lambda path, default="": confs.get(path, default))
+    monkeypatch.setattr(probe, "run", _fake_run({}))
+    kube = probe.kube_leftovers()
+    assert (kube["kubelet_conf_server"], kube["admin_conf_server"]) == ("https://192.0.2.10:6443",
+                                                                        "https://[fd00::10]:6443")
 
 
 def _lsblk(node):

@@ -241,11 +241,22 @@ def _checks(data, ctx, ours):
 
 
 def _probe_failed(res):
-    """The probe printed no JSON: sudo wanted a password, or python3 is missing."""
-    msg = str(res.get("msg") or res.get("stderr") or res.get("stdout") or "no output")
+    """The probe printed no JSON: sudo wanted a password, or python3 is missing.
+
+    When the script ran (rc is set) its output says why; Ansible's msg is then only "non-zero return code".
+    """
+    ran = res.get("rc") is not None
+    sources = (res.get("stdout"), res.get("stderr"), res.get("msg")) if ran else (res.get("msg"),)
+    msg = next((s.strip() for s in sources if s and s.strip()), "no output")
     if re.search(r"sudo|password|become", msg, re.I):
         return [("N9", "FAIL", msg.splitlines()[0][:300], SUDO_HINT)]
     return [("N0", "FAIL", msg.splitlines()[0][:300], "The probe could not run on this node (python3 needed)")]
+
+
+def node_preflight_skip(value):
+    """kubernetes_node_preflight_skip as check IDs: a list or a comma-separated string, in any case."""
+    items = value.split(",") if isinstance(value, str) else value or []
+    return sorted({str(v).strip().upper() for v in items} - {""})
 
 
 def node_preflight_evaluate(results, ctx):
@@ -265,7 +276,12 @@ def node_preflight_evaluate(results, ctx):
         for a in (data.get("kube") or {}).get("addresses", [])}
     rows = []
     for res, data in parsed:
-        for cid, status, evidence, hint in _checks(data, ctx, ours) if data is not None else _probe_failed(res):
+        checks = _checks(data, ctx, ours) if data is not None else _probe_failed(res)
+        # A check the node did not probe because it is skipped is still listed, as SKIP.
+        probed = {c[0] for c in checks}
+        checks += [(cid, "SKIP", "in kubernetes_node_preflight_skip", "") for cid in TITLES
+                   if cid in skip and cid not in probed]
+        for cid, status, evidence, hint in checks:
             rows.append({"node": res.get("item"), "id": cid, "check": TITLES.get(cid, "Probe"),
                          "status": "SKIP" if cid in skip else status, "evidence": evidence, "hint": hint})
 
@@ -284,4 +300,4 @@ def node_preflight_evaluate(results, ctx):
 
 class FilterModule:
     def filters(self):
-        return {"node_preflight_evaluate": node_preflight_evaluate}
+        return {"node_preflight_evaluate": node_preflight_evaluate, "node_preflight_skip": node_preflight_skip}
