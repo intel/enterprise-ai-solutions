@@ -189,7 +189,7 @@ racks:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `hostname` | yes | Used for netplan file names and K8s node name |
+| `hostname` | yes | Used for netplan file names. The Kubernetes node name is the node's key under `racks` (e.g. `master1`), and Kubespray sets the OS hostname to it |
 | `mgmt_ip` | yes | SSH reachable from the bastion. Every node needs it, the `local: true` node included: it SSHs to itself |
 | `roles` | yes | At least one of `kube_control_plane`, `etcd`, `kube_node`, `storage` |
 | `local` | no | Exactly one node — the bastion running the installer |
@@ -216,7 +216,9 @@ Ceph runs with host networking and binds to the addresses in
 `ceph_public_network` and `ceph_cluster_network`, so NIC names can differ per
 node. The parser checks that every `storage` node has a fabric IP in
 `ceph_public_network` (and in `ceph_cluster_network` when set), and that its
-first fabric NIC, the node IP, is in the public network.
+node IP is in the public network, because a Ceph mon binds to it. The node IP
+is the first fabric NIC, or `mgmt_ip` on a control-plane node when
+`control_plane_on_fabric` is false.
 
 ---
 
@@ -524,7 +526,7 @@ and continue.
 | `star cable faults: both ends must share...` | /30 subnet mismatch | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
 | `duplicate fabric_ip` | Two nodes share an IP | Check `rack-profile.yaml` for collisions |
 | `storage node ... has no fabric_ip in ceph_public_network` | Ceph networks don't match the storage nodes | Give each storage node a fabric IP in the Ceph networks, or fix `ceph_public_network` / `ceph_cluster_network` |
-| `storage node ... node IP ... is outside ceph_public_network` | The storage node's first fabric NIC is on another network | List the NIC in `ceph_public_network` first |
+| `storage node ... node IP ... is outside ceph_public_network` | The node IP (first fabric NIC, or `mgmt_ip` on a control-plane node off the fabric) is on another network | List the NIC in `ceph_public_network` first; on a control-plane node set `control_plane_on_fabric: true` or move the `storage` role |
 | `fabric_ip ... is not within leafX's fabric_subnet` | IP and `leaf:` disagree | Fix the `fabric_ip`, or drop `leaf:` and let the parser derive it |
 | `fabric_ip ... is outside the L2 segment` | L2 node addressed in another subnet | Put every fabric IP in the one L2 subnet |
 | `missing required field 'mgmt_ip'` / `has no roles` | Incomplete node entry | Add `mgmt_ip` and at least one role to the node |

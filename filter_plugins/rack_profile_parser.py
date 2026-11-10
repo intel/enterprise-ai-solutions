@@ -352,13 +352,11 @@ def _l2_segment_faults(all_nodes, fabric_prefix):
 
 
 def _ceph_address_faults(all_nodes, public_net, cluster_net, cp_on_fabric):
-    """Storage nodes need fabric IPs in the Ceph networks.
+    """Storage nodes need their addresses in the Ceph networks.
 
-    Rook runs with provider: host and binds to the addresses in
-    ceph_public_network / ceph_cluster_network; the NIC name plays no part.
-    Each storage node needs a fabric IP in the public network (and in the
-    cluster network when it is set), and its node IP, when that is a fabric
-    IP, must be in the public network.
+    Rook (provider: host) binds the OSDs to addresses in ceph_public_network /
+    ceph_cluster_network, but a mon binds to its node IP, so a storage node's
+    node IP must be in the public network too. The NIC name plays no part.
     """
     if not public_net:
         return []
@@ -381,7 +379,16 @@ def _ceph_address_faults(all_nodes, public_net, cluster_net, cp_on_fabric):
                 f"{public} (fabric IPs: {shown})")
             continue
         is_cp = "kube_control_plane" in roles or "etcd" in roles
-        if (not is_cp or cp_on_fabric) and ips[0] not in public:
+        if is_cp and not cp_on_fabric:
+            node_ip = ipaddress.ip_address(node["mgmt_ip"])
+            if node_ip not in public:
+                faults.append(
+                    f"storage node '{name}' node IP {node_ip} (its mgmt_ip: "
+                    f"control-plane nodes are off the fabric) is outside "
+                    f"ceph_public_network {public}, so its Ceph mon would "
+                    f"bind there — set network.control_plane_on_fabric: true, "
+                    f"or move the storage role off control-plane nodes")
+        elif ips[0] not in public:
             faults.append(
                 f"storage node '{name}' node IP {ips[0]} (its first fabric NIC) "
                 f"is outside ceph_public_network {public} — list the NIC in "
