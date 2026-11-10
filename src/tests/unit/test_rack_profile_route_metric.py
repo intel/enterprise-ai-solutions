@@ -72,6 +72,7 @@ def test_star_routes_have_no_metric():
 
 
 def test_malformed_leaf_subnet_is_a_profile_error():
+    # None too: the parser turns a YAML null into the string "None" before validation (_to_native).
     for bad in ("10.202.0.0/33", "10.202.0.x/16", None):
         profile = copy.deepcopy(CLOS)
         profile["network"]["leafs"][1]["fabric_subnet"] = bad
