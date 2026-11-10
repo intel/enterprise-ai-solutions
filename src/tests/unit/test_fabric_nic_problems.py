@@ -7,15 +7,9 @@ import pathlib
 
 import pytest
 import yaml
-from ansible.parsing.dataloader import DataLoader
 from ansible.plugins.loader import filter_loader
-from ansible.template import Templar
-
-try:
-    from ansible.template import trust_as_template
-except ImportError:  # ansible-core < 2.19 templates plain strings
-    def trust_as_template(source):
-        return source
+from ansible.template import trust_as_template
+from ansible_render import render
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 _spec = importlib.util.spec_from_file_location("fabric_nic_problems", _ROOT / "filter_plugins" / "fabric_nic_problems.py")
@@ -137,10 +131,6 @@ _BLOCK = next(t for t in _TASKS if t["name"] == "fabric_netplan | Compare the fa
 filter_loader.add_directory(str(_ROOT / "filter_plugins"))
 
 
-def render(source, variables):
-    return Templar(loader=DataLoader(), variables=variables).template(trust_as_template(source))
-
-
 def role_tasks(action):
     return yaml.safe_load((_ROOT / "roles/fabric_netplan/tasks" / (action + ".yaml")).read_text())
 
@@ -190,13 +180,15 @@ def test_the_node_address_check_reads_the_same_output():
     assert (fails("10.201.1.2"), fails("10.201.1.20"), fails("0.201.1.2")) == (False, True, True)
 
 
-def test_nodes_and_topology_none_for_install_and_validate():
-    nodes = yaml.safe_load((_ROOT / "roles/fabric_netplan/tasks/nodes.yaml").read_text())
+def test_one_node_list_and_the_topology_none_skip():
+    groups = {"kube_control_plane": ["cp1", "localhost"], "kube_node": ["w1", "cp1"], "ceph_storage_nodes": ["s1"]}
+    node_list = role_tasks("node_list")[0]["ansible.builtin.set_fact"]["_fabric_all_nodes"]
+    assert sorted(render(node_list, {"groups": groups})) == ["cp1", "s1", "w1"]
+    nodes = role_tasks("nodes")
     skip = next(t for t in nodes if t.get("ansible.builtin.meta") == "end_role")
     assert render("{{ %s }}" % skip["when"], {"rack_scale_topology": "none"}) is True
-    groups = {"kube_control_plane": ["cp1", "localhost"], "kube_node": ["w1", "cp1"], "ceph_storage_nodes": ["s1"]}
-    node_list = next(t for t in nodes if "ansible.builtin.set_fact" in t)["ansible.builtin.set_fact"]["_fabric_all_nodes"]
-    assert sorted(render(node_list, {"groups": groups})) == ["cp1", "s1", "w1"]
+    for tasks in (nodes, role_tasks("teardown")):
+        assert "node_list.yaml" in [t.get("ansible.builtin.import_tasks") for t in tasks]
     for action in ("install", "validate"):
         imports = [t.get("ansible.builtin.import_tasks") for t in role_tasks(action)]
         assert imports.index("nodes.yaml") < imports.index("check_nics.yaml")

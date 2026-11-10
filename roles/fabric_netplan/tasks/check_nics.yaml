@@ -17,8 +17,6 @@
   changed_when: false
   check_mode: false
 
-# Compares the NICs with the fabric file, not the other netplan files with it,
-# so it does not depend on netplan's merge rules.
 - name: "fabric_netplan | Compare the fabric NICs with the fabric file"
   vars:
     _host: "{{ hostvars[item.item].node_hostname | default(item.item) }}"

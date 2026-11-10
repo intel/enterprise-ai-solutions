@@ -5,22 +5,11 @@ import pathlib
 
 import pytest
 import yaml
-from ansible.parsing.dataloader import DataLoader
-from ansible.template import Templar
-
-try:
-    from ansible.template import trust_as_template
-except ImportError:  # ansible-core < 2.19 templates plain strings
-    def trust_as_template(source):
-        return source
+from ansible_render import render
 
 _TEMPLATES = pathlib.Path(__file__).resolve().parents[3] / "roles" / "kubernetes" / "templates"
 _RESOLVED = "/run/systemd/resolve/resolv.conf"
 _ETC = "/etc/resolv.conf"
-
-
-def render(source, variables):
-    return Templar(loader=DataLoader(), variables=variables).template(trust_as_template(source))
 
 
 def inventory(control_plane, workers):

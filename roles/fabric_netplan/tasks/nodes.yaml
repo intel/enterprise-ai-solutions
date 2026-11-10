@@ -10,14 +10,8 @@
   ansible.builtin.meta: end_role
   when: (rack_scale_topology | default('star')) == 'none'
 
-- name: "fabric_netplan | Compute cluster node list"
-  ansible.builtin.set_fact:
-    _fabric_all_nodes: >-
-      {{ (groups['kube_control_plane'] | default([]))
-         | union(groups['kube_node'] | default([]))
-         | union(groups.get('ceph_storage_nodes', []))
-         | reject('equalto', 'localhost')
-         | unique }}
+- name: "fabric_netplan | Cluster node list"
+  ansible.builtin.import_tasks: node_list.yaml
 
 - name: "fabric_netplan | Check netplan source exists for each node"
   ansible.builtin.stat:
