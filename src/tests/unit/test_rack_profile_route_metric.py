@@ -69,3 +69,11 @@ def test_star_routes_have_no_metric():
     assert star["network"]["topology"] == "star"
     spoke_routes = [route for r in routes(star).values() for route in r]
     assert spoke_routes and all("metric" not in route for route in spoke_routes)
+
+
+def test_malformed_leaf_subnet_is_a_profile_error():
+    for bad in ("10.202.0.0/33", "10.202.0.x/16"):
+        profile = copy.deepcopy(CLOS)
+        profile["network"]["leafs"][1]["fabric_subnet"] = bad
+        errors = rack_profile_parse(profile)["errors"]
+        assert any("leafs[1] ('leaf2') fabric_subnet" in e and bad in e for e in errors), errors

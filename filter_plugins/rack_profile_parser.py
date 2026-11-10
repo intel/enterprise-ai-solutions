@@ -409,6 +409,10 @@ def _parse_and_validate(profile):
             schema_errors.append(
                 f"leafs[{i}] ('{leaf.get('name', '?')}') is missing required "
                 f"field 'asn'")
+        if leaf.get("fabric_subnet") not in (None, "", "TBD"):
+            _safe_ip_network(leaf["fabric_subnet"],
+                             f"leafs[{i}] ('{leaf.get('name', '?')}') fabric_subnet",
+                             schema_errors)
 
     # S3: type-check each rack's nodes block
     # Flatten nodes preserving rack membership.
