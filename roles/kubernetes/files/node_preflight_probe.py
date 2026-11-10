@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-"""Read-only node readiness probe, run on each cluster node before Kubespray.
+"""Node preflight probe: reads NODE_PREFLIGHT_SPEC, prints what it finds as JSON, changes nothing.
 
-It reads NODE_PREFLIGHT_SPEC (JSON) from the environment and prints one JSON
-object with what it found. It changes nothing on the node. The pass/fail rules
-live in filter_plugins/node_preflight.py, on the controller.
 Standard library only, Python 3.6+ (RHEL 8 nodes).
 """
 
@@ -58,13 +55,16 @@ def os_release():
 
 def time_sync():
     rc, out = run(["chronyc", "tracking"])
-    if rc is not None:
+    if rc == 0:
         leap = re.search(r"Leap status\s*:\s*(.+)", out)
         status = leap.group(1).strip() if leap else (out.splitlines() or ["no output"])[0]
-        return {"source": "chrony", "synced": rc == 0 and status == "Normal", "detail": "Leap status: " + status}
-    rc, out = run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
+        return {"source": "chrony", "synced": status == "Normal", "detail": "Leap status: " + status}
+    # chronyc fails when chronyd is stopped; the node may sync with another daemon.
+    sync_rc, sync = run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
+    if sync_rc is not None:
+        return {"source": "timedatectl", "synced": sync == "yes", "detail": "NTPSynchronized=" + (sync or "?")}
     if rc is not None:
-        return {"source": "timedatectl", "synced": out == "yes", "detail": "NTPSynchronized=" + (out or "?")}
+        return {"source": "chrony", "synced": False, "detail": (out.splitlines() or ["no output"])[0]}
     return {"source": "none", "synced": False, "detail": "neither chronyc nor timedatectl found"}
 
 
@@ -192,26 +192,6 @@ def firewall():
     return {"ufw": ufw, "firewalld": out == "active"}
 
 
-def cpu():
-    info = read("/proc/cpuinfo")
-    model = re.search(r"^model name\s*:\s*(.+)$", info, re.M)
-    flags = re.search(r"^flags\s*:\s*(.+)$", info, re.M)
-    mem = re.search(r"^MemTotal:\s*(\d+) kB", read("/proc/meminfo"), re.M)
-    thp = re.search(r"\[(\w+)\]", read("/sys/kernel/mm/transparent_hugepage/enabled"))
-    nodes = [d for d in os.listdir("/sys/devices/system/node") if re.match(r"node\d+$", d)] \
-        if os.path.isdir("/sys/devices/system/node") else []
-    return {
-        "model": model.group(1).strip() if model else "?",
-        "sockets": len(set(re.findall(r"^physical id\s*:\s*(\d+)", info, re.M))) or 1,
-        "cpus": os.cpu_count(),
-        "numa_nodes": len(nodes) or 1,
-        "mem_bytes": int(mem.group(1)) * 1024 if mem else 0,
-        "amx": bool(flags and "amx_bf16" in flags.group(1).split()),
-        "governor": read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor") or None,
-        "thp": thp.group(1) if thp else None,
-    }
-
-
 def ceph_device(dev):
     """Whether dev can become an OSD: a whole, unmounted, unpartitioned disk with no signature."""
     real = os.path.realpath(dev)
@@ -248,7 +228,7 @@ def main():
     skip = set(spec.get("skip", []))
     out = {"node_epoch": time.time(), "controller_epoch": spec.get("controller_epoch"),
            "etcd_node": bool(spec.get("etcd")),
-           "euid": os.geteuid(), "os": os_release(), "kernel": os.uname().release}
+           "euid": os.geteuid(), "os": os_release()}
     probes = [
         ("time", ("N1", "N2"), time_sync),
         ("disk", ("N3", "N4", "N5"), lambda: {
@@ -261,7 +241,6 @@ def main():
         ("ports", ("N11", "N12"), lambda: listeners(set(spec.get("ports", [])))),
         ("pkg", ("N13",), package_manager),
         ("firewall", ("N14",), firewall),
-        ("cpu", ("N17", "N18"), cpu),
         ("ceph", ("N16",), lambda: {d: ceph_device(d) for d in spec.get("ceph_devices", [])}),
     ]
     errors = []

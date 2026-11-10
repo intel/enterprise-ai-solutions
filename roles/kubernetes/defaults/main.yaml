@@ -133,11 +133,8 @@ kubernetes_disable_firewall: false
 kubernetes_load_kernel_modules: true
 kubernetes_registry_enabled: false
 
-# --- Node preflight (tasks/node_preflight.yaml) ---
-# Read-only checks on every cluster node before Kubespray runs, on a fresh
-# install only. The install stops once, listing every failed check. Turn one
-# check off by its ID (N1-N19, see filter_plugins/node_preflight.py), e.g. a
-# site with its own package mirror skips the internet check: [N8].
+# --- Node preflight (tasks/node_preflight.yaml), fresh installs only ---
+# A site without internet skips N8 and lists its mirror in kubernetes_node_preflight_dns_names.
 kubernetes_node_preflight: true
 kubernetes_node_preflight_skip: []
 kubernetes_node_preflight_min_free_gib: 20       # under /var/lib/containerd: below this, stop

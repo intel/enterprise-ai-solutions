@@ -56,10 +56,10 @@ On a fresh install, the installer checks every node before Kubespray starts. The
 |---|---|
 | N1, N2 | Clock synchronised, and within 60 s of the deploy node |
 | N3, N4 | At least 20 GiB free, and at most 90 % used, under `/var/lib/containerd`; at most 90 % used on `/` |
-| N6, N7, N8 | Default gateway reachable; DNS resolves; HTTPS to github.com and registry.k8s.io (through the proxy, if one is set) |
+| N6, N7, N8 | Default gateway reachable; DNS resolves (a warning behind a proxy, or with N8 skipped); HTTPS to github.com and registry.k8s.io (through the proxy, if one is set) |
 | N9 | Passwordless sudo |
 | N10 | No configuration from another cluster (`/etc/kubernetes/kubelet.conf` pointing at another API server) |
-| N12 | No other program on the Kubernetes ports (6443, 2379-2380, 10250, 10257, 10259; 179 with BGP) |
+| N12 | No other program on the Kubernetes ports: 10250 on every node, 6443, 10257 and 10259 on control-plane nodes, 2379-2380 on etcd nodes, 179 with BGP |
 | N13 | Package manager not broken (`dpkg --audit`) |
 | N15 | Rack-scale only: Ubuntu 22.04 or 24.04 |
 | N16 | Ceph only (`storage_backend: ceph`): each OSD disk exists, is a whole disk, is not mounted or partitioned, and has no filesystem or old Ceph signature |
@@ -70,14 +70,12 @@ On a fresh install, the installer checks every node before Kubespray starts. The
 - N11: leftovers from an earlier install on this node.
 - N13: apt busy.
 - N14: firewall active.
-- N17: CPU governor not `performance`, or transparent huge pages set to `always`.
 
-**Node summary (N18):** OS, kernel, CPU, sockets, NUMA nodes, memory, and whether the CPU has Intel® AMX.
-
-To skip a check, list its ID in `global_config.yaml`. For example, a site with its own package mirror skips the internet check:
+To skip a check, list its ID in `global_config.yaml`. For example, a site without internet access, with its own package and image mirror, skips the internet check and lists the mirror's names for the DNS check. With N8 skipped, a name that doesn't resolve is only a warning:
 
 ```yaml
 kubernetes_node_preflight_skip: [N8]
+kubernetes_node_preflight_dns_names: [mirror.example.com]
 ```
 
 To turn all the checks off, set `kubernetes_node_preflight: false`. See [Configuration](../customize/configuration.md#node-preflight) for the thresholds.

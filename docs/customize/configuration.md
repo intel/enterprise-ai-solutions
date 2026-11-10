@@ -355,14 +355,14 @@ Read-only checks on every node before Kubespray runs, on a fresh install. The ch
 | Setting | Default | Description |
 |---|---|---|
 | `kubernetes_node_preflight` | `true` | `false` turns all the checks off |
-| `kubernetes_node_preflight_skip` | `[]` | Check IDs to skip, e.g. `[N8]` for a site with its own mirror |
+| `kubernetes_node_preflight_skip` | `[]` | Check IDs to skip, e.g. `[N8]` for a site without internet that has its own mirror |
 | `kubernetes_node_preflight_min_free_gib` | `20` | Below this free under `/var/lib/containerd`: stop |
 | `kubernetes_node_preflight_warn_free_gib` | `50` | Below this: warn |
 | `kubernetes_node_preflight_max_used_pct` | `90` | Above this on `/` or `/var/lib/containerd`: stop |
-| `kubernetes_node_preflight_etcd_warn_free_gib` | `10` | Below this under `/var/lib/etcd` on control-plane nodes: warn |
+| `kubernetes_node_preflight_etcd_warn_free_gib` | `10` | Below this under `/var/lib/etcd` on etcd nodes: warn |
 | `kubernetes_node_preflight_max_clock_skew_s` | `60` | Clock difference from the deploy node above this: stop |
 | `kubernetes_node_preflight_warn_clock_skew_s` | `5` | Above this: warn |
-| `kubernetes_node_preflight_dns_names` | registry.k8s.io, github.com, quay.io, docker.io, ghcr.io | Names each node must resolve (the proxy host too, when set) |
+| `kubernetes_node_preflight_dns_names` | registry.k8s.io, github.com, quay.io, docker.io, ghcr.io | Names each node must resolve (the proxy host too, when set). A site with its own mirror lists the mirror here |
 | `kubernetes_node_preflight_urls` | github.com, registry.k8s.io | HTTPS each node must reach, through the proxy |
 
 ---

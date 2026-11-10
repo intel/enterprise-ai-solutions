@@ -24,16 +24,16 @@
   ansible.builtin.meta: end_role
   when: existing_kubernetes | default('') | trim | length > 0
 
+# localhost is a placeholder: the seeded single-node inventory, which on a fresh
+# rack-scale env still sits next to the nodes fabric_inventory added.
 - name: "kubernetes | Detect SSH requirement from inventory"
+  vars:
+    _nodes: >-
+      {{ (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([])
+          + groups['etcd'] | default([])) | unique | reject('equalto', 'localhost') | list }}
   ansible.builtin.set_fact:
-    _k8s_needs_ssh: >-
-      {{
-        (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
-        | unique
-        | reject('equalto', 'localhost')
-        | list
-        | length > 0
-      }}
+    _k8s_nodes: "{{ _nodes }}"
+    _k8s_needs_ssh: "{{ _nodes | length > 0 }}"
 
 - name: "kubernetes | Compute execution phase"
   ansible.builtin.set_fact:
@@ -57,7 +57,7 @@
     - name: "kubernetes | SSH pre-flight | Ping all cluster nodes"
       ansible.builtin.ping:
       delegate_to: "{{ item }}"
-      loop: "{{ groups['kube_control_plane'] | default([]) | union(groups['kube_node'] | default([])) | unique }}"
+      loop: "{{ _k8s_nodes }}"
       loop_control:
         label: "{{ item }}"
 
@@ -157,14 +157,13 @@
   ansible.builtin.debug:
     msg: "Kubernetes cluster already running. Skipping."
 
-# --- Install via Kubespray ---
-# --- Node preflight: read-only checks on every node before Kubespray runs ---
 - name: "kubernetes | Node preflight"
   ansible.builtin.include_tasks: node_preflight.yaml
   when:
     - _k8s_existing.rc != 0
     - kubernetes_node_preflight | bool
 
+# --- Install via Kubespray ---
 - name: "kubernetes | Install via Kubespray"
   when: _k8s_existing.rc != 0
   block:
