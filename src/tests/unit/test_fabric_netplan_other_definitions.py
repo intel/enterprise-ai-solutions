@@ -57,7 +57,6 @@ def test_a_matching_entry_is_reported_with_its_dhcp(tmp_path):
 
 
 def test_a_matching_entry_that_sets_nothing_is_reported(tmp_path):
-    # Not merged: netplan writes it its own .network file, and networkd applies only the first that matches.
     assert probe(tmp_path, cloud_init("all-en:\n  match: {name: 'en*'}\n  dhcp4: no\n")) == [
         "netplandef=ens6f0 in /etc/netplan/50-cloud-init.yaml ('all-en' matches it)"]
 
@@ -126,3 +125,9 @@ def test_benign_unparseable_and_the_fabric_files(tmp_path):
              "etc/netplan/60-fabric.yaml": "network:\n  ethernets:\n    ens6f0: {addresses: [10.0.0.1/16]}\n",
              "etc/netplan/99-fabric.yaml": "network:\n  ethernets:\n    ens6f0: {addresses: [10.0.0.1/16]}\n"}
     assert probe(tmp_path, files) == []
+
+
+def test_a_file_that_is_not_utf8_is_skipped(tmp_path):
+    (tmp_path / "etc/netplan").mkdir(parents=True)
+    (tmp_path / "etc/netplan/50-latin1.yaml").write_bytes(b"network:\n  ethernets:\n    ens6f0: {addresses: [10.9.9.9/24]} # \xe9\n")
+    assert probe(tmp_path, {}) == []

@@ -3,8 +3,7 @@
 """Other netplan and NetworkManager configuration that also configures a fabric NIC.
 
 Usage: netplan_probe.py --fabric-file NAME --old-file NAME NIC...
-Prints one "nmprof=" or "netplandef=" line per finding. Fed to python3 by the
-fabric_netplan probe task, after its own check that netplan is installed.
+Prints one "nmprof=" or "netplandef=" line per finding.
 """
 import argparse
 import configparser
@@ -64,7 +63,7 @@ def netplan_files(root, skip):
         try:
             with open(by_name[name]) as f:
                 net = (yaml.safe_load(f) or {}).get("network") or {}
-        except (OSError, yaml.YAMLError, AttributeError):
+        except (OSError, ValueError, yaml.YAMLError, AttributeError):
             continue
         if isinstance(net, dict):
             out.append((by_name[name], net))
@@ -97,6 +96,8 @@ def scan(root, fabric_file, old_file, nics):
                 # .network file by name, so the entry can take the NIC even if it sets nothing.
                 what = "matches it" + (" and sets " + ", ".join(keys) if keys else "")
             else:
+                # Merged with the fabric file: lists add up, and on single values the file
+                # that sorts later wins, so its dhcp4/dhcp6: false overrides an earlier file.
                 if os.path.basename(path) < fabric_file:
                     keys = [k for k in keys if k not in ("dhcp4", "dhcp6")]
                 if not keys:

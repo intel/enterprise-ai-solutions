@@ -47,15 +47,8 @@
 # configuration for a fabric NIC, used to fail later with a misleading
 # "address not present" error.
 #
-# Any other netplan file that configures a fabric NIC (cloud-init's
-# 50-cloud-init.yaml, an installer's bond or bridge) conflicts as well. An
-# entry named after the NIC is merged with the fabric file: lists such as
-# addresses add up, and on single values the file that sorts later wins, so
-# dhcp4/dhcp6 from a file sorting before the fabric file are overridden, and
-# an entry that configures nothing (dhcp4: no, optional: true) is harmless. An
-# entry that selects the NIC with match: is not merged: networkd applies the
-# first matching .network file by name, which may not be the fabric one, so it
-# conflicts even if it configures nothing. The probe is files/netplan_probe.py.
+# Any other netplan file that configures a fabric NIC conflicts as well; the
+# rules are in files/netplan_probe.py.
 #
 # NetworkManager running next to networkd is fine: for renderer networkd,
 # netplan also tells NetworkManager to leave the fabric NICs alone, so
