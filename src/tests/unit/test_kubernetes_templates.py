@@ -6,7 +6,13 @@ import pathlib
 import pytest
 import yaml
 from ansible.parsing.dataloader import DataLoader
-from ansible.template import Templar, trust_as_template
+from ansible.template import Templar
+
+try:
+    from ansible.template import trust_as_template
+except ImportError:  # ansible-core < 2.19 templates plain strings
+    def trust_as_template(source):
+        return source
 
 _TEMPLATES = pathlib.Path(__file__).resolve().parents[3] / "roles" / "kubernetes" / "templates"
 _RESOLVED = "/run/systemd/resolve/resolv.conf"
