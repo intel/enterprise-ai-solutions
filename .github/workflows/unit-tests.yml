@@ -1,0 +1,51 @@
+---
+name: Unit Tests
+
+# Actions are pinned to full commit SHAs (the trailing `# vX.Y.Z` is the tag
+# that SHA corresponded to) and Python packages to hashes in
+# src/tests/unit/requirements.txt.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-[0-9]+\.[0-9]+'
+  pull_request:
+    branches:
+      - main
+      - 'release-[0-9]+\.[0-9]+'
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden the runner (audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+
+      - name: Install test dependencies
+        run: pip install --disable-pip-version-check --require-hashes -r src/tests/unit/requirements.txt
+
+      - name: Run unit tests
+        run: python -m pytest src/tests/unit -p no:cacheprovider
