@@ -3,6 +3,7 @@
 # Run: python3 -m pytest src/tests/unit
 import copy
 import importlib.util
+import ipaddress
 import pathlib
 
 import yaml
@@ -62,3 +63,15 @@ def test_star_gap_between_links_counts_as_fabric():
     cidrs = fabric_cidrs(profile)
     assert cidrs == ["10.201.1.0/28"]
     assert overlaps(cidrs, "10.201.1.5/32") == cidrs
+
+
+def test_invalid_leaf_subnet_is_a_profile_error():
+    profile = copy.deepcopy(CLOS)
+    profile["network"]["leafs"][1]["fabric_subnet"] = "10.202.0.0/166"
+    found = _mod.rack_profile_validate(profile)["errors"]
+    assert len(found) == 1 and "leafs[1] ('leaf2') fabric_subnet" in found[0]
+
+
+def test_merged_networks_drop_subnets_and_sort_ipv4_first():
+    nets = [ipaddress.ip_network(n) for n in ("fd00::/64", "10.202.0.0/16", "10.201.1.0/24", "10.201.0.0/16", "fd00::/48")]
+    assert _mod._merge_networks(nets) == ["10.201.0.0/16", "10.202.0.0/16", "fd00::/48"]

@@ -506,7 +506,7 @@ and continue.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `rack_scale_enabled is true but rack-profile.yaml not found` | Missing profile | Copy `configs/defaults/rack-profile.yaml.example` to `env/<env>/rack-profile.yaml` |
-| `rack_scale_enabled=true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to free management-subnet addresses (e.g. `172.18.168.240-172.18.168.250`), not a node's own IP |
+| `rack_scale_enabled is true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to free management-subnet addresses (e.g. `172.18.168.240-172.18.168.250`), not a node's own IP |
 | `metallb_ip_range ... overlaps the fabric subnet` | VIP range on the fabric | Move `metallb_ip_range` to free management-subnet addresses; fabric IPs are not reachable from outside the rack |
 | Kubespray can't SSH to workers | Star hub not forwarding | Check hub: `sysctl net.ipv4.ip_forward` (must be 1), `iptables -S FORWARD` (must have ACCEPT rules) |
 | `star cable faults: both ends must share...` | /30 subnet mismatch | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
