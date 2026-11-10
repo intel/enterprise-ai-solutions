@@ -12,10 +12,10 @@
       {{ ((_np_proxy_url if '://' in _np_proxy_url else 'http://' ~ _np_proxy_url) | urlsplit('hostname'))
          if _np_proxy_url | length > 0 else '' }}
     _np_ceph: "{{ (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph' }}"
-    # A kubelet.conf pointing elsewhere belongs to another cluster. Kubespray's
-    # workers reach the API server through a local proxy (localhost).
+    # A kubelet.conf pointing at another API server belongs to another cluster.
+    # (For a loopback server the rules compare the cluster CA instead.)
     _np_api_hosts: >-
-      {{ (['localhost', '127.0.0.1', '::1', apiserver_loadbalancer_domain_name | default('lb-apiserver.kubernetes.local')] + _np_cp
+      {{ ([apiserver_loadbalancer_domain_name | default('lb-apiserver.kubernetes.local')] + _np_cp
           + _np_cp | map('extract', hostvars) | map(attribute='ip', default='') | list
           + _np_cp | map('extract', hostvars) | map(attribute='access_ip', default='') | list
           + _np_cp | map('extract', hostvars) | map(attribute='ansible_host', default='') | list

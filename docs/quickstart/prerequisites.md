@@ -48,7 +48,7 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 
 ## Node checks before install
 
-On a fresh install, the installer checks every node before Kubespray starts. The checks are read-only. Every node is checked first; the install then stops once, listing each failed check with the node and a fix. Results are also saved to `env/<name>/logs/node-preflight-<time>.json`.
+On a fresh install, the installer checks every node before Kubespray starts. The checks are read-only. Every node is checked first; the install then stops once, listing each failed check with the node and a fix. Results are also saved to `env/<name>/logs/node-preflight-<time>.json`. On a first install with the nodes in `nodes.yaml`, the inventory doesn't list them yet, so the checks are skipped; a re-run before the cluster exists checks them.
 
 **Stops the install:**
 
@@ -56,9 +56,9 @@ On a fresh install, the installer checks every node before Kubespray starts. The
 |---|---|
 | N1, N2 | Clock synchronised, and within 60 s of the deploy node |
 | N3, N4 | At least 20 GiB free, and at most 90 % used, under `/var/lib/containerd`; at most 90 % used on `/` |
-| N6, N7, N8 | Default gateway reachable; DNS resolves (a warning behind a proxy, or with N8 skipped); HTTPS to github.com and registry.k8s.io (through the proxy, if one is set) |
+| N6, N7, N8 | Default gateway answers ping, TCP or ARP; DNS resolves (a warning behind a proxy, or with N8 skipped); HTTPS to github.com and registry.k8s.io (through the proxy, if one is set; a 403 is a warning) |
 | N9 | Passwordless sudo |
-| N10 | No configuration from another cluster (`/etc/kubernetes/kubelet.conf` pointing at another API server) |
+| N10 | No configuration from another cluster: `/etc/kubernetes/kubelet.conf` pointing at another API server, or at a local one (Kubespray's `127.0.0.1` or `localhost`) with a CA that this run's control-plane nodes don't have |
 | N12 | No other program on the Kubernetes ports: 10250 on every node, 6443, 10257 and 10259 on control-plane nodes, 2379-2380 on etcd nodes, 179 with BGP |
 | N13 | Package manager not broken (`dpkg --audit`) |
 | N15 | Rack-scale only: Ubuntu 22.04 or 24.04 |
@@ -78,7 +78,7 @@ kubernetes_node_preflight_skip: [N8]
 kubernetes_node_preflight_dns_names: [mirror.example.com]
 ```
 
-To turn all the checks off, set `kubernetes_node_preflight: false`. See [Configuration](../customize/configuration.md#node-preflight) for the thresholds.
+To turn all the checks off, set `kubernetes_node_preflight: false`. Do that for one run when you re-install onto a running cluster whose kubeconfig was lost: the checks then run as for a fresh install, and N16 stops on the disks Ceph is using (or skip just N16). See [Configuration](../customize/configuration.md#node-preflight) for the thresholds.
 
 ### Reusing a disk that held an OSD
 

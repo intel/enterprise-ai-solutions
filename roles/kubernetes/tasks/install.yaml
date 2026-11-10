@@ -157,11 +157,27 @@
   ansible.builtin.debug:
     msg: "Kubernetes cluster already running. Skipping."
 
+# nodes.yaml nodes join the inventory only when install_kubespray.yaml writes it, after this.
 - name: "kubernetes | Node preflight"
-  ansible.builtin.include_tasks: node_preflight.yaml
   when:
     - _k8s_existing.rc != 0
     - kubernetes_node_preflight | bool
+  vars:
+    _np_new: >-
+      {{ (nodes_control_plane | default([], true) + nodes_workers | default([], true))
+         | map(attribute='hostname', default='') | select | reject('in', groups['all']) | list }}
+  block:
+    - name: "kubernetes | Node preflight | Skipped: nodes.yaml nodes not in the inventory yet"
+      ansible.builtin.debug:
+        msg: >-
+          Node preflight skipped: {{ _np_new | join(', ') }} from nodes.yaml are not in the
+          inventory yet. It is written later in this run, so a re-run before the cluster
+          exists checks them.
+      when: _np_new | length > 0
+
+    - name: "kubernetes | Node preflight | Run"
+      ansible.builtin.include_tasks: node_preflight.yaml
+      when: _np_new | length == 0
 
 # --- Install via Kubespray ---
 - name: "kubernetes | Install via Kubespray"

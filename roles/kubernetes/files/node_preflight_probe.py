@@ -6,6 +6,8 @@
 Standard library only, Python 3.6+ (RHEL 8 nodes).
 """
 
+import base64
+import hashlib
 import http.client
 import json
 import os
@@ -22,6 +24,10 @@ GIB = 1 << 30
 # Ceph writes a BlueStore label at these offsets; a stale one makes Rook skip the disk.
 BLUESTORE_LABEL = b"bluestore block device"
 BLUESTORE_OFFSETS_GIB = (0, 1, 10, 100, 1000)
+# The cluster CA on a control-plane node: Kubespray's cert dir, then kubeadm's.
+CLUSTER_CA = ("/etc/kubernetes/ssl/ca.crt", "/etc/kubernetes/pki/ca.crt")
+# Neighbour states of a gateway that answered ARP recently.
+NEIGH_ALIVE = {"REACHABLE", "STALE", "DELAY", "PROBE"}
 
 
 def run(args, timeout=10):
@@ -95,6 +101,11 @@ def gateway():
     if rc == 0:
         result.update(reachable=True, via="icmp")
         return result
+    # A gateway that drops pings still answers ARP for them.
+    rc, out = run(["ip", "neigh", "show", gw])
+    if rc == 0 and out and out.split()[-1] in NEIGH_ALIVE:
+        result.update(reachable=True, via="arp")
+        return result
     for port in (22, 443):
         try:
             socket.create_connection((gw, port), timeout=3).close()
@@ -129,7 +140,7 @@ def resolve(names, timeout=5.0):
 def reach(urls, timeout=10):
     """HTTPS through the proxy from the environment. A 4xx answer still means the site
     was reached (registry.k8s.io answers 401); 407 and 5xx mean it wasn't: a proxy
-    answers 502/504 itself when it can't reach the site."""
+    answers 502/504 itself when it can't reach the site. 403 is reached, but refused."""
     out = {}
     for url in urls:
         try:
@@ -139,6 +150,8 @@ def reach(urls, timeout=10):
         except urllib.error.HTTPError as exc:
             if exc.code == 407:
                 out[url] = {"ok": False, "error": "proxy authentication required"}
+            elif exc.code == 403:  # the site, or an intercepting proxy, answered but refused
+                out[url] = {"ok": True, "refused": True}
             elif exc.code >= 500:
                 out[url] = {"ok": False, "error": "HTTP %d (the proxy could not reach it)" % exc.code}
             else:
@@ -157,6 +170,30 @@ def addresses():
     return sorted(set(re.findall(r"\binet6?\s+([0-9A-Fa-f:.]+)/", out or "")))
 
 
+def ca_hash(pem):
+    """sha256 of the first certificate in a PEM text, or None."""
+    match = re.search(r"-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----", pem, re.S)
+    if not match:
+        return None
+    try:
+        return hashlib.sha256(base64.b64decode("".join(match.group(1).split()), validate=True)).hexdigest()
+    except ValueError:
+        return None
+
+
+def kubeconfig_ca(conf):
+    """ca_hash of a kubeconfig's certificate-authority-data, or of the file its certificate-authority names."""
+    text = read(conf)
+    data = re.search(r"^\s*certificate-authority-data:\s*(\S+)", text, re.M)
+    path = re.search(r"^\s*certificate-authority:\s*(\S+)", text, re.M)
+    if data:
+        try:
+            return ca_hash(base64.b64decode(data.group(1), validate=True).decode("ascii", "replace"))
+        except ValueError:
+            return None
+    return ca_hash(read(path.group(1).strip("'\""))) if path else None
+
+
 def kube_leftovers():
     def server(conf):
         match = re.search(r"^\s*server:\s*(\S+)", read(conf), re.M)
@@ -169,6 +206,9 @@ def kube_leftovers():
         "kubelet_active": out == "active",
         "kubelet_conf_server": server("/etc/kubernetes/kubelet.conf"),
         "admin_conf_server": server("/etc/kubernetes/admin.conf"),
+        "kubelet_conf_ca": kubeconfig_ca("/etc/kubernetes/kubelet.conf"),
+        "admin_conf_ca": kubeconfig_ca("/etc/kubernetes/admin.conf"),
+        "cluster_ca": ca_hash(read(CLUSTER_CA[0]) or read(CLUSTER_CA[1])),
         "manifests": sorted(os.listdir(manifests)) if os.path.isdir(manifests) else [],
         "etcd_member": os.path.isdir("/var/lib/etcd/member"),
         # An etcd binary without its unit (a half-finished reset) makes Kubespray

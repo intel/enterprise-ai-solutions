@@ -1,12 +1,22 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 # Run: python3 -m pytest src/tests/unit
+import base64
 import copy
 import importlib.util
 import json
 import pathlib
 
 import pytest
+import yaml
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar
+
+try:
+    from ansible.template import trust_as_template
+except ImportError:  # ansible-core < 2.19 templates plain strings
+    def trust_as_template(source):
+        return source
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -41,7 +51,8 @@ def healthy():
         "urls": {"https://github.com": {"ok": True}, "https://registry.k8s.io/v2/": {"ok": True}},
         "kube": {"kubelet_active": False, "kubelet_conf_server": None, "admin_conf_server": None, "manifests": [],
                  "etcd_member": False, "etcd_binary": False, "etcd_unit": False, "cni_calico": [],
-                 "addresses": ["127.0.0.1", "192.0.2.30"]},
+                 "addresses": ["127.0.0.1", "192.0.2.30"], "kubelet_conf_ca": None, "admin_conf_ca": None,
+                 "cluster_ca": None},
         "ports": [],
         "pkg": {"dpkg_audit": "", "busy": []},
         "firewall": {"ufw": False, "firewalld": False},
@@ -101,6 +112,10 @@ CASES = [
     ("N8 timeout", lambda d: d["urls"]["https://github.com"].update(ok=False, error="timed out"), {}, "N8", "FAIL"),
     ("N8 proxy 407", lambda d: d["urls"]["https://github.com"].update(ok=False, error="proxy authentication required"),
      {}, "N8", "FAIL"),
+    ("N8 403", lambda d: d["urls"]["https://github.com"].update(ok=True, refused=True), {}, "N8", "WARN"),
+    ("N8 403 and a timeout", lambda d: (d["urls"]["https://github.com"].update(ok=True, refused=True),
+                                        d["urls"]["https://registry.k8s.io/v2/"].update(ok=False, error="timed out")),
+     {}, "N8", "FAIL"),
     ("N8 skipped", lambda d: d["urls"]["https://github.com"].update(ok=False), {"skip": ["N8"]}, "N8", "SKIP"),
     ("N8 skipped, so not probed", lambda d: d.pop("urls"), {"skip": ["N8"]}, "N8", "SKIP"),
     ("N9 not root after become", lambda d: d.update(euid=1000), {}, "N9", "FAIL"),
@@ -108,8 +123,8 @@ CASES = [
      {}, "N10", "FAIL"),
     ("N10 our control plane", lambda d: d["kube"].update(kubelet_conf_server="https://192.0.2.10:6443"),
      {}, "N10", "OK"),
-    ("N10 worker local proxy", lambda d: d["kube"].update(kubelet_conf_server="https://localhost:6443"),
-     {}, "N10", "OK"),
+    ("N10 local proxy, no control-plane CA in this run",
+     lambda d: d["kube"].update(kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-a"), {}, "N10", "FAIL"),
     ("N11 our leftovers", lambda d: d["kube"].update(kubelet_active=True, etcd_member=True), {}, "N11", "WARN"),
     ("N11 kubelet on its port", lambda d: d.update(ports=[{"port": 10250, "proc": "kubelet", "pid": 1}]),
      {}, "N11", "WARN"),
@@ -284,6 +299,46 @@ def test_n10_ipv6_api_server_address():
     assert n10([("cp1", cp1)], DEFAULT_HOSTS + ["cp1"], ["cp1"]) == {"cp1": "OK"}
 
 
+def test_n10_loopback_server_is_ours_only_with_our_ca():
+    cp1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://127.0.0.1:6443", kubelet_conf_ca="ca-a",
+                                               admin_conf_server="https://127.0.0.1:6443", admin_conf_ca="ca-a",
+                                               cluster_ca="ca-a", addresses=["192.0.2.10"]))
+    w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-a"))
+    w2 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-b"))
+    assert n10([("cp1", cp1), ("w1", w1), ("w2", w2)], DEFAULT_HOSTS + ["cp1"], ["cp1"]) == {
+        "cp1": "OK", "w1": "OK", "w2": "FAIL"}
+
+
+def test_n10_loopback_server_when_our_control_plane_has_no_ca_yet():
+    cp1 = changed(lambda d: d["kube"].update(addresses=["192.0.2.10"]))
+    w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://[::1]:6443", kubelet_conf_ca="ca-a"))
+    out = rules.node_preflight_evaluate([{"item": n, "stdout": json.dumps(d)} for n, d in (("cp1", cp1), ("w1", w1))],
+                                        {**CTX, "api_hosts": ["cp1"], "control_plane": ["cp1"]})
+    assert [(r["node"], r["status"], r["evidence"]) for r in out["rows"] if r["id"] == "N10"] == [
+        ("cp1", "OK", "no other cluster's config"),
+        ("w1", "FAIL", "kubelet.conf points at https://[::1]:6443 with another cluster's CA")]
+
+
+PEM = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUQ0E=\n-----END CERTIFICATE-----\n"
+
+
+def test_kubeconfig_ca_matches_the_cluster_ca(monkeypatch):
+    data = base64.b64encode(PEM.encode()).decode()
+    files = {"/etc/kubernetes/kubelet.conf": "clusters:\n- cluster:\n    certificate-authority-data: %s\n"
+                                             "    server: https://127.0.0.1:6443\n" % data,
+             "/etc/kubernetes/admin.conf": "    certificate-authority: /etc/kubernetes/ssl/ca.pem\n",
+             "/etc/kubernetes/ssl/ca.pem": PEM, "/etc/kubernetes/pki/ca.crt": PEM}
+    monkeypatch.setattr(probe, "read", lambda path, default="": files.get(path, default))
+    monkeypatch.setattr(probe, "run", _fake_run({}))
+    kube = probe.kube_leftovers()
+    assert kube["kubelet_conf_ca"] == kube["admin_conf_ca"] == kube["cluster_ca"] is not None
+
+
+@pytest.mark.parametrize("text", ["", "no certificate here", "-----BEGIN CERTIFICATE-----\n@@@=\n-----END CERTIFICATE-----"])
+def test_ca_hash_of_something_that_is_not_a_certificate(text):
+    assert probe.ca_hash(text) is None
+
+
 def test_addresses_from_ip_addr(monkeypatch):
     out = ("1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n"
            "1: lo    inet6 ::1/128 scope host noprefixroute \\       valid_lft forever preferred_lft forever\n"
@@ -335,6 +390,7 @@ class _Response:
 @pytest.mark.parametrize("answer, expected", [
     (200, {"ok": True}),
     (401, {"ok": True}),
+    (403, {"ok": True, "refused": True}),
     (407, {"ok": False, "error": "proxy authentication required"}),
     (504, {"ok": False, "error": "HTTP 504 (the proxy could not reach it)"}),
     ("refused", {"ok": False, "error": "refused"}),
@@ -387,6 +443,28 @@ def test_gateway_reads_the_default_route(monkeypatch, routes, ip, dev):
     monkeypatch.setattr(probe, "run", _fake_run({"ip": (0, routes), "ping": (0, "")}))
     out = probe.gateway()
     assert (out["ip"], out["dev"], out["reachable"]) == (ip, dev, ip is not None)
+
+
+# `ip neigh show <gateway>`, as iproute2 prints it.
+@pytest.mark.parametrize("neigh, reachable", [
+    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 REACHABLE ", True),
+    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 STALE ", True),
+    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 DELAY ", True),
+    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 PROBE ", True),
+    ("192.0.2.1 dev eth0 INCOMPLETE ", False),
+    ("192.0.2.1 dev eth0 FAILED ", False),
+    ("", False),
+])
+def test_gateway_that_drops_pings_but_answers_arp(monkeypatch, neigh, reachable):
+    answers = {("ip", "-o"): (0, "default via 192.0.2.1 dev eth0 proto static"), ("ip", "neigh"): (0, neigh),
+               ("ping",): (1, "100% packet loss")}
+    monkeypatch.setattr(probe, "run", lambda args, timeout=10: answers.get(tuple(args[:2]), answers.get(tuple(args[:1]))))
+
+    def connect(addr, timeout):
+        raise TimeoutError()
+    monkeypatch.setattr(probe.socket, "create_connection", connect)
+    out = probe.gateway()
+    assert (out["reachable"], out["via"]) == (reachable, "arp" if reachable else None)
 
 
 def test_kubeconfig_server_may_be_quoted(monkeypatch):
@@ -442,3 +520,20 @@ def test_os_release_runs_only_for_n15(monkeypatch, capsys, skip, has_os):
     monkeypatch.setenv("NODE_PREFLIGHT_SPEC", json.dumps({"skip": skip}))
     probe.main()
     assert ("os" in json.loads(capsys.readouterr().out)) is has_os
+
+
+def render(source, variables):
+    return Templar(loader=DataLoader(), variables=variables).template(trust_as_template(source))
+
+
+@pytest.mark.parametrize("nodes, workers, inventory, new", [
+    ([{"hostname": "cp1"}], None, ["localhost"], ["cp1"]),
+    ([{"hostname": "cp1"}], [{"hostname": "w1"}], ["localhost", "cp1"], ["w1"]),
+    ([{"hostname": "cp1"}], [{"hostname": "w1"}], ["localhost", "cp1", "w1"], []),
+    (None, None, ["localhost"], []),
+])
+def test_preflight_waits_until_the_inventory_has_the_nodes_yaml_nodes(nodes, workers, inventory, new):
+    tasks = yaml.safe_load((_ROOT / "roles/kubernetes/tasks/install.yaml").read_text())
+    task = next(t for t in tasks if t.get("name") == "kubernetes | Node preflight")
+    variables = {"nodes_control_plane": nodes, "nodes_workers": workers, "groups": {"all": inventory}}
+    assert render(task["vars"]["_np_new"], variables) == new

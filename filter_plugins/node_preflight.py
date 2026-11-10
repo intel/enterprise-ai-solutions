@@ -22,6 +22,9 @@ TITLES = {
 # N11, not N12). ss truncates process names to 15 characters.
 KUBE_PROCS = {"kubelet", "kube-apiserver", "kube-controller", "kube-scheduler", "etcd", "kube-proxy",
               "bird", "bird6", "calico-node"}
+LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+KUBECONFIGS = (("kubelet.conf", "kubelet_conf_server", "kubelet_conf_ca"),
+               ("admin.conf", "admin_conf_server", "admin_conf_ca"))
 RACK_SCALE_OS = {("ubuntu", "22.04"), ("ubuntu", "24.04")}
 SUDO_HINT = "Allow passwordless sudo for the Ansible user, or run with --ask-become-pass"
 
@@ -105,8 +108,14 @@ def _dns_checks(dns, ctx):
 
 def _internet_checks(urls):
     bad = ["%s (%s)" % (_host(url), res.get("error")) for url, res in sorted(urls.items()) if not res.get("ok")]
-    return [("N8", "FAIL" if bad else "OK",
-             ("cannot reach " + ", ".join(bad)) if bad else "reaches " + ", ".join(sorted(_host(u) for u in urls)),
+    refused = [_host(url) for url, res in sorted(urls.items()) if res.get("refused")]
+    if bad:
+        status, evidence = "FAIL", "cannot reach " + ", ".join(bad)
+    elif refused:
+        status, evidence = "WARN", "reached but refused (403): " + ", ".join(refused)
+    else:
+        status, evidence = "OK", "reaches " + ", ".join(sorted(_host(u) for u in urls))
+    return [("N8", status, evidence,
              "Kubespray downloads on every node: set http_proxy/https_proxy/no_proxy in global_config.yaml, "
              "or open HTTPS. Nodes that download from a mirror skip this check (kubernetes_node_preflight_skip: [N8])")]
 
@@ -117,10 +126,16 @@ def _sudo_checks(euid):
              SUDO_HINT)]
 
 
-def _cluster_checks(kube, ports, etcd_node, ours):
-    foreign = ["%s points at %s" % (conf, kube[key])
-               for key, conf in (("kubelet_conf_server", "kubelet.conf"), ("admin_conf_server", "admin.conf"))
-               if kube.get(key) and _canonical(_host(kube[key])) not in ours]
+def _cluster_checks(kube, ports, etcd_node, ours, our_cas):
+    foreign = []
+    for conf, server_key, ca_key in KUBECONFIGS:
+        server = kube.get(server_key)
+        host = _canonical(_host(server)) if server else None
+        # Kubespray points kubeconfigs at 127.0.0.1 or its local API proxy: there the cluster CA tells.
+        if host in LOOPBACK and kube.get(ca_key) not in our_cas:
+            foreign.append("%s points at %s with another cluster's CA" % (conf, server))
+        elif host and host not in LOOPBACK and host not in ours:
+            foreign.append("%s points at %s" % (conf, server))
     rows = [("N10", "FAIL" if foreign else "OK", "; ".join(foreign) or "no other cluster's config",
              "This node still belongs to another cluster. Remove it from that cluster and clean it "
              "(kubeadm reset, then remove /etc/kubernetes, /var/lib/etcd and /etc/cni/net.d) before installing")]
@@ -211,7 +226,7 @@ def _ceph_checks(devices):
              "unless rook_ceph_teardown_wipe_devices is true")]
 
 
-def _checks(data, ctx, ours):
+def _checks(data, ctx, ours, our_cas):
     """(id, status, evidence, hint) for one node's probe data. A probe the node skipped is absent."""
     rows = []
     if data.get("time"):
@@ -226,7 +241,7 @@ def _checks(data, ctx, ours):
         rows += _internet_checks(data["urls"])
     rows += _sudo_checks(data.get("euid"))
     if data.get("kube") is not None:
-        rows += _cluster_checks(data["kube"], data.get("ports"), data.get("etcd_node"), ours)
+        rows += _cluster_checks(data["kube"], data.get("ports"), data.get("etcd_node"), ours, our_cas)
     if data.get("ports") is not None:
         rows += _port_checks(data["ports"])
     if data.get("pkg"):
@@ -279,12 +294,13 @@ def node_preflight_evaluate(results, ctx):
     # An API server this run's control plane can serve: the inventory's names and addresses,
     # and every address the control-plane nodes report (Kubespray may bind the default-route one).
     control_plane = set(ctx.get("control_plane") or [])
+    cp_kube = [data.get("kube") or {} for res, data in parsed if data and res.get("item") in control_plane]
     ours = {_canonical(h) for h in ctx.get("api_hosts") or []} | {
-        _canonical(a) for res, data in parsed if data and res.get("item") in control_plane
-        for a in (data.get("kube") or {}).get("addresses", [])}
+        _canonical(a) for kube in cp_kube for a in kube.get("addresses", [])}
+    our_cas = {kube.get("cluster_ca") for kube in cp_kube} - {None}
     rows = []
     for res, data in parsed:
-        checks = _checks(data, ctx, ours) if data is not None else _probe_failed(res)
+        checks = _checks(data, ctx, ours, our_cas) if data is not None else _probe_failed(res)
         # A check the node did not probe because it is skipped is still listed, as SKIP.
         probed = {c[0] for c in checks}
         checks += [(cid, "SKIP", "in kubernetes_node_preflight_skip", "") for cid in TITLES
