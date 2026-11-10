@@ -51,10 +51,11 @@
 # 50-cloud-init.yaml, an installer's bond or bridge) conflicts as well. An
 # entry named after the NIC is merged with the fabric file: lists such as
 # addresses add up, and on single values the file that sorts later wins, so
-# dhcp4/dhcp6 from a file sorting before the fabric file are overridden. An
+# dhcp4/dhcp6 from a file sorting before the fabric file are overridden, and
+# an entry that configures nothing (dhcp4: no, optional: true) is harmless. An
 # entry that selects the NIC with match: is not merged: networkd applies the
-# first matching .network file by name, which may not be the fabric one. A
-# definition that configures nothing (dhcp4: no, optional: true) is harmless.
+# first matching .network file by name, which may not be the fabric one, so it
+# conflicts even if it configures nothing. The probe is files/netplan_probe.py.
 #
 # NetworkManager running next to networkd is fine: for renderer networkd,
 # netplan also tells NetworkManager to leave the fabric NICs alone, so
@@ -73,59 +74,8 @@
     command -v netplan >/dev/null 2>&1 || { echo "netplan=no"; exit 0; }
     echo "netplan=yes"
     echo "nm_enabled=$(systemctl is-enabled NetworkManager 2>/dev/null || true)"
-    python3 -I - {{ _fabric_nics | map('quote') | join(' ') }} <<'PY'
-    import configparser, fnmatch, glob, os, sys, yaml
-    nics = sys.argv[1:]
-    macs = {}
-    for n in nics:
-        try:
-            macs[n] = open('/sys/class/net/%s/address' % n).read().strip().lower()
-        except OSError:
-            pass
-    def claimed(name, mac):
-        mac = (mac or '').lower()
-        return [n for n in nics
-                if (name and fnmatch.fnmatchcase(n, name)) or (mac and macs.get(n) == mac)]
-    # netplan definitions rendered by NetworkManager, other than the fabric file
-    for f in sorted(glob.glob('/lib/netplan/*.yaml') + glob.glob('/etc/netplan/*.yaml')
-                    + glob.glob('/run/netplan/*.yaml')):
-        if os.path.basename(f) in ('{{ rack_scale_netplan_dest | basename }}', '60-fabric.yaml'):
-            continue
-        try:
-            net = (yaml.safe_load(open(f)) or {}).get('network') or {}
-        except Exception:
-            continue
-        eths = net.get('ethernets') or {}
-        for dev, d in eths.items():
-            if not isinstance(d, dict):
-                continue
-            m = d.get('match') or {}
-            hits = claimed(m.get('name') if m else dev, m.get('macaddress'))
-            if (d.get('renderer') or eths.get('renderer') or net.get('renderer')) == 'NetworkManager':
-                for n in hits:
-                    print("nmprof=%s in %s (profile '%s')" % (n, f, (d.get('networkmanager') or {}).get('name', dev)))
-                continue
-            keys = [k for k in ('addresses', 'dhcp4', 'dhcp6', 'routes', 'gateway4', 'gateway6', 'set-name') if d.get(k)]
-            if not m and os.path.basename(f) < '{{ rack_scale_netplan_dest | basename }}':
-                keys = [k for k in keys if k not in ('dhcp4', 'dhcp6')]
-            for n in hits if keys else []:
-                print("netplandef=%s in %s ('%s' %s %s)" % (n, f, dev, 'matches it and sets' if m else 'sets', ', '.join(keys)))
-        for kind in ('bonds', 'bridges'):
-            for dev, d in (net.get(kind) or {}).items():
-                for n in nics:
-                    if isinstance(d, dict) and n in (d.get('interfaces') or []):
-                        print("netplandef=%s in %s (member of %s '%s')" % (n, f, kind[:-1], dev))
-    # NetworkManager keyfiles
-    for f in sorted(glob.glob('/etc/NetworkManager/system-connections/*')):
-        c = configparser.ConfigParser(interpolation=None, strict=False)
-        try:
-            c.read(f)
-        except Exception:
-            continue
-        for n in claimed(c.get('connection', 'interface-name', fallback=None),
-                         c.get('ethernet', 'mac-address', fallback=None)):
-            name = c.get('connection', 'id', fallback=os.path.basename(f))
-            print("nmprof=%s in %s (profile '%s')" % (n, f, name))
+    python3 -I - --fabric-file {{ rack_scale_netplan_dest | basename | quote }} --old-file {{ rack_scale_netplan_old | basename | quote }} {{ _fabric_nics | map('quote') | join(' ') }} <<'PY'
+    {{ lookup('file', role_path ~ '/files/netplan_probe.py') }}
     PY
   args:
     executable: /bin/bash
@@ -169,41 +119,25 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: "fabric_netplan | Fail if another netplan file configures a fabric NIC"
+- name: "fabric_netplan | Another netplan file configures a fabric NIC"
   vars:
     # "<nic> in <file> ('<entry>' sets <keys>)" or "(member of bond '<name>')"
     _other_defs: "{{ item.stdout_lines | select('match', '^netplandef=') | map('regex_replace', '^netplandef=', '') | list }}"
-  ansible.builtin.fail:
+    _allowed: "{{ rack_scale_netplan_allow_other_definitions | bool }}"
+  ansible.builtin.debug:
     msg: >-
-      On {{ item.item }} ({{ hostvars[item.item].node_hostname | default(item.item) }})
+      {{ 'WARNING: on' if _allowed else 'On' }} {{ item.item }}
+      ({{ hostvars[item.item].node_hostname | default(item.item) }})
       another netplan file configures a fabric NIC:
       {{ _other_defs | join('; ') }}. An entry named after the NIC is merged
       with {{ rack_scale_netplan_dest }}, so the NIC would carry both
       configurations (for example a second address); an entry that matches it
-      is a separate configuration that networkd may apply instead. Remove the
-      NIC's entry from that file, or narrow the match so it no longer selects
-      the NIC (for cloud-init, also stop it rewriting the file: set
-      network: {config: disabled} in /etc/cloud/cloud.cfg.d/), and re-run, or
-      set rack_scale_netplan_allow_other_definitions: true to continue with a
-      warning.
-  when:
-    - _other_defs | length > 0
-    - not (rack_scale_netplan_allow_other_definitions | bool)
-  loop: "{{ _netplan_probe.results }}"
-  loop_control:
-    label: "{{ item.item }}"
-
-- name: "fabric_netplan | Warn that another netplan file configures a fabric NIC"
-  vars:
-    _other_defs: "{{ item.stdout_lines | select('match', '^netplandef=') | map('regex_replace', '^netplandef=', '') | list }}"
-  ansible.builtin.debug:
-    msg: >-
-      WARNING: on {{ item.item }} another netplan file configures a fabric NIC:
-      {{ _other_defs | join('; ') }}. Continuing because
-      rack_scale_netplan_allow_other_definitions is true.
-  when:
-    - _other_defs | length > 0
-    - rack_scale_netplan_allow_other_definitions | bool
+      is a separate configuration that networkd may apply instead.
+      {{ 'Continuing because rack_scale_netplan_allow_other_definitions is true.'
+         if _allowed else
+         'Remove the entry for the NIC from that file, or narrow the match so it no longer selects the NIC (for cloud-init, also stop it rewriting the file: set network: {config: disabled} in /etc/cloud/cloud.cfg.d/), and re-run, or set rack_scale_netplan_allow_other_definitions: true to continue with a warning.' }}
+  failed_when: not _allowed
+  when: _other_defs | length > 0
   loop: "{{ _netplan_probe.results }}"
   loop_control:
     label: "{{ item.item }}"
