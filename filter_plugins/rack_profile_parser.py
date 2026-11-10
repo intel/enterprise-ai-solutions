@@ -1080,10 +1080,7 @@ def _gen_flags_env(ctx):
     return "\n".join(lines) + "\n"
 
 
-# A dual-homed Clos node's route to the other NIC's subnet, via this NIC's leaf, has
-# the same prefix as that NIC's connected route. Without a higher metric the kernel
-# picks whichever was added first, and can send traffic for a directly connected
-# leaf through the other leaf (DCAIDSE8-2525). With it, the route is only a backup.
+# Higher than the connected route's 0, so a cross-leaf route is only a backup (DCAIDSE8-2525).
 CROSS_LEAF_BACKUP_METRIC = 200
 
 
@@ -1159,10 +1156,7 @@ def _gen_netplan_files(ctx):
                 "mtu": cfg["mtu"],
             }
             if "routes" in cfg:
-                entry["routes"] = [
-                    {"to": r["to"], "via": r["via"],
-                     **({"metric": r["metric"]} if "metric" in r else {})}
-                    for r in cfg["routes"]]
+                entry["routes"] = cfg["routes"]
             netplan["network"]["ethernets"][nic] = entry
 
         content = (
