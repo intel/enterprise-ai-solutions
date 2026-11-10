@@ -5,6 +5,7 @@
 FAIL stops the install, WARN is printed. The check IDs are what kubernetes_node_preflight_skip takes.
 """
 
+import ipaddress
 import json
 import re
 from urllib.parse import urlparse
@@ -34,6 +35,13 @@ def _host(url):
         return urlparse(url).hostname or url
     except ValueError:
         return url
+
+
+def _canonical(host):
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return str(host).lower()
 
 
 def _time_checks(data, ctx):
@@ -94,8 +102,7 @@ def _dns_checks(dns, ctx):
 
 
 def _internet_checks(urls):
-    bad = ["%s (%s)" % (_host(url), res.get("error") or res.get("status")) for url, res in sorted(urls.items())
-           if not res.get("ok")]
+    bad = ["%s (%s)" % (_host(url), res.get("error")) for url, res in sorted(urls.items()) if not res.get("ok")]
     return [("N8", "FAIL" if bad else "OK",
              ("cannot reach " + ", ".join(bad)) if bad else "reaches " + ", ".join(sorted(_host(u) for u in urls)),
              "Kubespray downloads on every node: set http_proxy/https_proxy/no_proxy in global_config.yaml, "
@@ -108,10 +115,10 @@ def _sudo_checks(euid):
              SUDO_HINT)]
 
 
-def _cluster_checks(kube, ports, etcd_node, ctx):
+def _cluster_checks(kube, ports, etcd_node, ours):
     foreign = ["%s points at %s" % (conf, kube[key])
                for key, conf in (("kubelet_conf_server", "kubelet.conf"), ("admin_conf_server", "admin.conf"))
-               if kube.get(key) and _host(kube[key]) not in ctx.get("api_hosts", [])]
+               if kube.get(key) and _canonical(_host(kube[key])) not in ours]
     rows = [("N10", "FAIL" if foreign else "OK", "; ".join(foreign) or "no other cluster's config",
              "This node still belongs to another cluster. Remove it from that cluster and clean it "
              "(kubeadm reset, then remove /etc/kubernetes, /var/lib/etcd and /etc/cni/net.d) before installing")]
@@ -202,7 +209,7 @@ def _ceph_checks(devices):
              "unless rook_ceph_teardown_wipe_devices is true")]
 
 
-def _checks(data, ctx):
+def _checks(data, ctx, ours):
     """(id, status, evidence, hint) for one node's probe data. A probe the node skipped is absent."""
     rows = []
     if data.get("time"):
@@ -217,7 +224,7 @@ def _checks(data, ctx):
         rows += _internet_checks(data["urls"])
     rows += _sudo_checks(data.get("euid"))
     if data.get("kube") is not None:
-        rows += _cluster_checks(data["kube"], data.get("ports"), data.get("etcd_node"), ctx)
+        rows += _cluster_checks(data["kube"], data.get("ports"), data.get("etcd_node"), ours)
     if data.get("ports") is not None:
         rows += _port_checks(data["ports"])
     if data.get("pkg"):
@@ -244,13 +251,21 @@ def _probe_failed(res):
 def node_preflight_evaluate(results, ctx):
     """Rows for every node and check, the failures and warnings, and a printable table."""
     skip = set(ctx.get("skip") or [])
-    rows = []
+    parsed = []
     for res in results or []:
         try:
-            data = json.loads(res.get("stdout") or "")
+            parsed.append((res, json.loads(res.get("stdout") or "")))
         except ValueError:
-            data = None
-        for cid, status, evidence, hint in _checks(data, ctx) if data is not None else _probe_failed(res):
+            parsed.append((res, None))
+    # An API server this run's control plane can serve: the inventory's names and addresses,
+    # and every address the control-plane nodes report (Kubespray may bind the default-route one).
+    control_plane = set(ctx.get("control_plane") or [])
+    ours = {_canonical(h) for h in ctx.get("api_hosts") or []} | {
+        _canonical(a) for res, data in parsed if data and res.get("item") in control_plane
+        for a in (data.get("kube") or {}).get("addresses", [])}
+    rows = []
+    for res, data in parsed:
+        for cid, status, evidence, hint in _checks(data, ctx, ours) if data is not None else _probe_failed(res):
             rows.append({"node": res.get("item"), "id": cid, "check": TITLES.get(cid, "Probe"),
                          "status": "SKIP" if cid in skip else status, "evidence": evidence, "hint": hint})
 

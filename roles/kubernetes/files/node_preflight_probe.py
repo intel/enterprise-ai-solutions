@@ -106,7 +106,8 @@ def resolve(names, timeout=5.0):
 
     def one(name):
         try:
-            found[name] = {"ok": True, "addr": socket.getaddrinfo(name, 443)[0][4][0]}
+            socket.getaddrinfo(name, 443)
+            found[name] = {"ok": True}
         except OSError as exc:
             found[name] = {"ok": False, "error": str(exc)}
 
@@ -126,16 +127,25 @@ def reach(urls, timeout=10):
     for url in urls:
         try:
             # Fixed https URLs from the spec (kubernetes_node_preflight_urls).
-            with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosec B310
-                out[url] = {"ok": True, "status": resp.status}
+            with urllib.request.urlopen(url, timeout=timeout):  # nosec B310
+                out[url] = {"ok": True}
         except urllib.error.HTTPError as exc:
-            blocked = exc.code == 407 or exc.code >= 500
-            out[url] = {"ok": not blocked, "status": exc.code,
-                        "error": "proxy authentication required" if exc.code == 407 else
-                        "HTTP %d (the proxy could not reach it)" % exc.code if exc.code >= 500 else ""}
+            if exc.code == 407:
+                out[url] = {"ok": False, "error": "proxy authentication required"}
+            elif exc.code >= 500:
+                out[url] = {"ok": False, "error": "HTTP %d (the proxy could not reach it)" % exc.code}
+            else:
+                out[url] = {"ok": True}
         except (urllib.error.URLError, OSError) as exc:
-            out[url] = {"ok": False, "status": None, "error": str(getattr(exc, "reason", exc))}
+            out[url] = {"ok": False, "error": str(getattr(exc, "reason", exc))}
     return out
+
+
+def addresses():
+    """The node's own IP addresses. Kubespray binds the API server to one of them,
+    the default-route address when the inventory sets no ip."""
+    rc, out = run(["ip", "-o", "addr", "show"])
+    return sorted(set(re.findall(r"\binet6?\s+([0-9A-Fa-f:.]+)/", out or "")))
 
 
 def kube_leftovers():
@@ -158,6 +168,7 @@ def kube_leftovers():
         "etcd_unit": any(os.path.exists(d + "/etcd.service")
                          for d in ("/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system")),
         "cni_calico": sorted(f for f in os.listdir(cni) if "calico" in f) if os.path.isdir(cni) else [],
+        "addresses": addresses(),
     }
 
 
@@ -173,8 +184,8 @@ def listeners(ports):
         if not port.isdigit() or int(port) not in ports:
             continue
         proc = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
-        found.append({"port": int(port), "addr": cols[3],
-                      "proc": proc.group(1) if proc else "?", "pid": int(proc.group(2)) if proc else None})
+        found.append({"port": int(port), "proc": proc.group(1) if proc else "?",
+                      "pid": int(proc.group(2)) if proc else None})
     return found
 
 
@@ -195,24 +206,23 @@ def firewall():
 def ceph_device(dev):
     """Whether dev can become an OSD: a whole, unmounted, unpartitioned disk with no signature."""
     real = os.path.realpath(dev)
-    info = {"path": dev, "real": real, "exists": os.path.exists(real)}
-    if not info["exists"]:
-        return info
+    if not os.path.exists(real):
+        return {"exists": False}
     rc, out = run(["lsblk", "-J", "-b", "-o", "NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT", real])
     try:
         node = json.loads(out)["blockdevices"][0]
     except (ValueError, KeyError, IndexError, TypeError):
-        info["error"] = "lsblk: " + (out or "no output")
-        return info
+        return {"exists": True, "error": "lsblk: " + (out or "no output")}
     children = node.get("children") or []
-    info.update(type=node.get("type"), size=int(node.get("size") or 0), fstype=node.get("fstype"),
-                children=[c.get("name") for c in children],
-                mountpoints=sorted({m for m in [node.get("mountpoint")] + [c.get("mountpoint") for c in children] if m}))
+    size = int(node.get("size") or 0)
+    info = {"exists": True, "type": node.get("type"), "fstype": node.get("fstype"),
+            "children": [c.get("name") for c in children],
+            "mountpoints": sorted({m for m in [node.get("mountpoint")] + [c.get("mountpoint") for c in children] if m})}
     labels = []
     try:
         with open(real, "rb") as f:
             for off in BLUESTORE_OFFSETS_GIB:
-                if off * GIB + len(BLUESTORE_LABEL) > info["size"]:
+                if off * GIB + len(BLUESTORE_LABEL) > size:
                     break
                 f.seek(off * GIB)
                 if f.read(len(BLUESTORE_LABEL)) == BLUESTORE_LABEL:
@@ -227,9 +237,9 @@ def main():
     spec = json.loads(os.environ.get("NODE_PREFLIGHT_SPEC", "{}"))
     skip = set(spec.get("skip", []))
     out = {"node_epoch": time.time(), "controller_epoch": spec.get("controller_epoch"),
-           "etcd_node": bool(spec.get("etcd")),
-           "euid": os.geteuid(), "os": os_release()}
+           "etcd_node": bool(spec.get("etcd")), "euid": os.geteuid()}
     probes = [
+        ("os", ("N15",), os_release),
         ("time", ("N1", "N2"), time_sync),
         ("disk", ("N3", "N4", "N5"), lambda: {
             "root": disk("/"), "containerd": disk("/var/lib/containerd"),

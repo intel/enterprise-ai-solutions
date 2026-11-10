@@ -38,10 +38,10 @@ def healthy():
                  "containerd": {"path": "/var/lib", "avail": 200 * GIB, "used_pct": 30.0}, "etcd": None},
         "gateway": {"ip": "192.0.2.1", "dev": "eth0", "reachable": True, "via": "icmp"},
         "dns": {"registry.k8s.io": {"ok": True}, "quay.io": {"ok": True}},
-        "urls": {"https://github.com": {"ok": True, "status": 200},
-                 "https://registry.k8s.io/v2/": {"ok": True, "status": 401}},
+        "urls": {"https://github.com": {"ok": True}, "https://registry.k8s.io/v2/": {"ok": True}},
         "kube": {"kubelet_active": False, "kubelet_conf_server": None, "admin_conf_server": None, "manifests": [],
-                 "etcd_member": False, "etcd_binary": False, "etcd_unit": False, "cni_calico": []},
+                 "etcd_member": False, "etcd_binary": False, "etcd_unit": False, "cni_calico": [],
+                 "addresses": ["127.0.0.1", "192.0.2.30"]},
         "ports": [],
         "pkg": {"dpkg_audit": "", "busy": []},
         "firewall": {"ufw": False, "firewalld": False},
@@ -96,9 +96,9 @@ CASES = [
      "N7", "WARN"),
     ("N7 proxy host fails", lambda d: d["dns"].update({"proxy.example.com": {"ok": False}}),
      {"proxy_host": "proxy.example.com"}, "N7", "FAIL"),
-    ("N8 timeout", lambda d: d["urls"]["https://github.com"].update(ok=False, status=None, error="timed out"),
+    ("N8 timeout", lambda d: d["urls"]["https://github.com"].update(ok=False, error="timed out"), {}, "N8", "FAIL"),
+    ("N8 proxy 407", lambda d: d["urls"]["https://github.com"].update(ok=False, error="proxy authentication required"),
      {}, "N8", "FAIL"),
-    ("N8 proxy 407", lambda d: d["urls"]["https://github.com"].update(ok=False, status=407), {}, "N8", "FAIL"),
     ("N8 skipped", lambda d: d["urls"]["https://github.com"].update(ok=False), {"skip": ["N8"]}, "N8", "SKIP"),
     ("N9 not root after become", lambda d: d.update(euid=1000), {}, "N9", "FAIL"),
     ("N10 kubelet.conf of another cluster", lambda d: d["kube"].update(kubelet_conf_server="https://198.51.100.9:6443"),
@@ -177,3 +177,131 @@ def test_time_sync_uses_chrony_when_it_answers(monkeypatch):
 def test_time_sync_without_timedatectl_reports_chrony(monkeypatch):
     monkeypatch.setattr(probe, "run", _fake_run({"chronyc": (1, "506 Cannot talk to daemon")}))
     assert probe.time_sync() == {"source": "chrony", "synced": False, "detail": "506 Cannot talk to daemon"}
+
+
+def n10(results, api_hosts, control_plane):
+    out = rules.node_preflight_evaluate(
+        [{"item": node, "stdout": json.dumps(data)} for node, data in results],
+        {**CTX, "api_hosts": api_hosts, "control_plane": control_plane})
+    return {r["node"]: r["status"] for r in out["rows"] if r["id"] == "N10"}
+
+
+DEFAULT_HOSTS = ["localhost", "127.0.0.1", "::1", "lb-apiserver.kubernetes.local"]
+
+
+def test_n10_single_node_rerun_keeps_its_own_cluster():
+    # No ip in the inventory: Kubespray binds the API server to the default-route address.
+    data = changed(lambda d: d["kube"].update(admin_conf_server="https://192.0.2.77:6443",
+                                               addresses=["127.0.0.1", "192.0.2.77", "::1"]))
+    assert n10([("localhost", data)], DEFAULT_HOSTS + ["localhost"], ["localhost"]) == {"localhost": "OK"}
+
+
+def test_n10_dns_name_inventory_counts_the_control_plane_addresses():
+    cp1 = changed(lambda d: d["kube"].update(admin_conf_server="https://192.0.2.10:6443", addresses=["192.0.2.10"]))
+    w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://192.0.2.10:6443", addresses=["192.0.2.20"]))
+    w2 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://198.51.100.9:6443",
+                                             addresses=["198.51.100.9"]))
+    hosts = DEFAULT_HOSTS + ["cp1", "cp1.example.com"]
+    assert n10([("cp1", cp1), ("w1", w1), ("w2", w2)], hosts, ["cp1"]) == {"cp1": "OK", "w1": "OK", "w2": "FAIL"}
+
+
+def test_n10_ipv6_api_server_address():
+    cp1 = changed(lambda d: d["kube"].update(admin_conf_server="https://[fd00::10]:6443", addresses=["fd00:0::10"]))
+    assert n10([("cp1", cp1)], DEFAULT_HOSTS + ["cp1"], ["cp1"]) == {"cp1": "OK"}
+
+
+def test_addresses_from_ip_addr(monkeypatch):
+    out = ("1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n"
+           "1: lo    inet6 ::1/128 scope host noprefixroute \\       valid_lft forever preferred_lft forever\n"
+           "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0\\       valid_lft forever\n"
+           "2: eth0    inet6 fe80::1/64 scope link \\       valid_lft forever preferred_lft forever")
+    monkeypatch.setattr(probe, "run", _fake_run({"ip": (0, out)}))
+    assert probe.addresses() == ["127.0.0.1", "192.0.2.10", "::1", "fe80::1"]
+
+
+SS = """LISTEN 0      4096       127.0.0.1:10248      0.0.0.0:* users:(("kubelet",pid=101,fd=20))
+LISTEN 0      4096               *:10250            *:* users:(("kubelet",pid=101,fd=24))
+LISTEN 0      4096            [::]:6443          [::]:* users:(("kube-apiserver",pid=202,fd=3))
+LISTEN 0      4096       127.0.0.1:10257      0.0.0.0:* users:(("kube-controller",pid=303,fd=3))
+LISTEN 0      4096         0.0.0.0:22         0.0.0.0:* users:(("sshd",pid=1,fd=3),("systemd",pid=1,fd=114))
+LISTEN 0      128          0.0.0.0:2379       0.0.0.0:*"""
+
+
+def test_listeners_parses_ss(monkeypatch):
+    monkeypatch.setattr(probe, "run", _fake_run({"ss": (0, SS)}))
+    assert probe.listeners({6443, 10250, 10257, 2379}) == [
+        {"port": 10250, "proc": "kubelet", "pid": 101},
+        {"port": 6443, "proc": "kube-apiserver", "pid": 202},
+        {"port": 10257, "proc": "kube-controller", "pid": 303},
+        {"port": 2379, "proc": "?", "pid": None}]
+
+
+class _Response:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize("answer, expected", [
+    (200, {"ok": True}),
+    (401, {"ok": True}),
+    (407, {"ok": False, "error": "proxy authentication required"}),
+    (504, {"ok": False, "error": "HTTP 504 (the proxy could not reach it)"}),
+    ("refused", {"ok": False, "error": "refused"}),
+])
+def test_reach_maps_answers(monkeypatch, answer, expected):
+    def urlopen(url, timeout):
+        if answer == 200:
+            return _Response()
+        if answer == "refused":
+            raise probe.urllib.error.URLError("refused")
+        raise probe.urllib.error.HTTPError(url, answer, "x", {}, None)
+    monkeypatch.setattr(probe.urllib.request, "urlopen", urlopen)
+    assert probe.reach(["https://example.com"]) == {"https://example.com": expected}
+
+
+def _lsblk(node):
+    return json.dumps({"blockdevices": [node]})
+
+
+def test_ceph_device_reads_lsblk_and_the_bluestore_labels(tmp_path, monkeypatch):
+    disk = tmp_path / "nvme1n1"
+    with open(disk, "wb") as f:
+        f.truncate(2 * GIB)
+        f.seek(GIB)
+        f.write(probe.BLUESTORE_LABEL)
+    monkeypatch.setattr(probe, "run", _fake_run({"lsblk": (0, _lsblk(
+        {"name": "nvme1n1", "type": "disk", "size": 2 * GIB, "fstype": None, "mountpoint": None})) }))
+    assert probe.ceph_device(str(disk)) == {"exists": True, "type": "disk", "fstype": None, "children": [],
+                                            "mountpoints": [], "bluestore_labels_gib": [1]}
+
+
+def test_ceph_device_reports_partitions_and_mounts(tmp_path, monkeypatch):
+    disk = tmp_path / "sda"
+    disk.write_bytes(b"")
+    monkeypatch.setattr(probe, "run", _fake_run({"lsblk": (0, _lsblk(
+        {"name": "sda", "type": "disk", "size": 0, "fstype": None, "mountpoint": None,
+         "children": [{"name": "sda1", "mountpoint": "/boot"}, {"name": "sda2", "mountpoint": "/"}]})) }))
+    assert probe.ceph_device(str(disk)) == {"exists": True, "type": "disk", "fstype": None,
+                                            "children": ["sda1", "sda2"], "mountpoints": ["/", "/boot"],
+                                            "bluestore_labels_gib": []}
+
+
+def test_ceph_device_missing_or_unreadable(tmp_path, monkeypatch):
+    assert probe.ceph_device(str(tmp_path / "nvme9n9")) == {"exists": False}
+    disk = tmp_path / "nvme1n1"
+    disk.write_bytes(b"")
+    monkeypatch.setattr(probe, "run", _fake_run({"lsblk": (32, "lsblk: not a block device")}))
+    assert probe.ceph_device(str(disk)) == {"exists": True, "error": "lsblk: lsblk: not a block device"}
+
+
+ALL_BUT_N15 = ["N1", "N2", "N3", "N4", "N5", "N6", "N7", "N8", "N10", "N11", "N12", "N13", "N14", "N16", "N19"]
+
+
+@pytest.mark.parametrize("skip, has_os", [(ALL_BUT_N15, True), (ALL_BUT_N15 + ["N15"], False)])
+def test_os_release_runs_only_for_n15(monkeypatch, capsys, skip, has_os):
+    monkeypatch.setenv("NODE_PREFLIGHT_SPEC", json.dumps({"skip": skip}))
+    probe.main()
+    assert ("os" in json.loads(capsys.readouterr().out)) is has_os

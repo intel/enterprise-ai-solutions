@@ -1,12 +1,11 @@
 ---
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-#
-# Probe: files/node_preflight_probe.py, run once per node. Rules: filter_plugins/node_preflight.py.
 
 - name: "kubernetes | node preflight | Plan the checks"
   vars:
     _np_proxy_url: "{{ https_proxy | default('') or http_proxy | default('') }}"
+    _np_cp: "{{ groups['kube_control_plane'] | default([]) }}"
   ansible.builtin.set_fact:
     _np_log_dir: "{{ log_dir | default((env_dir | default(playbook_dir)) ~ '/logs') }}"
     _np_proxy_host: >-
@@ -16,14 +15,12 @@
     # A kubelet.conf pointing elsewhere belongs to another cluster. Kubespray's
     # workers reach the API server through a local proxy (localhost).
     _np_api_hosts: >-
-      {%- set out = ['localhost', '127.0.0.1', '::1', 'lb-apiserver.kubernetes.local'] -%}
-      {%- for h in groups['kube_control_plane'] | default([]) -%}
-      {%- set _ = out.append(h) -%}
-      {%- for k in ['ip', 'access_ip', 'ansible_host', 'node_hostname'] if hostvars[h][k] is defined -%}
-      {%- set _ = out.append(hostvars[h][k] | string) -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {{ out | unique }}
+      {{ (['localhost', '127.0.0.1', '::1', 'lb-apiserver.kubernetes.local'] + _np_cp
+          + _np_cp | map('extract', hostvars) | map(attribute='ip', default='') | list
+          + _np_cp | map('extract', hostvars) | map(attribute='access_ip', default='') | list
+          + _np_cp | map('extract', hostvars) | map(attribute='ansible_host', default='') | list
+          + _np_cp | map('extract', hostvars) | map(attribute='node_hostname', default='') | list)
+         | select | map('string') | unique | list }}
 
 - name: "kubernetes | node preflight | Probe each node"
   ansible.builtin.script:
@@ -72,6 +69,7 @@
            'ceph': _np_ceph | bool,
            'proxy_host': _np_proxy_host,
            'api_hosts': _np_api_hosts,
+           'control_plane': groups['kube_control_plane'] | default([]),
            'min_free_gib': kubernetes_node_preflight_min_free_gib | int,
            'warn_free_gib': kubernetes_node_preflight_warn_free_gib | int,
            'max_used_pct': kubernetes_node_preflight_max_used_pct | int,

@@ -133,15 +133,14 @@ kubernetes_disable_firewall: false
 kubernetes_load_kernel_modules: true
 kubernetes_registry_enabled: false
 
-# --- Node preflight (tasks/node_preflight.yaml), fresh installs only ---
-# A site without internet skips N8 and lists its mirror in kubernetes_node_preflight_dns_names.
+# --- Node preflight (fresh installs only; settings in docs/customize/configuration.md) ---
 kubernetes_node_preflight: true
 kubernetes_node_preflight_skip: []
-kubernetes_node_preflight_min_free_gib: 20       # under /var/lib/containerd: below this, stop
-kubernetes_node_preflight_warn_free_gib: 50      # ...and below this, warn
-kubernetes_node_preflight_max_used_pct: 90       # on / and /var/lib/containerd
+kubernetes_node_preflight_min_free_gib: 20
+kubernetes_node_preflight_warn_free_gib: 50
+kubernetes_node_preflight_max_used_pct: 90
 kubernetes_node_preflight_etcd_warn_free_gib: 10
-kubernetes_node_preflight_max_clock_skew_s: 60   # against the deploy node: stop
+kubernetes_node_preflight_max_clock_skew_s: 60
 kubernetes_node_preflight_warn_clock_skew_s: 5
 kubernetes_node_preflight_dns_names: [registry.k8s.io, github.com, quay.io, docker.io, ghcr.io]
 kubernetes_node_preflight_urls: ["https://github.com", "https://registry.k8s.io/v2/"]
