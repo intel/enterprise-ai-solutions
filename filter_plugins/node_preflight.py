@@ -23,6 +23,8 @@ TITLES = {
 KUBE_PROCS = {"kubelet", "kube-apiserver", "kube-controller", "kube-scheduler", "etcd", "kube-proxy",
               "bird", "bird6", "calico-node"}
 LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+# Inventory variables that can name a control-plane node's API server in a kubeconfig.
+API_HOST_VARS = ("ip", "access_ip", "ansible_host", "node_hostname")
 KUBECONFIGS = (("kubelet.conf", "kubelet_conf_server", "kubelet_conf_ca"),
                ("admin.conf", "admin_conf_server", "admin_conf_ca"))
 RACK_SCALE_OS = {("ubuntu", "22.04"), ("ubuntu", "24.04")}
@@ -327,7 +329,8 @@ def node_preflight_evaluate(results, ctx):
     control_plane = set(ctx.get("control_plane") or [])
     # A node whose probe did not run, or whose cluster probe failed, cannot vouch for a CA.
     cp_kube = [data["kube"] for res, data in parsed if data and data.get("kube") and res.get("item") in control_plane]
-    cp = {"hosts": {_canonical(h) for h in ctx.get("api_hosts") or []} | {
+    names = list(control_plane) + [hv.get(k) for hv in ctx.get("cp_hostvars") or [] for k in API_HOST_VARS]
+    cp = {"hosts": {_canonical(str(h)) for h in names if h} | {
               _canonical(a) for kube in cp_kube for a in kube.get("addresses", [])},
           "cas": {kube.get("cluster_ca") for kube in cp_kube} - {None},
           "by_ca": LOOPBACK | ({_canonical(ctx["api_lb"])} if ctx.get("api_lb") else set()),

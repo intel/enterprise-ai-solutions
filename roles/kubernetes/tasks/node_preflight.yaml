@@ -5,22 +5,12 @@
 - name: "kubernetes | node preflight | Plan the checks"
   vars:
     _np_proxy_url: "{{ https_proxy | default('') or http_proxy | default('') }}"
-    _np_cp: "{{ groups['kube_control_plane'] | default([]) }}"
   ansible.builtin.set_fact:
     _np_skip: "{{ kubernetes_node_preflight_skip | node_preflight_skip }}"
     _np_proxy_host: >-
       {{ ((_np_proxy_url if '://' in _np_proxy_url else 'http://' ~ _np_proxy_url) | urlsplit('hostname'))
          if _np_proxy_url | length > 0 else '' }}
     _np_ceph: "{{ (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph' }}"
-    # A kubelet.conf pointing at another API server belongs to another cluster.
-    # (For a loopback server or the load balancer name the rules compare the cluster CA instead.)
-    _np_api_hosts: >-
-      {{ (_np_cp
-          + _np_cp | map('extract', hostvars) | map(attribute='ip', default='') | list
-          + _np_cp | map('extract', hostvars) | map(attribute='access_ip', default='') | list
-          + _np_cp | map('extract', hostvars) | map(attribute='ansible_host', default='') | list
-          + _np_cp | map('extract', hostvars) | map(attribute='node_hostname', default='') | list)
-         | select | map('string') | unique | list }}
 
 - name: "kubernetes | node preflight | Probe each node"
   ansible.builtin.script:
@@ -74,8 +64,8 @@
            'ceph': _np_ceph | bool,
            'proxy_host': _np_proxy_host,
            'api_lb': apiserver_loadbalancer_domain_name | default('lb-apiserver.kubernetes.local'),
-           'api_hosts': _np_api_hosts,
            'control_plane': groups['kube_control_plane'] | default([]),
+           'cp_hostvars': groups['kube_control_plane'] | default([]) | map('extract', hostvars) | list,
            'min_free_gib': kubernetes_node_preflight_min_free_gib | int,
            'warn_free_gib': kubernetes_node_preflight_warn_free_gib | int,
            'max_used_pct': kubernetes_node_preflight_max_used_pct | int,

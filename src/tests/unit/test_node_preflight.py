@@ -27,7 +27,7 @@ probe = _load("node_preflight_probe", "roles/kubernetes/files/node_preflight_pro
 GIB = 1 << 30
 CTX = {"skip": [], "local": False, "rack_scale": False, "ceph": False, "proxy_host": "",
        "api_lb": "lb-apiserver.kubernetes.local",
-       "api_hosts": ["localhost", "127.0.0.1", "cp1", "192.0.2.10"], "min_free_gib": 20, "warn_free_gib": 50,
+       "control_plane": ["cp1"], "cp_hostvars": [{"ip": "192.0.2.10"}], "min_free_gib": 20, "warn_free_gib": 50,
        "max_used_pct": 90, "etcd_warn_free_gib": 10, "max_skew_s": 60, "warn_skew_s": 5}
 CLEAN_DISK = {"exists": True, "type": "disk", "fstype": None, "children": [], "mountpoints": [],
               "bluestore_labels_gib": []}
@@ -292,21 +292,18 @@ def test_time_sync_without_timedatectl_reports_chrony(monkeypatch):
     assert probe.time_sync() == {"source": "chrony", "synced": False, "detail": "506 Cannot talk to daemon"}
 
 
-def n10(results, api_hosts, control_plane):
+def n10(results, cp_hostvars, control_plane):
     out = rules.node_preflight_evaluate(
         [{"item": node, "stdout": json.dumps(data)} for node, data in results],
-        {**CTX, "api_hosts": api_hosts, "control_plane": control_plane})
+        {**CTX, "cp_hostvars": cp_hostvars, "control_plane": control_plane})
     return {r["node"]: r["status"] for r in out["rows"] if r["id"] == "N10"}
-
-
-DEFAULT_HOSTS = ["localhost", "127.0.0.1", "::1", "lb-apiserver.kubernetes.local"]
 
 
 def test_n10_single_node_rerun_keeps_its_own_cluster():
     # No ip in the inventory: Kubespray binds the API server to the default-route address.
     data = changed(lambda d: d["kube"].update(admin_conf_server="https://192.0.2.77:6443",
                                                addresses=["127.0.0.1", "192.0.2.77", "::1"]))
-    assert n10([("localhost", data)], DEFAULT_HOSTS + ["localhost"], ["localhost"]) == {"localhost": "OK"}
+    assert n10([("localhost", data)], [{}], ["localhost"]) == {"localhost": "OK"}
 
 
 def test_n10_dns_name_inventory_counts_the_control_plane_addresses():
@@ -314,13 +311,24 @@ def test_n10_dns_name_inventory_counts_the_control_plane_addresses():
     w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://192.0.2.10:6443", addresses=["192.0.2.20"]))
     w2 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://198.51.100.9:6443",
                                              addresses=["198.51.100.9"]))
-    hosts = DEFAULT_HOSTS + ["cp1", "cp1.example.com"]
+    hosts = [{"ansible_host": "cp1.example.com"}]
     assert n10([("cp1", cp1), ("w1", w1), ("w2", w2)], hosts, ["cp1"]) == {"cp1": "OK", "w1": "OK", "w2": "FAIL"}
+
+
+@pytest.mark.parametrize("server, expected", [
+    ("https://cp1.example.com:6443", "OK"), ("https://cp2:6443", "OK"), ("https://192.0.2.11:6443", "OK"),
+    ("https://192.0.2.99:6443", "FAIL"),
+])
+def test_n10_api_server_names_come_from_the_control_planes_inventory_vars(server, expected):
+    # Any of ip, access_ip, ansible_host and node_hostname, on hosts that lack some of them.
+    w1 = changed(lambda d: d["kube"].update(kubelet_conf_server=server))
+    hostvars = [{"ip": "192.0.2.10", "access_ip": "192.0.2.11", "node_hostname": "cp1.example.com"}, {}]
+    assert n10([("w1", w1)], hostvars, ["cp1", "cp2"]) == {"w1": expected}
 
 
 def test_n10_ipv6_api_server_address():
     cp1 = changed(lambda d: d["kube"].update(admin_conf_server="https://[fd00::10]:6443", addresses=["fd00:0::10"]))
-    assert n10([("cp1", cp1)], DEFAULT_HOSTS + ["cp1"], ["cp1"]) == {"cp1": "OK"}
+    assert n10([("cp1", cp1)], [{}], ["cp1"]) == {"cp1": "OK"}
 
 
 def test_n10_loopback_server_is_ours_only_with_our_ca():
@@ -329,13 +337,12 @@ def test_n10_loopback_server_is_ours_only_with_our_ca():
                                                cluster_ca="ca-a", addresses=["192.0.2.10"]))
     w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-a"))
     w2 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-b"))
-    assert n10([("cp1", cp1), ("w1", w1), ("w2", w2)], DEFAULT_HOSTS + ["cp1"], ["cp1"]) == {
+    assert n10([("cp1", cp1), ("w1", w1), ("w2", w2)], [{}], ["cp1"]) == {
         "cp1": "OK", "w1": "OK", "w2": "FAIL"}
 
 
 def n10_rows(results, control_plane=("cp1", "cp2")):
-    out = rules.node_preflight_evaluate(results, {**CTX, "api_hosts": list(control_plane),
-                                                  "control_plane": list(control_plane)})
+    out = rules.node_preflight_evaluate(results, {**CTX, "cp_hostvars": [], "control_plane": list(control_plane)})
     return {r["node"]: (r["status"], r["evidence"]) for r in out["rows"] if r["id"] in ("N10", "N0", "N9")}
 
 
@@ -392,8 +399,8 @@ def test_n10_load_balancer_name_is_decided_by_ca(ca, expected):
     # Kubespray's apiserver_loadbalancer_domain_name is the same in every cluster, so naming it proves nothing.
     results = [probed("cp1", cluster_ca="ca-a"),
                probed("w1", kubelet_conf_server="https://lb-apiserver.kubernetes.local:6443", kubelet_conf_ca=ca)]
-    out = rules.node_preflight_evaluate(results, {**CTX, "api_hosts": ["cp1", "lb-apiserver.kubernetes.local"],
-                                                  "control_plane": ["cp1"]})
+    out = rules.node_preflight_evaluate(results, {**CTX, "control_plane": ["cp1"],
+                                                  "cp_hostvars": [{"ansible_host": "lb-apiserver.kubernetes.local"}]})
     assert [r["status"] for r in out["rows"] if r["id"] == "N10" and r["node"] == "w1"] == [expected]
 
 
@@ -410,7 +417,7 @@ def test_n10_loopback_server_when_our_control_plane_has_no_ca_yet():
     cp1 = changed(lambda d: d["kube"].update(addresses=["192.0.2.10"]))
     w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://[::1]:6443", kubelet_conf_ca="ca-a"))
     out = rules.node_preflight_evaluate([{"item": n, "stdout": json.dumps(d)} for n, d in (("cp1", cp1), ("w1", w1))],
-                                        {**CTX, "api_hosts": ["cp1"], "control_plane": ["cp1"]})
+                                        {**CTX, "cp_hostvars": [], "control_plane": ["cp1"]})
     assert [(r["node"], r["status"], r["evidence"]) for r in out["rows"] if r["id"] == "N10"] == [
         ("cp1", "OK", "no other cluster's config"),
         ("w1", "FAIL", "kubelet.conf points at https://[::1]:6443 with another cluster's CA")]
@@ -690,5 +697,6 @@ def test_preflight_waits_until_the_inventory_has_the_nodes_yaml_nodes(nodes, wor
     ({"ansible_facts": {}}, "python3"),
 ])
 def test_probe_runs_with_the_nodes_python(node, expected):
-    task = yaml.safe_load((_ROOT / "roles/kubernetes/tasks/node_preflight.yaml").read_text())[1]
+    tasks = yaml.safe_load((_ROOT / "roles/kubernetes/tasks/node_preflight.yaml").read_text())
+    task = next(t for t in tasks if t["name"] == "kubernetes | node preflight | Probe each node")
     assert render(task["ansible.builtin.script"]["executable"], {"item": "n1", "hostvars": {"n1": node}}) == expected
