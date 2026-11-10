@@ -74,7 +74,7 @@ MetalLB operates in **Layer 2 mode** by default:
 2. **Leader election** — One Speaker pod becomes leader for that IP
 3. **ARP announcement** — Leader responds to ARP requests with node's MAC address
 4. **Traffic ingress** — Packets arrive at the elected node's interface
-5. **Kubernetes routing** — kube-proxy/IPVS forwards to Service ClusterIP
+5. **Kubernetes routing** — kube-proxy (nftables by default) forwards to Service ClusterIP
 
 **Characteristics:**
 - ✅ Simple setup (no BGP configuration needed)
@@ -367,7 +367,7 @@ Here is every hop an inference request takes through Intel® AI for Enterprise S
 |-------|-----------|----------------|------------|
 | **NAT/Firewall** | Port forwarding | 0.01 - 1ms | <0.2% |
 | **MetalLB** | ARP + L2 routing | <0.001ms | <0.001% |
-| **kube-proxy** | iptables/IPVS | 0.01 - 0.1ms | <0.02% |
+| **kube-proxy** | nftables (default), iptables or IPVS | 0.01 - 0.1ms | <0.02% |
 | **Envoy Gateway** | TLS + JWT + routing | 2 - 10ms | 1-2% |
 | **Calico CNI** | Pod-to-pod network | 0.1 - 0.5ms | <0.1% |
 | **vLLM Inference** | Model computation | 50 - 500ms | **98%** |
@@ -584,12 +584,8 @@ Intel® AI for Enterprise Solutions' networking defaults are already tuned for n
 ✅ **Direct node-to-node routing** (Calico without VXLAN if same subnet)
 - Configure Calico in direct routing mode for <0.1ms pod-to-pod
 
-✅ **IPVS mode for kube-proxy** (instead of iptables)
-```yaml
-# Already default in Kubespray 2.31
-ipvs:
-  strictARP: true
-```
+✅ **nftables mode for kube-proxy** (the default, `kubernetes_kube_proxy_mode: nftables`)
+- IPVS-level performance without IPVS's `kube-ipvs0` interface, so a LoadBalancer IP is never bound to the nodes (see [IP Allocation Strategy](#ip-allocation-strategy))
 
 ### BGP Mode (Advanced)
 
