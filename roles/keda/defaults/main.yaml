@@ -1,13 +1,8 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 ---
-# =============================================================================
-# KEDA — event-driven autoscaling; serves the external metrics API
-# =============================================================================
-# One per cluster: it owns external.metrics.k8s.io (prometheus-adapter serves
-# custom.metrics.k8s.io; both can run). Solutions create ScaledObjects;
-# KServe 0.21 creates them for models with autoscalerClass keda.
-# Skipped when another install already serves external.metrics.k8s.io.
+# KEDA — event-driven autoscaling. Skipped when another install already serves
+# external.metrics.k8s.io; prometheus-adapter's custom.metrics.k8s.io can run beside it.
 
 keda_version: "2.21.0"   # chart and app
 keda_namespace: "keda"

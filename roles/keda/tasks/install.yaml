@@ -60,64 +60,17 @@
                                 'pod-security.kubernetes.io/warn': 'restricted'}
                                if enforce_pss | default(false) | bool else {}) }}
 
-        # The host-network apiserver calls the metrics API (6443) and the admission
-        # webhooks (9443) over plaintext: only those ports are PERMISSIVE, and only
-        # the apiserver's node and CNI tunnel addresses may reach them.
+        # The apiserver calls the metrics API (6443) and the admission webhooks (9443).
         - name: "keda | Mesh exception for the apiserver"
-          when: istio_enabled | default(false) | bool
+          ansible.builtin.include_role:
+            name: istio
+            tasks_from: apiserver_exception.yaml
           vars:
-            _keda_apiserver_ports:
-              - {app: keda-operator-metrics-apiserver, port: "6443"}
-              - {app: keda-admission-webhooks, port: "9443"}
-          block:
-            - name: "keda | Read the nodes (apiserver source addresses)"
-              kubernetes.core.k8s_info:
-                kind: Node
-              register: _keda_nodes
-
-            - name: "keda | Allow apiserver plaintext on its ports (port-level mTLS)"
-              kubernetes.core.k8s:
-                state: present
-                definition:
-                  apiVersion: security.istio.io/v1
-                  kind: PeerAuthentication
-                  metadata:
-                    name: "allow-{{ item.app }}"
-                    namespace: "{{ keda_namespace }}"
-                  spec:
-                    selector:
-                      matchLabels: {app: "{{ item.app }}"}
-                    mtls:
-                      mode: STRICT
-                    portLevelMtls: "{{ {item.port: {'mode': 'PERMISSIVE'}} }}"
-              loop: "{{ _keda_apiserver_ports }}"
-              loop_control:
-                label: "{{ item.app }}:{{ item.port }}"
-
-            # Node addresses are a snapshot; re-running the role refreshes them.
-            - name: "keda | Restrict those ports to the apiserver"
-              kubernetes.core.k8s:
-                state: present
-                definition:
-                  apiVersion: security.istio.io/v1
-                  kind: AuthorizationPolicy
-                  metadata:
-                    name: "authz-{{ item.app }}"
-                    namespace: "{{ keda_namespace }}"
-                  spec:
-                    selector:
-                      matchLabels: {app: "{{ item.app }}"}
-                    action: ALLOW
-                    rules:
-                      - from:
-                          - source:
-                              ipBlocks: "{{ _keda_nodes.resources | apiserver_source_ips }}"
-                        to:
-                          - operation:
-                              ports: ["{{ item.port }}"]
-              loop: "{{ _keda_apiserver_ports }}"
-              loop_control:
-                label: "{{ item.app }}:{{ item.port }}"
+            istio_apiserver_exception_namespace: "{{ keda_namespace }}"
+            istio_apiserver_exception_workloads:
+              - {name: keda-operator-metrics-apiserver, selector: {app: keda-operator-metrics-apiserver}, port: 6443}
+              - {name: keda-admission-webhooks, selector: {app: keda-admission-webhooks}, port: 9443}
+          when: istio_enabled | default(false) | bool
 
         - name: "keda | Add Helm repo"
           kubernetes.core.helm_repository:
@@ -150,10 +103,7 @@
             kind: APIService
             name: v1beta1.external.metrics.k8s.io
           register: _keda_api_ready
-          until:
-            - _keda_api_ready.resources | length > 0
-            - _keda_api_ready.resources[0].status.conditions | default([])
-              | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+          until: _keda_api_ready.resources | apiservice_available
           retries: 30
           delay: 10
 

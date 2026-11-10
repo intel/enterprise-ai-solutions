@@ -57,6 +57,8 @@ def scaled_object(name, replicas):
 
 @pytest.fixture(scope="module")
 def scaled_workload():
+    if not namespace_exists("keda"):
+        pytest.skip("external.metrics.k8s.io is served by another install")
     ns = Namespace({"metadata": {"name": NAMESPACE, "labels": {
         "istio.io/dataplane-mode": "ambient",
         "pod-security.kubernetes.io/enforce": "restricted",
@@ -95,15 +97,18 @@ def scaled_workload():
 
 @allure.testcase("")
 def test_keda_serves_external_metrics():
-    for name in ("keda-operator", "keda-operator-metrics-apiserver", "keda-admission-webhooks"):
-        deploy = Deployment.get(name, namespace="keda")
-        assert (deploy.status.get("readyReplicas") or 0) >= 1, f"{name} has no ready replica"
+    if namespace_exists("keda"):
+        for name in ("keda-operator", "keda-operator-metrics-apiserver", "keda-admission-webhooks"):
+            deploy = Deployment.get(name, namespace="keda")
+            assert (deploy.status.get("readyReplicas") or 0) >= 1, f"{name} has no ready replica"
     api = APIService.get("v1beta1.external.metrics.k8s.io")
     available = [c for c in api.status.get("conditions", []) if c["type"] == "Available"]
     assert available and available[0]["status"] == "True", f"external.metrics.k8s.io not Available: {available}"
 
 
 @allure.testcase("")
+@pytest.mark.skipif(not cfg.get("observability_enabled", True),
+                    reason="no platform Prometheus for the trigger (observability_enabled is false)")
 def test_keda_scales_on_prometheus_trigger(scaled_workload):
     deploy = Deployment.get("scale-me", namespace=NAMESPACE)
 

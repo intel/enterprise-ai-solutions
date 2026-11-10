@@ -28,10 +28,7 @@
 
 - name: "metrics_server | Assert metrics.k8s.io Available"
   ansible.builtin.assert:
-    that:
-      - _ms_api.resources | length > 0
-      - _ms_api.resources[0].status.conditions | default([])
-        | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+    that: _ms_available | bool
     fail_msg: >-
       metrics.k8s.io is not Available
       ({{ _ms_api_service.namespace | default('not registered') }}/{{ _ms_api_service.name | default('') }}):

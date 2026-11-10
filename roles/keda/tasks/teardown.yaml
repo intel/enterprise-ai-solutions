@@ -18,12 +18,12 @@
   when: not _keda_from_olm | bool and _keda_ours | bool
   vars:
     _keda_kinds:
-      - {api: keda.sh/v1alpha1, kind: ScaledObject}
-      - {api: keda.sh/v1alpha1, kind: ScaledJob}
-      - {api: keda.sh/v1alpha1, kind: TriggerAuthentication}
-      - {api: keda.sh/v1alpha1, kind: ClusterTriggerAuthentication}
-      - {api: eventing.keda.sh/v1alpha1, kind: CloudEventSource}
-      - {api: eventing.keda.sh/v1alpha1, kind: ClusterCloudEventSource}
+      - {api: keda.sh/v1alpha1, kind: ScaledObject, crd: scaledobjects.keda.sh}
+      - {api: keda.sh/v1alpha1, kind: ScaledJob, crd: scaledjobs.keda.sh}
+      - {api: keda.sh/v1alpha1, kind: TriggerAuthentication, crd: triggerauthentications.keda.sh}
+      - {api: keda.sh/v1alpha1, kind: ClusterTriggerAuthentication, crd: clustertriggerauthentications.keda.sh}
+      - {api: eventing.keda.sh/v1alpha1, kind: CloudEventSource, crd: cloudeventsources.eventing.keda.sh}
+      - {api: eventing.keda.sh/v1alpha1, kind: ClusterCloudEventSource, crd: clustercloudeventsources.eventing.keda.sh}
   block:
     # First, while the operator runs: it clears finalizer.keda.sh and hands
     # each scaled workload back to its own replica count.
@@ -51,13 +51,14 @@
         label: "{{ item.kind }} {{ item.metadata.namespace | default('') }}/{{ item.metadata.name }}"
       failed_when: false
 
+    # No wait: a finalized object left behind keeps its CRD Terminating
+    # until the strip below runs.
     - name: "keda | Uninstall Helm release"
       kubernetes.core.helm:
         name: keda
         release_namespace: "{{ keda_namespace }}"
         state: absent
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
+        wait: false
 
     # A gone operator cannot clear its own finalizer.
     - name: "keda | Find KEDA objects left behind"
@@ -88,12 +89,15 @@
         label: "{{ item.kind }} {{ item.metadata.namespace | default('') }}/{{ item.metadata.name }}"
       failed_when: false
 
-    - name: "keda | Delete the external metrics APIService"
+    - name: "keda | Wait for the KEDA CRDs to go"
       kubernetes.core.k8s:
         state: absent
-        api_version: apiregistration.k8s.io/v1
-        kind: APIService
-        name: v1beta1.external.metrics.k8s.io
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        wait: true
+        wait_timeout: 120
+      loop: "{{ _keda_kinds | map(attribute='crd') | list }}"
 
     # Takes the mesh policies with it.
     - name: "keda | Delete the namespace"

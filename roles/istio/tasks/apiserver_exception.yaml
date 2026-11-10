@@ -1,0 +1,56 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# The host-network apiserver calls these workloads over plaintext: only their
+# port is PERMISSIVE, and only the apiserver's node and CNI tunnel addresses may
+# reach it. Node addresses are a snapshot; re-running the caller refreshes them.
+#   istio_apiserver_exception_namespace   namespace of the workloads
+#   istio_apiserver_exception_workloads   [{name, selector, port}]
+
+- name: "istio | apiserver exception | Read the nodes (apiserver source addresses)"
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: _istio_ax_nodes
+
+- name: "istio | apiserver exception | Allow apiserver plaintext (port-level mTLS)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: "allow-{{ item.name }}"
+        namespace: "{{ istio_apiserver_exception_namespace }}"
+      spec:
+        selector:
+          matchLabels: "{{ item.selector }}"
+        mtls:
+          mode: STRICT
+        portLevelMtls: "{{ {item.port | string: {'mode': 'PERMISSIVE'}} }}"
+  loop: "{{ istio_apiserver_exception_workloads }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.port }}"
+
+- name: "istio | apiserver exception | Restrict the port to the apiserver"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: AuthorizationPolicy
+      metadata:
+        name: "authz-{{ item.name }}"
+        namespace: "{{ istio_apiserver_exception_namespace }}"
+      spec:
+        selector:
+          matchLabels: "{{ item.selector }}"
+        action: ALLOW
+        rules:
+          - from:
+              - source:
+                  ipBlocks: "{{ _istio_ax_nodes.resources | apiserver_source_ips }}"
+            to:
+              - operation:
+                  ports: ["{{ item.port | string }}"]
+  loop: "{{ istio_apiserver_exception_workloads }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.port }}"

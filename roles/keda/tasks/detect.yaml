@@ -19,13 +19,10 @@
 
 - name: "keda | Classify"
   vars:
-    _api: "{{ _keda_api.resources | first | default(none) }}"
-    _available: >-
-      {{ _api is not none and _api.status.conditions | default([])
-         | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0 }}
-    _ours: "{{ (_keda_release.status | default(none)) is not none }}"
+    _state: "{{ _keda_api.resources | apiservice_state(_keda_release.status | default(none)) }}"
   ansible.builtin.set_fact:
-    _keda_ours: "{{ _ours | bool }}"
-    _keda_foreign: "{{ not _ours | bool and _available | bool }}"
-    _keda_stale: "{{ not _ours | bool and _api is not none and not _available | bool }}"
-    _keda_api_service: "{{ (_api.spec.service | default({}, true)) if _api is not none else {} }}"
+    _keda_ours: "{{ _state.ours }}"
+    _keda_foreign: "{{ _state.foreign }}"
+    _keda_stale: "{{ _state.stale }}"
+    _keda_available: "{{ _state.available }}"
+    _keda_api_service: "{{ _state.service }}"

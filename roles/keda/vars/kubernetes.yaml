@@ -1,3 +1,3 @@
 ---
-# KEDA from the kedacore Helm chart, installed by this role.
+# _<name>_from_olm per platform: docs/reference/adding_solutions.md ("Platform differences").
 _keda_from_olm: false

@@ -40,9 +40,7 @@
   ansible.builtin.assert:
     that:
       - _keda_crd.resources | length > 0
-      - _keda_api.resources | length > 0
-      - _keda_api.resources[0].status.conditions | default([])
-        | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+      - _keda_available | bool
     fail_msg: >-
       KEDA is not serving: {{ 'scaledobjects.keda.sh is missing; ' if not _keda_crd.resources else '' }}external.metrics.k8s.io
       is not Available ({{ _keda_api_service.namespace | default('not registered') }}/{{ _keda_api_service.name | default('') }})
