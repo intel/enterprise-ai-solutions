@@ -95,7 +95,7 @@
 # Always cleans /var/lib/rook (stale mon stores). Wiping the OSD devices is
 # opt-in via rook_ceph_teardown_wipe_devices, because a stale path in the map
 # would destroy whatever now lives on it. Left off, the disks keep their
-# bluestore labels and must be wiped by hand (blkdiscard -f) before Ceph can be
+# bluestore labels and must be wiped by hand (see the teardown message) before Ceph can be
 # re-installed, or ceph-volume skips them and creates 0 OSDs.
 
 - name: "rook_ceph | teardown | Ensure cleanup namespace"
@@ -192,15 +192,14 @@
                           echo "REFUSE $dev (type='$ft', expected ceph_bluestore)"; rc=1; continue
                         fi
                         echo "discarding $dev"
-                        # blkdiscard clears the whole device. The dd fallback is for
-                        # disks that reject discard and zeroes each offset where
-                        # bluestore keeps a label, not just the head.
-                        if ! blkdiscard -f "$dev"; then
-                          for off in 0 1024 10240 102400; do
-                            dd if=/dev/zero of="$dev" bs=1M count=16 seek="$off" \
-                               oflag=direct conv=notrunc status=none 2>/dev/null || true
-                          done
-                        fi
+                        # Discarded blocks read back as zeros only on disks that
+                        # guarantee it, so each offset where bluestore keeps a label
+                        # (0, 1, 10, 100, 1000 GiB) is zeroed as well.
+                        blkdiscard -f "$dev" || true
+                        for off in 0 1024 10240 102400 1024000; do
+                          dd if=/dev/zero of="$dev" bs=1M count=16 seek="$off" \
+                             oflag=direct conv=notrunc status=none 2>/dev/null || true
+                        done
                         wipefs -a "$dev" >/dev/null || { echo "FAILED wipefs $dev"; rc=1; continue; }
                         after=$(blkid -p -o value -s TYPE "$dev" 2>/dev/null)
                         [ -n "$after" ] && { echo "FAILED $dev still labelled '$after'"; rc=1; }
@@ -326,7 +325,8 @@
         {% if not (rook_ceph_teardown_wipe_devices | bool) %}
         OSD devices were NOT wiped (rook_ceph_teardown_wipe_devices is false). They
         still carry bluestore labels, so re-installing Ceph will create 0 OSDs until
-        each is wiped with: blkdiscard -f <device> && wipefs -a <device>
+        each is wiped: wipefs -a <device>, then zero 1 MiB at 0, 1, 10, 100 and
+        1000 GiB, where bluestore keeps copies of its label
         {% elif rook_ceph_devices | default({}) | length == 0 %}
         No raw devices to wipe.
         {% elif _rook_wipe_failed | length == 0 %}
