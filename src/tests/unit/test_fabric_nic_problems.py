@@ -8,8 +8,7 @@ import pathlib
 import pytest
 import yaml
 from ansible.plugins.loader import filter_loader
-from ansible.template import trust_as_template
-from ansible_render import render
+from ansible_render import render, trust_as_template
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 _spec = importlib.util.spec_from_file_location("fabric_nic_problems", _ROOT / "filter_plugins" / "fabric_nic_problems.py")
