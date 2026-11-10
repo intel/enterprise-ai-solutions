@@ -58,8 +58,6 @@ def _time_checks(data, ctx):
              "then check chronyc tracking")]
     if ctx.get("local"):
         rows.append(("N2", "OK", "this is the deploy node", ""))
-    elif data.get("controller_epoch") is None:
-        rows.append(("N2", "WARN", "no deploy-node time to compare with", ""))
     else:
         skew = data["node_epoch"] - float(data["controller_epoch"])
         status = ("FAIL" if abs(skew) > ctx["max_skew_s"] else
@@ -71,11 +69,13 @@ def _time_checks(data, ctx):
 
 def _disk_checks(disk, ctx):
     images, root, etcd = disk["containerd"], disk["root"], disk.get("etcd")
-    status = ("FAIL" if images["avail"] < ctx["min_free_gib"] * GIB or images["used_pct"] > ctx["max_used_pct"] else
+    full = images["used_pct"] > ctx["max_used_pct"]
+    status = ("FAIL" if images["avail"] < ctx["min_free_gib"] * GIB or full else
               "WARN" if images["avail"] < ctx["warn_free_gib"] * GIB else "OK")
+    need = ("get it below %d%% used" % ctx["max_used_pct"] if full else
+            "free at least %d GiB there" % ctx["min_free_gib"])
     rows = [("N3", status, "%s free, %s%% used on %s" % (_gib(images["avail"]), images["used_pct"], images["path"]),
-             "Container images need space under /var/lib/containerd: free at least %d GiB there, "
-             "or mount a larger disk" % ctx["min_free_gib"]),
+             "Container images need space under /var/lib/containerd: %s, or mount a larger disk" % need),
             ("N4", "FAIL" if root["used_pct"] > ctx["max_used_pct"] else "OK",
              "%s%% used, %s free on /" % (root["used_pct"], _gib(root["avail"])), "Free space on /")]
     if etcd:
@@ -325,12 +325,14 @@ def node_preflight_evaluate(results, ctx):
     # This run's control plane: the API servers it can serve (the inventory's names and addresses,
     # and every address its nodes report: Kubespray may bind the default-route one) and its CAs.
     control_plane = set(ctx.get("control_plane") or [])
-    cp_kube = [data.get("kube") or {} for res, data in parsed if data and res.get("item") in control_plane]
+    # A node whose probe did not run, or whose cluster probe failed, cannot vouch for a CA.
+    cp_kube = [data["kube"] for res, data in parsed if data and data.get("kube") and res.get("item") in control_plane]
     cp = {"hosts": {_canonical(h) for h in ctx.get("api_hosts") or []} | {
               _canonical(a) for kube in cp_kube for a in kube.get("addresses", [])},
           "cas": {kube.get("cluster_ca") for kube in cp_kube} - {None},
           "by_ca": LOOPBACK | ({_canonical(ctx["api_lb"])} if ctx.get("api_lb") else set()),
-          "unprobed": [res.get("item") for res, data in parsed if data is None and res.get("item") in control_plane]}
+          "unprobed": [res.get("item") for res, data in parsed
+                       if res.get("item") in control_plane and not (data and data.get("kube"))]}
     rows = []
     for res, data in parsed:
         checks = _checks(data, ctx, cp) if data is not None else _probe_failed(res)
@@ -344,6 +346,9 @@ def node_preflight_evaluate(results, ctx):
 
     failures = [r for r in rows if r["status"] == "FAIL"]
     warnings = [r for r in rows if r["status"] == "WARN"]
+    # Skipping the check a probe failure reports would leave that node unchecked.
+    unprobed = [res.get("item") for res, data in parsed if data is None]
+    skippable = sorted({r["id"] for r in failures} - {r["id"] for r in failures if r["node"] in unprobed})
     table = []
     for node in [res.get("item") for res in results or []]:
         mine = [r for r in rows if r["node"] == node]
@@ -352,7 +357,8 @@ def node_preflight_evaluate(results, ctx):
                                                          ", %d skipped" % counts["SKIP"] if counts["SKIP"] else ""))
         table += ["  %s %-4s %-15s %s" % (r["id"], r["status"], r["check"], r["evidence"])
                   for r in mine if r["status"] in ("FAIL", "WARN")]
-    return {"rows": rows, "failures": failures, "warnings": warnings, "table": table}
+    return {"rows": rows, "failures": failures, "warnings": warnings, "table": table,
+            "skippable": skippable, "unprobed": unprobed}
 
 
 class FilterModule:

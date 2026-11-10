@@ -107,6 +107,5 @@
       - {{ r.node }}: {{ r.id }} {{ r.check }}: {{ r.evidence }}
         Fix: {{ r.hint }}
       {% endfor %}
-      {% set _ids = _np.failures | map(attribute='id') | unique | reject('equalto', 'N0') | list %}
-      Fix these and re-run.{% if _ids %} To skip a check, set kubernetes_node_preflight_skip (e.g. [{{ _ids | join(', ') }}]) in global_config.yaml.{% endif %}
+      Fix these and re-run.{% if _np.skippable %} To skip a check, set kubernetes_node_preflight_skip (e.g. [{{ _np.skippable | join(', ') }}]) in global_config.yaml.{% endif %}{% if _np.unprobed %} The probe did not run on {{ _np.unprobed | join(', ') }}, so nothing was checked there: fix SSH, sudo or python3 on the node, or set kubernetes_node_preflight: false to install without these checks.{% endif %}
   when: _np.failures | length > 0

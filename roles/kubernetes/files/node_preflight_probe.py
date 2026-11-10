@@ -90,22 +90,25 @@ def disk(path):
 
 
 def gateway():
-    """The default route's first gateway (a multipath route lists one per nexthop)."""
+    """The default route's first gateway (a multipath route lists one per nexthop). With BGP
+    unnumbered the IPv4 default goes via an IPv6 link-local address: "via inet6 fe80::1 dev eth0"."""
     rc, out = run(["ip", "-o", "route", "show", "default"])
     route = next((line for line in (out or "").splitlines() if line.startswith("default")), "")
-    via = re.search(r"\bvia (\S+)", route)
+    via = re.search(r"\bvia (?:inet6 )?(\S+)", route)
     dev = re.search(r"\bdev (\S+)", route)
     gw = via.group(1) if via else None
     result = {"ip": gw, "dev": dev.group(1) if dev else None, "reachable": False, "via": None}
     if not gw:
         return result
-    rc, _ = run(["ping", "-c", "2", "-W", "2", gw], timeout=10)
+    # A link-local gateway is only reachable through its interface.
+    target = "%s%%%s" % (gw, result["dev"]) if gw.lower().startswith("fe80:") and result["dev"] else gw
+    rc, _ = run(["ping", "-c", "2", "-W", "2", target], timeout=10)
     if rc == 0:
         result.update(reachable=True, via="icmp")
         return result
     for port in (22, 443):
         try:
-            socket.create_connection((gw, port), timeout=3).close()
+            socket.create_connection((target, port), timeout=3).close()
         except ConnectionRefusedError:
             pass  # the gateway answered
         except OSError:
@@ -200,8 +203,9 @@ def kubeconfig(conf):
     data = re.search(r"^\s*certificate-authority-data:\s*(\S+)", text, re.M)
     path = re.search(r"^\s*certificate-authority:\s*(\S+)", text, re.M)
     try:
-        pem = (base64.b64decode(data.group(1), validate=True).decode("ascii", "replace") if data
-               else read(path.group(1).strip("'\"")) if path else "")
+        # A relative certificate-authority is relative to the kubeconfig.
+        pem = (base64.b64decode(data.group(1).strip("'\""), validate=True).decode("ascii", "replace") if data
+               else read(os.path.join(os.path.dirname(conf), path.group(1).strip("'\""))) if path else "")
     except ValueError:
         pem = ""
     return (server.group(1).strip("'\"") if server else None), ca_hash(pem)

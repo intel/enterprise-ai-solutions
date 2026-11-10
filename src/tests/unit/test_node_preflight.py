@@ -9,14 +9,7 @@ import pathlib
 
 import pytest
 import yaml
-from ansible.parsing.dataloader import DataLoader
-from ansible.template import Templar
-
-try:
-    from ansible.template import trust_as_template
-except ImportError:  # ansible-core < 2.19 templates plain strings
-    def trust_as_template(source):
-        return source
+from ansible_render import render
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -90,7 +83,6 @@ CASES = [
     ("N2 12 s", lambda d: d.update(controller_epoch=988.0), {}, "N2", "WARN"),
     ("N2 -90 s", lambda d: d.update(controller_epoch=1090.0), {}, "N2", "FAIL"),
     ("N2 on the deploy node", lambda d: d.update(controller_epoch=1900.0), {"local": True}, "N2", "OK"),
-    ("N2 no deploy-node time", lambda d: d.update(controller_epoch=None), {}, "N2", "WARN"),
     ("N3 15 GiB free", lambda d: d["disk"]["containerd"].update(avail=15 * GIB), {}, "N3", "FAIL"),
     ("N3 35 GiB free", lambda d: d["disk"]["containerd"].update(avail=35 * GIB), {}, "N3", "WARN"),
     ("N3 95% used", lambda d: d["disk"]["containerd"].update(used_pct=95.0), {}, "N3", "FAIL"),
@@ -364,6 +356,30 @@ def test_n10_cannot_compare_while_a_control_plane_node_is_not_probed():
     assert rows["cp2"][0] == "FAIL"
 
 
+def test_n10_control_plane_whose_cluster_probe_failed_cannot_vouch():
+    cp2 = changed(lambda d: (d.pop("kube"), d.update(errors=["kube: boom"])))
+    rows = n10_rows([probed("cp1", cluster_ca="ca-a"), {"item": "cp2", "stdout": json.dumps(cp2)},
+                     probed("w1", kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-b")])
+    assert rows["w1"] == ("WARN", "cannot compare the CA of kubelet.conf: cp2 not probed")
+
+
+def test_n3_hint_follows_the_cause():
+    def hint(**disk):
+        data = changed(lambda d: d["disk"]["containerd"].update(**disk))
+        return [r["hint"] for r in evaluate(data)["rows"] if r["id"] == "N3"][0]
+    assert "below 90% used" in hint(used_pct=95.0) and "free at least" not in hint(used_pct=95.0)
+    assert "free at least 20 GiB" in hint(avail=15 * GIB)
+
+
+def test_skip_suggestion_leaves_out_checks_from_a_probe_that_did_not_run():
+    results = [{"item": "n1", "stdout": json.dumps(changed(lambda d: d.update(euid=1000)))},
+               {"item": "n2", "stdout": "", "msg": "Missing sudo password"},
+               {"item": "n3", "stdout": "", "msg": "Task failed: Failed to connect to the host via ssh"},
+               {"item": "n4", "stdout": json.dumps(changed(lambda d: d["disk"]["root"].update(used_pct=95.0)))}]
+    out = rules.node_preflight_evaluate(results, CTX)
+    assert (out["skippable"], out["unprobed"]) == (["N4"], ["n2", "n3"])
+
+
 def test_n10_loopback_kubeconfig_without_a_readable_ca():
     rows = n10_rows([probed("cp1", cluster_ca="ca-a"), probed("w1", kubelet_conf_server="https://localhost:6443")],
                     ("cp1",))
@@ -413,6 +429,15 @@ def test_kubeconfig_ca_matches_the_cluster_ca(monkeypatch):
     monkeypatch.setattr(probe, "run", _fake_run({}))
     kube = probe.kube_leftovers(["/usr/local/bin"])
     assert kube["kubelet_conf_ca"] == kube["admin_conf_ca"] == kube["cluster_ca"] is not None
+
+
+def test_kubeconfig_ca_quoted_or_relative(tmp_path):
+    (tmp_path / "ssl").mkdir()
+    (tmp_path / "ssl" / "ca.crt").write_text(PEM)
+    (tmp_path / "quoted.conf").write_text('    certificate-authority-data: "%s"\n' % base64.b64encode(PEM.encode()).decode())
+    (tmp_path / "relative.conf").write_text("    certificate-authority: ssl/ca.crt\n")
+    want = probe.ca_hash(PEM)
+    assert probe.kubeconfig(str(tmp_path / "quoted.conf"))[1] == probe.kubeconfig(str(tmp_path / "relative.conf"))[1] == want
 
 
 def test_each_kubeconfig_is_read_once(monkeypatch):
@@ -539,6 +564,8 @@ def test_gateway_that_refuses_tcp_answered(monkeypatch, error, expected):
     ("default \tnexthop via 192.0.2.1 dev d0 weight 1 \tnexthop via 198.51.100.1 dev d1 weight 1 ", "192.0.2.1", "d0"),
     ("default via 198.51.100.1 dev d1 metric 50 \ndefault via 192.0.2.1 dev d0 metric 100", "198.51.100.1", "d1"),
     ("default dev d0 scope link ", None, "d0"),
+    # BGP unnumbered: an IPv4 default via an IPv6 link-local nexthop.
+    ("default nhid 30 via inet6 fe80::1 dev d0 ", "fe80::1", "d0"),
     ("", None, None),
 ])
 def test_gateway_reads_the_default_route(monkeypatch, routes, ip, dev):
@@ -576,6 +603,17 @@ def test_gateway_that_drops_pings_but_answers_arp(monkeypatch, neigh, reachable)
     out = probe.gateway()
     assert (out["reachable"], out["via"]) == (reachable, "arp" if reachable else None)
     assert ["ip", "neigh", "show", "192.0.2.1", "dev", "eth0"] in calls
+
+
+def test_a_link_local_gateway_is_pinged_through_its_interface(monkeypatch):
+    calls = []
+
+    def run(args, timeout=10, stderr=True):
+        calls.append(args)
+        return (0, "default nhid 30 via inet6 fe80::1 dev ens6f0 proto bgp metric 20") if args[:2] == ["ip", "-o"] else (0, "")
+    monkeypatch.setattr(probe, "run", run)
+    assert probe.gateway() == {"ip": "fe80::1", "dev": "ens6f0", "reachable": True, "via": "icmp"}
+    assert ["ping", "-c", "2", "-W", "2", "fe80::1%ens6f0"] in calls
 
 
 def test_kubeconfig_server_may_be_quoted(monkeypatch):
@@ -631,10 +669,6 @@ def test_os_release_runs_only_for_n15(monkeypatch, capsys, skip, has_os):
     monkeypatch.setenv("NODE_PREFLIGHT_SPEC", json.dumps({"skip": skip}))
     probe.main()
     assert ("os" in json.loads(capsys.readouterr().out)) is has_os
-
-
-def render(source, variables):
-    return Templar(loader=DataLoader(), variables=variables).template(trust_as_template(source))
 
 
 @pytest.mark.parametrize("nodes, workers, inventory, new", [
