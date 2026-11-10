@@ -201,7 +201,6 @@ racks:
 
 ```yaml
 storage:
-  ceph_fabric_nic: ens801f0              # optional; Ceph binds by address, not NIC name
   ceph_public_network: 10.201.1.0/28    # client → OSD traffic
   ceph_cluster_network: 10.201.1.0/28   # OSD → OSD replication
 

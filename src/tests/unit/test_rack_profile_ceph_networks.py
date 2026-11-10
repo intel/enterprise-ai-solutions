@@ -73,7 +73,10 @@ def test_a_node_ceph_fabric_nic_is_ignored_with_a_warning():
     profile["racks"]["r1"]["nodes"]["w1"]["ceph_fabric_nic"] = "eth2"
     result = _mod.rack_profile_validate(profile)
     assert result["errors"] == []
-    assert any("'ceph_fabric_nic' is set on w1 but is obsolete and ignored" in w for w in result["warnings"]), result
+    assert any("'ceph_fabric_nic' (node w1) is obsolete and ignored" in w for w in result["warnings"]), result
+    profile["storage"]["ceph_fabric_nic"] = "eth2"
+    assert any("'ceph_fabric_nic' (storage, node w1) is obsolete" in w
+               for w in _mod.rack_profile_validate(profile)["warnings"])
 
 
 def test_rook_gets_both_networks_as_address_ranges():
