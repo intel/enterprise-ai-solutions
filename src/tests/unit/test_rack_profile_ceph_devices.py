@@ -65,6 +65,7 @@ def storage_result(nodes):
     ([{"name": "master1", "devices": []}], "storage node 'master1' needs a non-empty devices list"),
     ([{"name": "master1", "devices": [1]}], "storage node 'master1' needs a non-empty devices list"),
     ([{"name": "master1", "devices": [" nvme1n1 "]}], "storage node 'master1' needs a non-empty devices list"),
+    ([{"name": "master1", "devices": ["nvme1n1 nvme2n1"]}], "storage node 'master1' needs a non-empty devices list"),
     ({"master1": ["nvme1n1"]}, "storage.nodes must be a list, got dict"),
 ])
 def test_storage_node_entry_errors(nodes, message):
