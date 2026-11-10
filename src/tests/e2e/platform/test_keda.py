@@ -5,7 +5,6 @@
 
 import time
 
-import allure
 import kr8s
 import pytest
 from kr8s.objects import Deployment, HorizontalPodAutoscaler, Namespace, new_class
@@ -20,6 +19,7 @@ pytestmark = pytest.mark.skipif(
 APIService = new_class(kind="APIService", version="apiregistration.k8s.io/v1", namespaced=False)
 ScaledObject = new_class(kind="ScaledObject", version="keda.sh/v1alpha1", namespaced=True)
 
+KEDA_NAMESPACE = cfg.get("keda_namespace", "keda")
 NAMESPACE = "keda-e2e"
 PROMETHEUS = "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
 
@@ -57,7 +57,7 @@ def scaled_object(name, replicas):
 
 @pytest.fixture(scope="module")
 def scaled_workload():
-    if not namespace_exists("keda"):
+    if not namespace_exists(KEDA_NAMESPACE):
         pytest.skip("external.metrics.k8s.io is served by another install")
     ns = Namespace({"metadata": {"name": NAMESPACE, "labels": {
         "istio.io/dataplane-mode": "ambient",
@@ -95,18 +95,16 @@ def scaled_workload():
         wait_for(lambda: not namespace_exists(NAMESPACE), timeout=120)
 
 
-@allure.testcase("")
 def test_keda_serves_external_metrics():
-    if namespace_exists("keda"):
+    if namespace_exists(KEDA_NAMESPACE):
         for name in ("keda-operator", "keda-operator-metrics-apiserver", "keda-admission-webhooks"):
-            deploy = Deployment.get(name, namespace="keda")
+            deploy = Deployment.get(name, namespace=KEDA_NAMESPACE)
             assert (deploy.status.get("readyReplicas") or 0) >= 1, f"{name} has no ready replica"
     api = APIService.get("v1beta1.external.metrics.k8s.io")
     available = [c for c in api.status.get("conditions", []) if c["type"] == "Available"]
     assert available and available[0]["status"] == "True", f"external.metrics.k8s.io not Available: {available}"
 
 
-@allure.testcase("")
 @pytest.mark.skipif(not cfg.get("observability_enabled", True),
                     reason="no platform Prometheus for the trigger (observability_enabled is false)")
 def test_keda_scales_on_prometheus_trigger(scaled_workload):
@@ -121,7 +119,7 @@ def test_keda_scales_on_prometheus_trigger(scaled_workload):
     assert hpa.spec["metrics"][0]["type"] == "External"
 
 
-@allure.testcase("")
 def test_keda_webhook_rejects_duplicate_scaledobject(scaled_workload):
-    with pytest.raises(kr8s.ServerError, match="already managed by the ScaledObject"):
+    # Names the ScaledObject or, once KEDA has created it, its HPA.
+    with pytest.raises(kr8s.ServerError, match="is already managed by the (ScaledObject|hpa) "):
         scaled_object("scale-me-duplicate", 2).create()
