@@ -7,6 +7,7 @@ import pathlib
 import re
 
 import jinja2
+import pytest
 import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -60,20 +61,19 @@ def storage_errors(nodes):
     return storage_result(nodes)["errors"]
 
 
-def test_storage_node_entry_errors():
-    devices = ["nvme1n1"]
-    cases = [
-        ([{"devices": devices}], "storage.nodes[0] needs a 'name'"),
-        ([{"name": "master1", "devices": devices}, {"name": "master1", "devices": devices}],
-         "storage.nodes lists 'master1' more than once"),
-        ([{"name": "ghost", "devices": devices}], "storage.nodes entry 'ghost' is not a node defined under racks"),
-        ([{"name": "master1", "devices": []}], "storage node 'master1' needs a non-empty devices list"),
-        ([{"name": "master1", "devices": [1]}], "storage node 'master1' needs a non-empty devices list"),
-        ([{"name": "master1", "devices": [" nvme1n1 "]}], "storage node 'master1' needs a non-empty devices list"),
-        ({"master1": devices}, "storage.nodes must be a list, got dict"),
-    ]
-    for nodes, message in cases:
-        assert any(message in e for e in storage_errors(nodes)), (nodes, storage_errors(nodes))
+@pytest.mark.parametrize("nodes, message", [
+    ([{"devices": ["nvme1n1"]}], "storage.nodes[0] needs a 'name'"),
+    ([{"name": "master1", "devices": ["nvme1n1"]}, {"name": "master1", "devices": ["nvme1n1"]}],
+     "storage.nodes lists 'master1' more than once"),
+    ([{"name": "ghost", "devices": ["nvme1n1"]}], "storage.nodes entry 'ghost' is not a node defined under racks"),
+    ([{"name": "master1", "devices": []}], "storage node 'master1' needs a non-empty devices list"),
+    ([{"name": "master1", "devices": [1]}], "storage node 'master1' needs a non-empty devices list"),
+    ([{"name": "master1", "devices": [" nvme1n1 "]}], "storage node 'master1' needs a non-empty devices list"),
+    ({"master1": ["nvme1n1"]}, "storage.nodes must be a list, got dict"),
+])
+def test_storage_node_entry_errors(nodes, message):
+    errors = storage_errors(nodes)
+    assert any(message in e for e in errors), errors
 
 
 def test_storage_role_and_storage_nodes_disagree_warns():
