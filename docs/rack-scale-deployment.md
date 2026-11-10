@@ -104,8 +104,8 @@ vim env/rack/rack-profile.yaml            # edit for your hardware — see below
 > [!Important]
 > **Ceph storage:** the OSD devices and the Ceph networks both come from the
 > `storage` section of `rack-profile.yaml`; set only `storage_backend: ceph` in
-> `global_config.yaml`. A device can be a bare name (`nvme1n1`) or a path under
-> `/dev`. With `storage_backend: ceph`, install stops before Kubespray if the profile
+> `global_config.yaml`. A device can be a kernel name (`nvme1n1`) or a full path
+> such as `/dev/disk/by-id/...`. With `storage_backend: ceph`, install stops before Kubespray if the profile
 > lists no devices, and install and teardown stop if `global_config.yaml` still sets a
 > different `rook_ceph_devices`. Delete `rook_ceph_devices` from `global_config.yaml`.
 > Teardown also stops when `rook_ceph_teardown_wipe_devices: true` asks for a disk wipe
@@ -209,8 +209,8 @@ storage:
   ceph_cluster_network: 10.201.1.0/28   # OSD → OSD replication
 
   nodes:                                 # the Ceph storage nodes and their OSD devices
-    - name: master1                      # must match a node name above
-      devices: [nvme1n1]                 # raw block devices (NEVER the OS disk); nvme1n1 or /dev/...
+    - name: master1                      # the node's key under racks
+      devices: [nvme1n1]                 # raw block devices (NEVER the OS disk): nvme1n1 or /dev/disk/by-id/...
     - name: master2
       devices: [nvme1n1]
 ```

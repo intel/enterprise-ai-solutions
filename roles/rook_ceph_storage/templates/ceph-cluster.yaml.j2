@@ -51,7 +51,7 @@ spec:
       - name: "{{ node_name }}"
         devices:
 {% for dev in devices %}
-          - name: "{{ dev | regex_replace('^/dev/', '') }}"
+          - name: "{{ dev | regex_replace('^/dev/([^/]+)$', '\\1') }}"
 {% endfor %}
 {% endfor %}
   resources:
