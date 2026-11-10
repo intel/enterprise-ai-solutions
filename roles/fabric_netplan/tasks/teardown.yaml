@@ -48,14 +48,11 @@
       {%- set eths = ((r.content | b64decode | from_yaml).network | default({})).ethernets | default({}) -%}
       {%- for nic, cfg in eths.items() -%}
       {%- for addr in cfg.addresses | default([]) -%}
-      {%- set entry = {'node': r.item, 'nic': nic, 'addr': addr} -%}
-      {%- if entry not in out -%}
-      {%- set _ = out.append(entry) -%}
-      {%- endif -%}
+      {%- set _ = out.append({'node': r.item, 'nic': nic, 'addr': addr}) -%}
       {%- endfor -%}
       {%- endfor -%}
       {%- endfor -%}
-      {{ out }}
+      {{ out | unique }}
 
 - name: "fabric_netplan | teardown | Remove 99-fabric.yaml from all nodes"
   ansible.builtin.file:

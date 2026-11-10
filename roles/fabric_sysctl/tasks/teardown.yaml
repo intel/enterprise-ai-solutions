@@ -79,8 +79,7 @@
 
 # This pass runs after the kubespray reset, which flushes every table
 # (flush_iptables), so iptables-save here would write empty tables over the
-# operator's saved rules. Only this role's lines come out of the saved file;
-# a file that is not there stays absent.
+# operator's saved rules.
 - name: "fabric_sysctl | teardown | Remove fabric transit rules from the saved rules"
   ansible.builtin.lineinfile:
     path: "{{ item.1 }}"
