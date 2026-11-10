@@ -74,36 +74,47 @@ def scan(root, fabric_file, old_file, nics):
     facts = nic_facts(root, nics)
     files = netplan_files(root, {fabric_file, old_file})
 
-    def hits(dev, d):
-        m = d.get("match") or {}
-        return [n for n in nics if selects(m, n, facts)] if m else [n for n in nics if n == dev]
+    def entries():
+        for path, net in files:
+            eths = net.get("ethernets") or {}
+            for dev, d in eths.items() if isinstance(eths, dict) else []:
+                if isinstance(d, dict):
+                    yield path, net, eths, dev, d
+
+    # netplan merges the entries that share an ID across files, match: included,
+    # so a match: in one file also selects the NIC for the keys another file sets.
+    matches = {}
+    for _, _, _, dev, d in entries():
+        if isinstance(d.get("match"), dict):
+            matches[dev] = {**matches.get(dev, {}), **d["match"]}
+    members = {dev: [n for n in nics if selects(m, n, facts)] for dev, m in matches.items()}
 
     lines = []
-    members = {}
-    for path, net in files:
-        eths = net.get("ethernets") or {}
-        for dev, d in eths.items() if isinstance(eths, dict) else []:
-            if not isinstance(d, dict):
-                continue
-            members[dev] = hits(dev, d)
-            if (d.get("renderer") or eths.get("renderer") or net.get("renderer")) == "NetworkManager":
-                lines += ["nmprof=%s in %s (profile '%s')" % (n, path, (d.get("networkmanager") or {}).get("name", dev))
-                          for n in members[dev]]
-                continue
-            keys = [k for k in ("addresses", "dhcp4", "dhcp6", "routes", "gateway4", "gateway6", "set-name") if d.get(k)]
+    for path, net, eths, dev, d in entries():
+        members.setdefault(dev, [n for n in nics if n == dev])
+        if (d.get("renderer") or eths.get("renderer") or net.get("renderer")) == "NetworkManager":
+            lines += ["nmprof=%s in %s (profile '%s')" % (n, path, (d.get("networkmanager") or {}).get("name", dev))
+                      for n in members[dev]]
+            continue
+        keys = [k for k in ("addresses", "dhcp4", "dhcp6", "routes", "gateway4", "gateway6", "set-name") if d.get(k)]
+        if dev in matches:
             if d.get("match"):
-                # A separate netdef, not merged: networkd applies only the first matching
-                # .network file by name, so the entry can take the NIC even if it sets nothing.
+                # A separate netdef, not merged with the fabric file: networkd applies only the
+                # first matching .network file by name, so the entry can take the NIC even if it sets nothing.
                 what = "matches it" + (" and sets " + ", ".join(keys) if keys else "")
-            else:
-                # Merged with the fabric file: lists add up, and on single values the file
-                # that sorts later wins, so its dhcp4/dhcp6: false overrides an earlier file.
-                if os.path.basename(path) < fabric_file:
-                    keys = [k for k in keys if k not in ("dhcp4", "dhcp6")]
-                if not keys:
-                    continue
+            elif keys:
                 what = "sets " + ", ".join(keys)
-            lines += ["netplandef=%s in %s ('%s' %s)" % (n, path, dev, what) for n in members[dev]]
+            else:
+                continue
+        else:
+            # Merged with the fabric file: lists add up, and on single values the file
+            # that sorts later wins, so its dhcp4/dhcp6: false overrides an earlier file.
+            if os.path.basename(path) < fabric_file:
+                keys = [k for k in keys if k not in ("dhcp4", "dhcp6")]
+            if not keys:
+                continue
+            what = "sets " + ", ".join(keys)
+        lines += ["netplandef=%s in %s ('%s' %s)" % (n, path, dev, what) for n in members[dev]]
     for path, net in files:
         for kind in ("bonds", "bridges"):
             group = net.get(kind) or {}

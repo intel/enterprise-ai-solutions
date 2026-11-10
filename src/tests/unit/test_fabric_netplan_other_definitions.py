@@ -62,7 +62,6 @@ def test_a_matching_entry_that_sets_nothing_is_reported(tmp_path):
 
 
 def test_match_keys_must_all_match(tmp_path):
-    # name and macaddress: only the NIC with that MAC is selected, not every en* NIC.
     entries = "mgmt:\n  match: {name: 'en*', macaddress: 'aa:bb:cc:00:00:99'}\n  dhcp4: true\n"
     assert probe(tmp_path, cloud_init(entries), macs={"ens6f0": MAC}) == []
     entries = "fab:\n  match: {name: 'en*', macaddress: '%s'}\n  dhcp4: true\n" % MAC.upper()
@@ -131,3 +130,13 @@ def test_a_file_that_is_not_utf8_is_skipped(tmp_path):
     (tmp_path / "etc/netplan").mkdir(parents=True)
     (tmp_path / "etc/netplan/50-latin1.yaml").write_bytes(b"network:\n  ethernets:\n    ens6f0: {addresses: [10.9.9.9/24]} # \xe9\n")
     assert probe(tmp_path, {}) == []
+
+
+def test_an_id_matched_in_one_file_carries_the_keys_another_file_sets(tmp_path):
+    files = {"etc/netplan/50-cloud-init.yaml": "network:\n  ethernets:\n    id0:\n      match: {macaddress: '%s'}\n" % MAC,
+             "etc/netplan/70-local.yaml": "network:\n  ethernets:\n    id0: {addresses: [192.168.0.7/24]}\n"
+                                          "  bonds:\n    bond0: {interfaces: [id0]}\n"}
+    assert probe(tmp_path, files, macs={"ens6f0": MAC}) == [
+        "netplandef=ens6f0 in /etc/netplan/50-cloud-init.yaml ('id0' matches it)",
+        "netplandef=ens6f0 in /etc/netplan/70-local.yaml ('id0' sets addresses)",
+        "netplandef=ens6f0 in /etc/netplan/70-local.yaml (member of bond 'bond0')"]
