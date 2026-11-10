@@ -216,9 +216,11 @@ Ceph runs with host networking and binds to the addresses in
 `ceph_public_network` and `ceph_cluster_network`, so NIC names can differ per
 node. The parser checks that every `storage` node has a fabric IP in
 `ceph_public_network` (and in `ceph_cluster_network` when set), and that its
-node IP is in the public network, because a Ceph mon binds to it. The node IP
-is the first fabric NIC, or `mgmt_ip` on a control-plane node when
-`control_plane_on_fabric` is false.
+node IP is in the public network: a Ceph mon binds to its node IP, and Rook can
+place a mon on any storage node. The node IP is the first fabric NIC, or
+`mgmt_ip` on a control-plane node when `control_plane_on_fabric` is false. With
+topology `none` there is no fabric, so each storage node's `mgmt_ip` must be in
+the Ceph networks.
 
 ---
 
@@ -527,6 +529,7 @@ and continue.
 | `duplicate fabric_ip` | Two nodes share an IP | Check `rack-profile.yaml` for collisions |
 | `storage node ... has no fabric_ip in ceph_public_network` | Ceph networks don't match the storage nodes | Give each storage node a fabric IP in the Ceph networks, or fix `ceph_public_network` / `ceph_cluster_network` |
 | `storage node ... node IP ... is outside ceph_public_network` | The node IP (first fabric NIC, or `mgmt_ip` on a control-plane node off the fabric) is on another network | List the NIC in `ceph_public_network` first; on a control-plane node set `control_plane_on_fabric: true` or move the `storage` role |
+| `storage node ... mgmt_ip ... is outside ceph_..._network` | Topology `none`: the Ceph networks don't hold the management addresses | Set the Ceph networks to the management subnet, or leave them out |
 | `fabric_ip ... is not within leafX's fabric_subnet` | IP and `leaf:` disagree | Fix the `fabric_ip`, or drop `leaf:` and let the parser derive it |
 | `fabric_ip ... is outside the L2 segment` | L2 node addressed in another subnet | Put every fabric IP in the one L2 subnet |
 | `missing required field 'mgmt_ip'` / `has no roles` | Incomplete node entry | Add `mgmt_ip` and at least one role to the node |

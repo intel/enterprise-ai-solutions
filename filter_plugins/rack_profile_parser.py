@@ -111,6 +111,18 @@ def _node_primary_nic(node):
     return fnics[0] if fnics else None
 
 
+def _node_ip(node, cp_on_fabric):
+    """The node's Kubernetes address (ip/access_ip in hosts.yaml): its first
+    fabric NIC, or mgmt_ip for a node with no fabric NIC and for a
+    control-plane node when control_plane_on_fabric is false."""
+    nics = node.get("fabric_nics", [])
+    roles = node.get("roles", [])
+    is_cp = "kube_control_plane" in roles or "etcd" in roles
+    if nics and (not is_cp or cp_on_fabric):
+        return nics[0]["fabric_ip"]
+    return node.get("mgmt_ip", "")
+
+
 def _ecmp_nodes(all_nodes, calico_mode, leaf_by_name):
     if calico_mode != "bgp":
         return []
@@ -278,13 +290,12 @@ def _cluster_cidr_faults(pod_cidr, service_cidr, all_nodes, fabric_prefix):
     return faults
 
 
-def _clos_leaf_faults(all_nodes, leafs):
-    """Clos: each fabric NIC's leaf is the one whose fabric_subnet holds its IP.
+def _assign_clos_leafs(all_nodes, leafs):
+    """Clos: sets each fabric NIC's leaf to the one whose fabric_subnet holds its IP.
 
-    'leaf:' is optional; when given it must agree with the subnet. Fills in
-    'leaf' on NICs that leave it out, so the netplan, BGP and ECMP generators
-    see it. A leaf with fabric_subnet TBD can't be derived from, so its NICs
-    still name it.
+    'leaf:' is optional; when given it must agree with the subnet. The netplan,
+    BGP and ECMP generators read the leaf set here. A leaf with fabric_subnet
+    TBD can't be derived from, so its NICs still name it. Returns the faults.
     """
     if not leafs:
         return []
@@ -355,8 +366,9 @@ def _ceph_address_faults(all_nodes, public_net, cluster_net, cp_on_fabric):
     """Storage nodes need their addresses in the Ceph networks.
 
     Rook (provider: host) binds the OSDs to addresses in ceph_public_network /
-    ceph_cluster_network, but a mon binds to its node IP, so a storage node's
-    node IP must be in the public network too. The NIC name plays no part.
+    ceph_cluster_network, but a mon binds to its node IP. Rook can place a mon
+    on any storage node, so each storage node's node IP must be in the public
+    network too. The NIC name plays no part.
     """
     if not public_net:
         return []
@@ -367,30 +379,35 @@ def _ceph_address_faults(all_nodes, public_net, cluster_net, cp_on_fabric):
     if faults:
         return faults
     for name, node in sorted(all_nodes.items()):
-        roles = node.get("roles", [])
-        if "storage" not in roles:
+        if "storage" not in node.get("roles", []):
             continue
+        node_ip = ipaddress.ip_address(_node_ip(node, cp_on_fabric))
         ips = [ipaddress.ip_address(fn["fabric_ip"])
                for fn in node.get("fabric_nics", [])]
-        shown = ", ".join(str(ip) for ip in ips) or "none"
+        if not ips:
+            for label, net in (("public", public), ("cluster", cluster)):
+                if net is not None and node_ip not in net:
+                    faults.append(
+                        f"storage node '{name}' mgmt_ip {node_ip} is outside "
+                        f"ceph_{label}_network {net} — with no fabric NIC, Ceph "
+                        f"runs on the management network")
+            continue
+        shown = ", ".join(str(ip) for ip in ips)
         if not any(ip in public for ip in ips):
             faults.append(
                 f"storage node '{name}' has no fabric_ip in ceph_public_network "
                 f"{public} (fabric IPs: {shown})")
             continue
-        is_cp = "kube_control_plane" in roles or "etcd" in roles
-        if is_cp and not cp_on_fabric:
-            node_ip = ipaddress.ip_address(node["mgmt_ip"])
-            if node_ip not in public:
-                faults.append(
-                    f"storage node '{name}' node IP {node_ip} (its mgmt_ip: "
-                    f"control-plane nodes are off the fabric) is outside "
-                    f"ceph_public_network {public}, so its Ceph mon would "
-                    f"bind there — set network.control_plane_on_fabric: true, "
-                    f"or move the storage role off control-plane nodes")
-        elif ips[0] not in public:
+        if node_ip not in public and node_ip != ips[0]:
             faults.append(
-                f"storage node '{name}' node IP {ips[0]} (its first fabric NIC) "
+                f"storage node '{name}' node IP {node_ip} (its mgmt_ip: "
+                f"control-plane nodes are off the fabric) is outside "
+                f"ceph_public_network {public}, so a Ceph mon there would "
+                f"bind to it — set network.control_plane_on_fabric: true, "
+                f"or move the storage role off control-plane nodes")
+        elif node_ip not in public:
+            faults.append(
+                f"storage node '{name}' node IP {node_ip} (its first fabric NIC) "
                 f"is outside ceph_public_network {public} — list the NIC in "
                 f"that network first")
         if cluster is not None and not any(ip in cluster for ip in ips):
@@ -553,8 +570,6 @@ def _parse_and_validate(profile):
 
     for node_name, node in all_nodes.items():
         _check_keys(node, VALID_NODE_KEYS, f"node '{node_name}'", schema_errors)
-        # Every node is an SSH target (ansible_host is mgmt_ip, the deploy
-        # node included) and must land in at least one inventory group.
         if not node.get("mgmt_ip"):
             schema_errors.append(
                 f"node '{node_name}' is missing required field 'mgmt_ip' "
@@ -689,7 +704,6 @@ def _parse_and_validate(profile):
     for node_name, node in all_nodes.items():
         for fn in node.get("fabric_nics", []):
             if fn.get("leaf") and fn["leaf"] not in leaf_names:
-                # On Clos that NIC would get no route and no BGP peer.
                 (errors if topology == "clos" else warnings).append(
                     f"node '{node_name}' NIC '{fn.get('nic', '?')}' references "
                     f"unknown leaf '{fn['leaf']}' "
@@ -826,7 +840,7 @@ def _parse_and_validate(profile):
                                        fabric_prefix))
 
     if topology == "clos":
-        errors.extend(_clos_leaf_faults(all_nodes, leafs))
+        errors.extend(_assign_clos_leafs(all_nodes, leafs))
     if topology == "l2":
         errors.extend(_l2_segment_faults(all_nodes, fabric_prefix))
     errors.extend(_ceph_address_faults(all_nodes, ceph_public_net,
@@ -884,18 +898,13 @@ def _gen_hosts_yaml(ctx):
 
     for name, node in all_nodes.items():
         nics = node.get("fabric_nics", [])
-        roles = node.get("roles", [])
         mgmt_ip = node.get("mgmt_ip", "")
-        is_cp = "kube_control_plane" in roles or "etcd" in roles
         node_family = node.get("node_family", "")
         sku = node.get("sku", "")
         accel = node.get("accelerator", "")
         gpu_count = node.get("gpu_count", "")
 
-        if nics and (not is_cp or c["cp_on_fabric"]):
-            bind_ip = nics[0]["fabric_ip"]
-        else:
-            bind_ip = mgmt_ip
+        bind_ip = _node_ip(node, c["cp_on_fabric"])
 
         lines.append(f"    {name}:")
         # All nodes use SSH — including the bastion (local: true is accepted
