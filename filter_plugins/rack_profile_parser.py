@@ -1123,8 +1123,8 @@ def _gen_netplan_files(ctx):
                 if gateway and gateway != "TBD":
                     for other_leaf in c["leafs"]:
                         if (other_leaf["name"] != leaf_name
-                                and other_leaf.get("fabric_subnet", "TBD")
-                                != "TBD"):
+                                and other_leaf.get("fabric_subnet")
+                                not in (None, "", "TBD")):
                             route = {
                                 "to": other_leaf["fabric_subnet"],
                                 "via": gateway,

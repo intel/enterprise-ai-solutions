@@ -72,8 +72,15 @@ def test_star_routes_have_no_metric():
 
 
 def test_malformed_leaf_subnet_is_a_profile_error():
-    for bad in ("10.202.0.0/33", "10.202.0.x/16"):
+    for bad in ("10.202.0.0/33", "10.202.0.x/16", None):
         profile = copy.deepcopy(CLOS)
         profile["network"]["leafs"][1]["fabric_subnet"] = bad
         errors = rack_profile_parse(profile)["errors"]
-        assert any("leafs[1] ('leaf2') fabric_subnet" in e and bad in e for e in errors), errors
+        assert any("leafs[1] ('leaf2') fabric_subnet" in e and str(bad) in e for e in errors), errors
+
+
+def test_unknown_leaf_subnet_gets_no_route():
+    for unknown in ("", "TBD"):
+        profile = copy.deepcopy(CLOS)
+        profile["network"]["leafs"][1]["fabric_subnet"] = unknown
+        assert routes(profile)[("cp1", "ens1")] == [], unknown
