@@ -55,33 +55,16 @@ Provides **LoadBalancer Service** support on bare-metal Kubernetes (equivalent t
 
 ### IP Allocation Strategy
 
-The installer automatically selects optimal IPs based on cluster topology:
+With `metallb_ip_range` empty, the installer picks the pool from the cluster's shape:
 
-| Cluster Type | MetalLB IP Pool | Example | Rationale |
-|--------------|----------------|---------|-----------|
-| **Single-node** | Node IP `/32` | `10.1.1.1/32` | Direct routing, zero extra hops |
-| **Multi-node (1 master + workers)** | First master IP `/32` | `10.1.1.1/32` | Master is stable, already routes traffic |
-| **Multi-master HA (2-3 masters)** | Master IP range | `10.1.1.1-10.1.1.3` | Enables HA with external LB failover |
+| Cluster | Pool | Example | Why |
+|---|---|---|---|
+| **Single node** | The node IP `/32` | `10.1.1.1/32` | Reachable as it is, no extra routing |
+| **One control-plane node + workers**, kube-proxy nftables or iptables | The control-plane node IP `/32` | `10.1.1.1/32` | These kube-proxy modes put no LoadBalancer IP on the nodes |
+| **More than one control-plane node** | `.240`–`.250` in the first node's `/24` | `10.1.1.240-10.1.1.250` | MetalLB can announce a VIP from any node: if the VIP were one node's own IP, two nodes would answer ARP for it |
+| **kube-proxy ipvs**, more than one node | `.240`–`.250` in the first node's `/24` | `10.1.1.240-10.1.1.250` | IPVS binds every LoadBalancer IP on every node (`kube-ipvs0`), so a node IP in the pool would be taken over |
 
-**Why not `.240-.250` range?**
-
-❌ **Old approach** (avoided):
-```yaml
-metallb_ip_range: "10.1.1.240-10.1.1.250"  # BAD
-```
-- Creates "virtual IPs" that don't exist on any physical interface
-- Requires additional routing configuration
-- Not reachable from external networks without complex setup
-- Adds unnecessary network hops
-
-✅ **New approach** (default):
-```yaml
-metallb_ip_range: "10.1.1.1/32"  # GOOD (master node IP)
-```
-- Uses real node IP that's already routable
-- Zero configuration needed for NAT/port-forwarding
-- Direct path from external → node interface
-- Production-grade pattern
+The `.240`–`.250` addresses must be free on that subnet, and clients outside it may need a route or NAT at the edge. To choose the pool yourself, set `metallb_ip_range` in `global_config.yaml`. Rack-scale installs must set it, to free management-subnet addresses: see [Rack-scale deployment](../rack-scale-deployment.md).
 
 ### L2 Mode Operation
 
@@ -593,10 +576,7 @@ Intel® AI for Enterprise Solutions' networking defaults are already tuned for n
 
 ### Zero-Overhead Pattern
 
-✅ **Use real node IPs in MetalLB pool**
-```yaml
-metallb_ip_range: "10.1.1.1/32"  # Not .240-.250
-```
+✅ **A node IP as the MetalLB VIP where it is safe**: a single node, or one control-plane node with kube-proxy nftables or iptables (see [IP Allocation Strategy](#ip-allocation-strategy))
 
 ✅ **Hardware NAT at network edge** (dedicated firewall/router)
 - Overhead: ~0.01ms (wire speed)
@@ -693,7 +673,7 @@ Intel® AI for Enterprise Solutions networking follows a small set of principles
 
 **Key Principles:**
 
-1. **Use real node IPs** — Not synthetic `.240-.250` ranges
+1. **Use a node IP as the VIP where it is safe** — otherwise free addresses on the node subnet (see [IP Allocation Strategy](#ip-allocation-strategy))
 2. **Handle external routing at edge** — NAT/LB at firewall, not inside cluster
 3. **Trust Kubernetes CNI** — Already optimized for pod-to-pod routing
 4. **Network overhead is negligible** — <1% of inference latency

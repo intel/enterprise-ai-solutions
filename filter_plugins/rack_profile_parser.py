@@ -1224,6 +1224,20 @@ def _gen_bgp_peers(ctx):
     return files
 
 
+def _fabric_cidrs(ctx):
+    """Every fabric subnet: the NICs' own, each Clos leaf's, and the star supernet."""
+    nets = [ipaddress.ip_network(n) for n in _fabric_supernets(ctx["all_nodes"], ctx["fabric_prefix"])]
+    for leaf in ctx["leafs"]:
+        if leaf.get("fabric_subnet") not in (None, "", "TBD"):
+            nets.append(_safe_ip_network(leaf["fabric_subnet"], "", []))
+    star = _star_fabric_supernet(ctx["all_nodes"]) if ctx["topology"] == "star" else None
+    if star:
+        nets.append(ipaddress.ip_network(star))
+    nets = [n for n in nets if n]
+    merged = {n for n in nets if not any(n != o and n.version == o.version and n.subnet_of(o) for o in nets)}
+    return [str(n) for n in sorted(merged, key=lambda n: (n.version, n.network_address, n.prefixlen))]
+
+
 def _build_summary(ctx):
     """Build the summary metadata dict."""
     all_nodes = ctx["all_nodes"]
@@ -1244,7 +1258,7 @@ def _build_summary(ctx):
         "topology": ctx["topology"],
         "calico_mode": ctx["calico_mode"],
         "fabric_mtu": ctx["fabric_mtu"],
-        "fabric_cidrs": _fabric_supernets(all_nodes, ctx["fabric_prefix"]),
+        "fabric_cidrs": _fabric_cidrs(ctx),
         "node_count": len(all_nodes),
         "gpu_vendor": gpu_vendor,
         "gpu_model": gpu_model,
