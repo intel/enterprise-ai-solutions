@@ -4,16 +4,14 @@ all:
     hosts:
 {% for node in _nodes_control_plane + _nodes_workers %}
         {{ node.hostname }}:
-{% if node.hostname == 'localhost' or node.ip | string is match('^(127[.]|::1$|localhost$)') %}
-            # The installer machine itself: no SSH, and the installer's Python.
-            ansible_connection: local
-            ansible_python_interpreter: "{% raw %}{{ ansible_playbook_python }}{% endraw %}"
-{% else %}
             ansible_host: {{ node.ip }}
             ansible_user: {{ node.ssh_user | default(_nodes_ssh_user) }}
 {% if node.ssh_key is defined or _nodes_ssh_key | default('') | length > 0 %}
             ansible_ssh_private_key_file: {{ node.ssh_key | default(_nodes_ssh_key) }}
 {% endif %}
+{% if node.hostname == 'localhost' or node.ip | string is match('^(127[.]|::1$|localhost$)') %}
+            ansible_connection: local
+            ansible_python_interpreter: "{% raw %}{{ ansible_playbook_python }}{% endraw %}"
 {% endif %}
 {% endfor %}
     children:
@@ -46,7 +44,6 @@ all:
             vars:
                 ansible_become: true
                 # The playbooks run with connection: local; delegated node tasks need SSH.
-                # A localhost node overrides both below in its host vars.
                 ansible_connection: ssh
                 ansible_python_interpreter: /usr/bin/python3
         calico_rr:
