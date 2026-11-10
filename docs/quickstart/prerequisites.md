@@ -14,6 +14,8 @@ Everything needed before running the Toolkit Manager installer, whether you're d
 | Ubuntu 24.04 | ✅ Supported |
 | RHEL 8 / Rocky Linux 8 (x86_64) | ✅ Supported |
 
+**No Docker on cluster nodes.** Kubespray uses containerd and, while installing it, deletes Docker and all its data (`/var/lib/docker`) on any node where Docker is installed. The installer refuses to install onto a node with a `docker.service` unit (for a single-node install, the installer host itself). Back up and uninstall Docker first, or use a different node. See [Node Scaling](../customize/node_scaling.md#built-into-add-nodes-pre-flight).
+
 ---
 
 ## Hardware minimums

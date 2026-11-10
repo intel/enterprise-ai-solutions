@@ -1,0 +1,48 @@
+---
+# =============================================================================
+# Pre-flight: refuse nodes that have Docker installed
+# =============================================================================
+# Kubespray's container-engine role (validate-container-engine, run by both
+# cluster.yml and scale.yml) uninstalls any runtime other than the configured
+# one. With Docker running it kills and force-removes every container, removes
+# the Docker and containerd packages, and deletes /var/lib/docker and
+# /etc/docker — images, volumes and container data, with no prompt. A stopped
+# Docker is skipped by that reset but its containerd package is left to clash
+# with Kubespray's. This installer never resets Docker: any node with a
+# docker.service unit is refused here, before Kubespray runs, and the operator
+# migrates or removes Docker by hand.
+#
+# Input: _docker_check_hosts — nodes to check. The caller supplies the
+# connection (install.yaml's SSH block, or the k8s_cluster inventory vars for
+# add-node); 'localhost' runs on the controller.
+# =============================================================================
+
+# Same unit-file search Kubespray uses to decide whether Docker is installed.
+- name: "kubernetes | Docker pre-flight | Find docker.service unit"
+  ansible.builtin.find:
+    file_type: file
+    recurse: true
+    use_regex: true
+    patterns:
+      - docker.service$
+    paths:
+      - /lib/systemd
+      - /etc/systemd
+      - /run/systemd
+  delegate_to: "{{ item }}"
+  loop: "{{ _docker_check_hosts }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _docker_unit_find
+
+- name: "kubernetes | Docker pre-flight | Refuse nodes with Docker installed"
+  vars:
+    _docker_hosts: "{{ _docker_unit_find.results | selectattr('matched', 'gt', 0) | map(attribute='item') | list }}"
+  ansible.builtin.fail:
+    msg: >-
+      Docker is installed on: {{ _docker_hosts | join(', ') }}. Kubespray
+      would stop and delete every Docker container, uninstall Docker and
+      delete /var/lib/docker (images, volumes, data) on these node(s) while
+      installing containerd. This installer does not do that. Back up and
+      uninstall Docker yourself (or use a different node), then retry.
+  when: _docker_hosts | length > 0

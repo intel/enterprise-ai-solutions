@@ -77,6 +77,13 @@ Kubespray's `scale.yml` cannot add control-plane or etcd members — that requir
 ./es_auto_installer.sh install --env <name> kubernetes
 ```
 
+### After adding a node
+
+Kubernetes does not move running pods onto a new node. Models already deployed stay where they are; only new or restarted pods can be scheduled on it. To use the new node:
+
+- Deploy new models, or undeploy and redeploy an existing one (`./model-manager undeploy <model>` then `deploy <model> --wait`).
+- `model-manager deploy --node <name>` is a *preference*, not a requirement — if the node doesn't qualify, the pod lands elsewhere. Check where it went with `kubectl get pods -n llm-inference -o wide`.
+
 ## Removing nodes
 
 1. Delete the entry from `nodes_control_plane` or `nodes_workers` in `env/<name>/nodes.yaml`.
@@ -107,6 +114,20 @@ Kubespray uses the first host in `kube_control_plane` (which this installer's ge
 2. Run `./es_auto_installer.sh install --env <name> kubernetes` to apply the reorder via `cluster.yml`.
 3. Retry `remove-node`.
 
+### Removing a control-plane node: keep the count odd
+
+Every control-plane node is also an etcd member, and Kubespray stops on an even number of etcd hosts. Going from 3 to 2 control-plane nodes succeeds, but every later Kubespray run — `add-node`, `install kubernetes`, another `remove-node` — then fails at its first check. Remove control-plane nodes in pairs (e.g. 5 → 3), or add one back with `install kubernetes` straight away.
+
+### A node that is already gone (`--node-lost`)
+
+For a node that is unreachable or `NotReady`, use:
+
+```bash
+./es_auto_installer.sh remove-node --node-lost --env <name>
+```
+
+This skips the drain and the PodDisruptionBudget check and does not reset the node's OS (`allow_ungraceful_removal=true`, `reset_nodes=false`) — only etcd membership and cluster bookkeeping are cleaned up. Every target must actually be `NotReady`, so the flag can't be used to skip the drain on a healthy node. The capacity simulation still runs.
+
 ## Safety
 
 ### Built into Kubespray's `scale.yml`
@@ -120,9 +141,10 @@ Before `scale.yml` ever runs, against just the new node(s):
 
 1. **SSH reachability** (`ping`) — hard fail if unreachable, before anything is provisioned.
 2. **Not already joined to a cluster** — fails if `/etc/kubernetes/kubelet.conf` already exists on the node, rather than letting a stale or foreign join corrupt either cluster.
-3. **Duplicate hostname/IP within `nodes.yaml`** — checked even earlier, as part of inventory generation (applies to `install`/`remove-node` too, not just `add-node`): fails if any two entries across `nodes_control_plane`/`nodes_workers` share an `ip` or `hostname`.
-4. **Control-plane API server (port 6443) reachability** — `scale.yml`'s `kubeadm join` needs this; failing here is faster and clearer than a join timeout deep inside the Kubespray run.
-5. **Internet/proxy reachability** (same check a fresh `install` runs against every node) — a warning only, since a private registry mirror can make it a non-issue.
+3. **No Docker installed** — fails if the node has a `docker.service` unit, running or not. Kubespray removes any container runtime other than containerd: it kills and deletes every Docker container, uninstalls Docker and deletes `/var/lib/docker` and `/etc/docker`, so all images, volumes and container data are lost. This installer never lets that happen. Back up and uninstall Docker yourself, or use a different node. `install kubernetes` runs the same check against every node (and the controller itself in single-node localhost mode).
+4. **Duplicate hostname/IP within `nodes.yaml`** — checked even earlier, as part of inventory generation (applies to `install`/`remove-node` too, not just `add-node`): fails if any two entries across `nodes_control_plane`/`nodes_workers` share an `ip` or `hostname`.
+5. **Control-plane API server (port 6443) reachability** — `scale.yml`'s `kubeadm join` needs this; failing here is faster and clearer than a join timeout deep inside the Kubespray run.
+6. **Internet/proxy reachability** (same check a fresh `install` runs against every node) — a warning only, since a private registry mirror can make it a non-issue.
 
 ### Known gaps in `add-node`'s pre-checks
 
@@ -166,7 +188,22 @@ Before `confirm()`, `roles/kubernetes/files/simulate_node_removal.py` simulates 
 | **Local data** | the pod uses a volume bound to that specific node (PV `local`/node-affinity, or a known local-path provisioner) | A `local-path` or similar node-pinned PVC — the data does not move with the pod |
 | **Last capable node** | the pod's `nodeSelector`/required `nodeAffinity`/taints, or an extended resource it requests (e.g. a GPU), isn't satisfiable by any remaining node | The only GPU-labeled node while a GPU workload is running there |
 
-This is a heuristic, not a scheduler simulation — it models the common cases above closely enough to catch them, not every possible scheduling predicate. Capacity is checked as a conservative aggregate (total needed vs. total free across every node capable of taking at least one of the affected pods), not true bin-packing, so it can occasionally refuse a removal a real multi-node bin-pack could have fit. A false refusal costs a retry; a false pass costs an outage.
+This is a heuristic, not a scheduler simulation — it models the common cases above closely enough to catch them, not every possible scheduling predicate. Capacity is checked pod by pod: each evicted pod is placed on one specific remaining node it is allowed to run on, and that node's free capacity is reduced before the next pod is placed. The hardest pods to place go first (fewest eligible nodes, then largest request), and each goes on the eligible node it fills most tightly. So a pod whose only eligible node is full is refused even when other nodes have room it could never use. `--dry-run` prints the resulting plan: the target node for every pod it placed. It is a greedy placement, not an exact solver, so it can occasionally refuse a removal that a different placement order would have fit. A false refusal costs a retry; a false pass costs an outage.
+
+## If an action fails
+
+Neither action rolls back. What was done stays done; re-running is the recovery path.
+
+| Fails during | State | Recovery |
+|---|---|---|
+| `add-node` pre-flight | Nothing installed on the node | Fix the cause, re-run `add-node` |
+| `add-node` `scale.yml` | Packages/containerd/kubelet partly installed | Re-run `add-node` (`scale.yml` is safe to repeat) |
+| `add-node` post phase | Node joined, still tainted `add-node-pending` — nothing schedules there | Re-run `add-node`; it resumes the post phase |
+| `remove-node` checks | Nothing changed | Fix the cause, re-run |
+| `remove-node` drain | Node left cordoned | Re-run `remove-node`, or `kubectl uncordon <node>` to keep it |
+| `remove-node` reset / post phase | Node partly reset, or removed but still in the inventory | Re-run `remove-node` (`--node-lost` if unreachable) |
+
+Errors marked `...ignoring` in Kubespray's reset output are expected — for example `crictl` failing to stop pods once the node can no longer reach the API server, or `/run/calico` not being deletable because it holds a cgroup mount. They don't fail the run.
 
 ## Related Docs
 

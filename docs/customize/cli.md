@@ -149,6 +149,7 @@ Remove node(s) from an already-provisioned cluster. As with `add-node`, no node 
 ```bash
 ./es_auto_installer.sh remove-node --dry-run --env local
 ./es_auto_installer.sh remove-node --env local
+./es_auto_installer.sh remove-node --node-lost --env local   # node already NotReady: no drain, no reset
 ```
 
 The current first control-plane/etcd node cannot be removed this way (Kubespray limitation). Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these. After the node is gone, it runs the same check as `status --health` and fails the command on red. See [Node Scaling](node_scaling.md).
@@ -192,6 +193,7 @@ List all available layers and components, including which are opt-in.
 | `--skip <names>` | Comma-separated layers or components to leave out of the plan (e.g., `--skip erag` to tear down the cluster without uninstalling erag first) |
 | `--force` | Skip the confirmation prompt (required in CI, where there is no terminal to answer it) |
 | `--dry-run` | (`add-node`/`remove-node` only) print the computed node diff and Kubespray command, then exit |
+| `--node-lost` | (`remove-node` only) for a node that is already `NotReady`: skip the drain and PDB check, don't reset the node; refused if any target is still `Ready` |
 | `--health` | (`status` only) print a green/red cluster health verdict and exit with it, instead of the full component-status table |
 | `-- <ansible-flags>` | Pass remaining args directly to `ansible-playbook` (e.g. `-- -vvv`, `-- --check`, `-- -e key=value`) |
 

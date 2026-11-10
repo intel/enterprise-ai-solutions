@@ -96,6 +96,21 @@
         label: "{{ item.item }}"
       when: item.status | default(0) not in [200, 301, 302]
 
+    # cluster.yml would otherwise wipe Docker and its data on these nodes.
+    - name: "kubernetes | SSH pre-flight | Refuse nodes with Docker installed"
+      ansible.builtin.include_tasks: docker_preflight.yaml
+      vars:
+        _docker_check_hosts: "{{ groups['kube_control_plane'] | default([]) | union(groups['kube_node'] | default([])) | unique }}"
+
+# Localhost mode: Kubespray installs onto the controller itself, so check it.
+- name: "kubernetes | Pre-flight | Refuse controller with Docker installed (localhost mode)"
+  ansible.builtin.include_tasks: docker_preflight.yaml
+  vars:
+    _docker_check_hosts: ["localhost"]
+  when:
+    - not (_k8s_needs_ssh | bool)
+    - _k8s_phase | trim != 'post-kubespray'
+
 # =====================================================================
 # PHASE: post-kubespray — kubeconfig + validation only
 # =====================================================================

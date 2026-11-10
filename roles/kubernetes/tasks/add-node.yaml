@@ -218,6 +218,12 @@
     label: "{{ item.item }}"
   when: item.stat.exists | default(false)
 
+# scale.yml would otherwise wipe Docker and its data on the new node(s).
+- name: "kubernetes | add-node | SSH pre-flight | Refuse new node(s) with Docker installed"
+  ansible.builtin.include_tasks: docker_preflight.yaml
+  vars:
+    _docker_check_hosts: "{{ _added_nodes_list }}"
+
 # scale.yml's kubeadm join needs this; failing here is faster and clearer
 # than a join timeout deep inside the Kubespray run.
 - name: "kubernetes | add-node | SSH pre-flight | Check control-plane API server reachability from new node(s)"
