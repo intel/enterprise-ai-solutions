@@ -37,11 +37,12 @@
                            if enforce_pss | default(false) | bool else {}) }}
 
     # The host-network apiserver calls the aggregated API over plaintext: only
-    # 10250 is PERMISSIVE, and only the node addresses may reach it.
+    # 10250 is PERMISSIVE, and only the node addresses may reach it. Across nodes
+    # the call leaves through the CNI tunnel, so Calico's tunnel addresses count too.
     - name: "metrics_server | Mesh exception for the apiserver"
       when: istio_enabled | default(false) | bool
       block:
-        - name: "metrics_server | Read node internal IPs"
+        - name: "metrics_server | Read the nodes (apiserver source addresses)"
           kubernetes.core.k8s_info:
             kind: Node
           register: _ms_nodes
@@ -79,9 +80,7 @@
                 rules:
                   - from:
                       - source:
-                          ipBlocks: >-
-                            {{ _ms_nodes.resources | map(attribute='status.addresses') | flatten
-                               | selectattr('type', 'eq', 'InternalIP') | map(attribute='address') | unique | list }}
+                          ipBlocks: "{{ _ms_nodes.resources | apiserver_source_ips }}"
                     to:
                       - operation:
                           ports: ["10250"]
