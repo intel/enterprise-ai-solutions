@@ -140,3 +140,20 @@ def test_an_id_matched_in_one_file_carries_the_keys_another_file_sets(tmp_path):
         "netplandef=ens6f0 in /etc/netplan/50-cloud-init.yaml ('id0' matches it)",
         "netplandef=ens6f0 in /etc/netplan/70-local.yaml ('id0' sets addresses)",
         "netplandef=ens6f0 in /etc/netplan/70-local.yaml (member of bond 'bond0')"]
+
+
+def test_cloud_init_entry_named_after_the_fabric_nic_with_its_own_mac_is_harmless(tmp_path):
+    entries = "ens6f0:\n  match: {macaddress: '%s'}\n  set-name: ens6f0\n  dhcp4: true\n" % MAC
+    assert probe(tmp_path, cloud_init(entries), macs={"ens6f0": MAC}) == []
+
+
+def test_entry_named_after_the_fabric_nic_still_reports_what_it_adds(tmp_path):
+    entries = "ens6f0:\n  match: {macaddress: '%s'}\n  set-name: ens6f0\n  addresses: [192.168.0.7/24]\n" % MAC
+    assert probe(tmp_path, cloud_init(entries), macs={"ens6f0": MAC}) == [
+        "netplandef=ens6f0 in /etc/netplan/50-cloud-init.yaml ('ens6f0' sets addresses)"]
+
+
+def test_entry_named_after_the_fabric_nic_that_matches_another_nic_is_reported(tmp_path):
+    entries = "ens6f0:\n  match: {macaddress: 'aa:bb:cc:00:00:99'}\n  set-name: ens6f0\n"
+    assert probe(tmp_path, cloud_init(entries), macs={"ens6f0": MAC}) == [
+        "netplandef=ens6f0 in /etc/netplan/50-cloud-init.yaml ('ens6f0' has a match: that selects a different NIC)"]

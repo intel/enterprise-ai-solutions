@@ -87,7 +87,8 @@ def scan(root, fabric_file, old_file, nics):
     for _, _, _, dev, d in entries():
         if isinstance(d.get("match"), dict):
             matches[dev] = {**matches.get(dev, {}), **d["match"]}
-    members = {dev: [n for n in nics if selects(m, n, facts)] for dev, m in matches.items()}
+    # An ID named after a fabric NIC is the fabric file's own netdef, whatever match: it has.
+    members = {dev: [n for n in nics if selects(m, n, facts)] for dev, m in matches.items() if dev not in nics}
 
     lines = []
     for path, net, eths, dev, d in entries():
@@ -97,7 +98,14 @@ def scan(root, fabric_file, old_file, nics):
                       for n in members[dev]]
             continue
         keys = [k for k in ("addresses", "dhcp4", "dhcp6", "routes", "gateway4", "gateway6", "set-name") if d.get(k)]
-        if dev in matches:
+        if dev in nics:
+            # Merged into the fabric netdef. Its match: must still select this NIC, or netplan
+            # moves the fabric configuration to another one; set-name to its own name is harmless.
+            if d.get("match") and not selects(matches[dev], dev, facts):
+                lines.append("netplandef=%s in %s ('%s' has a match: that selects a different NIC)" % (dev, path, dev))
+            if d.get("set-name") == dev:
+                keys.remove("set-name")
+        if dev in matches and dev not in nics:
             if d.get("match"):
                 # A separate netdef, not merged with the fabric file: networkd applies only the
                 # first matching .network file by name, so the entry can take the NIC even if it sets nothing.
