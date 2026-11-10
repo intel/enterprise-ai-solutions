@@ -54,6 +54,8 @@
   register: _np_probe
   changed_when: false
   failed_when: false
+  # A timeout or a become error is not a task result failed_when sees; the rules report it.
+  ignore_errors: true
 
 - name: "kubernetes | node preflight | Evaluate"
   ansible.builtin.set_fact:
@@ -97,5 +99,6 @@
       - {{ r.node }}: {{ r.id }} {{ r.check }}: {{ r.evidence }}
         Fix: {{ r.hint }}
       {% endfor %}
-      Fix these and re-run. To skip a check, set kubernetes_node_preflight_skip (e.g. [{{ _np.failures | map(attribute='id') | unique | join(', ') }}]) in global_config.yaml.
+      {% set _ids = _np.failures | map(attribute='id') | unique | reject('equalto', 'N0') | list %}
+      Fix these and re-run.{% if _ids %} To skip a check, set kubernetes_node_preflight_skip (e.g. [{{ _ids | join(', ') }}]) in global_config.yaml.{% endif %}
   when: _np.failures | length > 0

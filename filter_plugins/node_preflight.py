@@ -80,6 +80,8 @@ def _disk_checks(disk, ctx):
 
 def _gateway_checks(gateway):
     if not gateway.get("ip"):
+        if gateway.get("dev"):
+            return [("N6", "OK", "default route on %s, no gateway" % gateway["dev"], "")]
         return [("N6", "FAIL", "no default route", "Add a default route on the management network")]
     return [("N6", "OK" if gateway.get("reachable") else "FAIL",
              "%s %s" % (gateway["ip"], "reachable (%s)" % gateway["via"] if gateway.get("reachable") else "unreachable"),
@@ -92,13 +94,13 @@ def _dns_checks(dns, ctx):
     if proxy and proxy in bad:
         status, evidence = "FAIL", "cannot resolve the proxy %s" % proxy
     elif bad:
-        # The node needn't resolve these itself behind a proxy, or without internet (N8 skipped).
+        # The node needn't resolve these itself behind a proxy, or with a mirror (N8 skipped).
         offline = "N8" in (ctx.get("skip") or [])
         status, evidence = ("WARN" if proxy or offline else "FAIL"), "cannot resolve " + ", ".join(bad)
     else:
         status, evidence = "OK", "%d names resolve" % len(dns)
-    return [("N7", status, evidence, "Check /etc/resolv.conf and the DNS servers on this node. A site without "
-             "internet lists its mirror in kubernetes_node_preflight_dns_names")]
+    return [("N7", status, evidence, "Check /etc/resolv.conf and the DNS servers on this node. Nodes that download "
+             "from a mirror list it in kubernetes_node_preflight_dns_names")]
 
 
 def _internet_checks(urls):
@@ -106,7 +108,7 @@ def _internet_checks(urls):
     return [("N8", "FAIL" if bad else "OK",
              ("cannot reach " + ", ".join(bad)) if bad else "reaches " + ", ".join(sorted(_host(u) for u in urls)),
              "Kubespray downloads on every node: set http_proxy/https_proxy/no_proxy in global_config.yaml, "
-             "or open HTTPS. A site with its own mirror skips this check (kubernetes_node_preflight_skip: [N8])")]
+             "or open HTTPS. Nodes that download from a mirror skip this check (kubernetes_node_preflight_skip: [N8])")]
 
 
 def _sudo_checks(euid):
@@ -250,13 +252,19 @@ def _probe_failed(res):
     msg = next((s.strip() for s in sources if s and s.strip()), "no output")
     if re.search(r"sudo|password|become", msg, re.I):
         return [("N9", "FAIL", msg.splitlines()[0][:300], SUDO_HINT)]
-    return [("N0", "FAIL", msg.splitlines()[0][:300], "The probe could not run on this node (python3 needed)")]
+    return [("N0", "FAIL", msg.splitlines()[0][:300],
+             "The probe did not run or did not finish on this node: it needs python3, and SSH and sudo that answer")]
 
 
 def node_preflight_skip(value):
     """kubernetes_node_preflight_skip as check IDs: a list or a comma-separated string, in any case."""
     items = value.split(",") if isinstance(value, str) else value or []
-    return sorted({str(v).strip().upper() for v in items} - {""})
+    ids = sorted({str(v).strip().upper() for v in items} - {""})
+    unknown = [i for i in ids if i not in TITLES]
+    if unknown:
+        raise ValueError("kubernetes_node_preflight_skip: no check %s; the checks are %s"
+                         % (", ".join(unknown), ", ".join(TITLES)))
+    return ids
 
 
 def node_preflight_evaluate(results, ctx):

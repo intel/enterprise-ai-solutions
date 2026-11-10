@@ -71,7 +71,7 @@ On a fresh install, the installer checks every node before Kubespray starts. The
 - N13: apt busy.
 - N14: firewall active.
 
-To skip a check, list its ID in `global_config.yaml`. For example, a site without internet access, with its own package and image mirror, skips the internet check and lists the mirror's names for the DNS check. With N8 skipped, a name that doesn't resolve is only a warning:
+To skip a check, list its ID in `global_config.yaml`. For example, nodes that download packages and images from a mirror instead of the internet skip the internet check, and list the mirror's names for the DNS check (the deploy node still needs internet access). With N8 skipped, a name that doesn't resolve is only a warning:
 
 ```yaml
 kubernetes_node_preflight_skip: [N8]

@@ -6,6 +6,7 @@
 Standard library only, Python 3.6+ (RHEL 8 nodes).
 """
 
+import http.client
 import json
 import os
 import re
@@ -24,7 +25,8 @@ BLUESTORE_OFFSETS_GIB = (0, 1, 10, 100, 1000)
 
 
 def run(args, timeout=10):
-    """(rc, output) of a command found on PATH, in the C locale; (None, '') when it isn't installed."""
+    """(rc, output) of a command found on PATH, in the C locale; (None, '') when it isn't installed,
+    (-1, error) when it could not run or timed out."""
     path = shutil.which(args[0])
     if not path:
         return None, ""
@@ -33,7 +35,7 @@ def run(args, timeout=10):
                              universal_newlines=True, timeout=timeout, env=dict(os.environ, LC_ALL="C"))
         return res.returncode, res.stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, str(exc)
+        return -1, str(exc)
 
 
 def read(path, default=""):
@@ -80,12 +82,15 @@ def disk(path):
 
 
 def gateway():
+    """The default route's first gateway (a multipath route lists one per nexthop)."""
     rc, out = run(["ip", "-o", "route", "show", "default"])
-    match = re.search(r"default via (\S+)(?: dev (\S+))?", out or "")
-    if not match:
-        return {"ip": None, "dev": None, "reachable": False, "via": None}
-    gw, dev = match.group(1), match.group(2)
-    result = {"ip": gw, "dev": dev, "reachable": False, "via": None}
+    route = next((line for line in (out or "").splitlines() if line.startswith("default")), "")
+    via = re.search(r"\bvia (\S+)", route)
+    dev = re.search(r"\bdev (\S+)", route)
+    gw = via.group(1) if via else None
+    result = {"ip": gw, "dev": dev.group(1) if dev else None, "reachable": False, "via": None}
+    if not gw:
+        return result
     rc, _ = run(["ping", "-c", "2", "-W", "2", gw], timeout=10)
     if rc == 0:
         result.update(reachable=True, via="icmp")
@@ -138,7 +143,7 @@ def reach(urls, timeout=10):
                 out[url] = {"ok": False, "error": "HTTP %d (the proxy could not reach it)" % exc.code}
             else:
                 out[url] = {"ok": True}
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             out[url] = {"ok": False, "error": str(getattr(exc, "reason", exc))}
         except ValueError:
             out[url] = {"ok": False, "error": "not a URL, it needs https://"}
@@ -190,8 +195,10 @@ def listeners(ports):
         if not port.isdigit() or int(port) not in ports:
             continue
         proc = re.search(r'users:\(\("([^"]+)",pid=(\d+)', line)
-        found.append({"port": int(port), "proc": proc.group(1) if proc else "?",
-                      "pid": int(proc.group(2)) if proc else None})
+        entry = {"port": int(port), "proc": proc.group(1) if proc else "?",
+                 "pid": int(proc.group(2)) if proc else None}
+        if entry not in found:  # one socket per address family
+            found.append(entry)
     return found
 
 

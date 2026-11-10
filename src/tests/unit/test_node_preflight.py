@@ -89,6 +89,8 @@ CASES = [
     ("N6 no default route", lambda d: d.update(gateway={"ip": None, "dev": None, "reachable": False, "via": None}),
      {}, "N6", "FAIL"),
     ("N6 gateway unreachable", lambda d: d["gateway"].update(reachable=False), {}, "N6", "FAIL"),
+    ("N6 default route without a gateway", lambda d: d.update(gateway={"ip": None, "dev": "wg0", "reachable": False,
+                                                                        "via": None}), {}, "N6", "OK"),
     ("N7 name fails, no proxy", lambda d: d["dns"]["quay.io"].update(ok=False), {}, "N7", "FAIL"),
     ("N7 name fails behind a proxy", lambda d: d["dns"]["quay.io"].update(ok=False),
      {"proxy_host": "proxy.example.com"}, "N7", "WARN"),
@@ -172,9 +174,62 @@ def test_skip_list_is_normalised(value, expected):
     assert rules.node_preflight_skip(value) == expected
 
 
+@pytest.mark.parametrize("value", [["N08"], "N8,N99", ["N0"]])
+def test_skip_list_rejects_unknown_checks(value):
+    with pytest.raises(ValueError, match="no check"):
+        rules.node_preflight_skip(value)
+
+
 def test_run_uses_the_c_locale(monkeypatch):
     monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
     assert probe.run(["sh", "-c", 'printf %s "$LC_ALL"']) == (0, "C")
+
+
+def test_run_tells_a_timeout_from_a_missing_command():
+    assert probe.run(["no-such-command-np"]) == (None, "")
+    rc, out = probe.run(["sleep", "5"], timeout=0.2)
+    assert rc == -1 and "timed out" in out
+
+
+def test_a_dpkg_audit_that_times_out_is_not_ok(monkeypatch):
+    monkeypatch.setattr(probe, "run", _fake_run({"dpkg": (-1, "Command 'dpkg --audit' timed out after 30 seconds")}))
+    pkg = probe.package_manager()
+    assert status(changed(lambda d: d.update(pkg=pkg)), "N13") == "FAIL"
+
+
+def test_package_manager_reports_a_busy_apt(monkeypatch):
+    comms = {"/proc/10/comm": "unattended-upgr", "/proc/11/comm": "bash"}
+    monkeypatch.setattr(probe.os, "listdir", lambda path: ["10", "11", "self"])
+    monkeypatch.setattr(probe, "read", lambda path, default="": comms.get(path, default))
+    monkeypatch.setattr(probe, "run", _fake_run({"dpkg": (0, "")}))
+    assert probe.package_manager() == {"dpkg_audit": "", "busy": ["unattended-upgr"]}
+
+
+@pytest.mark.parametrize("answers, expected", [
+    ({"ufw": (0, "Status: active\n\nTo  Action  From"), "systemctl": (3, "inactive")}, {"ufw": True, "firewalld": False}),
+    ({"ufw": (0, "Status: inactive"), "systemctl": (0, "active")}, {"ufw": False, "firewalld": True}),
+    ({"systemctl": (3, "inactive")}, {"ufw": None, "firewalld": False}),
+])
+def test_firewall(monkeypatch, answers, expected):
+    monkeypatch.setattr(probe, "run", _fake_run(answers))
+    assert probe.firewall() == expected
+
+
+def test_resolve_bounds_each_name(monkeypatch):
+    def getaddrinfo(name, port):
+        if name == "slow.example.com":
+            probe.time.sleep(2)
+        if name == "bad.example.com":
+            raise probe.socket.gaierror("Name or service not known")
+    monkeypatch.setattr(probe.socket, "getaddrinfo", getaddrinfo)
+    assert probe.resolve(["ok.example.com", "bad.example.com", "slow.example.com"], timeout=0.2) == {
+        "ok.example.com": {"ok": True}, "bad.example.com": {"ok": False, "error": "Name or service not known"},
+        "slow.example.com": {"ok": False, "error": "timed out after 0.2s"}}
+
+
+def test_disk_uses_the_nearest_existing_parent(tmp_path):
+    out = probe.disk(str(tmp_path / "not" / "there"))
+    assert out["path"] == str(tmp_path) and out["avail"] > 0 and 0 <= out["used_pct"] <= 100
 
 
 def _fake_run(answers):
@@ -253,6 +308,13 @@ def test_listeners_without_a_working_ss_is_a_probe_error(monkeypatch, answer):
         probe.listeners({6443})
 
 
+def test_listeners_lists_a_socket_on_both_families_once(monkeypatch):
+    ss = ("LISTEN 0 4096 0.0.0.0:6443 0.0.0.0:* users:((\"nc\",pid=42,fd=3))\n"
+          "LISTEN 0 4096 [::]:6443 [::]:* users:((\"nc\",pid=42,fd=4))")
+    monkeypatch.setattr(probe, "run", _fake_run({"ss": (0, ss)}))
+    assert probe.listeners({6443}) == [{"port": 6443, "proc": "nc", "pid": 42}]
+
+
 def test_listeners_parses_ss(monkeypatch):
     monkeypatch.setattr(probe, "run", _fake_run({"ss": (0, SS)}))
     assert probe.listeners({6443, 10250, 10257, 2379}) == [
@@ -288,6 +350,13 @@ def test_reach_maps_answers(monkeypatch, answer, expected):
     assert probe.reach(["https://example.com"]) == {"https://example.com": expected}
 
 
+def test_reach_reports_a_bad_http_answer(monkeypatch):
+    def urlopen(url, timeout):
+        raise probe.http.client.BadStatusLine("garbage")
+    monkeypatch.setattr(probe.urllib.request, "urlopen", urlopen)
+    assert probe.reach(["https://example.com"])["https://example.com"]["ok"] is False
+
+
 def test_reach_reports_a_url_without_a_scheme():
     assert probe.reach(["github.com"]) == {"github.com": {"ok": False, "error": "not a URL, it needs https://"}}
 
@@ -304,6 +373,20 @@ def test_gateway_that_refuses_tcp_answered(monkeypatch, error, expected):
         raise error()
     monkeypatch.setattr(probe.socket, "create_connection", connect)
     assert probe.gateway() == {"ip": "192.0.2.1", "dev": "eth0", **expected}
+
+
+# `ip -o route show default`, as iproute2 prints it.
+@pytest.mark.parametrize("routes, ip, dev", [
+    ("default via 192.0.2.1 dev eth0 proto static", "192.0.2.1", "eth0"),
+    ("default \tnexthop via 192.0.2.1 dev d0 weight 1 \tnexthop via 198.51.100.1 dev d1 weight 1 ", "192.0.2.1", "d0"),
+    ("default via 198.51.100.1 dev d1 metric 50 \ndefault via 192.0.2.1 dev d0 metric 100", "198.51.100.1", "d1"),
+    ("default dev d0 scope link ", None, "d0"),
+    ("", None, None),
+])
+def test_gateway_reads_the_default_route(monkeypatch, routes, ip, dev):
+    monkeypatch.setattr(probe, "run", _fake_run({"ip": (0, routes), "ping": (0, "")}))
+    out = probe.gateway()
+    assert (out["ip"], out["dev"], out["reachable"]) == (ip, dev, ip is not None)
 
 
 def test_kubeconfig_server_may_be_quoted(monkeypatch):
