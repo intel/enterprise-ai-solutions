@@ -12,9 +12,7 @@
   ansible.builtin.include_tasks: kubespray_ensure.yaml
 
 # ─── Inventory ───────────────────────────────────────────────────────────────
-
-- name: "kubernetes | kubespray | Generate inventory from nodes.yaml (if defined)"
-  ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+# Already rendered from nodes.yaml and reloaded at the top of install.yaml.
 
 - name: "kubernetes | kubespray | Generate inventory from current config"
   ansible.builtin.include_tasks: generate_inventory.yaml

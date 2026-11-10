@@ -144,7 +144,7 @@ Control-plane node additions are refused. Use `install kubernetes` instead (re-r
 
 ### `remove-node`
 
-Remove node(s) from an already-provisioned cluster. As with `add-node`, no node name is passed on the command line — delete the entry from `nodes.yaml` first, and the removed node(s) are found the same way (diffing `nodes.yaml` against the live cluster), just in the opposite direction: nodes present in the cluster but missing from `nodes.yaml`.
+Remove worker node(s) from an already-provisioned cluster. As with `add-node`, no node name is passed on the command line — delete the entry from `nodes_workers` in `nodes.yaml` first, and the removed node(s) are found the same way (diffing `nodes.yaml` against the live cluster), just in the opposite direction: nodes present in the cluster but missing from `nodes.yaml`.
 
 ```bash
 ./es_auto_installer.sh remove-node --dry-run --env local
@@ -152,7 +152,7 @@ Remove node(s) from an already-provisioned cluster. As with `add-node`, no node 
 ./es_auto_installer.sh remove-node --node-lost --env local   # node already NotReady: no drain, no reset
 ```
 
-The current first control-plane/etcd node cannot be removed this way (Kubespray limitation). Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these. After the node is gone, it runs the same check as `status --health` and fails the command on red. See [Node Scaling](node_scaling.md).
+Removing a control-plane node is not supported — see [its side effects](node_scaling.md#removing-a-control-plane-node-side-effects). Both `add-node` and `remove-node` refuse on a cluster with ERAG deployed. Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these, and a check that can't run refuses the removal. After the node is gone, it runs the same check as `status --health` and fails the command on red. See [Node Scaling](node_scaling.md).
 
 ---
 

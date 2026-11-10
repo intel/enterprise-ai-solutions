@@ -181,11 +181,13 @@ usage() {
                            diffing the rendered inventory against the live cluster;
                            no node name is passed. Control-plane node additions are
                            refused — use 'install --target kubernetes' for those.
-    remove-node            remove node(s) from an already-provisioned cluster
+    remove-node            remove worker node(s) from an already-provisioned cluster
                            (Kubespray remove-node.yml). Edit env/<env>/nodes.yaml
                            first (delete entries) — removed nodes are auto-detected
-                           the same way. The current first control-plane/etcd node
-                           cannot be removed this way (Kubespray limitation).
+                           the same way. Removing a control-plane node is not
+                           supported (see docs/customize/node_scaling.md for its
+                           side effects); the first one, or one that would leave an
+                           even control-plane count, is refused outright.
                            Preflight refuses the removal (no flag skips this) when:
                            capacity (CPU/memory/GPU/hugepages) is short on every
                            remaining node able to take the evicted workload(s);
@@ -195,8 +197,9 @@ usage() {
                            a running workload (nodeSelector/affinity/taint/extended
                            resource); or the node holds a node-local volume. After
                            removal, reports a status --health verdict and fails the
-                           command if it's red. Refused on OpenShift and on BYO
-                           clusters (existing_kubernetes set).
+                           command if it's red. add-node/remove-node are both
+                           refused on OpenShift, on BYO clusters (existing_kubernetes
+                           set), and on a cluster with ERAG deployed.
 
   Targets:
     <layer>                single layer (Ansible routes it to its components)
@@ -1396,8 +1399,48 @@ _inventory_group() {
 
 # _live_nodes — Node object names in the live cluster, one per line.
 # KUBECONFIG is already exported by main() before either action runs.
+# Errors are not swallowed: an empty list read as "no nodes" would make
+# add-node treat every declared node as new and remove-node report nothing
+# to do. Callers go through _require_live_nodes.
 _live_nodes() {
-    kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null
+    kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+}
+
+# _require_live_nodes — _live_nodes, sorted, or err() if the API server
+# can't be read or reports no nodes (a provisioned cluster always has one).
+# stderr is kept apart from the node list: kubectl can succeed and still warn
+# (e.g. an unavailable aggregated API), and a warning line read as a node
+# name would make remove-node try to remove it.
+_require_live_nodes() {
+    local out errf err_out rc=0
+    errf=$(mktemp)
+    out=$(_live_nodes 2>"$errf") || rc=$?
+    err_out=$(<"$errf"); rm -f "$errf"
+    (( rc == 0 )) \
+        || err "${ACTION}: cannot list the cluster's nodes (kubectl get nodes failed) — refusing to diff nodes.yaml against an unknown cluster:
+  ${err_out}"
+    [[ -n "$out" ]] \
+        || err "${ACTION}: kubectl get nodes returned no nodes — refusing to diff nodes.yaml against an empty node list."
+    sort -u <<< "$out"
+}
+
+# ERAG-only namespaces (docs/reference/labels.md). Namespaces ERAG shares
+# with other layers (seaweedfs, system) or that depend on the pipeline type
+# (chatqa) are left out, so a cluster without ERAG never matches.
+readonly -a ERAG_NAMESPACES=(rag-ui chat-history edp fingerprint vdb erag-gateway auth-apisix)
+
+# _erag_namespaces_present — the ERAG_NAMESPACES that exist in the cluster,
+# one per line. err() if namespaces can't be listed, so "can't tell" never
+# reads as "not deployed".
+_erag_namespaces_present() {
+    local out ns
+    out=$(kubectl get namespaces -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>&1) \
+        || err "${ACTION}: cannot list namespaces to check for an ERAG deployment:
+  ${out}"
+    for ns in "${ERAG_NAMESPACES[@]}"; do
+        grep -qxF -- "$ns" <<< "$out" && echo "$ns"
+    done
+    return 0
 }
 
 # _add_node_pending_nodes — joined nodes still carrying ADD_NODE_PENDING_TAINT,
@@ -1468,24 +1511,38 @@ _cp_tainted_nodes() {
 # PDBs that select pods via matchExpressions (no matchLabels) can't be
 # resolved to a `kubectl -l` selector here, so they're reported with
 # "unsupported selector" instead of being silently skipped — the caller
-# should treat that as blocking too, pending manual review.
+# should treat that as blocking too, pending manual review. A PDB whose pods
+# can't be listed is reported the same way. Returns 1, with the error on
+# stdout, if the PDBs themselves can't be listed: a check that didn't run
+# must not read as "nothing blocked".
 _pdb_blocked_pods() {
-    local node="$1" ns name selector pod
+    local node="$1" ns name selector pod pdb_json pdb_rows pods errf
+    # stderr goes to a file, not into the JSON: a kubectl warning on an
+    # otherwise successful call would break the parse below.
+    errf=$(mktemp)
+    pdb_json=$(kubectl get pdb -A -o json 2>"$errf") || { cat "$errf"; rm -f "$errf"; return 1; }
+    pdb_rows=$(yq -p json -r '
+        .items[]
+        | select(.status.disruptionsAllowed == 0)
+        | [.metadata.namespace, .metadata.name, ((.spec.selector.matchLabels // {}) | to_entries | map(.key + "=" + .value) | join(","))]
+        | @tsv
+    ' <<< "$pdb_json" 2>"$errf") || { echo "could not parse the PodDisruptionBudget list: $(<"$errf")"; rm -f "$errf"; return 1; }
+    rm -f "$errf"
     while IFS=$'\t' read -r ns name selector; do
         [[ -n "$ns" ]] || continue
         if [[ -z "$selector" ]]; then
             printf '%s/%s\t%s/%s\tunsupported selector (not matchLabels-based) — verify manually\n' "$ns" "$name" "$ns" "$name"
             continue
         fi
+        if ! pods=$(kubectl get pods -n "$ns" -l "$selector" --field-selector "spec.nodeName=${node}" -o name 2>/dev/null); then
+            printf '%s/*\t%s/%s\tcould not list its pods (selector=%s) — verify manually\n' "$ns" "$ns" "$name" "$selector"
+            continue
+        fi
         while IFS= read -r pod; do
             [[ -n "$pod" ]] && printf '%s/%s\t%s/%s\tselector=%s\n' "$ns" "${pod#pod/}" "$ns" "$name" "$selector"
-        done < <(kubectl get pods -n "$ns" -l "$selector" --field-selector "spec.nodeName=${node}" -o name 2>/dev/null)
-    done < <(kubectl get pdb -A -o json 2>/dev/null | yq -p json -r '
-        .items[]
-        | select(.status.disruptionsAllowed == 0)
-        | [.metadata.namespace, .metadata.name, ((.spec.selector.matchLabels // {}) | to_entries | map(.key + "=" + .value) | join(","))]
-        | @tsv
-    ' 2>/dev/null || true)
+        done <<< "$pods"
+    done <<< "$pdb_rows"
+    return 0
 }
 
 # _simulate_removal <node>... — capacity / spread / local-data / last-capable-
@@ -1494,13 +1551,11 @@ _pdb_blocked_pods() {
 # arithmetic and selector/affinity/taint matching this needs is unreasonable
 # to hand-roll in bash+yq (unlike the simpler PDB/workload checks above).
 # Runs locally against the API server, same as every other kubectl call in
-# this file — it is not copied to a managed node. `|| true`: the script
-# exits 1 when it finds something to report, same meaning as non-empty
-# output here, not a shell-level failure — swallowed so `set -e` doesn't
-# treat "found a problem" as a crash (same reasoning as _node_workloads
-# below swallowing kubectl's own errors).
+# this file — it is not copied to a managed node. Exit codes are passed
+# through: 0 nothing found, 1 findings, anything else the simulation could
+# not run — do_remove_node refuses on that last case rather than skipping.
 _simulate_removal() {
-    "${VENV}/bin/python3" "${SCRIPT_DIR}/roles/kubernetes/files/simulate_node_removal.py" "$@" 2>/dev/null || true
+    "${VENV}/bin/python3" "${SCRIPT_DIR}/roles/kubernetes/files/simulate_node_removal.py" "$@"
 }
 
 # _cluster_health_findings — one problem per line, empty output = healthy.
@@ -1590,7 +1645,7 @@ do_add_node() {
 
     local declared live added
     declared=$(_nodes_yaml_hostnames | sort -u)
-    live=$(_live_nodes | sort -u)
+    live=$(_require_live_nodes)
     added=$(comm -23 <(printf '%s\n' "$declared") <(printf '%s\n' "$live") | grep -v '^$' || true)
 
     # Joined, but the post phase never finished (it removes the pending taint
@@ -1687,7 +1742,7 @@ do_remove_node() {
 
     local declared live removed
     declared=$(_nodes_yaml_hostnames | sort -u)
-    live=$(_live_nodes | sort -u)
+    live=$(_require_live_nodes)
     removed=$(comm -23 <(printf '%s\n' "$live") <(printf '%s\n' "$declared") | grep -v '^$' || true)
 
     if [[ -z "$removed" ]]; then
@@ -1700,6 +1755,26 @@ do_remove_node() {
   Reorder nodes_control_plane in env/${ENV_NAME}/nodes.yaml so a different host is first, run:
     ./$(basename "$0") install --env ${ENV_NAME} kubernetes
   to apply the reorder via cluster.yml, then retry remove-node."
+    fi
+
+    # Control-plane removal (not supported; see docs/customize/node_scaling.md).
+    # Every control-plane node is an etcd member, and Kubespray asserts an odd
+    # etcd count on every run — an even count left behind here would fail the
+    # next add-node/install/remove-node at its first check. The count that
+    # matters is nodes.yaml's, since the post phase regenerates the inventory
+    # from it.
+    local removed_cp
+    removed_cp=$(comm -12 <(_inventory_group kube_control_plane | sort -u) <(printf '%s\n' "$removed") | grep -v '^$' || true)
+    if [[ -n "$removed_cp" ]]; then
+        local remaining_cp; remaining_cp=$(_nodes_yaml_hostnames control_plane | sort -u | grep -c . || true)
+        if (( remaining_cp % 2 == 0 )); then
+            err "remove-node: removing control-plane node(s) ${removed_cp//$'\n'/, } would leave ${remaining_cp} control-plane/etcd node(s).
+  Kubespray requires an odd etcd member count, so every later Kubespray run would fail.
+  Remove control-plane nodes in pairs (e.g. 5 -> 3) so an odd number remains."
+        fi
+        warn "  removing control-plane node(s) ${removed_cp//$'\n'/, } is not supported. remove-node.yml drops them from etcd, but does not
+  update the remaining nodes: kube-apiserver --etcd-servers and each node's nginx-proxy still list them
+  until 'install kubernetes' (cluster.yml) is re-run. See docs/customize/node_scaling.md."
     fi
 
     local removed_csv="${removed//$'\n'/,}"
@@ -1745,11 +1820,14 @@ do_remove_node() {
     # the pods are just gone along with the node, which capacity/last-
     # capable-node below still checks they can come back from.
     if [[ "$NODE_LOST" != "true" ]]; then
-        local pdb_hits=""
+        local pdb_hits="" pdb_out
         for n in ${removed//$'\n'/ }; do
+            pdb_out=$(_pdb_blocked_pods "$n") \
+                || err "remove-node: cannot check PodDisruptionBudgets for ${n} — refusing rather than skipping the check:
+  ${pdb_out}"
             while IFS=$'\t' read -r pod pdb detail; do
                 [[ -n "$pod" ]] && pdb_hits+="  ${pod} on ${n} — blocked by PodDisruptionBudget ${pdb} (${detail})"$'\n'
-            done < <(_pdb_blocked_pods "$n")
+            done <<< "$pdb_out"
         done
         if [[ -n "$pdb_hits" ]]; then
             err "remove-node: drain would hang — the pod(s) below cannot be evicted because their PodDisruptionBudget currently allows zero disruptions:
@@ -1768,11 +1846,19 @@ ${pdb_hits}  Scale up the workload, raise/delete the PDB, or move it off the nod
     # otherwise make the output always non-empty.
     local sim_opts=()
     [[ "$DRY_RUN" == "true" ]] && sim_opts+=(--plan)
-    local sim_output; sim_output=$(_simulate_removal "${sim_opts[@]}" ${removed//$'\n'/ })
+    local sim_output sim_rc=0 sim_errf; sim_errf=$(mktemp)
+    sim_output=$(_simulate_removal "${sim_opts[@]}" ${removed//$'\n'/ } 2>"$sim_errf") || sim_rc=$?
+    local sim_err; sim_err=$(<"$sim_errf"); rm -f "$sim_errf"
     if [[ "$DRY_RUN" == "true" && -n "$sim_output" ]]; then
         while IFS= read -r line; do [[ -n "$line" ]] && info "  ${line}"; done <<< "$sim_output"
     fi
     local sim_findings; sim_findings=$(grep -E '^(capacity|spread|local-data|last-capable-node): ' <<< "$sim_output" || true)
+    # Fail closed: exit >1 (or 1 with no findings to show) means the
+    # simulation never ran to completion — that must refuse, not pass.
+    if (( sim_rc > 1 )) || { (( sim_rc == 1 )) && [[ -z "$sim_findings" ]]; }; then
+        err "remove-node: preflight simulation could not run (exit ${sim_rc}) — refusing the removal rather than skipping the check:
+  ${sim_err:-no error output}"
+    fi
     if [[ -n "$sim_findings" ]]; then
         err "remove-node: preflight simulation refuses this removal:
 $(sed 's/^/  /' <<< "$sim_findings")
@@ -2097,6 +2183,12 @@ main() {
             && err "${ACTION} is not supported on an OpenShift cluster — node lifecycle there is managed by the Machine API/Machine Config Operator, not Kubespray."
         [[ "$IS_BYO" == "false" ]] \
             || err "${ACTION} is not supported for a BYO cluster (existing_kubernetes is set in global_config.yaml)."
+        # Only the kubernetes component is ever run, so ERAG's node-specific
+        # placement would not be re-applied (docs/customize/node_scaling.md).
+        local _erag_ns; _erag_ns=$(_erag_namespaces_present)
+        [[ -z "$_erag_ns" ]] \
+            || err "${ACTION} is not supported on a cluster with ERAG deployed (found namespace(s): ${_erag_ns//$'\n'/, }).
+  Tear it down first (./$(basename "$0") teardown --env ${ENV_NAME} erag), then retry."
         TARGET="kubernetes"
         vars+=(-e "target=kubernetes")
         case "$ACTION" in

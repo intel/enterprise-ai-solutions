@@ -30,9 +30,12 @@
 #
 # Usage: simulate_node_removal.py [--plan] <node1> [<node2> ...]
 # Exit 0, silent, when nothing is found. Exit 1 with one finding per line
-# ("<check>: <message>") when the removal should be refused. --plan also
-# prints, ahead of any findings, the pod count by namespace and a target
-# node for every pod the bin-pack actually placed ("<owner> -> <node>").
+# ("<check>: <message>") when the removal should be refused. Exit 2, with
+# the reason on stderr, when the simulation could not run at all (kubectl
+# error, unexpected API object, bad arguments) — the caller must treat that
+# as a refusal, never as a pass. --plan also prints, ahead of any findings,
+# the pod count by namespace and a target node for every pod the bin-pack
+# actually placed ("<owner> -> <node>").
 
 import json
 import re
@@ -426,5 +429,20 @@ def main():
     return 1 if findings else 0
 
 
+def run():
+    # An uncaught exception exits 1, the same code as "findings" — so a
+    # crash would read as a refusal with no reason given, or, to a caller
+    # only checking for findings, as nothing found. Every failure to
+    # simulate gets its own exit code instead.
+    try:
+        return main()
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or "").strip() or str(e)
+        print(f"simulate_node_removal.py: kubectl failed: {detail}", file=sys.stderr)
+    except Exception as e:  # pylint: disable=broad-except
+        print(f"simulate_node_removal.py: error: {type(e).__name__}: {e}", file=sys.stderr)
+    return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
