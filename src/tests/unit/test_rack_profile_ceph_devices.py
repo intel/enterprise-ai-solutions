@@ -57,10 +57,6 @@ def storage_result(nodes):
     return _mod.rack_profile_validate(profile)
 
 
-def storage_errors(nodes):
-    return storage_result(nodes)["errors"]
-
-
 @pytest.mark.parametrize("nodes, message", [
     ([{"devices": ["nvme1n1"]}], "storage.nodes[0] needs a 'name'"),
     ([{"name": "master1", "devices": ["nvme1n1"]}, {"name": "master1", "devices": ["nvme1n1"]}],
@@ -72,7 +68,7 @@ def storage_errors(nodes):
     ({"master1": ["nvme1n1"]}, "storage.nodes must be a list, got dict"),
 ])
 def test_storage_node_entry_errors(nodes, message):
-    errors = storage_errors(nodes)
+    errors = storage_result(nodes)["errors"]
     assert any(message in e for e in errors), errors
 
 
