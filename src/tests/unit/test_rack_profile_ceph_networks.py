@@ -42,17 +42,38 @@ def test_control_plane_storage_node_off_the_fabric_is_rejected():
     assert all("mgmt_ip" in e and "control_plane_on_fabric: true" in e for e in found)
 
 
+def dual_homed_storage_worker():
+    return {
+        "site": {"name": "test"},
+        "network": {
+            "topology": "clos", "calico_mode": "bgp", "control_plane_on_fabric": True, "bgp": {"cluster_asn": 65100},
+            "leafs": [{"name": "leaf-a", "asn": 65001, "peer_ip": "10.201.0.1", "fabric_subnet": "10.201.0.0/16"},
+                      {"name": "leaf-b", "asn": 65002, "peer_ip": "10.202.0.1", "fabric_subnet": "10.202.0.0/16"}],
+        },
+        "racks": {"r1": {"nodes": {
+            "cp1": {"hostname": "cp1", "mgmt_ip": "192.0.2.10", "local": True, "roles": ["kube_control_plane", "etcd"],
+                    "fabric_nics": [{"nic": "eth1", "fabric_ip": "10.201.1.1"}]},
+            "w1": {"hostname": "w1", "mgmt_ip": "192.0.2.20", "roles": ["kube_node", "storage"],
+                   "fabric_nics": [{"nic": "eth1", "fabric_ip": "10.201.1.2"}, {"nic": "eth2", "fabric_ip": "10.202.1.2"}]},
+        }}},
+        "storage": {"ceph_public_network": "10.202.0.0/16", "nodes": [{"name": "w1", "devices": ["nvme1n1"]}]},
+    }
+
+
 def test_worker_storage_node_whose_first_nic_is_outside_the_public_network():
-    def change(p):
-        worker = p["racks"]["rack-01"]["nodes"]["worker1"]
-        worker["roles"] = ["kube_node", "storage"]
-        p["storage"]["nodes"].append({"name": "worker1", "devices": ["nvme1n1"]})
-        p["storage"]["ceph_public_network"] = p["storage"]["ceph_cluster_network"] = "10.201.1.4/30"
-        p["storage"]["nodes"] = [n for n in p["storage"]["nodes"] if n["name"] != "master1"]
-        p["racks"]["rack-01"]["nodes"]["master1"]["roles"] = ["kube_control_plane", "etcd"]
-    assert errors(change) == [
-        "storage node 'worker1' node IP 10.201.1.2 (its first fabric NIC) is outside ceph_public_network "
-        "10.201.1.4/30 — list the NIC in that network first"]
+    assert _mod.rack_profile_validate(dual_homed_storage_worker())["errors"] == [
+        "storage node 'w1' node IP 10.201.1.2 (its first fabric NIC) is outside ceph_public_network "
+        "10.202.0.0/16 — list the NIC in that network first"]
+
+
+def test_a_node_ceph_fabric_nic_is_ignored_with_a_warning():
+    profile = dual_homed_storage_worker()
+    profile["storage"]["ceph_public_network"] = "10.201.0.0/16"
+    assert not any("ceph_fabric_nic" in w for w in _mod.rack_profile_validate(copy.deepcopy(profile))["warnings"])
+    profile["racks"]["r1"]["nodes"]["w1"]["ceph_fabric_nic"] = "eth2"
+    result = _mod.rack_profile_validate(profile)
+    assert result["errors"] == []
+    assert any("'ceph_fabric_nic' is set on w1 but is obsolete and ignored" in w for w in result["warnings"]), result
 
 
 def test_rook_gets_both_networks_as_address_ranges():

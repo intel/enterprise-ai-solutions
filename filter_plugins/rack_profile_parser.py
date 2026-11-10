@@ -814,6 +814,13 @@ def _parse_and_validate(profile):
             "each node's address via kubespray's can-reach=$(NODEIP). "
             "Remove the key.")
 
+    ceph_nic_nodes = sorted(n for n, cfg in all_nodes.items() if cfg.get("ceph_fabric_nic"))
+    if ceph_nic_nodes:
+        warnings.append(
+            f"'ceph_fabric_nic' is set on {', '.join(ceph_nic_nodes)} but is "
+            f"obsolete and ignored. Ceph binds by address: "
+            f"storage.ceph_public_network and ceph_cluster_network. Remove the key.")
+
     # If any IP addresses are malformed, skip the address-level checks — they
     # would raise ValueError on the same bad input.
     if errors:
