@@ -2,16 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Run: python3 -m pytest src/tests/unit
 import copy
-import importlib.util
-import pathlib
 
 import yaml
 
-_ROOT = pathlib.Path(__file__).resolve().parents[3]
-_spec = importlib.util.spec_from_file_location("rack_profile_parser", _ROOT / "filter_plugins" / "rack_profile_parser.py")
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
-EXAMPLE = yaml.safe_load((_ROOT / "configs" / "defaults" / "rack-profile.yaml.example").read_text())
+from plugin_loader import EXAMPLE_PROFILE as EXAMPLE, load_plugin
+
+_mod = load_plugin("rack_profile_parser")
 
 
 def clos():
