@@ -120,6 +120,7 @@ The Quick Start gets you running with single-node defaults. From here you can ta
 |---|---|
 | All configuration options | [Configuration Reference](docs/customize/configuration.md) |
 | Multi-node cluster or BYO Kubernetes | [Topologies](docs/deploy/topologies.md) |
+| Rack-scale: a cluster on a dedicated high-speed fabric | [Rack-scale Deployment](docs/rack-scale-deployment.md) |
 | Deploy and manage models | [Deploy Models](docs/deploy/deploy_models.md) |
 | Deploy Intel® Chatbot Toolkit | [Getting Started with Intel® Chatbot Toolkit](docs/quickstart/getting_started_rag.md) |
 | Connect your app or framework | [Integration Guide](docs/customize/integration.md) |
