@@ -33,6 +33,7 @@ probe = _load("node_preflight_probe", "roles/kubernetes/files/node_preflight_pro
 
 GIB = 1 << 30
 CTX = {"skip": [], "local": False, "rack_scale": False, "ceph": False, "proxy_host": "",
+       "api_lb": "lb-apiserver.kubernetes.local",
        "api_hosts": ["localhost", "127.0.0.1", "cp1", "192.0.2.10"], "min_free_gib": 20, "warn_free_gib": 50,
        "max_used_pct": 90, "etcd_warn_free_gib": 10, "max_skew_s": 60, "warn_skew_s": 5}
 CLEAN_DISK = {"exists": True, "type": "disk", "fstype": None, "children": [], "mountpoints": [],
@@ -152,13 +153,13 @@ CASES = [
      {"ceph": True}, "N16", "FAIL"),
     ("N16 xfs signature", lambda d: d.update(ceph={"/dev/nvme1n1": {**CLEAN_DISK, "fstype": "xfs"}}),
      {"ceph": True}, "N16", "FAIL"),
-    ("N19 not an etcd node", lambda d: d["kube"].update(etcd_binary=True), {}, "N19", []),
-    ("N19 binary without a service", lambda d: (d.update(etcd_node=True), d["kube"].update(etcd_binary=True)),
+    ("N19 not an etcd node", lambda d: d["kube"].update(etcd_binary="/usr/local/bin/etcd"), {}, "N19", []),
+    ("N19 binary without a service", lambda d: (d.update(etcd_node=True), d["kube"].update(etcd_binary="/usr/local/bin/etcd")),
      {}, "N19", "FAIL"),
-    ("N19 installed etcd", lambda d: (d.update(etcd_node=True), d["kube"].update(etcd_binary=True, etcd_unit=True)),
+    ("N19 installed etcd", lambda d: (d.update(etcd_node=True), d["kube"].update(etcd_binary="/usr/local/bin/etcd", etcd_unit=True)),
      {}, "N19", "OK"),
     ("N11 installed etcd is a leftover",
-     lambda d: (d.update(etcd_node=True), d["kube"].update(etcd_binary=True, etcd_unit=True)), {}, "N11", "WARN"),
+     lambda d: (d.update(etcd_node=True), d["kube"].update(etcd_binary="/usr/local/bin/etcd", etcd_unit=True)), {}, "N11", "WARN"),
     ("N19 clean etcd node", lambda d: d.update(etcd_node=True), {}, "N19", "OK"),
     ("N0 probe error", lambda d: d.update(errors=["dns: boom"]), {}, "N0", "WARN"),
 ]
@@ -183,6 +184,17 @@ def test_sudo_warnings_before_the_probe_json_are_ignored():
       "stderr": "Shared connection to n1 closed.\r\n"}, "N0", "/bin/sh: 1: python3: not found"),
     ({"failed": True, "msg": "non-zero return code", "rc": 1, "stdout": "",
       "stderr": "sudo: a password is required"}, "N9", "sudo: a password is required"),
+    # sudo's host-name warning is not a sudo failure.
+    ({"failed": True, "msg": "non-zero return code", "rc": 127, "stdout": "sudo: unable to resolve host n1: Name or "
+      "service not known\r\n/bin/sh: 1: python3: not found\r\n"}, "N0", "/bin/sh: 1: python3: not found"),
+    ({"failed": True, "msg": "non-zero return code", "rc": 1, "stdout": "sudo: unable to resolve host n1\r\n"
+      "sudo: a terminal is required to read the password\r\n"}, "N9", "sudo: a terminal is required to read the password"),
+    # Unreachable: SSH, or a become timeout (ignore_unreachable hands these to the rules).
+    ({"unreachable": True, "msg": "Task failed: Failed to connect to the host via ssh: ssh: connect to host 192.0.2.9 "
+      "port 22: Connection timed out"}, "N0", "Task failed: Failed to connect to the host via ssh: ssh: connect to "
+      "host 192.0.2.9 port 22: Connection timed out"),
+    ({"unreachable": True, "msg": "Task failed: Timeout (12s) waiting for privilege escalation prompt: "}, "N9",
+     "Task failed: Timeout (12s) waiting for privilege escalation prompt:"),
 ])
 def test_probe_that_could_not_run(result, cid, evidence):
     out = rules.node_preflight_evaluate([{"item": "n1", "stdout": "", **result}], CTX)
@@ -206,6 +218,18 @@ def test_skip_list_rejects_unknown_checks(value):
 def test_run_uses_the_c_locale(monkeypatch):
     monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
     assert probe.run(["sh", "-c", 'printf %s "$LC_ALL"']) == (0, "C")
+
+
+def test_run_can_leave_stderr_out():
+    assert probe.run(["sh", "-c", "echo warning >&2; echo listed"], stderr=False) == (0, "listed")
+    assert probe.run(["sh", "-c", "echo warning >&2"]) == (0, "warning")
+
+
+@pytest.mark.parametrize("answer, expected", [((0, ""), "OK"), ((1, ""), "FAIL"), ((0, "pkg half-configured"), "FAIL")])
+def test_dpkg_audit_is_judged_on_its_stdout_and_exit_status(monkeypatch, answer, expected):
+    monkeypatch.setattr(probe, "run", _fake_run({"dpkg": answer}))
+    pkg = probe.package_manager()
+    assert status(changed(lambda d: d.update(pkg=pkg)), "N13") == expected
 
 
 def test_run_tells_a_timeout_from_a_missing_command():
@@ -256,7 +280,7 @@ def test_disk_uses_the_nearest_existing_parent(tmp_path):
 
 
 def _fake_run(answers):
-    return lambda args, timeout=10: answers.get(args[0], (None, ""))
+    return lambda args, timeout=10, stderr=True: answers.get(args[0], (None, ""))
 
 
 def test_time_sync_falls_back_when_chronyd_is_stopped(monkeypatch):
@@ -347,6 +371,25 @@ def test_n10_loopback_kubeconfig_without_a_readable_ca():
                                   "its CA is missing or unreadable")
 
 
+@pytest.mark.parametrize("ca, expected", [("ca-a", "OK"), ("ca-b", "FAIL")])
+def test_n10_load_balancer_name_is_decided_by_ca(ca, expected):
+    # Kubespray's apiserver_loadbalancer_domain_name is the same in every cluster, so naming it proves nothing.
+    results = [probed("cp1", cluster_ca="ca-a"),
+               probed("w1", kubelet_conf_server="https://lb-apiserver.kubernetes.local:6443", kubelet_conf_ca=ca)]
+    out = rules.node_preflight_evaluate(results, {**CTX, "api_hosts": ["cp1", "lb-apiserver.kubernetes.local"],
+                                                  "control_plane": ["cp1"]})
+    assert [r["status"] for r in out["rows"] if r["id"] == "N10" and r["node"] == "w1"] == [expected]
+
+
+def test_etcd_in_the_deploy_nodes_kubespray_bin_dir(tmp_path, monkeypatch):
+    (tmp_path / "etcd").write_text("")
+    monkeypatch.setattr(probe, "run", _fake_run({}))
+    kube = probe.kube_leftovers(["/usr/local/bin", str(tmp_path)])
+    assert kube["etcd_binary"] == str(tmp_path / "etcd")
+    rows = evaluate(changed(lambda d: (d.update(etcd_node=True), d["kube"].update(etcd_binary=kube["etcd_binary"]))))
+    assert [r["evidence"] for r in rows["rows"] if r["id"] == "N19"] == ["%s without an etcd service" % kube["etcd_binary"]]
+
+
 def test_n10_loopback_server_when_our_control_plane_has_no_ca_yet():
     cp1 = changed(lambda d: d["kube"].update(addresses=["192.0.2.10"]))
     w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://[::1]:6443", kubelet_conf_ca="ca-a"))
@@ -368,7 +411,7 @@ def test_kubeconfig_ca_matches_the_cluster_ca(monkeypatch):
              "/etc/kubernetes/ssl/ca.pem": PEM, "/etc/kubernetes/pki/ca.crt": PEM}
     monkeypatch.setattr(probe, "read", lambda path, default="": files.get(path, default))
     monkeypatch.setattr(probe, "run", _fake_run({}))
-    kube = probe.kube_leftovers()
+    kube = probe.kube_leftovers(["/usr/local/bin"])
     assert kube["kubelet_conf_ca"] == kube["admin_conf_ca"] == kube["cluster_ca"] is not None
 
 
@@ -376,7 +419,7 @@ def test_each_kubeconfig_is_read_once(monkeypatch):
     reads = []
     monkeypatch.setattr(probe, "read", lambda path, default="": reads.append(path) or default)
     monkeypatch.setattr(probe, "run", _fake_run({}))
-    probe.kube_leftovers()
+    probe.kube_leftovers(["/usr/local/bin"])
     assert reads.count("/etc/kubernetes/kubelet.conf") == reads.count("/etc/kubernetes/admin.conf") == 1
 
 
@@ -513,6 +556,8 @@ def test_gateway_reads_the_default_route(monkeypatch, routes, ip, dev):
     ("192.0.2.1 INCOMPLETE ", False),
     ("192.0.2.1 FAILED ", False),
     ("192.0.2.10 lladdr aa:bb:cc:dd:ee:09 REACHABLE ", False),
+    ("192.0.2.1 lladdr aa:bb:cc:dd:ee:01 extern_learn NOARP proto zebra ", True),
+    ("192.0.2.1 lladdr aa:bb:cc:dd:ee:01 STALE proto zebra ", False),
     ("", False),
 ])
 def test_gateway_that_drops_pings_but_answers_arp(monkeypatch, neigh, reachable):
@@ -520,7 +565,7 @@ def test_gateway_that_drops_pings_but_answers_arp(monkeypatch, neigh, reachable)
                ("ping",): (1, "100% packet loss")}
     calls = []
 
-    def run(args, timeout=10):
+    def run(args, timeout=10, stderr=True):
         calls.append(args)
         return answers.get(tuple(args[:2]), answers.get(tuple(args[:1])))
     monkeypatch.setattr(probe, "run", run)
@@ -538,7 +583,7 @@ def test_kubeconfig_server_may_be_quoted(monkeypatch):
              "/etc/kubernetes/admin.conf": "    server: 'https://[fd00::10]:6443'\n"}
     monkeypatch.setattr(probe, "read", lambda path, default="": confs.get(path, default))
     monkeypatch.setattr(probe, "run", _fake_run({}))
-    kube = probe.kube_leftovers()
+    kube = probe.kube_leftovers(["/usr/local/bin"])
     assert (kube["kubelet_conf_server"], kube["admin_conf_server"]) == ("https://192.0.2.10:6443",
                                                                         "https://[fd00::10]:6443")
 
@@ -603,3 +648,13 @@ def test_preflight_waits_until_the_inventory_has_the_nodes_yaml_nodes(nodes, wor
     task = next(t for t in tasks if t.get("name") == "kubernetes | Node preflight")
     variables = {"nodes_control_plane": nodes, "nodes_workers": workers, "groups": {"all": inventory}}
     assert render(task["vars"]["_np_new"], variables) == new
+
+
+@pytest.mark.parametrize("node, expected", [
+    ({"ansible_python_interpreter": "/usr/libexec/platform-python"}, "/usr/libexec/platform-python"),
+    ({"ansible_facts": {"discovered_interpreter_python": "/usr/libexec/platform-python"}}, "/usr/libexec/platform-python"),
+    ({"ansible_facts": {}}, "python3"),
+])
+def test_probe_runs_with_the_nodes_python(node, expected):
+    task = yaml.safe_load((_ROOT / "roles/kubernetes/tasks/node_preflight.yaml").read_text())[1]
+    assert render(task["ansible.builtin.script"]["executable"], {"item": "n1", "hostvars": {"n1": node}}) == expected

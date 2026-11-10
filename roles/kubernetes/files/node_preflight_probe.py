@@ -28,16 +28,18 @@ BLUESTORE_OFFSETS_GIB = (0, 1, 10, 100, 1000)
 CLUSTER_CA = ("/etc/kubernetes/ssl/ca.crt", "/etc/kubernetes/pki/ca.crt")
 # Neighbour states of a gateway that answered ARP, or has a static entry.
 NEIGH_ALIVE = {"REACHABLE", "PERMANENT", "NOARP"}
+NEIGH_STATES = NEIGH_ALIVE | {"STALE", "DELAY", "PROBE", "FAILED", "INCOMPLETE", "NONE"}
 
 
-def run(args, timeout=10):
+def run(args, timeout=10, stderr=True):
     """(rc, output) of a command found on PATH, in the C locale; (None, '') when it isn't installed,
-    (-1, error) when it could not run or timed out."""
+    (-1, error) when it could not run or timed out. stderr=False leaves warnings out of the output."""
     path = shutil.which(args[0])
     if not path:
         return None, ""
     try:
-        res = subprocess.run([path] + list(args[1:]), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        res = subprocess.run([path] + list(args[1:]), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT if stderr else subprocess.DEVNULL,
                              universal_newlines=True, timeout=timeout, env=dict(os.environ, LC_ALL="C"))
         return res.returncode, res.stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
@@ -113,8 +115,9 @@ def gateway():
     # A gateway that drops pings and TCP still answers ARP. The ping and TCP tries took
     # long enough for the kernel to re-check an old entry, so only a confirmed one counts.
     rc, out = run(["ip", "neigh", "show", gw] + (["dev", result["dev"]] if result["dev"] else []))
-    states = [line.split()[-1] for line in out.splitlines() if rc == 0 and line.split()[:1] == [gw]]
-    if states and states[0] in NEIGH_ALIVE:
+    # e.g. "192.0.2.1 lladdr 16:18:2f:83:38:dc REACHABLE" or "... extern_learn NOARP proto zebra"
+    words = next((line.split() for line in out.splitlines() if rc == 0 and line.split()[:1] == [gw]), [])
+    if next((w for w in words if w in NEIGH_STATES), None) in NEIGH_ALIVE:
         result.update(reachable=True, via="arp")
     return result
 
@@ -204,7 +207,7 @@ def kubeconfig(conf):
     return (server.group(1).strip("'\"") if server else None), ca_hash(pem)
 
 
-def kube_leftovers():
+def kube_leftovers(bin_dirs):
     kubelet_server, kubelet_ca = kubeconfig("/etc/kubernetes/kubelet.conf")
     admin_server, admin_ca = kubeconfig("/etc/kubernetes/admin.conf")
     rc, out = run(["systemctl", "is-active", "kubelet"])
@@ -221,7 +224,7 @@ def kube_leftovers():
         "etcd_member": os.path.isdir("/var/lib/etcd/member"),
         # An etcd binary without its unit (a half-finished reset) makes Kubespray
         # treat etcd as installed and fail at "Stop etcd".
-        "etcd_binary": os.path.exists("/usr/local/bin/etcd"),
+        "etcd_binary": next((d + "/etcd" for d in bin_dirs if os.path.exists(d + "/etcd")), None),
         "etcd_unit": any(os.path.exists(d + "/etcd.service")
                          for d in ("/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system")),
         "cni_calico": sorted(f for f in os.listdir(cni) if "calico" in f) if os.path.isdir(cni) else [],
@@ -253,8 +256,10 @@ def listeners(ports):
 def package_manager():
     busy = sorted({read("/proc/%s/comm" % pid) for pid in os.listdir("/proc") if pid.isdigit()}
                   & {"apt", "apt-get", "dpkg", "unattended-upgr", "unattended-upgrade"})
-    rc, out = run(["dpkg", "--audit"], timeout=30)
-    return {"dpkg_audit": None if rc is None else out, "busy": busy}
+    # What it lists on stdout, or its exit status; dpkg's warnings on stderr are not problems.
+    rc, out = run(["dpkg", "--audit"], timeout=30, stderr=False)
+    audit = None if rc is None else out or ("" if rc == 0 else "exit status %d" % rc)
+    return {"dpkg_audit": audit, "busy": busy}
 
 
 def firewall():
@@ -308,7 +313,7 @@ def main():
         ("gateway", ("N6",), gateway),
         ("dns", ("N7",), lambda: resolve(spec.get("dns_names", []))),
         ("urls", ("N8",), lambda: reach(spec.get("urls", []))),
-        ("kube", ("N10", "N11", "N19"), kube_leftovers),
+        ("kube", ("N10", "N11", "N19"), lambda: kube_leftovers(spec.get("bin_dirs") or ["/usr/local/bin"])),
         ("ports", ("N11", "N12"), lambda: listeners(set(spec.get("ports", [])))),
         ("pkg", ("N13",), package_manager),
         ("firewall", ("N14",), firewall),

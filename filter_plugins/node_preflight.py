@@ -26,6 +26,10 @@ LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 KUBECONFIGS = (("kubelet.conf", "kubelet_conf_server", "kubelet_conf_ca"),
                ("admin.conf", "admin_conf_server", "admin_conf_ca"))
 RACK_SCALE_OS = {("ubuntu", "22.04"), ("ubuntu", "24.04")}
+# sudo's harmless warning, and the errors that mean sudo did not let the probe run.
+SUDO_WARNING = re.compile(r"sudo: unable to resolve host")
+SUDO_ERROR = re.compile(r"password is required|terminal is required|not in the sudoers|incorrect (sudo )?password"
+                        r"|missing sudo password|privilege escalation", re.I)
 SUDO_HINT = "Allow passwordless sudo for the Ansible user, or run with --ask-become-pass"
 
 
@@ -136,10 +140,11 @@ def _other_cluster(kube, cp):
         host = _canonical(_host(server)) if server else None
         if host is None:
             continue
-        if host not in LOOPBACK:
+        if host not in cp["by_ca"]:
             if host not in cp["hosts"]:
                 fail.append("%s points at %s" % (conf, server))
-        # Kubespray points kubeconfigs at 127.0.0.1 or its local API proxy: there the cluster CA tells.
+        # Kubespray points kubeconfigs at 127.0.0.1, its local API proxy or its load balancer name,
+        # the same in every Kubespray cluster: there the cluster CA tells.
         elif ca is None:
             fail.append("%s points at %s, left over from a cluster; its CA is missing or unreadable" % (conf, server))
         elif ca not in cp["cas"] and cp["unprobed"]:
@@ -173,10 +178,10 @@ def _cluster_checks(kube, ports, etcd_node, cp):
     if etcd_node:
         half = kube.get("etcd_binary") and not kube.get("etcd_unit")
         rows.append(("N19", "FAIL" if half else "OK",
-                     "/usr/local/bin/etcd without an etcd service" if half else "no half-removed etcd",
+                     "%s without an etcd service" % kube["etcd_binary"] if half else "no half-removed etcd",
                      "Left by an unfinished reset: Kubespray takes it for an installed etcd and fails at "
-                     "'Stop etcd'. Run the teardown (Kubespray reset) again, or remove /usr/local/bin/etcd, "
-                     "etcdctl, etcdutl and /etc/etcd.env on this node"))
+                     "'Stop etcd'. Run the teardown (Kubespray reset) again, or remove etcd, etcdctl and etcdutl "
+                     "from that directory and /etc/etcd.env on this node"))
     return rows
 
 
@@ -280,16 +285,20 @@ def _probe_json(stdout):
 
 
 def _probe_failed(res):
-    """The probe printed no JSON: sudo wanted a password, or python3 is missing.
+    """The probe printed no JSON: sudo wanted a password, SSH failed, or python3 is missing.
 
     When the script ran (rc is set) its output says why; Ansible's msg is then only "non-zero return code".
+    An unreachable node (SSH, or a become timeout) has only msg.
     """
     ran = res.get("rc") is not None
     sources = (res.get("stdout"), res.get("stderr"), res.get("msg")) if ran else (res.get("msg"),)
-    msg = next((s.strip() for s in sources if s and s.strip()), "no output")
-    if re.search(r"sudo|password|become", msg, re.I):
-        return [("N9", "FAIL", msg.splitlines()[0][:300], SUDO_HINT)]
-    return [("N0", "FAIL", msg.splitlines()[0][:300],
+    lines = [line.strip() for s in sources if s for line in s.splitlines()
+             if line.strip() and not SUDO_WARNING.match(line.strip())]
+    msg = lines[0] if lines else "no output"
+    sudo = next((line for line in lines if SUDO_ERROR.search(line)), None)
+    if sudo:
+        return [("N9", "FAIL", sudo[:300], SUDO_HINT)]
+    return [("N0", "FAIL", msg[:300],
              "The probe did not run or did not finish on this node: it needs python3, and SSH and sudo that answer")]
 
 
@@ -320,6 +329,7 @@ def node_preflight_evaluate(results, ctx):
     cp = {"hosts": {_canonical(h) for h in ctx.get("api_hosts") or []} | {
               _canonical(a) for kube in cp_kube for a in kube.get("addresses", [])},
           "cas": {kube.get("cluster_ca") for kube in cp_kube} - {None},
+          "by_ca": LOOPBACK | ({_canonical(ctx["api_lb"])} if ctx.get("api_lb") else set()),
           "unprobed": [res.get("item") for res, data in parsed if data is None and res.get("item") in control_plane]}
     rows = []
     for res, data in parsed:

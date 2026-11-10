@@ -13,9 +13,9 @@
          if _np_proxy_url | length > 0 else '' }}
     _np_ceph: "{{ (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph' }}"
     # A kubelet.conf pointing at another API server belongs to another cluster.
-    # (For a loopback server the rules compare the cluster CA instead.)
+    # (For a loopback server or the load balancer name the rules compare the cluster CA instead.)
     _np_api_hosts: >-
-      {{ ([apiserver_loadbalancer_domain_name | default('lb-apiserver.kubernetes.local')] + _np_cp
+      {{ (_np_cp
           + _np_cp | map('extract', hostvars) | map(attribute='ip', default='') | list
           + _np_cp | map('extract', hostvars) | map(attribute='access_ip', default='') | list
           + _np_cp | map('extract', hostvars) | map(attribute='ansible_host', default='') | list
@@ -25,7 +25,10 @@
 - name: "kubernetes | node preflight | Probe each node"
   ansible.builtin.script:
     cmd: "{{ role_path }}/files/node_preflight_probe.py"
-    executable: python3
+    # RHEL 8 has /usr/libexec/platform-python, not python3: use the node's interpreter.
+    executable: >-
+      {{ hostvars[item].ansible_python_interpreter
+         | default(hostvars[item].ansible_facts.discovered_interpreter_python | default('python3')) }}
   delegate_to: "{{ item }}"
   become: true
   vars:
@@ -44,6 +47,8 @@
             or (rook_ceph_devices | default({})).get(hostvars[item].node_hostname | default(item))
             or []) if _np_ceph | bool else [] }}
       skip: "{{ _np_skip }}"
+      # Kubespray installs its binaries here; on the deploy node itself, in its own tree.
+      bin_dirs: "{{ ['/usr/local/bin'] + ([kubespray_bin_dir_local] if not (_k8s_needs_ssh | bool) else []) }}"
   # The proxy settings come from the play's environment (playbooks/site.yaml).
   environment:
     NODE_PREFLIGHT_SPEC: "{{ _np_spec | to_json }}"
@@ -54,8 +59,10 @@
   register: _np_probe
   changed_when: false
   failed_when: false
-  # A timeout or a become error is not a task result failed_when sees; the rules report it.
+  # A timeout, a become error or an unreachable node is not a result failed_when sees;
+  # these hand it to the rules, which report it as N0 or N9.
   ignore_errors: true
+  ignore_unreachable: true
 
 - name: "kubernetes | node preflight | Evaluate"
   ansible.builtin.set_fact:
@@ -66,6 +73,7 @@
            'rack_scale': rack_scale_enabled | default(false) | bool,
            'ceph': _np_ceph | bool,
            'proxy_host': _np_proxy_host,
+           'api_lb': apiserver_loadbalancer_domain_name | default('lb-apiserver.kubernetes.local'),
            'api_hosts': _np_api_hosts,
            'control_plane': groups['kube_control_plane'] | default([]),
            'min_free_gib': kubernetes_node_preflight_min_free_gib | int,
