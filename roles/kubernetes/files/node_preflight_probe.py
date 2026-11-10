@@ -26,8 +26,8 @@ BLUESTORE_LABEL = b"bluestore block device"
 BLUESTORE_OFFSETS_GIB = (0, 1, 10, 100, 1000)
 # The cluster CA on a control-plane node: Kubespray's cert dir, then kubeadm's.
 CLUSTER_CA = ("/etc/kubernetes/ssl/ca.crt", "/etc/kubernetes/pki/ca.crt")
-# Neighbour states of a gateway that answered ARP recently.
-NEIGH_ALIVE = {"REACHABLE", "STALE", "DELAY", "PROBE"}
+# Neighbour states of a gateway that answered ARP, or has a static entry.
+NEIGH_ALIVE = {"REACHABLE", "PERMANENT", "NOARP"}
 
 
 def run(args, timeout=10):
@@ -101,11 +101,6 @@ def gateway():
     if rc == 0:
         result.update(reachable=True, via="icmp")
         return result
-    # A gateway that drops pings still answers ARP for them.
-    rc, out = run(["ip", "neigh", "show", gw])
-    if rc == 0 and out and out.split()[-1] in NEIGH_ALIVE:
-        result.update(reachable=True, via="arp")
-        return result
     for port in (22, 443):
         try:
             socket.create_connection((gw, port), timeout=3).close()
@@ -115,6 +110,12 @@ def gateway():
             continue
         result.update(reachable=True, via="tcp/%d" % port)
         return result
+    # A gateway that drops pings and TCP still answers ARP. The ping and TCP tries took
+    # long enough for the kernel to re-check an old entry, so only a confirmed one counts.
+    rc, out = run(["ip", "neigh", "show", gw] + (["dev", result["dev"]] if result["dev"] else []))
+    states = [line.split()[-1] for line in out.splitlines() if rc == 0 and line.split()[:1] == [gw]]
+    if states and states[0] in NEIGH_ALIVE:
+        result.update(reachable=True, via="arp")
     return result
 
 
@@ -137,6 +138,17 @@ def resolve(names, timeout=5.0):
     return {n: found.get(n, {"ok": False, "error": "timed out after %ss" % timeout}) for n in names}
 
 
+def _answer(code):
+    """What an HTTP status from the site or the proxy means for reaching the site."""
+    if code == 407:
+        return {"ok": False, "error": "proxy authentication required"}
+    if code == 403:  # the site, or a proxy, answered but refused
+        return {"ok": True, "refused": True}
+    if code >= 500:
+        return {"ok": False, "error": "HTTP %d (the proxy could not reach it)" % code}
+    return {"ok": True}
+
+
 def reach(urls, timeout=10):
     """HTTPS through the proxy from the environment. A 4xx answer still means the site
     was reached (registry.k8s.io answers 401); 407 and 5xx mean it wasn't: a proxy
@@ -148,16 +160,12 @@ def reach(urls, timeout=10):
             with urllib.request.urlopen(url, timeout=timeout):  # nosec B310
                 out[url] = {"ok": True}
         except urllib.error.HTTPError as exc:
-            if exc.code == 407:
-                out[url] = {"ok": False, "error": "proxy authentication required"}
-            elif exc.code == 403:  # the site, or an intercepting proxy, answered but refused
-                out[url] = {"ok": True, "refused": True}
-            elif exc.code >= 500:
-                out[url] = {"ok": False, "error": "HTTP %d (the proxy could not reach it)" % exc.code}
-            else:
-                out[url] = {"ok": True}
+            out[url] = _answer(exc.code)
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
-            out[url] = {"ok": False, "error": str(getattr(exc, "reason", exc))}
+            reason = str(getattr(exc, "reason", exc))
+            # A proxy that refuses the HTTPS tunnel: "Tunnel connection failed: 407 ..."
+            tunnel = re.match(r"Tunnel connection failed: (403|407)\b", reason)
+            out[url] = _answer(int(tunnel.group(1))) if tunnel else {"ok": False, "error": reason}
         except ValueError:
             out[url] = {"ok": False, "error": "not a URL, it needs https://"}
     return out
@@ -181,33 +189,33 @@ def ca_hash(pem):
         return None
 
 
-def kubeconfig_ca(conf):
-    """ca_hash of a kubeconfig's certificate-authority-data, or of the file its certificate-authority names."""
+def kubeconfig(conf):
+    """(server, ca_hash) of a kubeconfig. The CA is its certificate-authority-data, or the file
+    its certificate-authority names; None for each that is missing or unreadable."""
     text = read(conf)
+    server = re.search(r"^\s*server:\s*(\S+)", text, re.M)
     data = re.search(r"^\s*certificate-authority-data:\s*(\S+)", text, re.M)
     path = re.search(r"^\s*certificate-authority:\s*(\S+)", text, re.M)
-    if data:
-        try:
-            return ca_hash(base64.b64decode(data.group(1), validate=True).decode("ascii", "replace"))
-        except ValueError:
-            return None
-    return ca_hash(read(path.group(1).strip("'\""))) if path else None
+    try:
+        pem = (base64.b64decode(data.group(1), validate=True).decode("ascii", "replace") if data
+               else read(path.group(1).strip("'\"")) if path else "")
+    except ValueError:
+        pem = ""
+    return (server.group(1).strip("'\"") if server else None), ca_hash(pem)
 
 
 def kube_leftovers():
-    def server(conf):
-        match = re.search(r"^\s*server:\s*(\S+)", read(conf), re.M)
-        return match.group(1).strip("'\"") if match else None
-
+    kubelet_server, kubelet_ca = kubeconfig("/etc/kubernetes/kubelet.conf")
+    admin_server, admin_ca = kubeconfig("/etc/kubernetes/admin.conf")
     rc, out = run(["systemctl", "is-active", "kubelet"])
     manifests = "/etc/kubernetes/manifests"
     cni = "/etc/cni/net.d"
     return {
         "kubelet_active": out == "active",
-        "kubelet_conf_server": server("/etc/kubernetes/kubelet.conf"),
-        "admin_conf_server": server("/etc/kubernetes/admin.conf"),
-        "kubelet_conf_ca": kubeconfig_ca("/etc/kubernetes/kubelet.conf"),
-        "admin_conf_ca": kubeconfig_ca("/etc/kubernetes/admin.conf"),
+        "kubelet_conf_server": kubelet_server,
+        "admin_conf_server": admin_server,
+        "kubelet_conf_ca": kubelet_ca,
+        "admin_conf_ca": admin_ca,
         "cluster_ca": ca_hash(read(CLUSTER_CA[0]) or read(CLUSTER_CA[1])),
         "manifests": sorted(os.listdir(manifests)) if os.path.isdir(manifests) else [],
         "etcd_member": os.path.isdir("/var/lib/etcd/member"),

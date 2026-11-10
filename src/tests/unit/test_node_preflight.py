@@ -123,6 +123,8 @@ CASES = [
      {}, "N10", "FAIL"),
     ("N10 our control plane", lambda d: d["kube"].update(kubelet_conf_server="https://192.0.2.10:6443"),
      {}, "N10", "OK"),
+    ("N10 local server, CA unreadable", lambda d: d["kube"].update(kubelet_conf_server="https://127.0.0.1:6443"),
+     {}, "N10", "FAIL"),
     ("N10 local proxy, no control-plane CA in this run",
      lambda d: d["kube"].update(kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-a"), {}, "N10", "FAIL"),
     ("N11 our leftovers", lambda d: d["kube"].update(kubelet_active=True, etcd_member=True), {}, "N11", "WARN"),
@@ -165,6 +167,12 @@ CASES = [
 @pytest.mark.parametrize("change, ctx, cid, expected", [c[1:] for c in CASES], ids=[c[0] for c in CASES])
 def test_check(change, ctx, cid, expected):
     assert status(changed(change), cid, **ctx) == expected
+
+
+def test_sudo_warnings_before_the_probe_json_are_ignored():
+    stdout = "sudo: unable to resolve host n1: Name or service not known\r\n" + json.dumps(healthy()) + "\r\n"
+    out = rules.node_preflight_evaluate([{"item": "n1", "stdout": stdout}], CTX)
+    assert out["failures"] == [] and out["warnings"] == []
 
 
 @pytest.mark.parametrize("result, cid, evidence", [
@@ -309,6 +317,36 @@ def test_n10_loopback_server_is_ours_only_with_our_ca():
         "cp1": "OK", "w1": "OK", "w2": "FAIL"}
 
 
+def n10_rows(results, control_plane=("cp1", "cp2")):
+    out = rules.node_preflight_evaluate(results, {**CTX, "api_hosts": list(control_plane),
+                                                  "control_plane": list(control_plane)})
+    return {r["node"]: (r["status"], r["evidence"]) for r in out["rows"] if r["id"] in ("N10", "N0", "N9")}
+
+
+def probed(node, **kube):
+    return {"item": node, "stdout": json.dumps(changed(lambda d: d["kube"].update(**kube)))}
+
+
+def test_n10_control_plane_nodes_with_different_cas():
+    rows = n10_rows([probed("cp1", cluster_ca="ca-a"), probed("cp2", cluster_ca="ca-b"),
+                     probed("w1", kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-a")])
+    assert rows["cp1"] == rows["cp2"] == ("FAIL", "this run's control-plane nodes have 2 different cluster CAs")
+
+
+def test_n10_cannot_compare_while_a_control_plane_node_is_not_probed():
+    rows = n10_rows([probed("cp1", cluster_ca="ca-a"), {"item": "cp2", "stdout": "", "msg": "Missing sudo password"},
+                     probed("w1", kubelet_conf_server="https://localhost:6443", kubelet_conf_ca="ca-b")])
+    assert rows["w1"] == ("WARN", "cannot compare the CA of kubelet.conf: cp2 not probed")
+    assert rows["cp2"][0] == "FAIL"
+
+
+def test_n10_loopback_kubeconfig_without_a_readable_ca():
+    rows = n10_rows([probed("cp1", cluster_ca="ca-a"), probed("w1", kubelet_conf_server="https://localhost:6443")],
+                    ("cp1",))
+    assert rows["w1"] == ("FAIL", "kubelet.conf points at https://localhost:6443, left over from a cluster; "
+                                  "its CA is missing or unreadable")
+
+
 def test_n10_loopback_server_when_our_control_plane_has_no_ca_yet():
     cp1 = changed(lambda d: d["kube"].update(addresses=["192.0.2.10"]))
     w1 = changed(lambda d: d["kube"].update(kubelet_conf_server="https://[::1]:6443", kubelet_conf_ca="ca-a"))
@@ -332,6 +370,14 @@ def test_kubeconfig_ca_matches_the_cluster_ca(monkeypatch):
     monkeypatch.setattr(probe, "run", _fake_run({}))
     kube = probe.kube_leftovers()
     assert kube["kubelet_conf_ca"] == kube["admin_conf_ca"] == kube["cluster_ca"] is not None
+
+
+def test_each_kubeconfig_is_read_once(monkeypatch):
+    reads = []
+    monkeypatch.setattr(probe, "read", lambda path, default="": reads.append(path) or default)
+    monkeypatch.setattr(probe, "run", _fake_run({}))
+    probe.kube_leftovers()
+    assert reads.count("/etc/kubernetes/kubelet.conf") == reads.count("/etc/kubernetes/admin.conf") == 1
 
 
 @pytest.mark.parametrize("text", ["", "no certificate here", "-----BEGIN CERTIFICATE-----\n@@@=\n-----END CERTIFICATE-----"])
@@ -406,6 +452,19 @@ def test_reach_maps_answers(monkeypatch, answer, expected):
     assert probe.reach(["https://example.com"]) == {"https://example.com": expected}
 
 
+# What urllib raises when a proxy refuses the HTTPS tunnel (checked against a local proxy).
+@pytest.mark.parametrize("reason, expected", [
+    ("Tunnel connection failed: 403 Forbidden", {"ok": True, "refused": True}),
+    ("Tunnel connection failed: 407 Proxy Authentication Required", {"ok": False, "error": "proxy authentication required"}),
+    ("Tunnel connection failed: 502 Bad Gateway", {"ok": False, "error": "Tunnel connection failed: 502 Bad Gateway"}),
+])
+def test_reach_through_a_proxy_that_refuses_the_tunnel(monkeypatch, reason, expected):
+    def urlopen(url, timeout):
+        raise probe.urllib.error.URLError(OSError(reason))
+    monkeypatch.setattr(probe.urllib.request, "urlopen", urlopen)
+    assert probe.reach(["https://example.com"]) == {"https://example.com": expected}
+
+
 def test_reach_reports_a_bad_http_answer(monkeypatch):
     def urlopen(url, timeout):
         raise probe.http.client.BadStatusLine("garbage")
@@ -445,26 +504,33 @@ def test_gateway_reads_the_default_route(monkeypatch, routes, ip, dev):
     assert (out["ip"], out["dev"], out["reachable"]) == (ip, dev, ip is not None)
 
 
-# `ip neigh show <gateway>`, as iproute2 prints it.
+# `ip neigh show <gateway> dev <dev>`, as iproute2 prints it.
 @pytest.mark.parametrize("neigh, reachable", [
-    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 REACHABLE ", True),
-    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 STALE ", True),
-    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 DELAY ", True),
-    ("192.0.2.1 dev eth0 lladdr 36:e7:f9:8b:58:d7 PROBE ", True),
-    ("192.0.2.1 dev eth0 INCOMPLETE ", False),
-    ("192.0.2.1 dev eth0 FAILED ", False),
+    ("192.0.2.1 lladdr 16:18:2f:83:38:dc REACHABLE ", True),
+    ("192.0.2.1 lladdr aa:bb:cc:dd:ee:01 PERMANENT ", True),
+    ("192.0.2.1 lladdr aa:bb:cc:dd:ee:01 STALE ", False),
+    ("192.0.2.1 lladdr aa:bb:cc:dd:ee:01 PROBE ", False),
+    ("192.0.2.1 INCOMPLETE ", False),
+    ("192.0.2.1 FAILED ", False),
+    ("192.0.2.10 lladdr aa:bb:cc:dd:ee:09 REACHABLE ", False),
     ("", False),
 ])
 def test_gateway_that_drops_pings_but_answers_arp(monkeypatch, neigh, reachable):
     answers = {("ip", "-o"): (0, "default via 192.0.2.1 dev eth0 proto static"), ("ip", "neigh"): (0, neigh),
                ("ping",): (1, "100% packet loss")}
-    monkeypatch.setattr(probe, "run", lambda args, timeout=10: answers.get(tuple(args[:2]), answers.get(tuple(args[:1]))))
+    calls = []
+
+    def run(args, timeout=10):
+        calls.append(args)
+        return answers.get(tuple(args[:2]), answers.get(tuple(args[:1])))
+    monkeypatch.setattr(probe, "run", run)
 
     def connect(addr, timeout):
         raise TimeoutError()
     monkeypatch.setattr(probe.socket, "create_connection", connect)
     out = probe.gateway()
     assert (out["reachable"], out["via"]) == (reachable, "arp" if reachable else None)
+    assert ["ip", "neigh", "show", "192.0.2.1", "dev", "eth0"] in calls
 
 
 def test_kubeconfig_server_may_be_quoted(monkeypatch):

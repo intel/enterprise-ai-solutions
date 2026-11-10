@@ -126,19 +126,35 @@ def _sudo_checks(euid):
              SUDO_HINT)]
 
 
-def _cluster_checks(kube, ports, etcd_node, ours, our_cas):
-    foreign = []
+def _other_cluster(kube, cp):
+    """N10: (failures, warnings) for this node's kubeconfigs against this run's control plane."""
+    fail, warn = [], []
+    if kube.get("cluster_ca") in cp["cas"] and len(cp["cas"]) > 1:
+        fail.append("this run's control-plane nodes have %d different cluster CAs" % len(cp["cas"]))
     for conf, server_key, ca_key in KUBECONFIGS:
-        server = kube.get(server_key)
+        server, ca = kube.get(server_key), kube.get(ca_key)
         host = _canonical(_host(server)) if server else None
+        if host is None:
+            continue
+        if host not in LOOPBACK:
+            if host not in cp["hosts"]:
+                fail.append("%s points at %s" % (conf, server))
         # Kubespray points kubeconfigs at 127.0.0.1 or its local API proxy: there the cluster CA tells.
-        if host in LOOPBACK and kube.get(ca_key) not in our_cas:
-            foreign.append("%s points at %s with another cluster's CA" % (conf, server))
-        elif host and host not in LOOPBACK and host not in ours:
-            foreign.append("%s points at %s" % (conf, server))
-    rows = [("N10", "FAIL" if foreign else "OK", "; ".join(foreign) or "no other cluster's config",
+        elif ca is None:
+            fail.append("%s points at %s, left over from a cluster; its CA is missing or unreadable" % (conf, server))
+        elif ca not in cp["cas"] and cp["unprobed"]:
+            warn.append("cannot compare the CA of %s: %s not probed" % (conf, ", ".join(cp["unprobed"])))
+        elif ca not in cp["cas"]:
+            fail.append("%s points at %s with another cluster's CA" % (conf, server))
+    return fail, warn
+
+
+def _cluster_checks(kube, ports, etcd_node, cp):
+    fail, warn = _other_cluster(kube, cp)
+    rows = [("N10", "FAIL" if fail else "WARN" if warn else "OK", "; ".join(fail + warn) or "no other cluster's config",
              "This node still belongs to another cluster. Remove it from that cluster and clean it "
-             "(kubeadm reset, then remove /etc/kubernetes, /var/lib/etcd and /etc/cni/net.d) before installing")]
+             "(kubeadm reset, then remove /etc/kubernetes, /var/lib/etcd and /etc/cni/net.d) before installing"
+             if fail else "Fix the control-plane node's probe first; N10 then compares the cluster CA")]
     left = []
     if kube.get("kubelet_active"):
         left.append("kubelet running")
@@ -226,7 +242,7 @@ def _ceph_checks(devices):
              "unless rook_ceph_teardown_wipe_devices is true")]
 
 
-def _checks(data, ctx, ours, our_cas):
+def _checks(data, ctx, cp):
     """(id, status, evidence, hint) for one node's probe data. A probe the node skipped is absent."""
     rows = []
     if data.get("time"):
@@ -241,7 +257,7 @@ def _checks(data, ctx, ours, our_cas):
         rows += _internet_checks(data["urls"])
     rows += _sudo_checks(data.get("euid"))
     if data.get("kube") is not None:
-        rows += _cluster_checks(data["kube"], data.get("ports"), data.get("etcd_node"), ours, our_cas)
+        rows += _cluster_checks(data["kube"], data.get("ports"), data.get("etcd_node"), cp)
     if data.get("ports") is not None:
         rows += _port_checks(data["ports"])
     if data.get("pkg"):
@@ -255,6 +271,12 @@ def _checks(data, ctx, ours, our_cas):
     rows += [("N0", "WARN", "probe error: " + err, "Report this; the other checks still ran")
              for err in data.get("errors", [])]
     return rows
+
+
+def _probe_json(stdout):
+    """The probe's JSON line, or None. With ssh -tt, sudo's warnings ("unable to resolve host") come first."""
+    lines = [line for line in (stdout or "").splitlines() if line.strip().startswith("{")]
+    return json.loads(lines[-1]) if lines else None
 
 
 def _probe_failed(res):
@@ -288,19 +310,20 @@ def node_preflight_evaluate(results, ctx):
     parsed = []
     for res in results or []:
         try:
-            parsed.append((res, json.loads(res.get("stdout") or "")))
+            parsed.append((res, _probe_json(res.get("stdout"))))
         except ValueError:
             parsed.append((res, None))
-    # An API server this run's control plane can serve: the inventory's names and addresses,
-    # and every address the control-plane nodes report (Kubespray may bind the default-route one).
+    # This run's control plane: the API servers it can serve (the inventory's names and addresses,
+    # and every address its nodes report: Kubespray may bind the default-route one) and its CAs.
     control_plane = set(ctx.get("control_plane") or [])
     cp_kube = [data.get("kube") or {} for res, data in parsed if data and res.get("item") in control_plane]
-    ours = {_canonical(h) for h in ctx.get("api_hosts") or []} | {
-        _canonical(a) for kube in cp_kube for a in kube.get("addresses", [])}
-    our_cas = {kube.get("cluster_ca") for kube in cp_kube} - {None}
+    cp = {"hosts": {_canonical(h) for h in ctx.get("api_hosts") or []} | {
+              _canonical(a) for kube in cp_kube for a in kube.get("addresses", [])},
+          "cas": {kube.get("cluster_ca") for kube in cp_kube} - {None},
+          "unprobed": [res.get("item") for res, data in parsed if data is None and res.get("item") in control_plane]}
     rows = []
     for res, data in parsed:
-        checks = _checks(data, ctx, ours, our_cas) if data is not None else _probe_failed(res)
+        checks = _checks(data, ctx, cp) if data is not None else _probe_failed(res)
         # A check the node did not probe because it is skipped is still listed, as SKIP.
         probed = {c[0] for c in checks}
         checks += [(cid, "SKIP", "in kubernetes_node_preflight_skip", "") for cid in TITLES

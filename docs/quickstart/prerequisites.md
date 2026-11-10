@@ -56,9 +56,9 @@ On a fresh install, the installer checks every node before Kubespray starts. The
 |---|---|
 | N1, N2 | Clock synchronised, and within 60 s of the deploy node |
 | N3, N4 | At least 20 GiB free, and at most 90 % used, under `/var/lib/containerd`; at most 90 % used on `/` |
-| N6, N7, N8 | Default gateway answers ping, TCP or ARP; DNS resolves (a warning behind a proxy, or with N8 skipped); HTTPS to github.com and registry.k8s.io (through the proxy, if one is set; a 403 is a warning) |
+| N6, N7, N8 | Default gateway answers ping, TCP or ARP (a confirmed neighbour entry); DNS resolves (a warning behind a proxy, or with N8 skipped); HTTPS to github.com and registry.k8s.io (through the proxy, if one is set; a 403 is a warning) |
 | N9 | Passwordless sudo |
-| N10 | No configuration from another cluster: `/etc/kubernetes/kubelet.conf` pointing at another API server, or at a local one (Kubespray's `127.0.0.1` or `localhost`) with a CA that this run's control-plane nodes don't have |
+| N10 | No configuration from another cluster: `/etc/kubernetes/kubelet.conf` or `admin.conf` pointing at another API server, or at a local one (Kubespray's `127.0.0.1` or `localhost`) with a CA that this run's control-plane nodes don't have, or none. The control-plane nodes must also share one cluster CA |
 | N12 | No other program on the Kubernetes ports: 10250 on every node, 6443, 10257 and 10259 on control-plane nodes, 2379-2380 on etcd nodes, 179 with BGP |
 | N13 | Package manager not broken (`dpkg --audit`) |
 | N15 | Rack-scale only: Ubuntu 22.04 or 24.04 |
