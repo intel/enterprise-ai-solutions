@@ -42,6 +42,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 | Removing control-plane/etcd node(s) via `remove-node` | The remaining nodes are not reconfigured afterwards — see [side effects](#removing-a-control-plane-node-side-effects) |
 | Cluster with ERAG deployed | Both actions only ever touch the `kubernetes` component — ERAG's own Helm/pipeline config is never re-applied, so any node-specific placement it relies on isn't accounted for. Both refuse when any ERAG-only namespace (`rag-ui`, `chat-history`, `edp`, `fingerprint`, `vdb`, `erag-gateway`, `auth-apisix`) exists |
 | Hand-edited inventory (`env/<name>/inventory/hosts.yaml`, no `nodes.yaml`) | Both actions find their target node(s), SSH details and control-plane membership from `nodes.yaml`; without it they stop before doing anything. Convert the inventory to `nodes.yaml` first |
+| Rack-scale (`rack_scale_enabled: true`) | The inventory comes from `rack-profile.yaml`, not `nodes.yaml`, and neither action runs the fabric roles (netplan, sysctl, BGP), so a new node would join with no fabric connectivity. With `nodes.yaml` left empty, as [rack-scale deployment](../rack-scale-deployment.md) requires, both actions stop before doing anything. Do not fill in `nodes.yaml` to work around this: add-node would overwrite the inventory generated from the rack profile |
 
 
 ## Adding worker nodes
