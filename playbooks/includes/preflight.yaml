@@ -377,7 +377,8 @@
 #   2. BFS layer dependencies (downward for install, upward for teardown)
 #   3. Collect components in registry order; narrow for component targets
 #   4. Solution scoping, skip filter, enabled filter (coerces "True"/"False"
-#      strings — fixes ext components whose enabled: is a rendered Jinja expr)
+#      strings — fixes ext components and layers whose enabled: is a rendered
+#      Jinja expr)
 #   5. Reverse for teardown
 # =============================================================================
 
