@@ -60,6 +60,10 @@ local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
+# An extra-var: Kubespray's per-OS include_vars (resolved's file on Ubuntu) outrank inventory.
+# /etc/resolv.conf is Kubespray's own default on other OSes: host_resolvconf lists the
+# cluster DNS first and keeps the upstream after it, so pods still reach a real resolver.
+kube_resolv_conf: "{% raw %}{{ '/run/systemd/resolve/resolv.conf' if '127.0.0.53' in ansible_facts['dns']['nameservers'] | default([]) else '/etc/resolv.conf' }}{% endraw %}"
 {% if kubernetes_apiserver_authn_enabled | bool %}
 # Directory mount, so atomic file replacement reaches the container.
 kube_kubeadm_apiserver_extra_args:
