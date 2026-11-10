@@ -285,7 +285,7 @@ rook_ceph_devices:
 # rook_ceph_teardown_wipe_devices: false   # set true to auto-wipe on teardown
 ```
 
-On rack-scale (`rack_scale_enabled: true`), leave `rook_ceph_devices` out: the devices come only from `storage.nodes` in `rack-profile.yaml`, and install stops if `rook_ceph_devices` here lists different ones (see [Rack-scale deployment](../rack-scale-deployment.md)).
+On rack-scale (`rack_scale_enabled: true`), leave `rook_ceph_devices` out: the devices come only from `storage.nodes` in `rack-profile.yaml`, and install and teardown stop if `rook_ceph_devices` here lists different ones (see [Rack-scale deployment](../rack-scale-deployment.md)).
 
 ---
 

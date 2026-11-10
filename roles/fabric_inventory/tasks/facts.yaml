@@ -31,6 +31,8 @@
 
     - name: "fabric_inventory | facts | Export"
       when: _rack_facts_valid | bool
+      vars:
+        _rack_ceph: "{{ (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph' }}"
       block:
         - name: "fabric_inventory | facts | Parse rack-profile.yaml"
           ansible.builtin.set_fact:
@@ -68,7 +70,7 @@
               {{ 'Move the devices from rook_ceph_devices in global_config.yaml there, then
               delete it from global_config.yaml.' if rook_ceph_devices | default({}) | length > 0 else '' }}
           when:
-            - (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph'
+            - _rack_ceph | bool
             - component_action | default('install') == 'install'
             - _rack_parsed.summary.ceph_devices | length == 0
 
@@ -83,7 +85,7 @@
               false to tear down without wiping (the disks then need wiping by hand
               before Ceph is installed again).
           when:
-            - (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph'
+            - _rack_ceph | bool
             - component_action | default('install') == 'teardown'
             - rook_ceph_teardown_wipe_devices | default(false) | bool
             - _rack_parsed.summary.ceph_devices | length == 0
@@ -96,7 +98,7 @@
               On rack-scale the rack profile is the only source of the Ceph devices:
               delete rook_ceph_devices from global_config.yaml.
           when:
-            - (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph'
+            - _rack_ceph | bool
             - component_action | default('install') in ['install', 'teardown']
             - _rack_parsed.summary.ceph_devices | length > 0
             - rook_ceph_devices != _rack_parsed.summary.ceph_devices

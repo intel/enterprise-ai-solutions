@@ -48,3 +48,35 @@ def test_kernel_names_and_paths_become_dev_paths():
 def test_rook_gets_kernel_names_bare_and_udev_paths_whole():
     assert rook_device_names(["/dev/nvme1n1", "/dev/disk/by-id/nvme-SAMSUNG_A1"]) == [
         "nvme1n1", "/dev/disk/by-id/nvme-SAMSUNG_A1"]
+
+
+def storage_result(nodes):
+    profile = copy.deepcopy(EXAMPLE)
+    profile["storage"]["nodes"] = nodes
+    return _mod.rack_profile_validate(profile)
+
+
+def storage_errors(nodes):
+    return storage_result(nodes)["errors"]
+
+
+def test_storage_node_entry_errors():
+    devices = ["nvme1n1"]
+    cases = [
+        ([{"devices": devices}], "storage.nodes[0] needs a 'name'"),
+        ([{"name": "master1", "devices": devices}, {"name": "master1", "devices": devices}],
+         "storage.nodes lists 'master1' more than once"),
+        ([{"name": "ghost", "devices": devices}], "storage.nodes entry 'ghost' is not a node defined under racks"),
+        ([{"name": "master1", "devices": []}], "storage node 'master1' needs a non-empty devices list"),
+        ([{"name": "master1", "devices": [1]}], "storage node 'master1' needs a non-empty devices list"),
+        ([{"name": "master1", "devices": [" nvme1n1 "]}], "storage node 'master1' needs a non-empty devices list"),
+        ({"master1": devices}, "storage.nodes must be a list, got dict"),
+    ]
+    for nodes, message in cases:
+        assert any(message in e for e in storage_errors(nodes)), (nodes, storage_errors(nodes))
+
+
+def test_storage_role_and_storage_nodes_disagree_warns():
+    result = storage_result([{"name": "master1", "devices": ["nvme1n1"]}])
+    assert result["errors"] == []
+    assert any("disagree" in w and "master1, master2" in w for w in result["warnings"])

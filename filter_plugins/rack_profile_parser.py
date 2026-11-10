@@ -1041,8 +1041,9 @@ def _storage_node_faults(storage, all_nodes):
             errors.append(f"storage.nodes entry '{name}' is not a node defined under racks")
         devices = entry.get("devices")
         if (not isinstance(devices, list) or not devices
-                or not all(isinstance(d, str) and d.strip() for d in devices)):
-            errors.append(f"storage node '{name}' needs a non-empty devices list, e.g. devices: [nvme1n1]")
+                or not all(isinstance(d, str) and d and d == d.strip() for d in devices)):
+            errors.append(f"storage node '{name}' needs a non-empty devices list of names "
+                          f"without spaces, e.g. devices: [nvme1n1]")
     with_role = sorted(n for n, node in all_nodes.items() if "storage" in node.get("roles", []))
     listed = sorted(n for n in set(seen) if n in all_nodes)
     if entries and with_role != listed:

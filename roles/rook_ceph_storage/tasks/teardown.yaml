@@ -197,7 +197,7 @@
                         # (0, 1, 10, 100, 1000 GiB) is zeroed as well.
                         blkdiscard -f "$dev" || true
                         for off in 0 1024 10240 102400 1024000; do
-                          dd if=/dev/zero of="$dev" bs=1M count=16 seek="$off" \
+                          dd if=/dev/zero of="$dev" bs=1M count=1 seek="$off" \
                              oflag=direct conv=notrunc status=none 2>/dev/null || true
                         done
                         wipefs -a "$dev" >/dev/null || { echo "FAILED wipefs $dev"; rc=1; continue; }
