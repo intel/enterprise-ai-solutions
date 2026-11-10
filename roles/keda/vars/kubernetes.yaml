@@ -1,0 +1,3 @@
+---
+# KEDA from the kedacore Helm chart, installed by this role.
+_keda_from_olm: false

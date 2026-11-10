@@ -1,0 +1,162 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# KEDA — Install via Helm, or check the cluster's Custom Metrics Autoscaler
+# =============================================================================
+
+- name: "keda | Check the cluster's Custom Metrics Autoscaler"
+  when: _keda_from_olm | bool
+  block:
+    - name: "keda | Look up KedaController instances"
+      kubernetes.core.k8s_info:
+        api_version: keda.sh/v1alpha1
+        kind: KedaController
+      register: _keda_olm_instances
+      failed_when: false
+
+    - name: "keda | Require the Custom Metrics Autoscaler"
+      ansible.builtin.assert:
+        that: _keda_olm_instances.resources | default([]) | length > 0
+        fail_msg: |-
+          No KedaController found. Install the Custom Metrics Autoscaler operator from
+          OperatorHub and create the KedaController named keda in openshift-keda
+          (docs/deploy/openshift.md, step 7), or set keda_enabled: false.
+        success_msg: >-
+          KEDA provided by the cluster (Custom Metrics Autoscaler,
+          {{ _keda_olm_instances.resources | map(attribute='metadata.namespace') | join(', ') }}) — skipping Helm install.
+
+- name: "keda | Helm release"
+  when: not _keda_from_olm | bool
+  block:
+    - name: "keda | Detect"
+      ansible.builtin.include_tasks: detect.yaml
+
+    - name: "keda | external.metrics.k8s.io belongs to another install — skipping"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'The cluster already serves external.metrics.k8s.io' if _keda_foreign | bool
+             else 'external.metrics.k8s.io is registered but not Available' }}
+          ({{ _keda_api_service.namespace | default('?') }}/{{ _keda_api_service.name | default('?') }}); leaving it alone.
+          {{ '' if _keda_foreign | bool
+             else 'Remove the APIService v1beta1.external.metrics.k8s.io, or fix the service behind it, then install again.' }}
+      when: _keda_foreign | bool or _keda_stale | bool
+
+    - name: "keda | Install"
+      when: not (_keda_foreign | bool or _keda_stale | bool)
+      block:
+        - name: "keda | Namespace"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: "{{ keda_namespace }}"
+                labels: >-
+                  {{ ({'istio.io/dataplane-mode': 'ambient'} if istio_enabled | default(false) | bool else {})
+                     | combine({'pod-security.kubernetes.io/enforce': 'restricted',
+                                'pod-security.kubernetes.io/audit': 'restricted',
+                                'pod-security.kubernetes.io/warn': 'restricted'}
+                               if enforce_pss | default(false) | bool else {}) }}
+
+        # The host-network apiserver calls the metrics API (6443) and the admission
+        # webhooks (9443) over plaintext: only those ports are PERMISSIVE, and only
+        # the apiserver's node and CNI tunnel addresses may reach them.
+        - name: "keda | Mesh exception for the apiserver"
+          when: istio_enabled | default(false) | bool
+          vars:
+            _keda_apiserver_ports:
+              - {app: keda-operator-metrics-apiserver, port: "6443"}
+              - {app: keda-admission-webhooks, port: "9443"}
+          block:
+            - name: "keda | Read the nodes (apiserver source addresses)"
+              kubernetes.core.k8s_info:
+                kind: Node
+              register: _keda_nodes
+
+            - name: "keda | Allow apiserver plaintext on its ports (port-level mTLS)"
+              kubernetes.core.k8s:
+                state: present
+                definition:
+                  apiVersion: security.istio.io/v1
+                  kind: PeerAuthentication
+                  metadata:
+                    name: "allow-{{ item.app }}"
+                    namespace: "{{ keda_namespace }}"
+                  spec:
+                    selector:
+                      matchLabels: {app: "{{ item.app }}"}
+                    mtls:
+                      mode: STRICT
+                    portLevelMtls: "{{ {item.port: {'mode': 'PERMISSIVE'}} }}"
+              loop: "{{ _keda_apiserver_ports }}"
+              loop_control:
+                label: "{{ item.app }}:{{ item.port }}"
+
+            # Node addresses are a snapshot; re-running the role refreshes them.
+            - name: "keda | Restrict those ports to the apiserver"
+              kubernetes.core.k8s:
+                state: present
+                definition:
+                  apiVersion: security.istio.io/v1
+                  kind: AuthorizationPolicy
+                  metadata:
+                    name: "authz-{{ item.app }}"
+                    namespace: "{{ keda_namespace }}"
+                  spec:
+                    selector:
+                      matchLabels: {app: "{{ item.app }}"}
+                    action: ALLOW
+                    rules:
+                      - from:
+                          - source:
+                              ipBlocks: "{{ _keda_nodes.resources | apiserver_source_ips }}"
+                        to:
+                          - operation:
+                              ports: ["{{ item.port }}"]
+              loop: "{{ _keda_apiserver_ports }}"
+              loop_control:
+                label: "{{ item.app }}:{{ item.port }}"
+
+        - name: "keda | Add Helm repo"
+          kubernetes.core.helm_repository:
+            name: kedacore
+            repo_url: "{{ keda_helm_repo }}"
+          register: _keda_repo
+          until: _keda_repo is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "keda | Install via Helm"
+          kubernetes.core.helm:
+            name: keda
+            chart_ref: kedacore/keda
+            release_namespace: "{{ keda_namespace }}"
+            create_namespace: false
+            chart_version: "{{ keda_version }}"
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+            values:
+              affinity: "{{ _platform_affinity | default({}) }}"
+          register: _keda_install
+          until: _keda_install is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "keda | Wait for external.metrics.k8s.io"
+          kubernetes.core.k8s_info:
+            api_version: apiregistration.k8s.io/v1
+            kind: APIService
+            name: v1beta1.external.metrics.k8s.io
+          register: _keda_api_ready
+          until:
+            - _keda_api_ready.resources | length > 0
+            - _keda_api_ready.resources[0].status.conditions | default([])
+              | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+          retries: 30
+          delay: 10
+
+        - name: "keda | Install complete"
+          ansible.builtin.debug:
+            msg: "KEDA {{ keda_version }} in {{ keda_namespace }}; external.metrics.k8s.io is Available."

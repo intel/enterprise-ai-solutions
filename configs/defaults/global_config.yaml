@@ -72,6 +72,7 @@ observability_enabled: true
 metrics_server_enabled: true              # resource metrics (kubectl top, Headlamp CPU/memory); skipped when the cluster already has one
 velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
 headlamp_enabled: false                   # opt-in: Kubernetes web UI, Keycloak sign-in (platform realm)
+keda_enabled: false                       # opt-in: event-driven autoscaling (KEDA); Custom Metrics Autoscaler on OpenShift
 # headlamp_byo_apiserver_trusted: true    # BYO cluster: its API server already trusts the platform realm
 
 # --- Authentication ---

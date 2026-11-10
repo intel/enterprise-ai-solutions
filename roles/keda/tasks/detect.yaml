@@ -1,0 +1,31 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Ours = our Helm release in our own namespace. Otherwise an existing
+# external.metrics.k8s.io belongs to someone else: foreign when it answers, stale when not.
+- name: "keda | Check our Helm release"
+  kubernetes.core.helm_info:
+    name: keda
+    release_namespace: "{{ keda_namespace }}"
+  register: _keda_release
+  failed_when: false
+
+- name: "keda | Check external.metrics.k8s.io APIService"
+  kubernetes.core.k8s_info:
+    api_version: apiregistration.k8s.io/v1
+    kind: APIService
+    name: v1beta1.external.metrics.k8s.io
+  register: _keda_api
+
+- name: "keda | Classify"
+  vars:
+    _api: "{{ _keda_api.resources | first | default(none) }}"
+    _available: >-
+      {{ _api is not none and _api.status.conditions | default([])
+         | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0 }}
+    _ours: "{{ (_keda_release.status | default(none)) is not none }}"
+  ansible.builtin.set_fact:
+    _keda_ours: "{{ _ours | bool }}"
+    _keda_foreign: "{{ not _ours | bool and _available | bool }}"
+    _keda_stale: "{{ not _ours | bool and _api is not none and not _available | bool }}"
+    _keda_api_service: "{{ (_api.spec.service | default({}, true)) if _api is not none else {} }}"
