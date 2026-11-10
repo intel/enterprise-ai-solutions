@@ -1,0 +1,69 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Fabric Netplan — Check the fabric NICs (install and validate)
+# =============================================================================
+
+- name: "fabric_netplan | Read the NICs on each node"
+  ansible.builtin.command: ip -j addr show
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _addr_checks
+  changed_when: false
+  check_mode: false
+
+# Compares the NICs with the fabric file, not the other netplan files with it,
+# so it does not depend on netplan's merge rules.
+- name: "fabric_netplan | Compare the fabric NICs with the fabric file"
+  vars:
+    _host: "{{ hostvars[item.item].node_hostname | default(item.item) }}"
+    _ethernets: "{{ (lookup('file', rack_scale_netplan_dir ~ '/' ~ _host ~ '.yaml') | from_yaml).network.ethernets | default({}) }}"
+    _problems: "{{ item.stdout | from_json | fabric_nic_problems(_ethernets) }}"
+    _nic_diff: >-
+      On {{ item.item }} the fabric NICs are not as {{ rack_scale_netplan_dir }}/{{ _host }}.yaml
+      sets them: {{ (_problems.wrong + _problems.extra) | join('; ') }}.
+  block:
+    - name: "fabric_netplan | Fail if a fabric NIC is not as the fabric file sets it"
+      ansible.builtin.fail:
+        msg: >-
+          {{ _nic_diff }} Usually another netplan file or NetworkManager profile also
+          configures the NIC, by its name, its MAC or a wildcard match, or an address is left
+          from an earlier configuration. Remove or narrow that entry, delete any address it
+          left (ip addr del), run netplan apply on the node, and re-run. For a NIC that is not
+          found, check its name in rack-profile.yaml; for an MTU the NIC cannot take, see
+          max_mtu in ip -d link.{{
+          ' Or set rack_scale_netplan_allow_extra_addresses: true to continue with a warning.'
+          if _problems.wrong | length == 0 else '' }}
+      when: >-
+        _problems.wrong | length > 0
+        or (_problems.extra | length > 0 and not (rack_scale_netplan_allow_extra_addresses | bool))
+      loop: "{{ _addr_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: "fabric_netplan | Bypassed — a fabric NIC is not as the fabric file sets it"
+      ansible.builtin.debug:
+        msg: "WARNING: {{ _nic_diff }} Continuing because rack_scale_netplan_allow_extra_addresses is true."
+      when: >-
+        _problems.wrong | length == 0 and _problems.extra | length > 0
+        and rack_scale_netplan_allow_extra_addresses | bool
+      loop: "{{ _addr_checks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+- name: "fabric_netplan | Fail if fabric address not present"
+  ansible.builtin.fail:
+    msg: >-
+      On {{ item.item }} ({{ hostvars[item.item].node_hostname | default(item.item) }})
+      {{ hostvars[item.item].access_ip }} is not present on any interface.
+  loop: "{{ _addr_checks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: >-
+    hostvars[item.item].access_ip not in
+    (item.stdout | from_json | map(attribute='addr_info') | flatten | map(attribute='local'))

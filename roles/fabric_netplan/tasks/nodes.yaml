@@ -1,0 +1,38 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Fabric Netplan — Nodes and their netplan files (install and validate)
+# =============================================================================
+
+- name: "fabric_netplan | Skip — topology=none (no fabric)"
+  ansible.builtin.meta: end_role
+  when: (rack_scale_topology | default('star')) == 'none'
+
+- name: "fabric_netplan | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _fabric_all_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | union(groups.get('ceph_storage_nodes', []))
+         | reject('equalto', 'localhost')
+         | unique }}
+
+- name: "fabric_netplan | Check netplan source exists for each node"
+  ansible.builtin.stat:
+    path: "{{ rack_scale_netplan_dir }}/{{ hostvars[item].node_hostname | default(item) }}.yaml"
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _netplan_sources
+
+- name: "fabric_netplan | Fail if any netplan file is missing"
+  ansible.builtin.fail:
+    msg: >-
+      No netplan file for node {{ item.item }}
+      (hostname: {{ hostvars[item.item].node_hostname | default(item.item) }})
+  loop: "{{ _netplan_sources.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
