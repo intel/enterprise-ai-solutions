@@ -48,10 +48,13 @@
 # "address not present" error.
 #
 # Any other netplan file that configures a fabric NIC (cloud-init's
-# 50-cloud-init.yaml, an installer's bond or bridge) conflicts as well: netplan
-# merges it with the fabric file, so the NIC ends up with both sets of
-# addresses or is claimed by a bond. A definition that configures nothing
-# (dhcp4: no, optional: true) is harmless.
+# 50-cloud-init.yaml, an installer's bond or bridge) conflicts as well. An
+# entry named after the NIC is merged with the fabric file: lists such as
+# addresses add up, and on single values the file that sorts later wins, so
+# dhcp4/dhcp6 from a file sorting before the fabric file are overridden. An
+# entry that selects the NIC with match: is not merged: networkd applies the
+# first matching .network file by name, which may not be the fabric one. A
+# definition that configures nothing (dhcp4: no, optional: true) is harmless.
 #
 # NetworkManager running next to networkd is fine: for renderer networkd,
 # netplan also tells NetworkManager to leave the fabric NICs alone, so
@@ -103,8 +106,10 @@
                     print("nmprof=%s in %s (profile '%s')" % (n, f, (d.get('networkmanager') or {}).get('name', dev)))
                 continue
             keys = [k for k in ('addresses', 'dhcp4', 'dhcp6', 'routes', 'gateway4', 'gateway6', 'set-name') if d.get(k)]
+            if not m and os.path.basename(f) < '{{ rack_scale_netplan_dest | basename }}':
+                keys = [k for k in keys if k not in ('dhcp4', 'dhcp6')]
             for n in hits if keys else []:
-                print("netplandef=%s in %s ('%s' sets %s)" % (n, f, dev, ', '.join(keys)))
+                print("netplandef=%s in %s ('%s' %s %s)" % (n, f, dev, 'matches it and sets' if m else 'sets', ', '.join(keys)))
         for kind in ('bonds', 'bridges'):
             for dev, d in (net.get(kind) or {}).items():
                 for n in nics:
@@ -172,11 +177,13 @@
     msg: >-
       On {{ item.item }} ({{ hostvars[item.item].node_hostname | default(item.item) }})
       another netplan file configures a fabric NIC:
-      {{ _other_defs | join('; ') }}. netplan merges it with
-      {{ rack_scale_netplan_dest }}, so the NIC would carry both configurations
-      (for example a second address). Remove the NIC from that file (for
-      cloud-init, also stop it rewriting the file: set
-      network: {config: disabled} in /etc/cloud/cloud.cfg.d/) and re-run, or
+      {{ _other_defs | join('; ') }}. An entry named after the NIC is merged
+      with {{ rack_scale_netplan_dest }}, so the NIC would carry both
+      configurations (for example a second address); an entry that matches it
+      is a separate configuration that networkd may apply instead. Remove the
+      NIC's entry from that file, or narrow the match so it no longer selects
+      the NIC (for cloud-init, also stop it rewriting the file: set
+      network: {config: disabled} in /etc/cloud/cloud.cfg.d/), and re-run, or
       set rack_scale_netplan_allow_other_definitions: true to continue with a
       warning.
   when:
