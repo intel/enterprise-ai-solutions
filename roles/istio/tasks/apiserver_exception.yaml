@@ -5,7 +5,7 @@
 # port is PERMISSIVE, and only the apiserver's node and CNI tunnel addresses may
 # reach it. Node addresses are a snapshot; re-running the caller refreshes them.
 #   istio_apiserver_exception_namespace   namespace of the workloads
-#   istio_apiserver_exception_workloads   [{name, selector, port}]
+#   istio_apiserver_exception_workloads   [{name, selector, port, extra_rules (optional, appended)}]
 
 - name: "istio | apiserver exception | Read the nodes (apiserver source addresses)"
   kubernetes.core.k8s_info:
@@ -44,13 +44,15 @@
         selector:
           matchLabels: "{{ item.selector }}"
         action: ALLOW
-        rules:
-          - from:
-              - source:
-                  ipBlocks: "{{ _istio_ax_nodes.resources | apiserver_source_ips }}"
-            to:
-              - operation:
-                  ports: ["{{ item.port | string }}"]
+        rules: "{{ [_apiserver_rule] + (item.extra_rules | default([])) }}"
+  vars:
+    _apiserver_rule:
+      from:
+        - source:
+            ipBlocks: "{{ _istio_ax_nodes.resources | apiserver_source_ips }}"
+      to:
+        - operation:
+            ports: ["{{ item.port | string }}"]
   loop: "{{ istio_apiserver_exception_workloads }}"
   loop_control:
     label: "{{ item.name }}:{{ item.port }}"
