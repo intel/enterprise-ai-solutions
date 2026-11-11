@@ -99,7 +99,8 @@ vim env/rack/rack-profile.yaml            # edit for your hardware — see below
 > [!Note]
 > `rack-profile.yaml` replaces `nodes.yaml` for rack-scale. Leave `nodes.yaml`
 > empty (or don't create it) — the fabric_inventory role generates the Kubespray
-> inventory from your rack profile.
+> inventory from your rack profile. Install stops if `nodes_control_plane` or
+> `nodes_workers` is set, because those would overwrite that inventory.
 
 > [!Important]
 > **Ceph storage:** `rook_ceph_devices` must still be set in `global_config.yaml`
@@ -183,14 +184,14 @@ racks:
             fabric_ip: 10.201.1.1    # fabric IP address
             prefix: 30               # on-link prefix (star: /30, clos: /16)
             peer: worker1            # star: node at the other end of this cable
-            # leaf: leaf-a           # clos: which ToR switch this NIC connects to
+            # leaf: leaf-a           # clos, optional: the leaf whose fabric_subnet holds fabric_ip
 ```
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `hostname` | yes | Used for netplan file names and K8s node name |
-| `mgmt_ip` | yes | SSH reachable from bastion. Not needed for `local: true` node |
-| `roles` | yes | `kube_control_plane`, `etcd`, `kube_node`, `storage` |
+| `hostname` | yes | Used for netplan file names. The Kubernetes node name is the node's key under `racks` (e.g. `master1`), and Kubespray sets the OS hostname to it |
+| `mgmt_ip` | yes | SSH reachable from the bastion. Every node needs it, the `local: true` node included: it SSHs to itself |
+| `roles` | yes | At least one of `kube_control_plane`, `etcd`, `kube_node`, `storage` |
 | `local` | no | Exactly one node — the bastion running the installer |
 | `fabric_nics` | yes | At least one 100G NIC per node |
 | `fabric_router` | no | **Star only.** Exactly one node. The hub that forwards between spokes |
@@ -200,7 +201,6 @@ racks:
 
 ```yaml
 storage:
-  ceph_fabric_nic: ens801f0              # NIC Ceph binds to
   ceph_public_network: 10.201.1.0/28    # client → OSD traffic
   ceph_cluster_network: 10.201.1.0/28   # OSD → OSD replication
 
@@ -210,6 +210,16 @@ storage:
     - name: master2
       devices: [nvme1n1]
 ```
+
+Ceph runs with host networking and binds to the addresses in
+`ceph_public_network` and `ceph_cluster_network`, so NIC names can differ per
+node. The parser checks that every `storage` node has a fabric IP in
+`ceph_public_network` (and in `ceph_cluster_network` when set), and that its
+node IP is in the public network: a Ceph mon binds to its node IP, and Rook can
+place a mon on any storage node. The node IP is the first fabric NIC, or
+`mgmt_ip` on a control-plane node when `control_plane_on_fabric` is false. With
+topology `none` there is no fabric, so each storage node's `mgmt_ip` must be in
+the Ceph networks.
 
 ---
 
@@ -307,6 +317,11 @@ worker1:
       leaf: leaf-b              # ECMP across both uplinks
 ```
 
+`leaf:` is optional: each NIC's leaf is the one whose `fabric_subnet` holds
+its `fabric_ip`. If you set it, it must name a defined leaf and agree with the
+subnet. A `fabric_ip` in no leaf's subnet, or in two overlapping ones, is an
+error. A NIC on a leaf with `fabric_subnet: TBD` must name the leaf.
+
 ---
 
 ## L2 Topology
@@ -369,8 +384,9 @@ master1:
 ```
 
 > [!Note]
-> L2 rejects `leafs:`, `fabric_router:`, `peer:`, and `leaf:` on NICs.
-> The parser enforces these as hard errors.
+> L2 rejects `leafs:`, `fabric_router:`, `peer:`, and `leaf:` on NICs, and
+> every `fabric_ip` must be inside the one segment. The parser enforces these
+> as hard errors.
 
 ---
 
@@ -511,7 +527,13 @@ and continue.
 | Kubespray can't SSH to workers | Star hub not forwarding | Check hub: `sysctl net.ipv4.ip_forward` (must be 1), `iptables -S FORWARD` (must have ACCEPT rules) |
 | `star cable faults: both ends must share...` | /30 subnet mismatch | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
 | `duplicate fabric_ip` | Two nodes share an IP | Check `rack-profile.yaml` for collisions |
-| Ceph OSDs not starting | Wrong NIC name | Verify `ceph_fabric_nic` exists on storage nodes: `ip link show` on each |
+| `storage node ... has no fabric_ip in ceph_public_network` | Ceph networks don't match the storage nodes | Give each storage node a fabric IP in the Ceph networks, or fix `ceph_public_network` / `ceph_cluster_network` |
+| `storage node ... node IP ... is outside ceph_public_network` | The node IP (first fabric NIC, or `mgmt_ip` on a control-plane node off the fabric) is on another network | List the NIC in `ceph_public_network` first; on a control-plane node set `control_plane_on_fabric: true` or move the `storage` role |
+| `storage node ... mgmt_ip ... is outside ceph_..._network` | Topology `none`: the Ceph networks don't hold the management addresses | Set the Ceph networks to the management subnet, or leave them out |
+| `fabric_ip ... is not within leafX's fabric_subnet` | IP and `leaf:` disagree | Fix the `fabric_ip`, or drop `leaf:` and let the parser derive it |
+| `fabric_ip ... is outside the L2 segment` | L2 node addressed in another subnet | Put every fabric IP in the one L2 subnet |
+| `missing required field 'mgmt_ip'` / `has no roles` | Incomplete node entry | Add `mgmt_ip` and at least one role to the node |
+| `the nodes come from rack-profile.yaml, but nodes_control_plane ... also set` | `nodes.yaml` defines nodes on a rack-scale env | Remove `nodes_control_plane` and `nodes_workers` from `env/<env>/nodes.yaml`; the rack profile lists the nodes |
 | Kubespray hangs behind proxy | Fabric CIDRs not in no_proxy | The installer injects them automatically; verify with `echo $no_proxy` |
 | `unknown field 'X' — typo?` | Schema validation | Fix the field name and re-run — the parser catches typos as hard errors |
 | `GPU operator not installing` | Missing `accelerator:`, or the vendor is not NVIDIA | Add `accelerator: nvidia-b300-hgx` (or similar) to the node or its profile |
