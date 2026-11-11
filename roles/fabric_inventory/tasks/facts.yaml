@@ -6,10 +6,11 @@
 # fabric_inventory | facts
 # =============================================================================
 # Exports the rack-scale facts that later roles read (topology, fabric MTU,
-# GPU vendor/model, Ceph networks) and checks that no_proxy covers the fabric
-# subnets. Preflight includes this for every action, so validate, teardown and
-# --only runs see the same values as a full install. Missing or invalid
-# profile: nothing here; install and validate of fabric_inventory report it.
+# GPU vendor/model, Ceph networks), checks that no_proxy covers the fabric
+# subnets, and on install that the MetalLB range is set and not on the fabric.
+# Preflight includes this for every action, so validate, teardown and --only
+# runs see the same values as a full install. Missing or invalid profile:
+# nothing here; install and validate of fabric_inventory report it.
 # =============================================================================
 
 - name: "fabric_inventory | facts | Check rack-profile.yaml exists"
@@ -67,3 +68,41 @@
             - (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0)
             - no_proxy | default('') | length > 0
             - _fabric_uncovered | length > 0
+
+        # MetalLB auto-detection would pick a fabric IP, and a LoadBalancer VIP
+        # on a fabric subnet is not reachable from outside the rack. Here rather
+        # than in install.yaml so that install runs that skip fabric_inventory
+        # (install platform, --only metallb) are checked too. topology none has
+        # no fabric, so auto-detection is safe there.
+        - name: "fabric_inventory | facts | Fail if metallb_ip_range is not set"
+          ansible.builtin.fail:
+            msg: >-
+              rack_scale_enabled is true but metallb_ip_range is not set. Node
+              InternalIPs are on the fabric, which is not reachable from outside
+              the rack, so MetalLB auto-detection would pick an unreachable VIP.
+              Set metallb_ip_range in global_config.yaml to free management-subnet
+              addresses, not a fabric address and not a node's own IP, for example
+              "172.18.168.240-172.18.168.250".
+          when:
+            - component_action | default('install') == 'install'
+            - metallb_enabled | default(true) | bool
+            - _rack_parsed.summary.topology != 'none'
+            - metallb_ip_range | default('', true) | length == 0
+
+        - name: "fabric_inventory | facts | Fail if metallb_ip_range is on the fabric"
+          ansible.builtin.fail:
+            msg: >-
+              metallb_ip_range {{ metallb_ip_range }} overlaps the fabric
+              subnet{{ 's' if _metallb_on_fabric | length > 1 else '' }}
+              {{ _metallb_on_fabric | join(', ') }}. A LoadBalancer VIP there is
+              not reachable from outside the rack. Set metallb_ip_range in
+              global_config.yaml to free management-subnet addresses (not a
+              node's own IP), for example "172.18.168.240-172.18.168.250".
+          vars:
+            _metallb_on_fabric: >-
+              {{ _rack_parsed.summary.fabric_cidrs
+                 | metallb_range_overlaps(metallb_ip_range | default('')) }}
+          when:
+            - component_action | default('install') == 'install'
+            - metallb_enabled | default(true) | bool
+            - _metallb_on_fabric | length > 0

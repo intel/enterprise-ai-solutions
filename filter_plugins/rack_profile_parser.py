@@ -138,18 +138,19 @@ def _ecmp_nodes(all_nodes, calico_mode, leaf_by_name):
     return result
 
 
+def _merge_networks(nets):
+    """The networks not inside another one, as sorted strings (IPv4 first)."""
+    nets = set(nets)
+    kept = [n for n in nets
+            if not any(n != o and n.version == o.version and n.subnet_of(o) for o in nets)]
+    return [str(n) for n in sorted(kept, key=lambda n: (n.version, n.network_address, n.prefixlen))]
+
+
 def _fabric_supernets(all_nodes, fabric_prefix):
-    nets = []
-    for _, node in sorted(all_nodes.items()):
-        for fn in node.get("fabric_nics", []):
-            if not fn.get("fabric_ip"):
-                continue
-            net = ipaddress.ip_network(
-                f"{fn['fabric_ip']}/{_nic_prefix(fn, fabric_prefix)}", strict=False)
-            if net not in nets:
-                nets.append(net)
-    merged = [n for n in nets if not any(n != o and n.subnet_of(o) for o in nets)]
-    return [str(n) for n in sorted(merged, key=lambda n: (n.network_address, n.prefixlen))]
+    return _merge_networks(
+        ipaddress.ip_network(f"{fn['fabric_ip']}/{_nic_prefix(fn, fabric_prefix)}", strict=False)
+        for _, node in sorted(all_nodes.items())
+        for fn in node.get("fabric_nics", []) if fn.get("fabric_ip"))
 
 
 def _fabric_addressing_conflicts(all_nodes, fabric_prefix):
@@ -543,6 +544,10 @@ def _parse_and_validate(profile):
             schema_errors.append(
                 f"leafs[{i}] ('{leaf.get('name', '?')}') is missing required "
                 f"field 'asn'")
+        if leaf.get("fabric_subnet") not in (None, "", "TBD"):
+            _safe_ip_network(leaf["fabric_subnet"],
+                             f"leafs[{i}] ('{leaf.get('name', '?')}') fabric_subnet",
+                             schema_errors)
 
     # S3: type-check each rack's nodes block
     # Flatten nodes preserving rack membership.
@@ -1366,6 +1371,17 @@ def _gen_bgp_peers(ctx):
     return files
 
 
+def _fabric_cidrs(ctx):
+    """Every fabric subnet: the NICs' own, each Clos leaf's, and the star supernet."""
+    nets = [ipaddress.ip_network(n) for n in _fabric_supernets(ctx["all_nodes"], ctx["fabric_prefix"])]
+    nets += [ipaddress.ip_network(leaf["fabric_subnet"], strict=False) for leaf in ctx["leafs"]
+             if leaf.get("fabric_subnet") not in (None, "", "TBD")]
+    star = _star_fabric_supernet(ctx["all_nodes"]) if ctx["topology"] == "star" else None
+    if star:
+        nets.append(ipaddress.ip_network(star))
+    return _merge_networks(nets)
+
+
 def _build_summary(ctx):
     """Build the summary metadata dict."""
     all_nodes = ctx["all_nodes"]
@@ -1386,6 +1402,7 @@ def _build_summary(ctx):
         "topology": ctx["topology"],
         "calico_mode": ctx["calico_mode"],
         "fabric_mtu": ctx["fabric_mtu"],
+        "fabric_cidrs": _fabric_cidrs(ctx),
         "node_count": len(all_nodes),
         "gpu_vendor": gpu_vendor,
         "gpu_model": gpu_model,
@@ -1467,10 +1484,37 @@ def no_proxy_uncovered(cidrs, no_proxy):
     return uncovered
 
 
+def metallb_range_overlaps(cidrs, ip_range):
+    """Return the CIDRs that a MetalLB address range overlaps.
+
+    ip_range is one MetalLB pool entry: an address, a CIDR, or 'first-last'.
+    A value that does not parse returns nothing; MetalLB rejects it itself.
+    """
+    value = str(ip_range or "").strip()
+    try:
+        if "-" in value:
+            first, last = (ipaddress.ip_address(v.strip()) for v in value.split("-", 1))
+        else:
+            net = ipaddress.ip_network(value, strict=False)
+            first, last = net.network_address, net.broadcast_address
+        if first.version != last.version or first > last:
+            return []
+    except ValueError:
+        return []
+    overlaps = []
+    for cidr in cidrs or []:
+        net = ipaddress.ip_network(str(cidr), strict=False)
+        if (net.version == first.version
+                and first <= net.broadcast_address and last >= net.network_address):
+            overlaps.append(str(cidr))
+    return overlaps
+
+
 class FilterModule:
     def filters(self):
         return {
             "rack_profile_parse": rack_profile_parse,
             "rack_profile_validate": rack_profile_validate,
             "no_proxy_uncovered": no_proxy_uncovered,
+            "metallb_range_overlaps": metallb_range_overlaps,
         }

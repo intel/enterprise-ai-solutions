@@ -523,7 +523,8 @@ and continue.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `rack_scale_enabled is true but rack-profile.yaml not found` | Missing profile | Copy `configs/defaults/rack-profile.yaml.example` to `env/<env>/rack-profile.yaml` |
-| `rack_scale_enabled=true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to a management-subnet IP (e.g. `172.18.168.1/32`) |
+| `rack_scale_enabled is true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to free management-subnet addresses (e.g. `172.18.168.240-172.18.168.250`), not a node's own IP |
+| `metallb_ip_range ... overlaps the fabric subnet` | VIP range on the fabric | Move `metallb_ip_range` to free management-subnet addresses; fabric IPs are not reachable from outside the rack |
 | Kubespray can't SSH to workers | Star hub not forwarding | Check hub: `sysctl net.ipv4.ip_forward` (must be 1), `iptables -S FORWARD` (must have ACCEPT rules) |
 | `star cable faults: both ends must share...` | /30 subnet mismatch | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
 | `duplicate fabric_ip` | Two nodes share an IP | Check `rack-profile.yaml` for collisions |
@@ -598,6 +599,6 @@ kubernetes → storage
 | Variable | Default | Location | Purpose |
 |----------|---------|----------|---------|
 | `rack_scale_enabled` | `false` | `global_config.yaml` | Master gate for all fabric components |
-| `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale.** Management-subnet IP for LoadBalancer VIP (e.g. `172.18.168.1/32`). Auto-detection picks fabric IPs which are unreachable from outside the rack. |
+| `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale.** Free management-subnet addresses for LoadBalancer VIPs (e.g. `172.18.168.240-172.18.168.250`). Not a fabric address: auto-detection picks fabric IPs, which are unreachable from outside the rack, and install stops if the range overlaps a fabric subnet. Not a node's own IP: with more than one control-plane node, MetalLB can announce it from another node, which then answers ARP for that node's address. |
 | `storage_backend` | `local-path` | `global_config.yaml` | Set to `ceph` for fabric-attached storage |
 | `rack-profile.yaml` | (none) | `env/<env>/` | Hardware profile — see above |
