@@ -1,0 +1,28 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Ours = our Helm release in our own namespace. Otherwise an existing
+# external.metrics.k8s.io belongs to someone else: foreign when it answers, stale when not.
+- name: "keda | Check our Helm release"
+  kubernetes.core.helm_info:
+    name: keda
+    release_namespace: "{{ keda_namespace }}"
+  register: _keda_release
+  failed_when: false
+
+- name: "keda | Check external.metrics.k8s.io APIService"
+  kubernetes.core.k8s_info:
+    api_version: apiregistration.k8s.io/v1
+    kind: APIService
+    name: v1beta1.external.metrics.k8s.io
+  register: _keda_api
+
+- name: "keda | Classify"
+  vars:
+    _state: "{{ _keda_api.resources | apiservice_state(_keda_release.status | default(none)) }}"
+  ansible.builtin.set_fact:
+    _keda_ours: "{{ _state.ours }}"
+    _keda_foreign: "{{ _state.foreign }}"
+    _keda_stale: "{{ _state.stale }}"
+    _keda_available: "{{ _state.available }}"
+    _keda_api_service: "{{ _state.service }}"

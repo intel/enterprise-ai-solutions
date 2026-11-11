@@ -1,0 +1,5 @@
+---
+# Custom Metrics Autoscaler (Red Hat's KEDA), installed by the admin from
+# OperatorHub with a KedaController. It owns the CRDs and external.metrics.k8s.io:
+# the role only checks it runs.
+_keda_from_olm: true
