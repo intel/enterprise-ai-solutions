@@ -9,7 +9,7 @@ networking, Ceph storage on fabric, and optional GPU acceleration.
 
 ## Overview
 
-Rack-scale mode adds 100G fabric networking to the infrastructure layer. It is
+Rack-scale mode adds a dedicated high-speed fabric to the infrastructure layer. It is
 **disabled by default** (`rack_scale_enabled: false`) — when off, all fabric
 components are skipped and the stack behaves identically to a standard
 deployment. When enabled, the installer reads `rack-profile.yaml` and
@@ -37,7 +37,9 @@ Four topologies are supported from the same `rack-profile.yaml` schema:
   netplan, so RHEL and Rocky Linux nodes are not supported for rack-scale, even
   though the base installer supports them. The fabric step stops before writing
   anything if a node has no netplan.
-- **Hardware:** 100G NICs on all nodes (check with `ip link show`)
+- **Hardware:** fabric NICs on all nodes (check with `ip link show`). Any link
+  speed works; every fabric NIC and switch port must carry the profile's MTU
+  (`network.mtu`, 9000 by default)
   - Star: direct cables between hub and each node
   - Clos: cables to ToR leaf switches
 - **Network plan:** fabric IP addresses, subnet layout, cable map
@@ -76,8 +78,8 @@ failed rack-scale install.
 ## Quick Start
 
 ```bash
-git clone https://github.com/intel-innersource/applications.ai.enterprise.ai-solutions.git
-cd applications.ai.enterprise.ai-solutions
+git clone https://github.com/intel/enterprise-ai-solutions.git
+cd enterprise-ai-solutions
 
 ./es_auto_installer.sh configure
 
@@ -197,7 +199,7 @@ racks:
 | `mgmt_ip` | yes | SSH reachable from the bastion. Every node needs it, the `local: true` node included: it SSHs to itself |
 | `roles` | yes | At least one of `kube_control_plane`, `etcd`, `kube_node`, `storage` |
 | `local` | no | Exactly one node — the bastion running the installer |
-| `fabric_nics` | yes | At least one 100G NIC per node |
+| `fabric_nics` | yes | At least one fabric NIC per node |
 | `fabric_router` | no | **Star only.** Exactly one node. The hub that forwards between spokes |
 | `profile` | no | Reference to a `node_profiles` entry |
 
@@ -441,17 +443,21 @@ worker1:
 
 ## Upgrading Star → Clos
 
-This is a config-only change — no application modifications required.
+The topology of an installed cluster can't be changed in place. Re-running
+`install` on a running cluster skips Kubespray, so Calico's mode (VXLAN to BGP)
+never changes. Tear the cluster down and install it again. Teardown removes
+Ceph too, so back up what you need first.
 
-1. Install ToR leaf switches and cable nodes to them
-2. Edit `rack-profile.yaml`:
+1. Tear down: `./es_auto_installer.sh teardown infrastructure --env <env>`
+2. Install the ToR leaf switches and cable the nodes to them
+3. Edit `rack-profile.yaml`:
    - Change `topology: star` → `topology: clos`
    - Change `calico_mode: vxlan` → `calico_mode: bgp`
    - Change `fabric_prefix: 30` → `fabric_prefix: 16`
    - Remove `fabric_router: true` and `peer:` from nodes
    - Add `leafs:` definitions and `leaf:` on each fabric NIC
-   - Add `bgp: cluster_asn:` 
-3. Re-run `install` — the stack reconfigures automatically
+   - Add `bgp: cluster_asn:`
+4. Install: `./es_auto_installer.sh install inference --env <env>`
 
 ---
 

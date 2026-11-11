@@ -29,7 +29,7 @@ network:
   calico_mode: vxlan                # vxlan (star) | bgp (clos)
   pod_cidr: 10.244.0.0/16
   service_cidr: 10.233.0.0/18
-  mtu: 9000
+  mtu: 9000                         # every fabric NIC and switch port must carry it
   fabric_prefix: 30                 # /30 for star (point-to-point), /16 for clos
   netplan_renderer: networkd        # networkd | NetworkManager
   control_plane_on_fabric: true     # bind kubelet/etcd to fabric IP (recommended)
@@ -63,7 +63,7 @@ racks:
         local: true                   # Ansible bastion — runs locally
         roles: [kube_control_plane, etcd, storage]
         fabric_nics:
-          - nic: ens801f0              # 100G NIC name (ip link show)
+          - nic: ens801f0              # fabric NIC name (ip link show)
             fabric_ip: 10.201.1.1
             prefix: 30
             peer: worker1             # node at the other end of this cable
