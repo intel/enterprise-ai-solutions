@@ -99,8 +99,10 @@ storage:
   ceph_public_network: 10.201.1.0/28
   ceph_cluster_network: 10.201.1.0/28
 
-  # OS disk is typically nvme0n1 — NEVER list it here.
-  nodes:
+  # The OSD disks: on rack-scale the only source (no rook_ceph_devices in
+  # global_config.yaml). A kernel name (nvme1n1) or a full /dev path such as
+  # /dev/disk/by-id/.... The OS disk (typically nvme0n1) NEVER goes here.
+  nodes:                            # name: the node's key under racks
     - name: master1
       devices: [nvme1n1]
     - name: master2
