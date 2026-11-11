@@ -8,12 +8,8 @@
 # Runs after the kubespray reset (es_auto_installer.sh): the node IPs live on
 # the fabric, and the reset needs them.
 
-- name: "fabric_netplan | teardown | Compute cluster node list"
-  ansible.builtin.set_fact:
-    _fabric_all_nodes: >-
-      {{ (groups['kube_control_plane'] | default([]))
-         | union(groups['kube_node'] | default([]))
-         | unique }}
+- name: "fabric_netplan | teardown | Cluster node list"
+  ansible.builtin.import_tasks: node_list.yaml
 
 # netplan apply leaves an address in place once its definition is gone, so read
 # what 99-fabric.yaml assigned before removing it.
