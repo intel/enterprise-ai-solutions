@@ -1463,10 +1463,10 @@ _add_node_pending_nodes() {
 # node readiness; kept separate because this one answers "which nodes"
 # rather than "is anything wrong."
 _not_ready_nodes() {
-    kubectl get nodes -o json 2>/dev/null \
-        | yq -p json -r '.items[]
-            | select((.status.conditions // []) | map(select(.type == "Ready")) | .[0].status != "True")
-            | .metadata.name' 2>/dev/null || true
+    local json; json=$(kubectl get nodes -o json 2>/dev/null) || return 1
+    yq -p json -r '.items[]
+        | select((.status.conditions // []) | map(select(.type == "Ready")) | .[0].status != "True")
+        | .metadata.name' <<< "$json"
 }
 
 # _is_openshift — true if the target cluster is OpenShift, detected via its
@@ -1487,10 +1487,10 @@ _is_openshift() {
 # node itself, not something `kubectl drain` even evicts) — neither is the
 # kind of workload an operator needs a warning about before removing a node.
 _node_workloads() {
-    kubectl get pods -A --field-selector "spec.nodeName=${1}" -o json 2>/dev/null \
-        | yq -p json -r '.items[]
-            | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet" or .kind == "Node") | any | not)
-            | .metadata.namespace + "/" + .metadata.name' 2>/dev/null || true
+    local json; json=$(kubectl get pods -A --field-selector "spec.nodeName=${1}" -o json 2>/dev/null) || return 1
+    yq -p json -r '.items[]
+        | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet" or .kind == "Node") | any | not)
+        | .metadata.namespace + "/" + .metadata.name' <<< "$json"
 }
 
 # _cp_tainted_nodes — names of control-plane nodes that currently carry the
@@ -1564,21 +1564,15 @@ _simulate_removal() {
     "${VENV}/bin/python3" "${SCRIPT_DIR}/roles/kubernetes/files/simulate_node_removal.py" "$@"
 }
 
-# _cluster_health_findings — one problem per line, empty output = healthy.
-# Red when any node is NotReady, or any non-DaemonSet pod is
-# CrashLoopBackOff/ImagePullBackOff/stuck Unschedulable — the same signals
-# `kubectl get events` would surface, pre-aggregated so a caller (status
-# --health, or remove-node's post-check) can gate on "any output at all",
-# the same pattern _node_workloads/_pdb_blocked_pods already use. There's no
-# equivalent of the spec's "C3" external health system in this codebase, so
-# this is self-contained.
+# _cluster_health_findings — one problem per line, empty output = healthy:
+# NotReady nodes, and non-DaemonSet pods in CrashLoopBackOff, ImagePullBackOff
+# or stuck Unschedulable. A cluster that cannot be read is a finding too.
 _cluster_health_findings() {
-    kubectl get nodes -o json 2>/dev/null | yq -p json -r '
-        .items[]
-        | select((.status.conditions // []) | map(select(.type == "Ready")) | .[0].status != "True")
-        | "node " + .metadata.name + " is NotReady"
-    ' 2>/dev/null || true
-    kubectl get pods -A -o json 2>/dev/null | yq -p json -r '
+    local not_ready pods
+    not_ready=$(_not_ready_nodes) || { echo "cannot list the cluster's nodes (kubectl get nodes failed)"; return; }
+    pods=$(kubectl get pods -A -o json 2>/dev/null) || { echo "cannot list the cluster's pods (kubectl get pods failed)"; return; }
+    sed '/^$/d; s/^/node /; s/$/ is NotReady/' <<< "$not_ready"
+    yq -p json -r '
         .items[]
         | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet") | any | not)
         | . as $pod
@@ -1586,13 +1580,26 @@ _cluster_health_findings() {
         | map(select(.state.waiting.reason == "CrashLoopBackOff" or .state.waiting.reason == "ImagePullBackOff"))
         | select(length > 0)
         | "pod " + $pod.metadata.namespace + "/" + $pod.metadata.name + " is " + .[0].state.waiting.reason
-    ' 2>/dev/null || true
-    kubectl get pods -A -o json 2>/dev/null | yq -p json -r '
+    ' <<< "$pods"
+    yq -p json -r '
         .items[]
         | select(.status.phase == "Pending")
         | select((.status.conditions // []) | map(select(.type == "PodScheduled" and .status == "False" and .reason == "Unschedulable")) | any)
         | "pod " + .metadata.namespace + "/" + .metadata.name + " is Unschedulable"
-    ' 2>/dev/null || true
+    ' <<< "$pods"
+}
+
+# _health_regressions <baseline> — findings not in <baseline>. Pods a drain just
+# evicted are Unschedulable for a moment, so they get a minute to land.
+_health_regressions() {
+    local new i
+    for i in 1 2 3 4 5 6; do
+        new=$(comm -13 <(printf '%s\n' "$1" | sort -u) <(_cluster_health_findings | sort -u) | grep -v '^$' || true)
+        [[ -z "$new" ]] && return 0
+        (( i < 6 )) && sleep 10
+    done
+    printf '%s\n' "$new"
+    return 1
 }
 
 # do_health_check — `status --health`: aggregate cluster health into one
@@ -1783,8 +1790,22 @@ do_remove_node() {
     removed=$(comm -23 <(printf '%s\n' "$live") <(printf '%s\n' "$declared") | grep -v '^$' || true)
 
     if [[ -z "$removed" ]]; then
-        ok "remove-node: nothing to do — nodes.yaml matches the live cluster."
-        exit 0
+        # remove-node.yml ran but the post phase did not finish: the node is
+        # gone from the cluster and from nodes.yaml, yet still in the inventory.
+        local unfinished
+        unfinished=$(comm -23 <(yq -r '.all.hosts // {} | keys | .[]' "$INVENTORY" 2>/dev/null | sort -u) \
+            <(sort -u <(printf '%s\n' "$declared") <(printf '%s\n' "$live")) | grep -v '^$' || true)
+        if [[ -z "$unfinished" ]]; then
+            ok "remove-node: nothing to do — nodes.yaml matches the live cluster."
+            exit 0
+        fi
+        info "remove-node: finishing the post phase for: ${unfinished//$'\n'/, }"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            info "  would run: remove-node post phase only (no remove-node.yml)"
+            exit 0
+        fi
+        _remove_node_post "${unfinished//$'\n'/,}" "$(_cluster_health_findings)"
+        return
     fi
 
     # remove-node.yml can only reach hosts the inventory defines: -e node=<name>
@@ -1847,7 +1868,8 @@ do_remove_node() {
     # drain (and the PDB/eviction protection that comes with it) on a node
     # that's perfectly reachable.
     if [[ "$NODE_LOST" == "true" ]]; then
-        local not_ready; not_ready=$(_not_ready_nodes | sort -u)
+        local not_ready; not_ready=$(_not_ready_nodes) || err "remove-node: cannot read the nodes' Ready state (kubectl get nodes failed)."
+        not_ready=$(sort -u <<< "$not_ready")
         local still_ready; still_ready=$(comm -23 <(printf '%s\n' "$removed") <(printf '%s\n' "$not_ready") | grep -v '^$' || true)
         if [[ -n "$still_ready" ]]; then
             err "remove-node --node-lost refused — still Ready, not lost: ${still_ready//$'\n'/, }
@@ -1861,7 +1883,7 @@ do_remove_node() {
     # than finding out via a drain hang or a workload quietly going down.
     local n workloads any_workloads=false
     for n in ${removed//$'\n'/ }; do
-        workloads=$(_node_workloads "$n")
+        workloads=$(_node_workloads "$n") || { warn "  cannot list the workloads on ${n} (kubectl get pods failed)"; continue; }
         if [[ -n "$workloads" ]]; then
             any_workloads=true
             warn "  ${n} is running workload(s) that will be evicted:"
@@ -1962,25 +1984,29 @@ $(sed 's/^/  /' <<< "$sim_findings")
 
     _advanced_op_banner
     confirm "$_confirm_msg"
-    # Ensure kubespray only — the inventory is NOT regenerated here on purpose;
-    # remove-node.yml needs the target node(s) still present in it to reach
-    # them (see roles/kubernetes/tasks/remove-node.yaml for why).
+    local health_before; health_before=$(_cluster_health_findings)
+    # The inventory is not regenerated before remove-node.yml: it reaches the
+    # node(s) through it (see roles/kubernetes/tasks/remove-node.yaml).
     run site "${vars[@]}" -e "_scale_phase=prep" "${EXTRA_VARS[@]}"
     run_kubespray remove "$removed_csv"
-    # Only now regenerate the inventory, dropping the removed node(s), and
-    # delete their now-orphaned node.<NAME> BalloonsPolicy CR(s).
-    run site "${vars[@]}" -e "_scale_phase=post" -e "_removed_nodes=${removed_csv}" "${EXTRA_VARS[@]}"
+    _remove_node_post "$removed_csv" "$health_before"
+}
 
-    for n in ${removed//$'\n'/ }; do
+# _remove_node_post <csv> <health baseline> — after remove-node.yml: regenerate
+# the inventory without the node(s), delete their BalloonsPolicy CRs and
+# host_vars, then fail on any health finding the removal introduced. The node
+# is gone by then, so a failure means running add-node again, not a revert.
+_remove_node_post() {
+    run site "${vars[@]}" -e "_scale_phase=post" -e "_removed_nodes=${1}" "${EXTRA_VARS[@]}"
+    local n
+    for n in ${1//,/ }; do
         rm -f "${ENV_INVENTORY_DIR}/host_vars/${n}.yml"
     done
-
-    # Health verdict: the node is already gone at this point — reset ran,
-    # its etcd membership (if any) is already removed — so there is nothing
-    # left to roll back. A red verdict here is advisory: it fails the
-    # command (non-zero exit) so CI/automation notices, but recovering means
-    # running add-node again, not an automatic revert.
-    do_health_check || err "remove-node: cluster health is red after removing ${removed_csv//,/, } — see above."
+    local regressions
+    regressions=$(_health_regressions "$2") \
+        || err "remove-node: the cluster has new problems after removing ${1//,/, }:
+$(sed 's/^/  /' <<< "$regressions")"
+    ok "remove-node: ${1//,/, } removed; no new health findings."
 }
 
 # _opt_value <flag> <value> — a flag's value must exist and not be another flag,

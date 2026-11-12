@@ -370,3 +370,19 @@ def test_init_container_requests_are_not_added_to_the_containers():
     assert sim.pod_requests(p)["cpu"] == 2.0
     p["spec"]["initContainers"][0]["resources"]["requests"]["cpu"] = "1"
     assert sim.pod_requests(p)["cpu"] == 1.5
+
+
+def _avoid(labels):
+    return {"affinity": {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [
+        {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}]}}}
+
+
+def test_anti_affinity_against_another_app_needs_one_free_node(monkeypatch, capsys):
+    b = [pod(f"b-{i}", "w2", labels={"app": "b"}, owner=("ReplicaSet", "b-rs")) for i in range(3)]
+    a = pod("a-1", "w1", labels={"app": "a"}, **_avoid({"app": "b"}))
+    cluster = {"nodes": [node("w1"), node("w2"), node("w3")], "pods": [a, *b]}
+    rc, _ = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 0
+    cluster["pods"].append(pod("b-3", "w3", labels={"app": "b"}, owner=("ReplicaSet", "b-rs")))
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 1 and "every eligible kubernetes.io/hostname runs a pod it must avoid" in findings(out, "spread")[0]

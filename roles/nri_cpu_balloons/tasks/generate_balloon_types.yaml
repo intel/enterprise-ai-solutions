@@ -147,9 +147,15 @@
     name: node-topology-optimizer
     namespace: "{{ nri_cpu_balloons.namespace }}"
   register: _optimizer_ds
+  # observedGeneration: right after the scoped affinity patch, the status can
+  # still describe the previous generation's pods.
   until: >
     (_optimizer_ds.resources | default([]) | length) > 0
+    and (_optimizer_ds.resources[0].status.observedGeneration | default(0) | int)
+        >= (_optimizer_ds.resources[0].metadata.generation | int)
     and (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+    and (_optimizer_ds.resources[0].status.updatedNumberScheduled | default(0) | int)
+        == (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int)
     and (_optimizer_ds.resources[0].status.numberReady | default(0) | int)
         == (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int)
   retries: 30

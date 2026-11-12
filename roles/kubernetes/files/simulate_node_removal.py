@@ -357,16 +357,23 @@ def main():
             domains = {node_labels[n][tk] for n in caps if tk in node_labels[n]}
             ns_list = term.get("namespaces") or [pod["metadata"]["namespace"]]
             sel = term.get("labelSelector") or {}
-            total_needed = sum(
-                1 for p in pods
-                if is_workload_pod(p)
-                and p["metadata"]["namespace"] in ns_list
-                and selector_matches(p["metadata"].get("labels") or {}, sel)
-            )
-            if total_needed > len(domains):
-                findings.append(("spread", owner,
-                                  f"requires {total_needed} distinct {tk} value(s) (required pod anti-affinity), "
-                                  f"only {len(domains)} remain among eligible nodes"))
+            matching = [p for p in pods
+                        if is_workload_pod(p)
+                        and p["metadata"]["namespace"] in ns_list
+                        and selector_matches(p["metadata"].get("labels") or {}, sel)]
+            if selector_matches(pod["metadata"].get("labels") or {}, sel):
+                # The pods avoid each other: each needs its own domain.
+                if len(matching) > len(domains):
+                    findings.append(("spread", owner,
+                                      f"requires {len(matching)} distinct {tk} value(s) (required pod anti-affinity), "
+                                      f"only {len(domains)} remain among eligible nodes"))
+            else:
+                # It avoids other pods: it needs one domain where none of them runs.
+                taken = {node_labels[p["spec"]["nodeName"]].get(tk) for p in matching
+                         if p.get("spec", {}).get("nodeName") in node_labels}
+                if not domains - taken:
+                    findings.append(("spread", owner,
+                                      f"every eligible {tk} runs a pod it must avoid (required pod anti-affinity)"))
 
     # --- spread: topologySpreadConstraints (DoNotSchedule only) ------------
     for pod in evicted:
