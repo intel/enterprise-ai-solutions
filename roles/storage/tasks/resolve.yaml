@@ -55,9 +55,12 @@
 
 - name: "storage | resolve | detect multi-node"
   ansible.builtin.set_fact:
+    # The inventory for a cluster ai-solutions builds; the cluster's own Nodes for a
+    # BYO one, whose inventory is just localhost (cluster_node_count, preflight_platform.yaml).
     _storage_is_multinode: >-
       {{ (nodes_workers | default([]) | length) > 0
-         or (groups['all'] | default([]) | length) > 1 }}
+         or (groups['all'] | default([]) | length) > 1
+         or (cluster_node_count | default(0) | int) > 1 }}
 
 # ─── ONTAP / NetApp Trident ─────────────────────────────────────────────
 
@@ -109,7 +112,8 @@
 
 # Same rule as local-path below, for the same reason: the model store is one
 # volume mounted by the download job and every predictor pod, so without RWX the
-# pods that land off the downloading node cannot mount the weights.
+# pods that land off the downloading node cannot mount the weights. Install only,
+# like local-path: teardown and validate still have to reach such a cluster.
 - name: "storage | resolve | reject an RWO-only custom class on multi-node"
   ansible.builtin.fail:
     msg: >-
@@ -118,6 +122,7 @@
       shared-filesystem class (NFS, CephFS, ontap-nas, EFS, Azure Files, ...) and
       set storage_custom_rwx: true, or switch storage_backend to nfs or ceph.
   when:
+    - component_action | default('install') == 'install'
     - _resolved_storage_backend == 'custom'
     - not (storage_custom_rwx | default(true) | bool)
     - _storage_is_multinode | bool
@@ -129,7 +134,10 @@
     msg: >-
       storage_backend='local-path' cannot run on a multi-node cluster.
       Set storage_backend to nfs or ceph in global_config.yaml.
-  when: _resolved_storage_backend == 'local-path' and _storage_is_multinode | bool
+  when:
+    - component_action | default('install') == 'install'
+    - _resolved_storage_backend == 'local-path'
+    - _storage_is_multinode | bool
 
 - name: "storage | resolve | look up backend in registry"
   ansible.builtin.set_fact:
