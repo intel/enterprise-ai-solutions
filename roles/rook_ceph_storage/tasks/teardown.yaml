@@ -98,6 +98,34 @@
 # bluestore labels and must be wiped by hand (see the teardown message) before Ceph can be
 # re-installed, or ceph-volume skips them and creates 0 OSDs.
 
+# A teardown that stopped part-way leaves its cleanup pods, their logs and the
+# device map: start without them, or a re-run would trust the old ones.
+- name: "rook_ceph | teardown | Remove cleanup namespace left by an earlier run"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: rook-ceph-cleanup
+    wait: true
+    wait_timeout: 120
+  failed_when: false
+
+- name: "rook_ceph | teardown | Read the cleanup namespace"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: rook-ceph-cleanup
+  register: _rook_old_cleanup
+
+- name: "rook_ceph | teardown | Stop if the cleanup namespace of an earlier run is still there"
+  ansible.builtin.fail:
+    msg: >-
+      Namespace rook-ceph-cleanup, left by an earlier teardown, is still there
+      ({{ _rook_old_cleanup.resources[0].status.phase | default('?') }}). If it is stuck terminating,
+      delete its pods (kubectl delete pods -n rook-ceph-cleanup --all --force) and check its
+      finalizers, then re-run.
+  when: _rook_old_cleanup.resources | length > 0
+
 - name: "rook_ceph | teardown | Ensure cleanup namespace"
   kubernetes.core.k8s:
     state: present
@@ -208,7 +236,10 @@
                       echo "device wipe disabled — host paths only"
                     fi
                     [ "$rc" -eq 0 ] && echo "CLEANED" || echo "CLEANUP_FAILED"
-                    sleep 3600
+                    # Wait to be removed, and go at once then.
+                    trap 'exit 0' TERM
+                    sleep infinity &
+                    wait
                 volumeMounts:
                   - name: rook-data
                     mountPath: /host-var-lib-rook
@@ -255,32 +286,43 @@
   delay: 5
 
 # Per pod, not label-aggregated: a single k8s_log call concatenates every pod's
-# output, so one node reporting CLEANED would mask another that failed.
+# output, so one node reporting CLEANED would mask another that failed. A pod
+# wipes its node's disks one after another, so it waits for each of them; one
+# that runs out of time is reported below like one that failed.
 - name: "rook_ceph | teardown | Verify cleanup completed on every node"
   kubernetes.core.k8s_log:
     namespace: rook-ceph-cleanup
-    name: "{{ item }}"
+    name: "{{ item.metadata.name }}"
   register: _rook_cleanup_log
   until: "'CLEANED' in (_rook_cleanup_log.log | default('')) or 'CLEANUP_FAILED' in (_rook_cleanup_log.log | default(''))"
-  retries: 12
+  retries: "{{ (60 + _rook_node_devices | int * rook_ceph_teardown_wipe_seconds_per_device | int) // 5 }}"
   delay: 5
-  loop: "{{ _rook_cleanup_pods.resources | map(attribute='metadata.name') | list }}"
+  vars:
+    _rook_node_devices: >-
+      {{ (rook_ceph_devices | default({})).get(item.spec.nodeName, []) | length
+         if rook_ceph_teardown_wipe_devices | bool else 0 }}
+  loop: "{{ _rook_cleanup_pods.resources }}"
   loop_control:
-    label: "{{ item }}"
+    label: "{{ item.metadata.name }}"
+  failed_when: false
+
+- name: "rook_ceph | teardown | Nodes whose cleanup did not log CLEANED"
+  ansible.builtin.set_fact:
+    _rook_wipe_failed: >-
+      {%- set out = [] -%}
+      {%- for r in _rook_cleanup_log.results | default([]) if 'CLEANED' not in r.log | default('') -%}
+      {%- set _ = out.append(r.item.spec.nodeName) -%}
+      {%- endfor -%}
+      {{ out }}
 
 - name: "rook_ceph | teardown | Report nodes whose disk wipe failed"
   ansible.builtin.debug:
     msg: >-
-      Disk cleanup FAILED on {{ _rook_cleanup_failed | join(', ') }}.
+      Disk cleanup FAILED on {{ _rook_wipe_failed | join(', ') }}.
       Ceph writes bluestore labels at several offsets, so a partial wipe leaves a
       detectable stale cluster FSID and re-deploying OSDs on these disks will fail.
       Wipe them manually (blkdiscard -f <dev>) before re-installing.
-  vars:
-    _rook_cleanup_failed: >-
-      {{ _rook_cleanup_log.results | default([])
-         | rejectattr('log', 'search', 'CLEANED')
-         | map(attribute='item') | list }}
-  when: _rook_cleanup_failed | length > 0
+  when: _rook_wipe_failed | length > 0
 
 - name: "rook_ceph | teardown | Remove cleanup DaemonSet"
   kubernetes.core.k8s:
@@ -334,8 +376,3 @@
         {% else %}
         WARNING: disk wipe failed on {{ _rook_wipe_failed | join(', ') }} — wipe manually before re-installing.
         {% endif %}
-  vars:
-    _rook_wipe_failed: >-
-      {{ _rook_cleanup_log.results | default([])
-         | rejectattr('log', 'search', 'CLEANED')
-         | map(attribute='item') | list }}

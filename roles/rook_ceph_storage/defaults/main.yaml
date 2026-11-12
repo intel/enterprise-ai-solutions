@@ -67,6 +67,9 @@ rook_ceph_mgr_memory_request: "512Mi"
 # /var/lib/rook; wiping the OSD devices is opt-in. Left off, wipe them by hand
 # (blkdiscard -f) before re-installing.
 rook_ceph_teardown_wipe_devices: false
+# How long teardown waits for each OSD device's wipe (blkdiscard takes about a
+# minute on an 8 TB NVMe).
+rook_ceph_teardown_wipe_seconds_per_device: 300
 
 # --- Timeouts ---
 rook_ceph_operator_wait_timeout: "300s"
