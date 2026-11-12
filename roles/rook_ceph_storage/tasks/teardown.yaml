@@ -306,7 +306,7 @@
       Ceph writes bluestore labels at several offsets, so a partial wipe leaves a
       detectable stale cluster FSID and re-deploying OSDs on these disks will fail.
       Wipe them manually (blkdiscard -f <dev>) before re-installing.
-  when: _rook_wipe_failed | length > 0
+  when: _rook_wipe_failed | length > 0 and rook_ceph_teardown_wipe_devices | bool
 
 - name: "rook_ceph | teardown | Remove cleanup DaemonSet"
   kubernetes.core.k8s:
@@ -346,8 +346,8 @@
   ansible.builtin.debug:
     msg:
       - "Rook-Ceph teardown complete."
-      - "{{ 'Host path /var/lib/rook cleaned on all nodes.' if _rook_wipe_failed | length == 0
-           else 'Cleanup did not finish on ' ~ _rook_wipe_failed | join(', ') ~ '.' }}"
+      - "{{ 'Host path /var/lib/rook cleaned on all nodes.' if rook_ceph_teardown_wipe_devices | bool or _rook_wipe_failed | length == 0
+           else 'Host path cleanup not confirmed on ' ~ _rook_wipe_failed | join(', ') ~ '.' }}"
       - >-
         {% if not (rook_ceph_teardown_wipe_devices | bool) %}
         OSD devices were NOT wiped (rook_ceph_teardown_wipe_devices is false). They

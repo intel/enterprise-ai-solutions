@@ -76,7 +76,7 @@ def catches_sigterm(pid):
 def test_a_finished_cleanup_pod_stays_until_removed_then_exits_at_once():
     ds = task("disk cleanup DaemonSet")["kubernetes.core.k8s"]["definition"]
     script = ds["spec"]["template"]["spec"]["containers"][0]["args"][0]
-    pod = subprocess.Popen(["bash", "-c", script[script.index("trap "):]], start_new_session=True)
+    pod = subprocess.Popen(["bash", "-c", script[script.index("trap 'exit 0' TERM"):]], start_new_session=True)
     try:
         deadline = time.monotonic() + 5
         while not catches_sigterm(pod.pid) and time.monotonic() < deadline:
@@ -89,7 +89,16 @@ def test_a_finished_cleanup_pod_stays_until_removed_then_exits_at_once():
             os.killpg(pod.pid, signal.SIGKILL)  # bash exits on the trap and leaves its sleep running
 
 
-@pytest.mark.parametrize("failed, line", [([], "Host path /var/lib/rook cleaned on all nodes."),
-                                          (["store3"], "Cleanup did not finish on store3.")])
-def test_done_says_where_the_cleanup_did_not_finish(failed, line):
-    assert render(task("━━━ DONE ━━━")["ansible.builtin.debug"]["msg"][1], {"_rook_wipe_failed": failed}) == line
+def test_a_pod_out_of_time_is_reported_and_the_teardown_goes_on():
+    assert task("Verify cleanup completed on every node")["failed_when"] is False
+
+
+@pytest.mark.parametrize("wipe, failed, line, report", [
+    (False, [], "Host path /var/lib/rook cleaned on all nodes.", False),
+    (False, ["store3"], "Host path cleanup not confirmed on store3.", False),  # no disk wipe to report
+    (True, ["store3"], "Host path /var/lib/rook cleaned on all nodes.", True),  # the disk wipe failed after it
+])
+def test_the_closing_lines_match_what_ran(wipe, failed, line, report):
+    variables = {"_rook_wipe_failed": failed, "rook_ceph_teardown_wipe_devices": wipe}
+    assert render(task("━━━ DONE ━━━")["ansible.builtin.debug"]["msg"][1], variables) == line
+    assert render("{{ %s }}" % task("Report nodes whose disk wipe failed")["when"], variables) in (report, str(report))
