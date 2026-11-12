@@ -39,7 +39,7 @@ for pair in "${on_nics[@]}"; do
     fi
 done
 if netplan apply; then
-    rm -f "$marker"
+    [ "$rc" -eq 0 ] && rm -f "$marker"
 else
     echo "netplan apply fails: an address another netplan file sets is missing until it succeeds; re-run" >&2
     rc=1

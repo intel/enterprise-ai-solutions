@@ -84,7 +84,10 @@ def test_an_address_already_gone_is_not_a_failure(node):
 def test_netplan_is_reapplied_when_a_removal_fails(node):
     run = node(rc={"addr del 10.0.0.1/24 dev ens1": 1})
     assert run.code != 0 and run.calls[-1] == "netplan apply" and len(run.calls) == 4
-    assert run.stderr == "cannot remove 10.0.0.1/24 from ens1\n"
+    assert run.stderr == "cannot remove 10.0.0.1/24 from ens1\n" and node.marker.exists()
+    rerun = node(on_nics=(("ens1", "10.0.0.1"),), files=())
+    assert rerun.code == 0 and rerun.calls == ["netplan get", "ip addr del 10.0.0.1/24 dev ens1", "netplan apply"]
+    assert not node.marker.exists()
 
 
 def test_a_failed_apply_is_finished_by_the_next_run(node):
