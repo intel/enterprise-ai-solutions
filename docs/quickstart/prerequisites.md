@@ -68,7 +68,7 @@ On a fresh install, the installer checks every node before Kubespray starts. The
 **Warnings:**
 - N5: etcd disk space.
 - N11: leftovers from an earlier install on this node.
-- N13: apt busy.
+- N13: apt busy (a process holds an apt or dpkg lock).
 - N14: firewall active.
 
 To skip a check, list its ID in `global_config.yaml`. For example, nodes that download packages and images from a mirror instead of the internet skip the internet check, and list the mirror's names for the DNS check (the deploy node still needs internet access). With N8 skipped, a name that doesn't resolve is only a warning:

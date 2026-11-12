@@ -201,8 +201,9 @@ def _package_checks(pkg):
         return [("N13", "FAIL", "dpkg --audit: " + pkg["dpkg_audit"].splitlines()[0],
                  "Repair the package state: sudo dpkg --configure -a && sudo apt-get -f install")]
     if pkg.get("busy"):
-        return [("N13", "WARN", "running: " + ", ".join(pkg["busy"]),
-                 "apt is busy (often unattended-upgrades); Kubespray retries, but it can time out")]
+        return [("N13", "WARN", "apt or dpkg lock held by " + ", ".join(pkg["busy"]),
+                 "Another apt or dpkg run holds the lock: let it finish, then install. Kubespray retries, "
+                 "but it can time out")]
     return [("N13", "OK", "healthy", "")]
 
 

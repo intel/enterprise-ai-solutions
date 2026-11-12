@@ -6,6 +6,8 @@ import copy
 import importlib.util
 import json
 import pathlib
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -129,7 +131,7 @@ CASES = [
      {}, "N12", "FAIL"),
     ("N13 dpkg broken", lambda d: d["pkg"].update(dpkg_audit="The following packages are only half configured"),
      {}, "N13", "FAIL"),
-    ("N13 apt busy", lambda d: d["pkg"].update(busy=["unattended-upgr"]), {}, "N13", "WARN"),
+    ("N13 apt busy", lambda d: d["pkg"].update(busy=["apt-get (pid 10)"]), {}, "N13", "WARN"),
     ("N13 rpm system", lambda d: d["pkg"].update(dpkg_audit=None), {}, "N13", "OK"),
     ("N14 ufw active", lambda d: d["firewall"].update(ufw=True), {}, "N14", "WARN"),
     ("N15 not rack-scale", lambda d: d["os"].update(id="rocky", version_id="9.4"), {}, "N15", []),
@@ -236,12 +238,59 @@ def test_a_dpkg_audit_that_times_out_is_not_ok(monkeypatch):
     assert status(changed(lambda d: d.update(pkg=pkg)), "N13") == "FAIL"
 
 
-def test_package_manager_reports_a_busy_apt(monkeypatch):
-    comms = {"/proc/10/comm": "unattended-upgr", "/proc/11/comm": "bash"}
-    monkeypatch.setattr(probe.os, "listdir", lambda path: ["10", "11", "self"])
-    monkeypatch.setattr(probe, "read", lambda path, default="": comms.get(path, default))
+@pytest.fixture(autouse=True)
+def _no_host_apt_locks(monkeypatch):
+    # Otherwise package_manager() reads this machine's own apt locks; a test can set its own.
+    monkeypatch.setattr(probe, "APT_LOCKS", ())
+
+
+@pytest.fixture
+def held_lock(tmp_path):
+    """A lock file and a process that holds a POSIX lock on it, as dpkg and apt do."""
+    lock = tmp_path / "lock-frontend"
+    lock.touch()
+    holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys, time; f = open(sys.argv[1], 'w');"
+                               " fcntl.lockf(f, fcntl.LOCK_EX); print('held', flush=True); time.sleep(60)", str(lock)],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline() == "held\n"
+        yield lock, holder.pid
+    finally:
+        holder.kill()
+        holder.wait()
+        holder.stdout.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="F_GETLK with Linux's struct flock")
+def test_the_process_holding_an_apt_lock_is_named(monkeypatch, tmp_path, held_lock):
+    lock, pid = held_lock
+    monkeypatch.setattr(probe, "APT_LOCKS", (str(tmp_path / "absent"), str(lock)))
     monkeypatch.setattr(probe, "run", _fake_run({"dpkg": (0, "")}))
-    assert probe.package_manager() == {"dpkg_audit": "", "busy": ["unattended-upgr"]}
+    busy = probe.package_manager()["busy"]
+    assert busy == ["%s (pid %d)" % (pathlib.Path("/proc/%d/comm" % pid).read_text().strip(), pid)]
+
+
+@pytest.mark.parametrize("answer, busy", [
+    ((probe.fcntl.F_WRLCK, -1), ["an unknown process"]),  # an OFD lock, or a holder in another pid namespace
+    (OSError(37, "No locks available"), []),
+])
+def test_a_holder_without_a_pid_or_a_failed_query(monkeypatch, tmp_path, answer, busy):
+    (tmp_path / "lock").touch()
+    monkeypatch.setattr(probe, "APT_LOCKS", (str(tmp_path / "lock"),))
+
+    def fake_fcntl(fd, cmd, arg):
+        if isinstance(answer, OSError):
+            raise answer
+        return probe.struct.pack(probe.FLOCK, answer[0], 0, 0, 0, answer[1])
+    monkeypatch.setattr(probe.fcntl, "fcntl", fake_fcntl)
+    assert probe.apt_lock_holders() == busy
+
+
+def test_an_unlocked_or_missing_lock_file_is_not_busy(monkeypatch, tmp_path):
+    # The idle unattended-upgrade-shutdown helper holds no lock: its lock files exist, unlocked, or not at all.
+    (tmp_path / "lock").touch()
+    monkeypatch.setattr(probe, "APT_LOCKS", (str(tmp_path / "lock"), str(tmp_path / "absent")))
+    assert probe.apt_lock_holders() == []
 
 
 @pytest.mark.parametrize("answers, expected", [

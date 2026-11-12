@@ -7,6 +7,7 @@ Standard library only, Python 3.6+ (RHEL 8 nodes).
 """
 
 import base64
+import fcntl
 import hashlib
 import http.client
 import json
@@ -14,6 +15,7 @@ import os
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import threading
 import time
@@ -29,6 +31,11 @@ CLUSTER_CA = ("/etc/kubernetes/ssl/ca.crt", "/etc/kubernetes/pki/ca.crt")
 # Neighbour states of a gateway that answered ARP, or has a static entry.
 NEIGH_ALIVE = {"REACHABLE", "PERMANENT", "NOARP"}
 NEIGH_STATES = NEIGH_ALIVE | {"STALE", "DELAY", "PROBE", "FAILED", "INCOMPLETE", "NONE"}
+# apt, dpkg and unattended-upgrade hold a POSIX lock on these while they run.
+APT_LOCKS = ("/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock", "/var/lib/apt/lists/lock",
+             "/var/cache/apt/archives/lock", "/run/unattended-upgrades.lock")
+# struct flock on 64-bit Linux: l_type, l_whence, l_start, l_len, l_pid, padding.
+FLOCK = "hhqqi4x"
 
 
 def run(args, timeout=10, stderr=True):
@@ -257,9 +264,30 @@ def listeners(ports):
     return found
 
 
+def apt_lock_holders():
+    """'<name> (pid N)' of each process holding an apt or dpkg lock, as the kernel reports it (F_GETLK). By
+    lock, not by process name: Ubuntu's idle unattended-upgrade-shutdown helper is also named 'unattended-upgr',
+    and holds none."""
+    holders = set()
+    for path in APT_LOCKS:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            query = struct.pack(FLOCK, fcntl.F_WRLCK, os.SEEK_SET, 0, 0, 0)
+            kind, _, _, _, pid = struct.unpack(FLOCK, fcntl.fcntl(fd, fcntl.F_GETLK, query))
+        except OSError:
+            continue
+        finally:
+            os.close(fd)
+        if kind != fcntl.F_UNLCK:
+            holders.add("%s (pid %d)" % (read("/proc/%d/comm" % pid, "?"), pid) if pid > 0 else "an unknown process")
+    return sorted(holders)
+
+
 def package_manager():
-    busy = sorted({read("/proc/%s/comm" % pid) for pid in os.listdir("/proc") if pid.isdigit()}
-                  & {"apt", "apt-get", "dpkg", "unattended-upgr", "unattended-upgrade"})
+    busy = apt_lock_holders()
     # What it lists on stdout, or its exit status; dpkg's warnings on stderr are not problems.
     rc, out = run(["dpkg", "--audit"], timeout=30, stderr=False)
     audit = None if rc is None else out or ("" if rc == 0 else "exit status %d" % rc)
