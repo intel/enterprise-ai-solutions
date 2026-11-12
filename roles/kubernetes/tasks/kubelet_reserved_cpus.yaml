@@ -2,7 +2,7 @@
 # =============================================================================
 # Kubelet CPU Reservation (NUMA-aware, computed per node)
 # =============================================================================
-# Extracted out of install_kubespray.yaml so add-node's post phase can scope
+# Extracted out of install_kubespray.yaml so add-node's prep phase can scope
 # this to just the newly added node(s) via _kubelet_calc_hosts_override,
 # instead of re-probing every node in the cluster. Called with no override
 # from install_kubespray.yaml, which preserves the original "every node"

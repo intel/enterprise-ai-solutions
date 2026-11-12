@@ -42,8 +42,9 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 | Removing control-plane/etcd node(s) via `remove-node` | The remaining nodes are not reconfigured afterwards — see [side effects](#removing-a-control-plane-node-side-effects) |
 | Cluster with ERAG deployed | Both actions only ever touch the `kubernetes` component — ERAG's own Helm/pipeline config is never re-applied, so any node-specific placement it relies on isn't accounted for. Both refuse when any ERAG-only namespace (`rag-ui`, `chat-history`, `edp`, `fingerprint`, `vdb`, `erag-gateway`, `auth-apisix`) exists |
 | Hand-edited inventory (`env/<name>/inventory/hosts.yaml`, no `nodes.yaml`) | Both actions find their target node(s), SSH details and control-plane membership from `nodes.yaml`; without it they stop before doing anything. Convert the inventory to `nodes.yaml` first |
-| `add-node` with `storage_backend: local-path` (or `custom` with `storage_custom_rwx: false`) | That backend only runs on a single node: once a second node joins, every later `install`, `validate` and `teardown` refuses the cluster. `add-node` refuses before doing anything. Move to `nfs` or `ceph` first |
-| Rack-scale (`rack_scale_enabled: true`) | The inventory comes from `rack-profile.yaml`, not `nodes.yaml`, and the fabric roles (netplan, sysctl, BGP) have no add-node/remove-node, so a new node would join with no fabric connectivity. Both actions refuse rack-scale before doing anything, whatever `nodes.yaml` holds, until node changes from `rack-profile.yaml` are supported |
+| Rack-scale (`rack_scale_enabled: true`) | The inventory comes from `rack-profile.yaml`, not `nodes.yaml`, and neither action runs the fabric roles (netplan, sysctl, BGP). Both refuse a rack-scale env before doing anything |
+| `add-node` with `storage_backend: local-path`, or `custom` with `storage_custom_rwx: false` | Both serve a single node: the storage check refuses them on more than one, so every later install, validate and teardown would stop. `add-node` refuses them up front; move the env to NFS or Ceph first |
+| Per-node setup of other components on a new node | `add-node` runs only the kubernetes component (plus NFS exports and NRI balloons). A new node is not made a Ceph OSD node, does not get NetApp Trident's NFS client packages, and is not marked eligible for Kata. Re-run `install` for `rook_ceph_storage`, `netapp_trident_csi` or `kata_containers` if the new node needs them |
 
 
 ## Adding worker nodes
@@ -67,7 +68,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
    1. Regenerates the inventory and diffs `nodes.yaml` against the live cluster to find the new node(s).
    2. Runs a pre-flight on them: SSH, not already joined, API server and internet reachability (see [Safety](#safety)).
    3. Computes their kubelet CPU reservation, then runs Kubespray `scale.yml` for just the new node(s).
-   4. Applies the `workload-class` label (and NFS export, on NFS storage), waits for `Ready`, and — if `nri_cpu_balloons` is installed — creates each node's own `node.<NAME>` BalloonsPolicy. Existing nodes and running models are not touched.
+   4. Applies the `workload-class` label (and NFS export, on NFS storage), waits for `Ready` and for the node's DaemonSet pods (calico-node, kube-proxy, ...), and — if `nri_cpu_balloons` is installed — creates each node's own `node.<NAME>` BalloonsPolicy. Existing nodes and running models are not touched.
 
    New nodes join with an `ei.intel.com/add-node-pending:NoSchedule` taint that is removed only after the last step, so nothing is scheduled on a half-configured node. If a step fails, re-run `add-node` to resume.
 
@@ -149,7 +150,8 @@ Before `scale.yml` ever runs, against just the new node(s):
 
 Not checked, and each would currently only surface as a Kubespray failure partway through `scale.yml` rather than a fast, clear pre-check:
 
-- **Calico's data path (BGP/VXLAN) between the new node and the rest of the cluster** — there's nothing to check before the node joins; `calico-node` isn't running there yet, so this is inherently a post-join concern, not a pre-flight one.
+- **Calico's data path (BGP/VXLAN) between the new node and the rest of the cluster.** Before the node joins, `calico-node` isn't running there. After the join, `add-node` waits for the node's DaemonSet pods to be Ready and keeps the pending taint if they are not, but it does not test traffic between pods on different nodes. A large node can need more than Kubespray's default `calico_node_memory_limit` (500M): calico-node is then OOM-killed and the node stays tainted. Set a higher limit in `env/<name>/kubespray_extra.yml`.
+- **The checks on the new node itself under `--dry-run`.** The dry run does not connect to the new node, so "already joined to a cluster", Docker, API server and internet reachability are checked only by the real run, before `scale.yml`.
 - **Whether the node has adequate resources** (CPU/memory/disk) for what's expected to run there — the mechanics are easy (Ansible already gathers these facts), but there's no minimum threshold defined anywhere in this codebase to check against yet.
 
 ### Built into Kubespray's `remove-node.yml`
@@ -157,7 +159,7 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 1. **Explicit target required** — `-e node=<name>` must be set and non-empty; the play asserts this and fails with "No nodes specified for removal" otherwise.
 2. **Interactive confirmation by default** — prompts "Type 'yes' to delete nodes" unless `-e skip_confirmation=true` is passed.
 3. **Graceful drain before removal** — cordons and evicts workloads from the node before touching it (seen in our test log: `TASK [remove_node/pre_remove : Remove-node | Drain node except daemonsets resource]`).
-4. **Full OS reset by default** (`reset_nodes=true`) — stops kubelet/containerd, removes `/etc/kubernetes`, CNI state, iptables rules, etc., leaving the node clean. Can be skipped (`reset_nodes=false`) for an unreachable node, but only paired with an explicit `allow_ungraceful_removal=true` — a second, deliberate opt-out.
+4. **OS reset by default** (`reset_nodes=true`) — stops kubelet and containerd and removes `/etc/kubernetes` and the CNI state. It does not leave the node fully clean: `cali-*`/`KUBE-*` iptables chains and their ipsets remain, and containerd is stopped with its binary gone. Re-adding the machine as it is works; flush the chains before reusing it for anything else. The reset can be skipped (`reset_nodes=false`) for an unreachable node, but only paired with an explicit `allow_ungraceful_removal=true` — a second, deliberate opt-out.
 5. **Proper etcd membership removal** for control-plane/etcd nodes — avoids leaving a stale/unhealthy etcd member that could threaten quorum.
 6. **Refuses to remove the first `kube_control_plane`/etcd host directly** — that host is the reference used for cert generation and etcd bootstrap elsewhere in Kubespray.
 7. **Inventory is untouched by the play itself** — the node stays listed during/after the run; removing the entry is left to the caller, as a deliberate checkpoint.
@@ -166,7 +168,9 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 
 - **`--dry-run`** prints the computed node diff and the exact Kubespray invocation, without running anything.
 - A `confirm()` gate (y/N or `--force`) — separate from Kubespray's own `skip_confirmation`, which we pass through specifically so Kubespray's prompt doesn't block a non-interactive run; ours is the one that actually gates the destructive action.
-- **No diff, no action** — if `nodes.yaml` already matches the live cluster, both actions report "nothing to do" and exit, never invoking Kubespray.
+- **No diff, no action** — if `nodes.yaml` already matches the live cluster, both actions report "nothing to do" and exit, never invoking Kubespray. A `remove-node` whose post phase failed (the node is gone from the cluster and from `nodes.yaml`, but still in the inventory) runs the post phase again instead.
+- **`nodes.yaml`, the inventory and the cluster must agree.** `add-node` refuses while a joined node is missing from `nodes.yaml` (its prep pass would drop that node from the inventory), and `remove-node` refuses a node that is no longer in the inventory (Kubespray could not reach it).
+- **Health after `remove-node`** is judged against the findings from before the removal: only new problems fail the command, and pods the drain evicted get a minute to be scheduled.
 - **Fails closed when the cluster can't be read.** If `kubectl` can't list the cluster's nodes or namespaces, both actions stop with the error rather than diffing `nodes.yaml` against an empty list. `remove-node` does the same for PodDisruptionBudgets and the preflight simulation: a check that didn't run refuses the removal, it never passes it.
 - **ERAG guard** — both actions refuse when ERAG is deployed (see [What's not supported](#whats-not-supported)).
 - Our own first-control-plane/etcd guard, checked from the current inventory *before* anything runs (mirrors #6 above, at the wrapper level, so the error message can point back at `nodes.yaml`).

@@ -1759,6 +1759,7 @@ ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or f
 
     if [[ "$DRY_RUN" == "true" ]]; then
         info "  would run: scale.yml --limit=${added_csv},kube_control_plane"
+        info "  not checked by a dry run: whether the new node(s) are already joined, run Docker, or reach the API server and the internet"
         [[ -n "$pending_csv" ]] && info "  and resume unfinished node(s): ${pending_csv//,/, }"
         exit 0
     fi

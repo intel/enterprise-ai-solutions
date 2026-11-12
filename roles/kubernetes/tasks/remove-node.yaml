@@ -19,16 +19,9 @@
 #            now-orphaned node.<NAME> BalloonsPolicy CR(s) (_removed_nodes).
 #            es_auto_installer.sh then deletes their now-stale host_vars file(s).
 #
-# BYO clusters are refused — a bring-your-own cluster is not managed by
-# Kubespray at all. Kubespray also refuses to remove the first
-# kube_control_plane/etcd host directly; es_auto_installer.sh detects that
-# case from the current inventory and refuses before this role ever runs.
+# es_auto_installer.sh refuses BYO, OpenShift and rack-scale envs first, and
+# the first kube_control_plane/etcd host, which Kubespray cannot remove.
 # =============================================================================
-
-- name: "kubernetes | remove-node | Refuse on BYO cluster"
-  ansible.builtin.fail:
-    msg: "remove-node is not supported for a BYO cluster (existing_kubernetes is set)."
-  when: existing_kubernetes | default('') | trim | length > 0
 
 - name: "kubernetes | remove-node | Post phase — drop removed node(s) from inventory"
   when: _scale_phase | default('prep') == 'post'
