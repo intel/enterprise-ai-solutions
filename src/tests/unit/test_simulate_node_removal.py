@@ -256,25 +256,24 @@ def test_required_pod_anti_affinity_is_refused(monkeypatch, capsys):
     assert "requires 2 distinct kubernetes.io/hostname" in findings(out, "spread")[0]
 
 
-def test_topology_spread_do_not_schedule_is_refused(monkeypatch, capsys):
+def test_topology_spread_do_not_schedule(monkeypatch, capsys):
     tsc = [{"maxSkew": 1, "topologyKey": "zone", "whenUnsatisfiable": "DoNotSchedule",
             "labelSelector": {"matchLabels": {"app": "web"}}}]
     cluster = {
         "nodes": [node("w1", labels={"zone": "a"}), node("w2", labels={"zone": "a"}),
-                  node("w3", labels={"zone": "b"})],
+                  node("w3", labels={"zone": "b"}), node("w4")],
         "pods": [pod("web-0", "w1", labels={"app": "web"}, topologySpreadConstraints=tsc),
                  pod("web-1", "w2", labels={"app": "web"}, topologySpreadConstraints=tsc),
                  pod("web-2", "w2", labels={"app": "web"}, topologySpreadConstraints=tsc),
                  pod("web-3", "w2", labels={"app": "web"}, topologySpreadConstraints=tsc)],
     }
-    # Removing w3 leaves only zone a: one domain, so no skew is possible.
-    rc, out = simulate(monkeypatch, capsys, cluster, "w3")
-    assert (rc, out) == (0, [])
-    # Removing w1 leaves w2 (zone a, 3 pods) and w3 (zone b, 0): the
-    # rescheduled pod goes to b, and skew 3 - 1 = 2 > maxSkew 1.
-    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    # w2 (zone a) holds 3 pods and w3 (zone b) none: the scheduler puts the
+    # evicted pod in b (skew 0 + 1 - 0 = 1), whatever the imbalance already is.
+    assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
+    # Left with w4 only, which has no zone label: no domain to place it in.
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1", "w2", "w3")
     assert rc == 1
-    assert "best-case skew would be 2" in findings(out, "spread")[0]
+    assert "has no eligible remaining domain" in findings(out, "spread")[0]
 
 
 def test_topology_spread_schedule_anyway_is_ignored(monkeypatch, capsys):
@@ -361,6 +360,23 @@ def test_terminating_pods_on_a_lost_node_are_not_placed_again(monkeypatch, capsy
                "pods": [old, pod("m-new", "w2", cpu="6")]}
     rc, _ = simulate(monkeypatch, capsys, cluster, "w1")
     assert rc == 0
+
+
+def test_a_terminating_statefulset_pod_is_placed(monkeypatch, capsys):
+    # Its controller starts the replacement only once the old pod is gone.
+    old = pod("db-0", "w1", cpu="6", owner=("StatefulSet", "db"))
+    old["metadata"]["deletionTimestamp"] = "2026-11-12T00:00:00Z"
+    cluster = {"nodes": [node("w1"), node("w2", cpu="4")], "pods": [old]}
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 1
+    assert findings(out, "capacity")
+
+
+def test_an_empty_toleration_value_matches_a_taint_without_one(monkeypatch, capsys):
+    taint = {"key": "dedicated", "effect": "NoSchedule"}
+    tol = [{"key": "dedicated", "operator": "Equal", "value": "", "effect": "NoSchedule"}]
+    cluster = {"nodes": [node("w1"), node("w2", taints=[taint])], "pods": [pod("p", "w1", tolerations=tol)]}
+    assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
 
 
 def test_init_container_requests_are_not_added_to_the_containers():

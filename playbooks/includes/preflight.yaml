@@ -376,11 +376,8 @@
     _inference_affinity: {}
   when: not (node_topology_enabled | default(true) | bool)
 
-# Resolve storage_backend to a specific role or configuration. Skipped for
-# add-node/remove-node: they only ever run the kubernetes component, which
-# never reads _resolved_storage_backend/_resolved_storage_role. add-node
-# refuses the single-node backends itself, before the cluster grows
-# (es_auto_installer.sh, roles/kubernetes/tasks/add-node.yaml).
+# Resolve storage_backend to a specific role or configuration. Not for
+# add-node/remove-node: they run only the kubernetes component.
 - name: "Preflight - Storage: resolve backend"
   ansible.builtin.include_role:
     name: storage

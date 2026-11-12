@@ -15,32 +15,15 @@
          if (_nfs_refresh_hosts_override | default([]) | length > 0)
          else (groups['k8s_cluster'] | default(groups['kube_node'] | default([]))) }}
 
-- name: "nfs_storage | exports | Resolve NFS server target"
-  ansible.builtin.set_fact:
-    _nfs_target: >-
-      {%- if groups['nfs_server'] | default([]) | length > 0 -%}
-        {{ groups['nfs_server'] | first }}
-      {%- elif groups['kube_control_plane'] | default([]) | length > 0 -%}
-        {{ groups['kube_control_plane'] | first }}
-      {%- else -%}
-        localhost
-      {%- endif -%}
-
-- name: "nfs_storage | exports | Resolve NFS server IP"
-  ansible.builtin.set_fact:
-    nfs_server: >-
-      {%- if nfs_server | default('', true) | length > 0 -%}
-        {{ nfs_server | trim }}
-      {%- elif hostvars[_nfs_target | trim]['ansible_host'] is defined -%}
-        {{ hostvars[_nfs_target | trim]['ansible_host'] }}
-      {%- else -%}
-        {{ _nfs_target | trim }}
-      {%- endif -%}
+# install.yaml has resolved it already; add-node and remove-node have not.
+- name: "nfs_storage | exports | Resolve NFS server"
+  ansible.builtin.include_tasks: server.yaml
+  when: _nfs_target is not defined
 
 # ─── NFS client packages on the refresh host list ───────────────────────
-# The package name depends on the *node's* OS family — see install.yaml's
-# original comment on this; a bare ansible_os_family here reads localhost's
-# facts and silently picks the wrong package on a mixed-OS cluster.
+# The package name depends on each node's OS family, so its facts are
+# gathered on the node: localhost's would pick the wrong one on a mixed-OS
+# cluster.
 
 - name: "nfs_storage | exports | Gather OS facts on refresh hosts"
   ansible.builtin.setup:

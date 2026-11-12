@@ -33,9 +33,6 @@
 # Ansible auto-loads host_vars/ next to the inventory file, and kubespray is
 # invoked with `-i <env>/inventory/hosts.yaml`, so writing
 # <env>/inventory/host_vars/<node>.yml is picked up by the cluster.yml run.
-#
-# Extracted to kubelet_reserved_cpus.yaml so add-node's prep phase can re-run
-# just this step, scoped to the newly added node(s).
 
 - name: "kubernetes | kubespray | Kubelet CPU reservation"
   ansible.builtin.include_tasks: kubelet_reserved_cpus.yaml

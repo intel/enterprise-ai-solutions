@@ -86,6 +86,12 @@ def is_workload_pod(pod):
     return not any(o.get("kind") in ("DaemonSet", "Node") for o in owners)
 
 
+def is_replaced(pod):
+    """Terminating, and its controller has started a replacement already: all but a StatefulSet's."""
+    owners = pod["metadata"].get("ownerReferences") or []
+    return bool(pod["metadata"].get("deletionTimestamp")) and not any(o.get("kind") == "StatefulSet" for o in owners)
+
+
 def owner_label(pod):
     ns = pod["metadata"]["namespace"]
     owners = pod["metadata"].get("ownerReferences") or []
@@ -108,10 +114,6 @@ def pod_requests(pod):
             for r, v in requests(c).items():
                 totals[r] = max(totals.get(r, 0.0), v)
     return totals
-
-
-def requires_capability_check(resource):
-    return resource not in UNIVERSAL_RESOURCES
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +167,7 @@ def toleration_matches(toleration, taint):
         return False
     if toleration.get("operator", "Equal") == "Exists":
         return not toleration.get("key") or toleration.get("key") == taint.get("key")
-    return toleration.get("key") == taint.get("key") and toleration.get("value") == taint.get("value")
+    return toleration.get("key") == taint.get("key") and (toleration.get("value") or "") == (taint.get("value") or "")
 
 
 def node_tolerates_taints(taints, tolerations):
@@ -181,22 +183,15 @@ def node_tolerates_taints(taints, tolerations):
 # Local-data detection
 # ---------------------------------------------------------------------------
 
-_LOCAL_PROVISIONERS = ("rancher.io/local-path", "openebs.io/local", "kubernetes.io/no-provisioner")
+_LOCAL_PROVISIONERS = ("rancher.io/local-path", "openebs.io/local")
 
 
-def local_pv_bound_hosts(pv):
-    spec = pv.get("spec", {})
-    if "local" in spec:
-        terms = (spec.get("nodeAffinity", {}).get("required") or {}).get("nodeSelectorTerms") or []
-        for term in terms:
-            for expr in term.get("matchExpressions") or []:
-                if expr.get("key") == "kubernetes.io/hostname" and expr.get("operator") == "In":
-                    return expr.get("values") or []
-        return []
+def is_local_pv(pv):
+    """A `local` PV, or one a known local-volume provisioner made."""
+    if "local" in pv.get("spec", {}):
+        return True
     provisioner = (pv.get("metadata", {}).get("annotations") or {}).get("pv.kubernetes.io/provisioned-by", "")
-    if any(p in provisioner for p in _LOCAL_PROVISIONERS):
-        return None  # local by provisioner, but no explicit host list to report
-    return False
+    return any(p in provisioner for p in _LOCAL_PROVISIONERS)
 
 
 def main():
@@ -229,16 +224,14 @@ def main():
                 usage[nn][r] = usage[nn].get(r, 0.0) + v
     free = {n: {r: allocatable[n].get(r, 0.0) - usage[n].get(r, 0.0) for r in allocatable[n]} for n in remaining_names}
 
-    # A terminating pod is already being replaced (on a lost node, by the
-    # replica the controller started elsewhere): placing it too counts it twice.
     evicted = [p for p in pods if p.get("spec", {}).get("nodeName") in target_nodes and is_workload_pod(p)
-               and not p["metadata"].get("deletionTimestamp")]
+               and not is_replaced(p)]
 
     def capability_nodes(pod):
         sel = pod["spec"].get("nodeSelector") or {}
         aff = ((pod["spec"].get("affinity") or {}).get("nodeAffinity")) or {}
         tol = pod["spec"].get("tolerations") or []
-        ext = [r for r in pod_requests(pod) if requires_capability_check(r)]
+        ext = [r for r in pod_requests(pod) if r not in UNIVERSAL_RESOURCES]
         out = []
         for n in remaining_names:
             labels = node_labels[n]
@@ -254,6 +247,7 @@ def main():
         return out
 
     findings = []
+    eligible = [(pod, owner_label(pod), capability_nodes(pod)) for pod in evicted]
 
     # --- last-capable-node ---------------------------------------------------
     # Pods with zero eligible nodes are an intrinsic mismatch (nodeSelector/
@@ -261,12 +255,10 @@ def main():
     # here, and excluded from the capacity bin-pack below since there is
     # nowhere for them to even compete for room.
     placeable = []
-    for pod in evicted:
-        caps = capability_nodes(pod)
-        owner = owner_label(pod)
+    for pod, owner, caps in eligible:
         reqs = pod_requests(pod)
         if not caps:
-            ext = [r for r in reqs if requires_capability_check(r)]
+            ext = [r for r in reqs if r not in UNIVERSAL_RESOURCES]
             reason = f"requests {', '.join(sorted(ext))}" if ext else "its nodeSelector/affinity/taint requirements"
             findings.append(("last-capable-node", owner,
                               f"no remaining node can satisfy {reason}"))
@@ -274,11 +266,8 @@ def main():
         placeable.append((pod, owner, caps, reqs))
 
     # --- capacity: greedy best-fit bin-pack ----------------------------------
-    # Most-constrained-first: fewest eligible nodes, then largest request
-    # (normalized against the best allocatable among its own candidates, so
-    # cpu/memory/gpu aren't compared on raw, incomparable scales) — placing
-    # the hardest-to-place pods first leaves the most room for flexibility
-    # later, same heuristic as classic best-fit-decreasing bin-packing.
+    # Fewest eligible nodes first, then the largest request (relative to the
+    # largest allocatable among them, so cpu, memory and GPUs compare).
     def _normalized_demand(caps, reqs):
         total = 0.0
         for r, v in reqs.items():
@@ -313,10 +302,6 @@ def main():
                               f"(short {detail})"))
             continue
 
-        # Best-fit: the candidate left with the least normalized slack
-        # (leftover free / that node's own allocatable) after taking this
-        # pod, so larger-slack nodes stay available for whatever is placed
-        # next.
         def _slack_after(n):
             return sum((working_free[n].get(r, 0.0) - v) / allocatable[n][r]
                        for r, v in reqs.items() if allocatable[n].get(r, 0.0) > 0)
@@ -327,9 +312,7 @@ def main():
             working_free[best][r] = working_free[best].get(r, 0.0) - v
 
     # --- spread: required pod anti-affinity --------------------------------
-    for pod in evicted:
-        owner = owner_label(pod)
-        caps = capability_nodes(pod)
+    for pod, owner, caps in eligible:
         terms = (((pod["spec"].get("affinity") or {}).get("podAntiAffinity")) or {}) \
             .get("requiredDuringSchedulingIgnoredDuringExecution") or []
         for term in terms:
@@ -340,7 +323,7 @@ def main():
             ns_list = term.get("namespaces") or [pod["metadata"]["namespace"]]
             sel = term.get("labelSelector") or {}
             matching = [p for p in pods
-                        if is_workload_pod(p)
+                        if is_workload_pod(p) and not is_replaced(p)
                         and p["metadata"]["namespace"] in ns_list
                         and selector_matches(p["metadata"].get("labels") or {}, sel)]
             if selector_matches(pod["metadata"].get("labels") or {}, sel):
@@ -358,40 +341,14 @@ def main():
                                       f"every eligible {tk} runs a pod it must avoid (required pod anti-affinity)"))
 
     # --- spread: topologySpreadConstraints (DoNotSchedule only) ------------
-    for pod in evicted:
-        owner = owner_label(pod)
-        caps = capability_nodes(pod)
+    # The scheduler places a pod in its least-loaded eligible domain, where the
+    # skew is at most 1: only a constraint with no eligible domain left fails.
+    for pod, owner, caps in eligible:
         for tsc in pod["spec"].get("topologySpreadConstraints") or []:
-            if tsc.get("whenUnsatisfiable") != "DoNotSchedule":
-                continue
             tk = tsc.get("topologyKey")
-            max_skew = tsc.get("maxSkew", 1)
-            sel = tsc.get("labelSelector") or {}
-            domains = sorted({node_labels[n][tk] for n in caps if tk in node_labels[n]})
-            if not domains:
+            if tsc.get("whenUnsatisfiable") == "DoNotSchedule" and not any(tk in node_labels[n] for n in caps):
                 findings.append(("spread", owner,
                                   f"topologySpreadConstraint on {tk} has no eligible remaining domain"))
-                continue
-            ns = pod["metadata"]["namespace"]
-            counts = {d: 0 for d in domains}
-            for p in pods:
-                if not is_workload_pod(p):
-                    continue
-                nn = p.get("spec", {}).get("nodeName")
-                if nn not in node_labels or p["metadata"]["namespace"] != ns:
-                    continue
-                if not selector_matches(p["metadata"].get("labels") or {}, sel):
-                    continue
-                dv = node_labels[nn].get(tk)
-                if dv in counts:
-                    counts[dv] += 1
-            best_domain = min(counts, key=counts.get)
-            counts[best_domain] += 1
-            skew = max(counts.values()) - min(counts.values())
-            if skew > max_skew:
-                findings.append(("spread", owner,
-                                  f"topologySpreadConstraint on {tk} (maxSkew {max_skew}) cannot be met after "
-                                  f"removal — best-case skew would be {skew}"))
 
     # --- local-data ----------------------------------------------------------
     pvc_index = {(p["metadata"]["namespace"], p["metadata"]["name"]): p for p in pvcs}
@@ -409,11 +366,10 @@ def main():
             pv = pv_by_name.get(pvc.get("spec", {}).get("volumeName"))
             if not pv:
                 continue
-            hosts = local_pv_bound_hosts(pv)
-            if hosts is False:
+            if not is_local_pv(pv):
                 continue
             findings.append(("local-data", owner,
-                              f"uses local-path volume (pvc {claim}, pv {pv['metadata']['name']}) "
+                              f"uses a node-local volume (pvc {claim}, pv {pv['metadata']['name']}) "
                               f"bound to {node_name} — data does not move with the pod"))
 
     if show_plan:

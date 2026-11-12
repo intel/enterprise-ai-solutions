@@ -152,7 +152,7 @@ Remove worker node(s) from an already-provisioned cluster. As with `add-node`, n
 ./es_auto_installer.sh remove-node --node-lost --env local   # node already NotReady: no drain, no reset
 ```
 
-Removing a control-plane node is not supported — see [its side effects](node_scaling.md#removing-a-control-plane-node-side-effects). Both `add-node` and `remove-node` refuse on a cluster with ERAG deployed. Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these, and a check that can't run refuses the removal. After the node is gone, it runs the same check as `status --health` and fails the command on red. See [Node Scaling](node_scaling.md).
+Removing a control-plane node is refused — see [Node Scaling](node_scaling.md#control-plane-nodes-are-not-removed). Both `add-node` and `remove-node` refuse on a cluster with ERAG deployed. Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these, and a check that can't run refuses the removal. After the node is gone, it runs the same checks as `status --health` and fails the command on a problem the removal introduced. See [Node Scaling](node_scaling.md).
 
 ---
 

@@ -2,12 +2,8 @@
 # =============================================================================
 # Kubelet CPU Reservation (NUMA-aware, computed per node)
 # =============================================================================
-# Extracted out of install_kubespray.yaml so add-node's prep phase can scope
-# this to just the newly added node(s) via _kubelet_calc_hosts_override,
-# instead of re-probing every node in the cluster. Called with no override
-# from install_kubespray.yaml, which preserves the original "every node"
-# behaviour. See install_kubespray.yaml for the host_vars-over-group_vars
-# rationale.
+# Every node, or only _kubelet_calc_hosts_override (add-node's new nodes).
+# See install_kubespray.yaml for why host_vars, not group_vars.
 # =============================================================================
 
 - name: "kubernetes | kubespray | Resolve CPU-reservation facts"

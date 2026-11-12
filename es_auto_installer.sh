@@ -93,27 +93,24 @@ ok()   { echo -e "${GRN}$*${RST}"; }
 # Box banner for the final milestone. Each arg is one line; the box widens to
 # the longest. Padding uses ${#l}, so keep the content ASCII — a multibyte glyph
 # (em dash, emoji) counts as >1 under LC_ALL=C and skews the right edge.
-# Green by default; set BANNER_CLR for the call (BANNER_CLR="$YEL" banner ...).
 banner() {
     local -a lines=("$@")
-    local w=0 l pad bar="" i c="${BANNER_CLR:-$GRN}"
+    local w=0 l pad bar="" i
     for l in "${lines[@]}"; do (( ${#l} > w )) && w=${#l}; done
     for (( i = 0; i < w + 2; i++ )); do bar+='─'; done
-    printf '\n%s╭%s╮%s\n' "$c" "$bar" "$RST"
+    printf '\n%s╭%s╮%s\n' "$GRN" "$bar" "$RST"
     for l in "${lines[@]}"; do
         pad=$(( w - ${#l} ))
-        printf '%s│%s %s%*s %s│%s\n' "$c" "$RST" "$l" "$pad" "" "$c" "$RST"
+        printf '%s│%s %s%*s %s│%s\n' "$GRN" "$RST" "$l" "$pad" "" "$GRN" "$RST"
     done
-    printf '%s╰%s╯%s\n\n' "$c" "$bar" "$RST"
+    printf '%s╰%s╯%s\n\n' "$GRN" "$bar" "$RST"
 }
 
 # _advanced_op_banner — shown before the add-node/remove-node confirm prompt.
 # Both change a live cluster's membership; see docs/customize/node_scaling.md.
 _advanced_op_banner() {
-    BANNER_CLR="$YEL" banner \
-        "ADVANCED OPERATION: PROCEED ONLY IF YOU KNOW WHAT YOU'RE DOING" \
-        "${ACTION} changes the membership of a live cluster. Review the" \
-        "--dry-run output and docs/customize/node_scaling.md first."
+    warn "ADVANCED OPERATION: PROCEED ONLY IF YOU KNOW WHAT YOU'RE DOING. ${ACTION} changes the membership
+  of a live cluster: review the --dry-run output and docs/customize/node_scaling.md first."
 }
 _quiet() {
     if (( _LOG_LEVEL >= 1 )); then
@@ -173,31 +170,11 @@ usage() {
     validate  <target>     run validate.yaml against current state
     status                 show what is currently installed (namespaces, pods,
                            helm releases, endpoints)
-    add-node               scale worker node(s) into an already-provisioned cluster
-                           (Kubespray scale.yml). Edit env/<env>/nodes.yaml first
-                           (add worker entries) — new nodes are auto-detected by
-                           diffing the rendered inventory against the live cluster;
-                           no node name is passed. Control-plane node additions are
-                           refused — use 'install --target kubernetes' for those.
-    remove-node            remove worker node(s) from an already-provisioned cluster
-                           (Kubespray remove-node.yml). Edit env/<env>/nodes.yaml
-                           first (delete entries) — removed nodes are auto-detected
-                           the same way. Removing a control-plane node is not
-                           supported (see docs/customize/node_scaling.md for its
-                           side effects); the first one, or one that would leave an
-                           even control-plane count, is refused outright.
-                           Preflight refuses the removal (no flag skips this) when:
-                           capacity (CPU/memory/GPU/hugepages) is short on every
-                           remaining node able to take the evicted workload(s);
-                           a required anti-affinity or topology spread constraint
-                           cannot be met on the remaining nodes; a PodDisruptionBudget
-                           allows no eviction; the node is the only one that can run
-                           a running workload (nodeSelector/affinity/taint/extended
-                           resource); or the node holds a node-local volume. After
-                           removal, reports a status --health verdict and fails the
-                           command if it's red. add-node/remove-node are both
-                           refused on OpenShift, on BYO clusters (existing_kubernetes
-                           set), and on a cluster with ERAG deployed.
+    add-node               add the worker node(s) added to env/<env>/nodes.yaml to the
+                           cluster (Kubespray scale.yml)
+    remove-node            remove the worker node(s) deleted from env/<env>/nodes.yaml
+                           (Kubespray remove-node.yml), after a placement check
+                           no flag skips. See docs/customize/node_scaling.md.
 
   Targets:
     <layer>                single layer (Ansible routes it to its components)
@@ -1346,7 +1323,7 @@ run_kubespray() {
 # =============================================================================
 # Neither action takes a node name: the operator edits env/<env>/nodes.yaml,
 # and the nodes to act on are the diff between it and the live cluster, read
-# without Ansible, so --dry-run touches nothing.
+# without Ansible, so --dry-run changes nothing.
 
 # _nodes_yaml_hostnames [control_plane|workers] — hostnames from nodes.yaml,
 # one per line. No argument means both lists combined.
@@ -1366,6 +1343,11 @@ _nodes_yaml_hostnames() {
 _require_nodes_yaml_defined() {
     [[ -f "$ENV_DIR/nodes.yaml" ]] && [[ -n "$(_nodes_yaml_hostnames control_plane)" ]] \
         || err "${ACTION} requires nodes_control_plane to be defined in env/${ENV_NAME}/nodes.yaml. A hand-edited inventory (env/${ENV_NAME}/inventory/hosts.yaml) has no per-node structure to diff against — ${ACTION} does not support that mode."
+    # The kubelet lowercases its node name, so an upper-case hostname never matches it.
+    local upper; upper=$(_nodes_yaml_hostnames | grep '[A-Z]' || true)
+    [[ -z "$upper" ]] \
+        || err "${ACTION}: hostname(s) in env/${ENV_NAME}/nodes.yaml with upper-case letters: ${upper//$'\n'/, }
+  Kubernetes node names are lower case. Use the node's name as kubectl get nodes shows it."
 }
 
 # _rack_scale_enabled — whether global_config.yaml sets rack_scale_enabled to true.
@@ -1380,24 +1362,25 @@ _inventory_group() {
     yq -r ".all.children.${1}.hosts // {} | keys | .[]" "$INVENTORY" 2>/dev/null
 }
 
-# _live_nodes — Node object names in the live cluster, one per line.
-# KUBECONFIG is already exported by main() before either action runs.
-# Errors are not swallowed: an empty list read as "no nodes" would make
-# add-node treat every declared node as new and remove-node report nothing
-# to do. Callers go through _require_live_nodes.
-_live_nodes() {
-    kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+# _inventory_hosts — every host in $INVENTORY, one per line.
+_inventory_hosts() {
+    yq -r '.all.hosts // {} | keys | .[]' "$INVENTORY" 2>/dev/null
 }
 
-# _require_live_nodes — _live_nodes, sorted, or err() if the API server
-# can't be read or reports no nodes (a provisioned cluster always has one).
+# _only_in <list> <list> / _in_both <list> <list> — the lines of the first list
+# that are not in the second, or that are in both; sorted, one per line.
+_only_in() { comm -23 <(sort -u <<< "$1") <(sort -u <<< "$2") | grep -v '^$' || true; }
+_in_both() { comm -12 <(sort -u <<< "$1") <(sort -u <<< "$2") | grep -v '^$' || true; }
+
+# _require_live_nodes — the live cluster's node names, sorted, or err() if the
+# API server can't be read or reports no nodes (a provisioned cluster has one).
 # stderr is kept apart from the node list: kubectl can succeed and still warn
 # (e.g. an unavailable aggregated API), and a warning line read as a node
 # name would make remove-node try to remove it.
 _require_live_nodes() {
     local out errf err_out rc=0
     errf=$(mktemp)
-    out=$(_live_nodes 2>"$errf") || rc=$?
+    out=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>"$errf") || rc=$?
     err_out=$(<"$errf"); rm -f "$errf"
     (( rc == 0 )) \
         || err "${ACTION}: cannot list the cluster's nodes (kubectl get nodes failed) — refusing to diff nodes.yaml against an unknown cluster:
@@ -1429,10 +1412,10 @@ _erag_namespaces_present() {
 # _add_node_pending_nodes — joined nodes still carrying ADD_NODE_PENDING_TAINT,
 # i.e. whose add-node post phase never completed. One name per line.
 _add_node_pending_nodes() {
-    kubectl get nodes -o json 2>/dev/null \
-        | yq -p json -r ".items[]
-            | select((.spec.taints // []) | map(select(.key == \"${ADD_NODE_PENDING_TAINT}\")) | length > 0)
-            | .metadata.name" 2>/dev/null || true
+    local json; json=$(kubectl get nodes -o json 2>/dev/null) || return 1
+    yq -p json -r ".items[]
+        | select((.spec.taints // []) | map(select(.key == \"${ADD_NODE_PENDING_TAINT}\")) | length > 0)
+        | .metadata.name" <<< "$json"
 }
 
 # _not_ready_nodes — names of nodes whose Ready condition is not True, one
@@ -1453,10 +1436,11 @@ _is_openshift() {
 }
 
 # _node_workloads <node> — "namespace/name" of the pods a drain evicts from
-# <node>, one per line: not DaemonSet pods, not static (Node-owned) pods.
+# <node>, one per line: running ones that no DaemonSet or Node (static pod) owns.
 _node_workloads() {
     local json; json=$(kubectl get pods -A --field-selector "spec.nodeName=${1}" -o json 2>/dev/null) || return 1
     yq -p json -r '.items[]
+        | select(.status.phase != "Succeeded" and .status.phase != "Failed")
         | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet" or .kind == "Node") | any | not)
         | .metadata.namespace + "/" + .metadata.name' <<< "$json"
 }
@@ -1474,29 +1458,35 @@ _cp_tainted_nodes() {
 
 # _pdb_blocked_pods <node> — "pod<TAB>pdb<TAB>detail" for every pod on <node>
 # whose PodDisruptionBudget allows no disruption: the drain's evictions would
-# be refused until it times out. A PDB without matchLabels, or whose pods
-# can't be listed, is reported too ("verify manually"). Returns 1, with the
-# error on stdout, if the PDBs can't be listed.
+# be refused until it times out. A PDB whose pods can't be listed is reported
+# too ("verify manually"). Returns 1, with the error on stdout, if the PDBs
+# can't be listed.
 _pdb_blocked_pods() {
     local node="$1" ns name selector pod pdb_json pdb_rows pods errf
+    local -a by_label
     # stderr goes to a file, not into the JSON: a kubectl warning on an
     # otherwise successful call would break the parse below.
     errf=$(mktemp)
     pdb_json=$(kubectl get pdb -A -o json 2>"$errf") || { cat "$errf"; rm -f "$errf"; return 1; }
     pdb_rows=$(yq -p json -r '
         .items[]
-        | select(.status.disruptionsAllowed == 0)
-        | [.metadata.namespace, .metadata.name, ((.spec.selector.matchLabels // {}) | to_entries | map(.key + "=" + .value) | join(","))]
+        | select(.status.disruptionsAllowed == 0 and .spec.selector != null)
+        | [.metadata.namespace, .metadata.name,
+           ([(.spec.selector.matchLabels // {}) | to_entries | .[] | .key + "=" + .value]
+            + [(.spec.selector.matchExpressions // [])[]
+               | ((select(.operator == "In") | .key + " in (" + (.values | join(",")) + ")"),
+                  (select(.operator == "NotIn") | .key + " notin (" + (.values | join(",")) + ")"),
+                  (select(.operator == "Exists") | .key),
+                  (select(.operator == "DoesNotExist") | "!" + .key))]
+            | join(","))]
         | @tsv
     ' <<< "$pdb_json" 2>"$errf") || { echo "could not parse the PodDisruptionBudget list: $(<"$errf")"; rm -f "$errf"; return 1; }
     rm -f "$errf"
     while IFS=$'\t' read -r ns name selector; do
         [[ -n "$ns" ]] || continue
-        if [[ -z "$selector" ]]; then
-            printf '%s/%s\t%s/%s\tunsupported selector (not matchLabels-based) — verify manually\n' "$ns" "$name" "$ns" "$name"
-            continue
-        fi
-        if ! pods=$(kubectl get pods -n "$ns" -l "$selector" --field-selector "spec.nodeName=${node}" -o name 2>/dev/null); then
+        by_label=()
+        [[ -n "$selector" ]] && by_label=(-l "$selector")   # an empty selector covers every pod
+        if ! pods=$(kubectl get pods -n "$ns" "${by_label[@]}" --field-selector "spec.nodeName=${node}" -o name 2>/dev/null); then
             printf '%s/*\t%s/%s\tcould not list its pods (selector=%s) — verify manually\n' "$ns" "$ns" "$name" "$selector"
             continue
         fi
@@ -1509,7 +1499,9 @@ _pdb_blocked_pods() {
 
 # _cluster_health_findings — one problem per line, empty output = healthy:
 # NotReady nodes, and non-DaemonSet pods in CrashLoopBackOff, ImagePullBackOff
-# or stuck Unschedulable. A cluster that cannot be read is a finding too.
+# or stuck Unschedulable. A cluster that cannot be read is a finding too. A
+# controller's pods are named after it (<owner>-*): a pod the drain recreates
+# elsewhere keeps its line.
 _cluster_health_findings() {
     local not_ready pods
     not_ready=$(_not_ready_nodes) || { echo "cannot list the cluster's nodes (kubectl get nodes failed)"; return; }
@@ -1522,13 +1514,17 @@ _cluster_health_findings() {
         | ((.status.containerStatuses // []) + (.status.initContainerStatuses // []))
         | map(select(.state.waiting.reason == "CrashLoopBackOff" or .state.waiting.reason == "ImagePullBackOff"))
         | select(length > 0)
-        | "pod " + $pod.metadata.namespace + "/" + $pod.metadata.name + " is " + .[0].state.waiting.reason
+        | "pod " + $pod.metadata.namespace + "/"
+          + ((($pod.metadata.ownerReferences // [])[0].name | select(. != null) | . + "-*") // $pod.metadata.name)
+          + " is " + .[0].state.waiting.reason
     ' <<< "$pods"
     yq -p json -r '
         .items[]
         | select(.status.phase == "Pending")
         | select((.status.conditions // []) | map(select(.type == "PodScheduled" and .status == "False" and .reason == "Unschedulable")) | any)
-        | "pod " + .metadata.namespace + "/" + .metadata.name + " is Unschedulable"
+        | "pod " + .metadata.namespace + "/"
+          + (((.metadata.ownerReferences // [])[0].name | select(. != null) | . + "-*") // .metadata.name)
+          + " is Unschedulable"
     ' <<< "$pods"
 }
 
@@ -1537,7 +1533,7 @@ _cluster_health_findings() {
 _health_regressions() {
     local new i
     for i in 1 2 3 4 5 6; do
-        new=$(comm -13 <(printf '%s\n' "$1" | sort -u) <(_cluster_health_findings | sort -u) | grep -v '^$' || true)
+        new=$(_only_in "$(_cluster_health_findings)" "$1")
         [[ -z "$new" ]] && return 0
         (( i < 6 )) && sleep 10
     done
@@ -1551,7 +1547,7 @@ _health_regressions() {
 # caller (main(), or remove-node's post-check) can fail the command on it.
 do_health_check() {
     [[ -f "$KUBE_CFG" ]] || err "No kubeconfig at ${KUBE_CFG} — nothing to check. Install the cluster first."
-    local findings; findings=$(_cluster_health_findings | grep -v '^$' || true)
+    local findings; findings=$(_cluster_health_findings | grep -v '^$' | sort -u || true)
     if [[ -n "$findings" ]]; then
         echo "status --health: red"
         while IFS= read -r line; do
@@ -1563,18 +1559,15 @@ do_health_check() {
     return 0
 }
 
-# _nodes_yaml_ssh_target <hostname> — "ip<TAB>user<TAB>key" for <hostname>,
-# resolved from nodes.yaml with the same precedence hosts.yaml.j2 uses:
-# per-node ssh_user/ssh_key override the top-level nodes_ssh_user/nodes_ssh_key,
-# which in turn fall back to ssh's own defaults (current user, default identity)
-# when left unset.
+# _nodes_yaml_ssh_target <hostname> — its ip, ssh user and ssh key, one per
+# line (empty when unset), with hosts.yaml.j2's precedence: per-node
+# ssh_user/ssh_key, then nodes_ssh_user/nodes_ssh_key.
 _nodes_yaml_ssh_target() {
     _H="$1" yq -r '
         . as $root
         | ((.nodes_control_plane // []) + (.nodes_workers // []))
         | .[] | select(.hostname == env(_H))
-        | [.ip, (.ssh_user // $root.nodes_ssh_user // ""), (.ssh_key // $root.nodes_ssh_key // "")]
-        | @tsv
+        | (.ip, (.ssh_user // $root.nodes_ssh_user // ""), (.ssh_key // $root.nodes_ssh_key // ""))
     ' "$ENV_DIR/nodes.yaml" 2>/dev/null
 }
 
@@ -1583,7 +1576,7 @@ _nodes_yaml_ssh_target() {
 # before the confirm prompt, rather than after Ansible starts.
 _ssh_preflight_check() {
     local hostname="$1" ip user key target
-    IFS=$'\t' read -r ip user key < <(_nodes_yaml_ssh_target "$hostname")
+    { read -r ip; read -r user; read -r key; } < <(_nodes_yaml_ssh_target "$hostname") || true
     [[ -n "$ip" ]] || { echo "no ip found for ${hostname} in nodes.yaml"; return 1; }
     target="$ip"
     [[ -n "$user" ]] && target="${user}@${ip}"
@@ -1595,6 +1588,22 @@ _ssh_preflight_check() {
 # do_add_node — scale worker node(s) into an existing cluster (Kubespray scale.yml).
 do_add_node() {
     _require_nodes_yaml_defined
+
+    # hosts.yaml.j2 runs a loopback control plane locally: a new node cannot reach it there.
+    local loopback_cp
+    loopback_cp=$(yq -r '(.nodes_control_plane // [])[] | select(.hostname == "localhost" or ((.ip | tostring) | test("^(127[.]|::1$|localhost$)"))) | .hostname' "$ENV_DIR/nodes.yaml" 2>/dev/null)
+    [[ -z "$loopback_cp" ]] \
+        || err "add-node: control-plane node ${loopback_cp//$'\n'/, } is at a loopback address in env/${ENV_NAME}/nodes.yaml, which a new node cannot reach.
+  Give it the address the other nodes reach it at, run ./$(basename "$0") install --env ${ENV_NAME} kubernetes, then add the node."
+
+    # With nodes_workers empty, the control plane is the worker (hosts.yaml.j2);
+    # the first worker added would quietly end that.
+    if [[ "$(_inventory_group kube_node | sort -u)" == "$(_inventory_group kube_control_plane | sort -u)" ]]; then
+        local cp_only; cp_only=$(_only_in "$(_nodes_yaml_hostnames control_plane)" "$(_nodes_yaml_hostnames workers)")
+        [[ -z "$cp_only" ]] \
+            || err "add-node: the control plane (${cp_only//$'\n'/, }) is this cluster's worker, and adding a worker under nodes_workers would end that.
+  To keep it a worker, list it under nodes_workers too (an identical entry), then retry."
+    fi
 
     # The storage check (roles/storage/tasks/resolve.yaml) refuses these on more
     # than one node: once a second node joins, every install, validate and
@@ -1610,11 +1619,11 @@ do_add_node() {
     local declared live added stray
     declared=$(_nodes_yaml_hostnames | sort -u)
     live=$(_require_live_nodes)
-    added=$(comm -23 <(printf '%s\n' "$declared") <(printf '%s\n' "$live") | grep -v '^$' || true)
+    added=$(_only_in "$declared" "$live")
 
     # The prep pass renders the inventory from nodes.yaml: a joined node missing
     # from it would drop out, and a later remove-node could no longer reach it.
-    stray=$(comm -13 <(printf '%s\n' "$declared") <(printf '%s\n' "$live") | grep -v '^$' || true)
+    stray=$(_only_in "$live" "$declared")
     [[ -z "$stray" ]] \
         || err "add-node: node(s) in the cluster but not in env/${ENV_NAME}/nodes.yaml: ${stray//$'\n'/, }
   add-node would drop them from the inventory. Put them back in nodes.yaml, or remove them first with remove-node."
@@ -1623,19 +1632,21 @@ do_add_node() {
     # as its last step) — e.g. it failed, or the run was interrupted. Such a
     # node is already in the live cluster, so the diff above can't see it.
     local pending pending_csv
-    pending=$(_add_node_pending_nodes | sort -u)
+    pending=$(_add_node_pending_nodes) || err "add-node: cannot read the nodes' taints (kubectl get nodes failed)."
+    pending=$(sort -u <<< "$pending")
     pending_csv="${pending//$'\n'/,}"
 
+    # scale.yml runs again for them: it can have failed after the join.
     if [[ -z "$added" && -n "$pending" ]]; then
         info "add-node: resuming unfinished node(s) (still tainted ${ADD_NODE_PENDING_TAINT}): ${pending_csv//,/, }"
         if [[ "$DRY_RUN" == "true" ]]; then
-            info "  would run: add-node post phase only (no scale.yml)"
+            info "  would run: scale.yml --limit=${pending_csv},kube_control_plane, then the post phase"
             exit 0
         fi
         _advanced_op_banner
-        confirm "About to run the add-node post phase for: ${pending_csv//,/, }"
-        run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${pending_csv}" \
-            -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}" "${EXTRA_VARS[@]}"
+        confirm "About to resume add-node for: ${pending_csv//,/, }"
+        run_kubespray scale "$pending_csv"
+        run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${pending_csv}" "${EXTRA_VARS[@]}"
         return 0
     fi
 
@@ -1659,7 +1670,7 @@ do_add_node() {
 
     local declared_cp added_cp
     declared_cp=$(_nodes_yaml_hostnames control_plane | sort -u)
-    added_cp=$(comm -12 <(printf '%s\n' "$declared_cp") <(printf '%s\n' "$added") | grep -v '^$' || true)
+    added_cp=$(_in_both "$declared_cp" "$added")
     if [[ -n "$added_cp" ]]; then
         err "add-node only scales worker nodes. New control-plane node(s) detected: ${added_cp//$'\n'/, }
   Kubespray's scale.yml cannot add control-plane nodes. Use instead:
@@ -1704,30 +1715,24 @@ ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or f
     confirm "About to run Kubespray scale.yml for: ${added_csv//,/, }"
     # The prep pass writes the new node(s) into the inventory: scale.yml reaches them through it.
     run site "${vars[@]}" -e "_scale_phase=prep" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
-    run_kubespray scale "$added_csv"
-    run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${post_csv}" \
-        -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}" "${EXTRA_VARS[@]}"
+    run_kubespray scale "$post_csv"
+    run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${post_csv}" "${EXTRA_VARS[@]}"
 }
 
 # do_remove_node — remove node(s) from an existing cluster (Kubespray remove-node.yml).
 do_remove_node() {
     _require_nodes_yaml_defined
 
-    # Kubespray's first control-plane/etcd host, from the inventory as it is.
-    # sed, not head: head exits after one line, and under pipefail yq's SIGPIPE ends the script.
-    local old_first_cp; old_first_cp=$(_inventory_group kube_control_plane | sed -n 1p)
-
     local declared live removed
     declared=$(_nodes_yaml_hostnames | sort -u)
     live=$(_require_live_nodes)
-    removed=$(comm -23 <(printf '%s\n' "$live") <(printf '%s\n' "$declared") | grep -v '^$' || true)
+    removed=$(_only_in "$live" "$declared")
 
     if [[ -z "$removed" ]]; then
         # remove-node.yml ran but the post phase did not finish: the node is
         # gone from the cluster and from nodes.yaml, yet still in the inventory.
         local unfinished
-        unfinished=$(comm -23 <(yq -r '.all.hosts // {} | keys | .[]' "$INVENTORY" 2>/dev/null | sort -u) \
-            <(sort -u <(printf '%s\n' "$declared") <(printf '%s\n' "$live")) | grep -v '^$' || true)
+        unfinished=$(_only_in "$(_inventory_hosts)" "$declared"$'\n'"$live")
         if [[ -z "$unfinished" ]]; then
             ok "remove-node: nothing to do — nodes.yaml matches the live cluster."
             exit 0
@@ -1741,50 +1746,18 @@ do_remove_node() {
         return
     fi
 
-    # remove-node.yml can only reach hosts the inventory defines: -e node=<name>
-    # for any other node matches no host, and the play passes having done
-    # nothing. A node dropped from nodes.yaml is also dropped from the
-    # inventory by any run that re-renders it first (install, add-node).
-    local not_in_inventory
-    not_in_inventory=$(comm -23 <(printf '%s\n' "$removed") \
-        <({ _inventory_group kube_control_plane; _inventory_group kube_node; } | sort -u) | grep -v '^$' || true)
-    if [[ -n "$not_in_inventory" ]]; then
-        err "remove-node: not in the inventory (${INVENTORY}), so Kubespray cannot reach them to remove them: ${not_in_inventory//$'\n'/, }
-  An earlier run re-rendered the inventory from nodes.yaml after the entry was deleted. Put the entry back in
-  env/${ENV_NAME}/nodes.yaml, run:
-    ./$(basename "$0") install --env ${ENV_NAME} kubernetes
-  to re-render the inventory (the running cluster is left as it is), then delete the entry and retry remove-node."
-    fi
-
-    if [[ -n "$old_first_cp" ]] && grep -qxF -- "$old_first_cp" <<< "$removed"; then
-        err "remove-node cannot remove '${old_first_cp}' — it is the first control-plane/etcd node, and Kubespray does not support removing it directly.
-  Reorder nodes_control_plane in env/${ENV_NAME}/nodes.yaml so a different host is first, run:
-    ./$(basename "$0") install --env ${ENV_NAME} kubernetes
-  to apply the reorder via cluster.yml, then retry remove-node."
-    fi
-
-    # Control-plane removal (not supported; see docs/customize/node_scaling.md).
-    # Kubespray asserts an odd etcd count on every run, so an even count left
-    # in nodes.yaml (which the inventory is regenerated from) fails the next one.
-    local removed_cp
-    removed_cp=$(comm -12 <(_inventory_group kube_control_plane | sort -u) <(printf '%s\n' "$removed") | grep -v '^$' || true)
-    if [[ -n "$removed_cp" ]]; then
-        local remaining_cp; remaining_cp=$(_nodes_yaml_hostnames control_plane | sort -u | grep -c . || true)
-        if (( remaining_cp % 2 == 0 )); then
-            err "remove-node: removing control-plane node(s) ${removed_cp//$'\n'/, } would leave ${remaining_cp} control-plane/etcd node(s).
-  Kubespray requires an odd etcd member count, so every later Kubespray run would fail.
-  Remove control-plane nodes in pairs (e.g. 5 -> 3) so an odd number remains."
-        fi
-        warn "  removing control-plane node(s) ${removed_cp//$'\n'/, } is not supported. remove-node.yml drops them from etcd, but does not
-  update the remaining nodes: kube-apiserver --etcd-servers and each node's nginx-proxy still list them
-  until 'install kubernetes' (cluster.yml) is re-run. See docs/customize/node_scaling.md."
-    fi
+    # Kubespray takes a control-plane node out of etcd but does not update the
+    # nodes that stay (kube-apiserver --etcd-servers, every nginx-proxy).
+    local removed_cp; removed_cp=$(_in_both "$(_inventory_group kube_control_plane)" "$removed")
+    [[ -z "$removed_cp" ]] \
+        || err "remove-node only removes worker nodes: ${removed_cp//$'\n'/, } is a control-plane node.
+  See docs/customize/node_scaling.md."
 
     # remove-node.yml reaches each node through the current inventory: one an
     # install has already dropped from it would match no host, and the removal
     # would do nothing.
     local unreachable
-    unreachable=$(comm -23 <(printf '%s\n' "$removed") <(yq -r '.all.hosts // {} | keys | .[]' "$INVENTORY" 2>/dev/null | sort -u) | grep -v '^$' || true)
+    unreachable=$(_only_in "$removed" "$(_inventory_hosts)")
     [[ -z "$unreachable" ]] \
         || err "remove-node: ${unreachable//$'\n'/, } is in the cluster but no longer in ${INVENTORY}, so remove-node.yml cannot reach it.
   Put it back in env/${ENV_NAME}/nodes.yaml, run ./$(basename "$0") install --env ${ENV_NAME} kubernetes to restore the inventory,
@@ -1797,7 +1770,7 @@ do_remove_node() {
     if [[ "$NODE_LOST" == "true" ]]; then
         local not_ready; not_ready=$(_not_ready_nodes) || err "remove-node: cannot read the nodes' Ready state (kubectl get nodes failed)."
         not_ready=$(sort -u <<< "$not_ready")
-        local still_ready; still_ready=$(comm -23 <(printf '%s\n' "$removed") <(printf '%s\n' "$not_ready") | grep -v '^$' || true)
+        local still_ready; still_ready=$(_only_in "$removed" "$not_ready")
         if [[ -n "$still_ready" ]]; then
             err "remove-node --node-lost refused — still Ready, not lost: ${still_ready//$'\n'/, }
   --node-lost is for a node that is already gone (NotReady) — use plain remove-node for a healthy node so it goes through the normal cordon/drain."
@@ -1864,8 +1837,8 @@ $(sed 's/^/  /' <<< "$sim_findings")
     # Workers are the live kube_node hosts, a control plane listed as a worker
     # included. Only a warning: no workers is fine on an untainted control plane.
     local live_workers remaining_workers
-    live_workers=$(comm -12 <(printf '%s\n' "$live") <(_inventory_group kube_node | sort -u) | grep -v '^$' || true)
-    remaining_workers=$(comm -23 <(printf '%s\n' "$live_workers") <(printf '%s\n' "$removed") | grep -v '^$' || true)
+    live_workers=$(_in_both "$live" "$(_inventory_group kube_node)")
+    remaining_workers=$(_only_in "$live_workers" "$removed")
     if [[ -n "$live_workers" && -z "$remaining_workers" ]]; then
         local tainted_cp; tainted_cp=$(_cp_tainted_nodes)
         if [[ -n "$tainted_cp" ]]; then
@@ -2118,6 +2091,7 @@ main() {
         -e "env_dir=${ENV_DIR}"
         -e "kubespray_dir=${SCRIPT_DIR}/.kubespray"
         -e "kubespray_custom_inventory=${INVENTORY}"
+        -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}"
     )
     # Solution configs, in the order the provisioning record lists them (dependencies
     # first, so a layer's own config wins over its deps'). Collected before the loop:
@@ -2155,9 +2129,6 @@ main() {
             exit 0
         fi
         if [[ "$HEALTH" == "true" ]]; then
-            # `set -e` would abort the script on do_health_check's own
-            # return-1 before reaching exit — the && / || form keeps this a
-            # single compound statement, which -e does not trigger on.
             do_health_check && exit 0 || exit 1
         fi
         run status "${vars[@]}" "${EXTRA_VARS[@]}"

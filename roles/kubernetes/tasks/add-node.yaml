@@ -29,16 +29,6 @@
   ansible.builtin.set_fact:
     _added_nodes_list: "{{ _added_nodes | default('') | split(',') | reject('equalto', '') | list }}"
 
-- name: "kubernetes | add-node | Detect SSH requirement from inventory"
-  ansible.builtin.set_fact:
-    _k8s_needs_ssh: >-
-      {{
-        (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
-        | unique
-        | reject('equalto', 'localhost')
-        | list
-        | length > 0
-      }}
 
 # =====================================================================
 # PHASE: post — finishing steps for the newly added node(s)
@@ -47,6 +37,9 @@
 - name: "kubernetes | add-node | Post phase — new-node finishing steps"
   when: _scale_phase | default('prep') == 'post'
   block:
+    - name: "kubernetes | add-node | Detect SSH requirement from inventory"
+      ansible.builtin.include_tasks: needs_ssh.yaml
+
     - name: "kubernetes | add-node | Re-apply node topology labels (idempotent)"
       ansible.builtin.include_tasks: apply_node_topology.yaml
       when: node_topology_enabled | default(false) | bool
@@ -101,7 +94,7 @@
         msg: >-
           {{ item.item }} is Ready, but its pod network is not:
           {{ ('not Ready: ' ~ (_ds | unready_pods | join(', '))) if _ds else 'no DaemonSet pod has started' }}.
-          It keeps the {{ _add_node_pending_taint | default('add-node pending') }} taint, so no workload lands on it.
+          It keeps the {{ _add_node_pending_taint }} taint, so no workload lands on it.
           Check those pods (kubectl describe pod -n kube-system); a large node can need a higher
           calico_node_memory_limit in env/{{ env_name | default('ENV') }}/kubespray_extra.yml.
           Then re-run add-node, which resumes here.
@@ -113,14 +106,12 @@
     # The node's own node.<NAME> BalloonsPolicy, before the taint lift lets its
     # balloons agent start. Only when nri_cpu_balloons is installed; the other
     # nodes' policies and the Helm release are left alone.
-    - name: "kubernetes | add-node | Check whether NRI balloons is installed"
+    - name: "kubernetes | add-node | Check for BalloonsPolicy CRD"
       kubernetes.core.k8s_info:
-        api_version: config.nri/v1alpha1
-        kind: BalloonsPolicy
-        namespace: kube-system
-        name: default
-      register: _add_node_nri_default
-      failed_when: false
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: balloonspolicies.config.nri
+      register: _add_node_bp_crd
       when:
         - (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons'
         - (kubernetes_accelerator | default('cpu')) == 'cpu'
@@ -134,7 +125,7 @@
         vars_from: "{{ cluster_distribution }}.yaml"
       vars:
         _nri_scope_nodes: "{{ _added_nodes_list }}"
-      when: (_add_node_nri_default.resources | default([]) | length) > 0
+      when: (_add_node_bp_crd.resources | default([]) | length) > 0
 
     # Last: if anything above failed, the node keeps the taint and re-running
     # add-node resumes the post phase.
@@ -151,7 +142,6 @@
         - _add_node_untaint.failed | default(false)
         - "'not found' not in (_add_node_untaint.msg | default('') | lower)"
       loop: "{{ _added_nodes_list }}"
-      when: _add_node_pending_taint | default('') | length > 0
 
     - name: "kubernetes | add-node | New node(s) ready"
       ansible.builtin.debug:
@@ -176,14 +166,10 @@
 - name: "kubernetes | add-node | Reload inventory to pick up newly added node(s)"
   ansible.builtin.meta: refresh_inventory
 
-# ─── Pre-flight for the new node(s), over SSH ────────────────────────────────
+- name: "kubernetes | add-node | Detect SSH requirement from the new inventory"
+  ansible.builtin.include_tasks: needs_ssh.yaml
 
-- name: "kubernetes | add-node | SSH pre-flight | Ping new node(s)"
-  ansible.builtin.ping:
-  delegate_to: "{{ item }}"
-  loop: "{{ _added_nodes_list }}"
-  loop_control:
-    label: "{{ item }}"
+# ─── Pre-flight for the new node(s), over SSH ────────────────────────────────
 
 # A node joined to another cluster (or left from this one) would corrupt both.
 - name: "kubernetes | add-node | SSH pre-flight | Check new node(s) aren't already joined to a cluster"

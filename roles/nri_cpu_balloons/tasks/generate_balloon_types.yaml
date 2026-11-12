@@ -95,7 +95,7 @@
             # exists (ADD_NODE_PENDING_TAINT in es_auto_installer.sh), so the
             # probe that generates that CR has to be able to land there.
             tolerations:
-              - key: "{{ _add_node_pending_taint | default('ei.intel.com/add-node-pending') }}"
+              - key: "{{ _add_node_pending_taint }}"
                 operator: Exists
                 effect: NoSchedule
             # Pod-level hardening: non-root, no privilege escalation, seccomp.
@@ -134,12 +134,8 @@
                     memory: 32Mi
             restartPolicy: Always
 
-# Wait for the DaemonSet itself to report every scheduled pod Ready, not just
-# "at least one". A freshly-added node has a cold image cache (busybox pull
-# takes a few extra seconds), so checking for a single Running pod races: it
-# is satisfied by whichever node already had the image cached, and the new
-# node's probe pod gets silently excluded from topology discovery below —
-# which then skips its per-node BalloonsPolicy CR entirely.
+# Every probe pod, not the first one Running: a node still pulling the image
+# would get no policy.
 - name: "nri_cpu_balloons | advanced | Wait for topology-probe DaemonSet full readiness"
   kubernetes.core.k8s_info:
     api_version: apps/v1

@@ -13,7 +13,7 @@ Two CLI actions, both driven entirely from `env/<name>/nodes.yaml` — neither t
 | Action | Kubespray playbook | Scope |
 |---|---|---|
 | `add-node` | `scale.yml` | **Worker nodes only** |
-| `remove-node` | `remove-node.yml` | **Worker nodes only** — see [Removing a control-plane node: side effects](#removing-a-control-plane-node-side-effects) |
+| `remove-node` | `remove-node.yml` | **Worker nodes only** |
 
 The workflow is always: **edit `nodes.yaml`, then run the action**. The installer regenerates the inventory from the edited file and diffs it against the live cluster (`kubectl get nodes`) to figure out which host(s) changed — there is nothing else to specify.
 
@@ -30,7 +30,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 |---|---|
 | Installer-managed cluster, no ERAG deployed | Yes |
 | Adding worker node(s) via `add-node` | Yes |
-| A control-plane node that is also a worker (an identical entry under both `nodes_control_plane` and `nodes_workers`) | Yes, as long as it stays in both lists — `add-node`/`remove-node` treat it as control-plane, so changing its role (worker on/off) needs `install kubernetes`, and deleting it from both lists is a control-plane removal (not supported) |
+| A control-plane node that is also a worker (an identical entry under both `nodes_control_plane` and `nodes_workers`) | Yes, as long as it stays in both lists — `add-node`/`remove-node` treat it as control-plane, so changing its role (worker on/off) needs `install kubernetes`, and deleting it from both lists is a control-plane removal (refused) |
 | Removing worker node(s) via `remove-node` | Yes |
 
 ## What's not supported
@@ -39,7 +39,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 |---|---|
 | BYO cluster (`existing_kubernetes` set in `global_config.yaml`) | A bring-your-own cluster is not managed by Kubespray at all |
 | Adding control-plane/etcd node(s) via `add-node` | Kubespray's `scale.yml` cannot add control-plane/etcd members — use `install kubernetes` instead (re-runs `cluster.yml`) |
-| Removing control-plane/etcd node(s) via `remove-node` | The remaining nodes are not reconfigured afterwards — see [side effects](#removing-a-control-plane-node-side-effects) |
+| Removing control-plane/etcd node(s) via `remove-node` | Refused: see [Control-plane nodes are not removed](#control-plane-nodes-are-not-removed) |
 | Cluster with ERAG deployed | Both actions only ever touch the `kubernetes` component — ERAG's own Helm/pipeline config is never re-applied, so any node-specific placement it relies on isn't accounted for. Both refuse when any ERAG-only namespace (`rag-ui`, `chat-history`, `edp`, `fingerprint`, `vdb`, `erag-gateway`, `auth-apisix`) exists |
 | Hand-edited inventory (`env/<name>/inventory/hosts.yaml`, no `nodes.yaml`) | Both actions find their target node(s), SSH details and control-plane membership from `nodes.yaml`; without it they stop before doing anything. Convert the inventory to `nodes.yaml` first |
 | Rack-scale (`rack_scale_enabled: true`) | The inventory comes from `rack-profile.yaml`, not `nodes.yaml`, and neither action runs the fabric roles (netplan, sysctl, BGP). Both refuse a rack-scale env before doing anything |
@@ -109,14 +109,9 @@ Kubernetes does not move running pods onto a new node. Models already deployed s
 
    If the node being removed is the **last worker**, a second warning fires — it checks whether the control-plane node currently carries the standard `NoSchedule` taint (it does if the cluster was ever provisioned multi-node from the start; it doesn't if it started single-node and workers were added later via `add-node`, since kubeadm only sets that taint at cluster bring-up, not on a later `add-node`/`scale.yml` run). Tainted means nothing will be schedulable anywhere until a worker comes back; untainted means the cluster just drops to single-node capacity, which is a supported topology on its own.
 
-### Removing a control-plane node: side effects
+### Control-plane nodes are not removed
 
-`remove-node` is meant for worker nodes. If an entry is deleted from `nodes_control_plane`, `remove-node` does not stop you, but it prints a warning before the confirm prompt. Removing a control-plane node is not supported, because of these side effects:
-
-- **The remaining nodes are not reconfigured.** Every control-plane node is also an etcd member. `remove-node.yml` takes the node out of etcd, but [Kubespray's own procedure](https://github.com/kubernetes-sigs/kubespray/blob/v2.31.0/docs/operations/nodes.md#removing-an-etcd-node) also requires re-running `cluster.yml` and checking `--etcd-servers` in `/etc/kubernetes/manifests/kube-apiserver.yaml` on every remaining control-plane node. `remove-node` does neither. Until then, kube-apiserver still lists the removed etcd member, and each node's `nginx-proxy` (its local API server load balancer) still lists the removed API server.
-- **Even etcd count breaks later runs.** Kubespray stops on an even number of etcd hosts. Going from 3 to 2 would leave every later Kubespray run (`add-node`, `install kubernetes`, another `remove-node`) failing at its first check. So `remove-node` refuses any control-plane removal that would leave an even count in `nodes_control_plane`.
-- **The first control-plane/etcd node can't be removed at all.** Kubespray uses the first host in `kube_control_plane` (mirrored into `etcd` by the generated inventory) for cert generation and etcd bootstrap, and refuses to remove it. `remove-node` refuses before anything runs.
-- **Less fault tolerance.** Every etcd member removed lowers the number of failures the cluster can survive. A 3-node control plane survives one failure; a 1-node control plane survives none.
+`remove-node` refuses a node listed under `nodes_control_plane`. Every control-plane node is also an etcd member: `remove-node.yml` takes it out of etcd, but [Kubespray's own procedure](https://github.com/kubernetes-sigs/kubespray/blob/v2.31.0/docs/operations/nodes.md#removing-an-etcd-node) also needs `cluster.yml` re-run and `--etcd-servers` checked on every remaining control-plane node, and each node's `nginx-proxy` would keep the removed API server. Kubespray also stops on an even etcd count, and cannot remove the first control-plane node at all.
 
 ### A node that is already gone (`--node-lost`)
 
@@ -139,7 +134,7 @@ This skips the drain and the PodDisruptionBudget check and does not reset the no
 
 Before `scale.yml` ever runs, against just the new node(s):
 
-1. **SSH reachability** (`ping`) — hard fail if unreachable, before anything is provisioned.
+1. **SSH reachability** — the installer connects with the credentials in `nodes.yaml` before the confirm prompt (and before `--dry-run` exits).
 2. **Not already joined to a cluster** — fails if `/etc/kubernetes/kubelet.conf` already exists on the node, rather than letting a stale or foreign join corrupt either cluster.
 3. **No Docker installed** — fails if the node has a `docker.service` unit, running or not. Kubespray removes any container runtime other than containerd: it kills and deletes every Docker container, uninstalls Docker and deletes `/var/lib/docker` and `/etc/docker`, so all images, volumes and container data are lost. This installer never lets that happen. Back up and uninstall Docker yourself, or use a different node. `install kubernetes` runs the same check against every node (and the controller itself in single-node localhost mode) when it provisions a new cluster; on a running cluster Kubespray does not run, so it skips the check.
 4. **Duplicate hostname/IP within `nodes.yaml`** — checked even earlier, as part of inventory generation (applies to `install`/`remove-node` too, not just `add-node`): fails if any two entries across `nodes_control_plane`/`nodes_workers` share an `ip` or `hostname`.
@@ -151,7 +146,7 @@ Before `scale.yml` ever runs, against just the new node(s):
 Not checked, and each would currently only surface as a Kubespray failure partway through `scale.yml` rather than a fast, clear pre-check:
 
 - **Calico's data path (BGP/VXLAN) between the new node and the rest of the cluster.** Before the node joins, `calico-node` isn't running there. After the join, `add-node` waits for the node's DaemonSet pods to be Ready and keeps the pending taint if they are not, but it does not test traffic between pods on different nodes. A large node can need more than Kubespray's default `calico_node_memory_limit` (500M): calico-node is then OOM-killed and the node stays tainted. Set a higher limit in `env/<name>/kubespray_extra.yml`.
-- **The checks on the new node itself under `--dry-run`.** The dry run does not connect to the new node, so "already joined to a cluster", Docker, API server and internet reachability are checked only by the real run, before `scale.yml`.
+- **The checks on the new node itself under `--dry-run`.** The dry run only checks SSH: "already joined to a cluster", Docker, API server and internet reachability are checked by the real run, before `scale.yml`.
 - **Whether the node has adequate resources** (CPU/memory/disk) for what's expected to run there — the mechanics are easy (Ansible already gathers these facts), but there's no minimum threshold defined anywhere in this codebase to check against yet.
 
 ### Built into Kubespray's `remove-node.yml`
@@ -166,22 +161,21 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 
 ### Built into `es_auto_installer.sh`
 
-- **`--dry-run`** prints the computed node diff and the exact Kubespray invocation, without running anything.
+- **`--dry-run`** prints the computed node diff and the exact Kubespray invocation, and changes nothing.
 - A `confirm()` gate (y/N or `--force`) — separate from Kubespray's own `skip_confirmation`, which we pass through specifically so Kubespray's prompt doesn't block a non-interactive run; ours is the one that actually gates the destructive action.
 - **No diff, no action** — if `nodes.yaml` already matches the live cluster, both actions report "nothing to do" and exit, never invoking Kubespray. A `remove-node` whose post phase failed (the node is gone from the cluster and from `nodes.yaml`, but still in the inventory) runs the post phase again instead.
 - **`nodes.yaml`, the inventory and the cluster must agree.** `add-node` refuses while a joined node is missing from `nodes.yaml` (its prep pass would drop that node from the inventory), and `remove-node` refuses a node that is no longer in the inventory (Kubespray could not reach it).
 - **Health after `remove-node`** is judged against the findings from before the removal: only new problems fail the command, and pods the drain evicted get a minute to be scheduled.
 - **Fails closed when the cluster can't be read.** If `kubectl` can't list the cluster's nodes or namespaces, both actions stop with the error rather than diffing `nodes.yaml` against an empty list. `remove-node` does the same for PodDisruptionBudgets and the preflight simulation: a check that didn't run refuses the removal, it never passes it.
 - **ERAG guard** — both actions refuse when ERAG is deployed (see [What's not supported](#whats-not-supported)).
-- Our own first-control-plane/etcd guard, checked from the current inventory *before* anything runs (mirrors #6 above, at the wrapper level, so the error message can point back at `nodes.yaml`).
-- **Odd etcd count guard and control-plane warning** — see [Removing a control-plane node: side effects](#removing-a-control-plane-node-side-effects).
-- Inventory regeneration is deliberately deferred until *after* `remove-node.yml` succeeds, so Kubespray always gets a node it can still reach. `remove-node` also refuses a node that is no longer in the inventory (an `install` or `add-node` run after the entry was deleted from `nodes.yaml` re-renders it without the node): `remove-node.yml` would match no host and report success. Put the entry back, run `install kubernetes` to re-render the inventory, then delete it and retry.
+- **Control-plane removal is refused** — see [Control-plane nodes are not removed](#control-plane-nodes-are-not-removed).
+- Inventory regeneration is deliberately deferred until *after* `remove-node.yml` succeeds, so Kubespray always gets a node it can still reach.
 - **Workload visibility before you confirm** — lists real (non-DaemonSet, non-static-pod) workloads running on the node(s) about to be removed, so a model or service that's only running there doesn't get evicted as a surprise.
 - **PodDisruptionBudget guard** — refuses the removal if any pod on the node is currently covered by a PDB with `disruptionsAllowed: 0`; eviction would be rejected by the API server no matter how many times `remove-node.yml` retries.
 - **Preflight simulation (capacity / spread / local-data / last-capable-node)** — see below.
 - **Last-worker warning** — flags when the removal would leave zero worker nodes, and separately reports whether the control-plane node currently has the `NoSchedule` taint (so you know whether that actually means "nothing schedulable anywhere" or just "back to single-node"). A warning, not a block — dropping to zero workers is a valid, already-supported topology when it's intentional. (A control-plane node without the taint is also a valid remaining placement target for the preflight simulation above — it isn't excluded just for being control-plane, only for taints the evicted pods don't tolerate.)
 - **Balloon policy cleanup** — if CPU pinning (`nri_cpu_balloons`) is installed, `remove-node` deletes the removed node's `node.<NAME>` BalloonsPolicy once the node is gone, so a node later added under the same name starts from its own freshly generated policy instead of inheriting one written for the old hardware. (`add-node` applies the new node's per-node policy itself — see step 3 above.)
-- **Post-remove health verdict** — once the node is gone, runs the same green/red check as `status --health` (node Readiness, no crash-looping/image-pull-failing/unschedulable pods cluster-wide) and fails the `remove-node` command on red. Advisory at that point, not a rollback: the node has already been reset and dropped from the cluster, so recovering means `add-node`, not an automatic revert.
+- **Post-remove health verdict** — once the node is gone, runs the same checks as `status --health` (node Readiness, no crash-looping/image-pull-failing/unschedulable pods) and fails the `remove-node` command on a problem that was not there before the removal. Advisory at that point, not a rollback: the node has already been reset and dropped from the cluster, so recovering means `add-node`, not an automatic revert.
 
 ### Preflight simulation (capacity / spread / local-data / last-capable-node)
 

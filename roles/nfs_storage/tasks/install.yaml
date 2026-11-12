@@ -10,31 +10,8 @@
 # 4. Create StorageClass and VolumeSnapshotClass
 # =============================================================================
 
-# ─── Resolve NFS server host ────────────────────────────────────────────
-# The nfs_server inventory group designates which host runs NFS.
-# Fall back to first kube_control_plane if nfs_server group is empty.
-
-- name: "nfs_storage | Resolve NFS server target"
-  ansible.builtin.set_fact:
-    _nfs_target: >-
-      {%- if groups['nfs_server'] | default([]) | length > 0 -%}
-        {{ groups['nfs_server'] | first }}
-      {%- elif groups['kube_control_plane'] | default([]) | length > 0 -%}
-        {{ groups['kube_control_plane'] | first }}
-      {%- else -%}
-        localhost
-      {%- endif -%}
-
-- name: "nfs_storage | Resolve NFS server IP"
-  ansible.builtin.set_fact:
-    nfs_server: >-
-      {%- if nfs_server | default('', true) | length > 0 -%}
-        {{ nfs_server | trim }}
-      {%- elif hostvars[_nfs_target | trim]['ansible_host'] is defined -%}
-        {{ hostvars[_nfs_target | trim]['ansible_host'] }}
-      {%- else -%}
-        {{ _nfs_target | trim }}
-      {%- endif -%}
+- name: "nfs_storage | Resolve NFS server"
+  ansible.builtin.include_tasks: server.yaml
 
 - name: "nfs_storage | Display target"
   ansible.builtin.debug:
@@ -94,12 +71,8 @@
   ansible.builtin.debug:
     msg: "NFS CSI driver already present (Helm release + StorageClass). Skipping."
 
-# Node membership changes independently of the Helm release/StorageClass
-# lifecycle the skip above gates on — a node added since this cluster's NFS
-# storage was first installed still needs its own client packages and a
-# place in /etc/exports. The "Install" block below also calls this (after
-# standing up the server from scratch), on the only other path through this
-# file; between the two, exactly one call always runs.
+# A node added since the first install still needs its client packages and
+# its place in /etc/exports. A first install refreshes them in its block below.
 - name: "nfs_storage | Refresh NFS client packages + /etc/exports (already installed)"
   when: _nfs_release_present | bool and _nfs_sc_present | bool
   ansible.builtin.include_tasks: refresh_exports.yaml
@@ -178,13 +151,7 @@
       delegate_to: "{{ _nfs_target | trim }}"
       become: true
 
-    # nfsd is up by this point (service just (re)started) and exportfs exists
-    # (server packages just installed above), so this is the earliest point
-    # refresh_exports.yaml's own `exportfs -ra` can run on a brand new
-    # server. The smoke test below needs the export already configured for
-    # the first worker, so this has to stay inside the "Install" block,
-    # before it — the "already installed" path below covers the case where
-    # this whole block (and therefore this call) is skipped entirely.
+    # After the server is up (exportfs -ra needs it), before the smoke test.
     - name: "nfs_storage | Refresh NFS client packages + /etc/exports"
       ansible.builtin.include_tasks: refresh_exports.yaml
 

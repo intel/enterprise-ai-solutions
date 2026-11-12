@@ -35,15 +35,7 @@
   ansible.builtin.meta: refresh_inventory
 
 - name: "kubernetes | Detect SSH requirement from inventory"
-  ansible.builtin.set_fact:
-    _k8s_needs_ssh: >-
-      {{
-        (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
-        | unique
-        | reject('equalto', 'localhost')
-        | list
-        | length > 0
-      }}
+  ansible.builtin.include_tasks: needs_ssh.yaml
 
 - name: "kubernetes | Compute execution phase"
   ansible.builtin.set_fact:
