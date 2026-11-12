@@ -28,11 +28,23 @@
   register: _netplan_current
   failed_when: false
 
+# The node file is gone on a re-run after a failure below. The controller copy
+# fabric_inventory generated is still there (its teardown runs after this one),
+# so the addresses come from both.
+- name: "fabric_netplan | teardown | Read generated netplan for each node"
+  ansible.builtin.slurp:
+    src: "{{ rack_scale_netplan_dir }}/{{ hostvars[item].node_hostname | default(item) }}.yaml"
+  loop: "{{ _fabric_all_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _netplan_generated
+  failed_when: false
+
 - name: "fabric_netplan | teardown | Collect fabric addresses"
   ansible.builtin.set_fact:
     _fabric_addresses: >-
       {%- set out = [] -%}
-      {%- for r in _netplan_current.results if r.content is defined -%}
+      {%- for r in _netplan_current.results + _netplan_generated.results if r.content is defined -%}
       {%- set eths = ((r.content | b64decode | from_yaml).network | default({})).ethernets | default({}) -%}
       {%- for nic, cfg in eths.items() -%}
       {%- for addr in cfg.addresses | default([]) -%}
@@ -40,7 +52,7 @@
       {%- endfor -%}
       {%- endfor -%}
       {%- endfor -%}
-      {{ out }}
+      {{ out | unique }}
 
 - name: "fabric_netplan | teardown | Remove 99-fabric.yaml from all nodes"
   ansible.builtin.file:

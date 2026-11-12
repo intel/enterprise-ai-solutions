@@ -29,7 +29,7 @@ network:
   calico_mode: vxlan                # vxlan (star) | bgp (clos)
   pod_cidr: 10.244.0.0/16
   service_cidr: 10.233.0.0/18
-  mtu: 9000
+  mtu: 9000                         # every fabric NIC and switch port must carry it
   fabric_prefix: 30                 # /30 for star (point-to-point), /16 for clos
   netplan_renderer: networkd        # networkd | NetworkManager
   control_plane_on_fabric: true     # bind kubelet/etcd to fabric IP (recommended)
@@ -63,7 +63,7 @@ racks:
         local: true                   # Ansible bastion — runs locally
         roles: [kube_control_plane, etcd, storage]
         fabric_nics:
-          - nic: ens801f0              # 100G NIC name (ip link show)
+          - nic: ens801f0              # fabric NIC name (ip link show)
             fabric_ip: 10.201.1.1
             prefix: 30
             peer: worker1             # node at the other end of this cable
@@ -96,12 +96,13 @@ racks:
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 storage:
-  ceph_fabric_nic: ens801f0           # NIC that Ceph daemons bind to
   ceph_public_network: 10.201.1.0/28
   ceph_cluster_network: 10.201.1.0/28
 
-  # OS disk is typically nvme0n1 — NEVER list it here.
-  nodes:
+  # The OSD disks: on rack-scale the only source (no rook_ceph_devices in
+  # global_config.yaml). A kernel name (nvme1n1) or a full /dev path such as
+  # /dev/disk/by-id/.... The OS disk (typically nvme0n1) NEVER goes here.
+  nodes:                            # name: the node's key under racks
     - name: master1
       devices: [nvme1n1]
     - name: master2
@@ -142,7 +143,7 @@ storage:
 #         fabric_nics:
 #           - nic: ens801f0
 #             fabric_ip: 10.201.0.10
-#             leaf: leaf-a             # which ToR switch this NIC connects to
+#             leaf: leaf-a             # optional: derived from the leaf whose fabric_subnet holds fabric_ip
 #           - nic: ens801f1
 #             fabric_ip: 10.202.0.10
 #             leaf: leaf-b             # dual-homed for ECMP
