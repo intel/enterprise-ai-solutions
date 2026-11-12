@@ -99,7 +99,9 @@
 # re-installed, or ceph-volume skips them and creates 0 OSDs.
 
 # A teardown that stopped part-way leaves its cleanup pods, their logs and the
-# device map: start without them, or a re-run would trust the old ones.
+# device map: start without them, or a re-run would trust the old ones. If the
+# namespace is stuck terminating, delete its pods (kubectl delete pods -n
+# rook-ceph-cleanup --all --force), check its finalizers, then re-run.
 - name: "rook_ceph | teardown | Remove cleanup namespace left by an earlier run"
   kubernetes.core.k8s:
     state: absent
@@ -108,23 +110,6 @@
     name: rook-ceph-cleanup
     wait: true
     wait_timeout: 120
-  failed_when: false
-
-- name: "rook_ceph | teardown | Read the cleanup namespace"
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Namespace
-    name: rook-ceph-cleanup
-  register: _rook_old_cleanup
-
-- name: "rook_ceph | teardown | Stop if the cleanup namespace of an earlier run is still there"
-  ansible.builtin.fail:
-    msg: >-
-      Namespace rook-ceph-cleanup, left by an earlier teardown, is still there
-      ({{ _rook_old_cleanup.resources[0].status.phase | default('?') }}). If it is stuck terminating,
-      delete its pods (kubectl delete pods -n rook-ceph-cleanup --all --force) and check its
-      finalizers, then re-run.
-  when: _rook_old_cleanup.resources | length > 0
 
 - name: "rook_ceph | teardown | Ensure cleanup namespace"
   kubernetes.core.k8s:
@@ -236,7 +221,8 @@
                       echo "device wipe disabled — host paths only"
                     fi
                     [ "$rc" -eq 0 ] && echo "CLEANED" || echo "CLEANUP_FAILED"
-                    # Wait to be removed, and go at once then.
+                    # Stay until the DaemonSet is removed: a pod that exits restarts and
+                    # runs again on the wiped disks. Bash as PID 1 ignores SIGTERM without a trap.
                     trap 'exit 0' TERM
                     sleep infinity &
                     wait

@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Run: python3 -m pytest src/tests/unit
 import pathlib
+import signal
+import subprocess
+import time
 
 import pytest
 import yaml
@@ -55,7 +58,18 @@ def test_a_cleanup_namespace_left_by_an_earlier_run_goes_first():
     names = [t.get("name", "") for t in _TEARDOWN]
     first = names.index(task("Remove cleanup namespace left by an earlier run")["name"])
     assert first < names.index(task("Ensure cleanup namespace")["name"]) < names.index(task("Create device-map ConfigMap")["name"])
-    stop = task("Stop if the cleanup namespace of an earlier run is still there")
-    assert first < names.index(stop["name"]) < names.index(task("Ensure cleanup namespace")["name"])
-    for resources, stops in (([], False), ([{"status": {"phase": "Terminating"}}], True)):
-        assert render("{{ %s }}" % stop["when"], {"_rook_old_cleanup": {"resources": resources}}) in (stops, str(stops))
+
+
+def test_a_cleanup_namespace_that_does_not_go_stops_the_teardown():
+    old = task("Remove cleanup namespace left by an earlier run")
+    assert old["kubernetes.core.k8s"]["wait"] is True and not {"failed_when", "ignore_errors"} & old.keys()
+
+
+def test_a_finished_cleanup_pod_stays_until_removed_then_exits_at_once():
+    ds = task("disk cleanup DaemonSet")["kubernetes.core.k8s"]["definition"]
+    script = ds["spec"]["template"]["spec"]["containers"][0]["args"][0]
+    pod = subprocess.Popen(["bash", "-c", script[script.index("trap "):]])
+    time.sleep(0.5)
+    assert pod.poll() is None
+    pod.send_signal(signal.SIGTERM)
+    assert pod.wait(timeout=5) == 0
