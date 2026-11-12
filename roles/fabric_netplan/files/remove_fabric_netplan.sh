@@ -7,19 +7,16 @@
 # The config is checked with netplan get, not generate: apply reloads networkd
 # only if it finds netplan's networkd files from before its own generate.
 marker=${FABRIC_REAPPLY_MARKER:-/run/fabric-netplan-reapply}
-pending() {
-    [ -e "$marker" ] && return 0
-    for f in $FABRIC_FILES; do
-        [ -e "$f" ] && return 0
-    done
-    return 1
-}
 # After a teardown, an address a site file also sets is back on its NIC: leave it.
-pending || exit 0
+pending=
+for f in "$marker" $FABRIC_FILES; do
+    [ -e "$f" ] && pending=1
+done
+[ -n "$pending" ] || exit 0
 on_nics=()
 for pair in $FABRIC_ADDRESSES; do
-    addr=${pair#*=}
-    [ -n "$(ip -o addr show dev "${pair%%=*}" to "${addr%/*}" 2>/dev/null)" ] && on_nics+=("$pair")
+    nic=${pair%%=*} addr=${pair#*=}
+    [ -n "$(ip -o addr show dev "$nic" to "${addr%/*}" 2>/dev/null)" ] && on_nics+=("$pair")
 done
 
 touch "$marker" || { echo "cannot create $marker" >&2; exit 1; }
@@ -30,11 +27,12 @@ done
 netplan get >/dev/null || { echo "netplan get fails: the fabric netplan files are removed and no address was; fix what it reports, then re-run" >&2; exit 1; }
 rc=0
 for pair in "${on_nics[@]}"; do
+    nic=${pair%%=*} addr=${pair#*=}
     # ip exits 2 when the address is already gone.
-    if ip addr del "${pair#*=}" dev "${pair%%=*}"; then
-        echo "removed ${pair#*=} from ${pair%%=*}"
+    if ip addr del "$addr" dev "$nic"; then
+        echo "removed $addr from $nic"
     elif [ $? -ne 2 ]; then
-        echo "cannot remove ${pair#*=} from ${pair%%=*}" >&2
+        echo "cannot remove $addr from $nic: fix it, then re-run" >&2
         rc=1
     fi
 done
