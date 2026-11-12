@@ -15,8 +15,8 @@
          | union(groups['kube_node'] | default([]))
          | unique }}
 
-# netplan apply leaves an address in place once its definition is gone, so read
-# what 99-fabric.yaml assigned before removing it.
+# netplan apply leaves an address on a NIC that no netplan file configures any
+# more, so read what 99-fabric.yaml assigned before removing it.
 - name: "fabric_netplan | teardown | Read fabric netplan on each node"
   ansible.builtin.slurp:
     src: "{{ rack_scale_netplan_dest }}"
@@ -67,4 +67,4 @@
   loop_control:
     label: "{{ item }}"
   register: _fabric_netplan_removed
-  changed_when: "'fabric-netplan-changed' in (_fabric_netplan_removed.stdout | default(''))"
+  changed_when: "'fabric-netplan-changed' in _fabric_netplan_removed.stdout"

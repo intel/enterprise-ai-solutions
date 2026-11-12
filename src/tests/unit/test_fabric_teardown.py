@@ -18,7 +18,6 @@ TASK = next(t for t in yaml.safe_load((ROLE / "tasks" / "teardown.yaml").read_te
             if t["name"] == "fabric_netplan | teardown | Remove the fabric netplan and addresses, then re-apply netplan")
 N1 = "ens1=10.0.0.1/24 ens2=10.0.1.1/24 "
 BOTH_ON_NICS = (("ens1", "10.0.0.1"), ("ens2", "10.0.1.1"))
-# Stand-ins log the commands that change something, and answer from config.json.
 STAND_INS = {
     "ip": """
 cmd = " ".join(sys.argv[1:])
@@ -65,10 +64,11 @@ def node(tmp_path):
 
 
 def test_the_fabric_netplan_and_addresses_are_removed_then_netplan_is_reapplied(node):
-    assert node() == Run(0, ["netplan get", "ip addr del 10.0.0.1/24 dev ens1", "ip addr del 10.0.1.1/24 dev ens2",
-                             "netplan apply"],
-                         ["fabric-netplan-changed", "removed 10.0.0.1/24 from ens1", "removed 10.0.1.1/24 from ens2"],
-                         "", True)
+    run = node()
+    assert run.code == 0 and run.stderr == "" and run.changed
+    assert run.calls == ["netplan get", "ip addr del 10.0.0.1/24 dev ens1", "ip addr del 10.0.1.1/24 dev ens2",
+                         "netplan apply"]
+    assert run.stdout == ["fabric-netplan-changed", "removed 10.0.0.1/24 from ens1", "removed 10.0.1.1/24 from ens2"]
     assert node.files_left() == [] and not node.marker.exists()
 
 
@@ -102,11 +102,6 @@ def test_a_config_netplan_cannot_read_removes_no_address_and_the_next_run_finish
     assert node(files=()).calls[-1] == "netplan apply" and not node.marker.exists()
 
 
-def test_addresses_left_on_the_nics_are_removed_without_the_files(node):
-    assert node(files=()).calls == ["netplan get", "ip addr del 10.0.0.1/24 dev ens1",
-                                    "ip addr del 10.0.1.1/24 dev ens2", "netplan apply"]
-
-
 def test_a_fabric_file_that_cannot_be_removed_stops_the_node(node, tmp_path):
     (tmp_path / "99-fabric.yaml").mkdir()
     run = node(files=())
@@ -119,13 +114,18 @@ def test_a_marker_that_cannot_be_created_stops_the_node(node, tmp_path):
     assert run.code != 0 and run.calls == [] and "\ncannot create " in run.stderr
 
 
-def test_a_node_without_its_files_or_addresses_is_left_alone(node):
-    assert node(on_nics=(), files=()) == Run(0, [], [], "", False)
-    assert node(addresses="", on_nics=(), files=()) == Run(0, [], [], "", False)
+@pytest.mark.parametrize("addresses, on_nics", [
+    (N1, BOTH_ON_NICS),  # a site file sets them too, so they are back after a teardown
+    (N1, ()),
+    ("", ()),
+])
+def test_a_node_without_a_fabric_file_or_marker_is_left_alone(node, addresses, on_nics):
+    run = node(addresses=addresses, on_nics=on_nics, files=())
+    assert (run.code, run.calls, run.stdout, run.changed) == (0, [], [], False)
 
 
 def test_an_address_on_another_nic_does_not_count(node):
-    assert node(on_nics=(("ens9", "10.0.0.1"),), files=()) == Run(0, [], [], "", False)
+    assert node(on_nics=(("ens9", "10.0.0.1"),)).calls == ["netplan get", "netplan apply"]
 
 
 def test_the_old_fabric_file_alone_is_enough(node):

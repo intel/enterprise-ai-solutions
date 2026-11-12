@@ -6,8 +6,6 @@
 # another netplan file also sets on the NIC (a site file for an RDMA network, say).
 # The config is checked with netplan get, not generate: apply reloads networkd
 # only if it finds netplan's networkd files from before its own generate.
-#   FABRIC_FILES      the fabric netplan files
-#   FABRIC_ADDRESSES  "NIC=ADDRESS/PREFIX ..." that the fabric file assigned
 marker=${FABRIC_REAPPLY_MARKER:-/run/fabric-netplan-reapply}
 pending() {
     [ -e "$marker" ] && return 0
@@ -16,12 +14,13 @@ pending() {
     done
     return 1
 }
+# After a teardown, an address a site file also sets is back on its NIC: leave it.
+pending || exit 0
 on_nics=()
 for pair in $FABRIC_ADDRESSES; do
     addr=${pair#*=}
     [ -n "$(ip -o addr show dev "${pair%%=*}" to "${addr%/*}" 2>/dev/null)" ] && on_nics+=("$pair")
 done
-pending || [ ${#on_nics[@]} -gt 0 ] || exit 0
 
 touch "$marker" || { echo "cannot create $marker" >&2; exit 1; }
 echo fabric-netplan-changed
