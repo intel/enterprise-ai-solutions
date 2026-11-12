@@ -9,7 +9,7 @@ networking, Ceph storage on fabric, and optional GPU acceleration.
 
 ## Overview
 
-Rack-scale mode adds 100G fabric networking to the infrastructure layer. It is
+Rack-scale mode adds a dedicated high-speed fabric to the infrastructure layer. It is
 **disabled by default** (`rack_scale_enabled: false`) — when off, all fabric
 components are skipped and the stack behaves identically to a standard
 deployment. When enabled, the installer reads `rack-profile.yaml` and
@@ -37,7 +37,9 @@ Four topologies are supported from the same `rack-profile.yaml` schema:
   netplan, so RHEL and Rocky Linux nodes are not supported for rack-scale, even
   though the base installer supports them. The fabric step stops before writing
   anything if a node has no netplan.
-- **Hardware:** 100G NICs on all nodes (check with `ip link show`)
+- **Hardware:** fabric NICs on all nodes (check with `ip link show`). Any link
+  speed works; every fabric NIC and switch port must carry the profile's MTU
+  (`network.mtu`, 9000 by default)
   - Star: direct cables between hub and each node
   - Clos: cables to ToR leaf switches
 - **Network plan:** fabric IP addresses, subnet layout, cable map
@@ -76,8 +78,8 @@ failed rack-scale install.
 ## Quick Start
 
 ```bash
-git clone https://github.com/intel-innersource/applications.ai.enterprise.ai-solutions.git
-cd applications.ai.enterprise.ai-solutions
+git clone https://github.com/intel/enterprise-ai-solutions.git
+cd enterprise-ai-solutions
 
 ./es_auto_installer.sh configure
 
@@ -99,13 +101,18 @@ vim env/rack/rack-profile.yaml            # edit for your hardware — see below
 > [!Note]
 > `rack-profile.yaml` replaces `nodes.yaml` for rack-scale. Leave `nodes.yaml`
 > empty (or don't create it) — the fabric_inventory role generates the Kubespray
-> inventory from your rack profile.
+> inventory from your rack profile. Install stops if `nodes_control_plane` or
+> `nodes_workers` is set, because those would overwrite that inventory.
 
 > [!Important]
-> **Ceph storage:** `rook_ceph_devices` must still be set in `global_config.yaml`
-> even though storage nodes and devices are defined in `rack-profile.yaml`. The
-> Ceph network CIDRs are derived automatically from the profile, but the device
-> list is not yet. This duplication will be removed in a future release.
+> **Ceph storage:** the OSD devices and the Ceph networks both come from the
+> `storage` section of `rack-profile.yaml`; set only `storage_backend: ceph` in
+> `global_config.yaml`. A device can be a kernel name (`nvme1n1`) or a full path
+> such as `/dev/disk/by-id/...`. With `storage_backend: ceph`, install stops before Kubespray if the profile
+> lists no devices, and install and teardown stop if `global_config.yaml` still sets a
+> different `rook_ceph_devices`. Delete `rook_ceph_devices` from `global_config.yaml`.
+> Teardown also stops when `rook_ceph_teardown_wipe_devices: true` asks for a disk wipe
+> but the profile lists no devices.
 
 ---
 
@@ -183,16 +190,16 @@ racks:
             fabric_ip: 10.201.1.1    # fabric IP address
             prefix: 30               # on-link prefix (star: /30, clos: /16)
             peer: worker1            # star: node at the other end of this cable
-            # leaf: leaf-a           # clos: which ToR switch this NIC connects to
+            # leaf: leaf-a           # clos, optional: the leaf whose fabric_subnet holds fabric_ip
 ```
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `hostname` | yes | Used for netplan file names and K8s node name |
-| `mgmt_ip` | yes | SSH reachable from bastion. Not needed for `local: true` node |
-| `roles` | yes | `kube_control_plane`, `etcd`, `kube_node`, `storage` |
+| `hostname` | yes | Used for netplan file names. The Kubernetes node name is the node's key under `racks` (e.g. `master1`), and Kubespray sets the OS hostname to it |
+| `mgmt_ip` | yes | SSH reachable from the bastion. Every node needs it, the `local: true` node included: it SSHs to itself |
+| `roles` | yes | At least one of `kube_control_plane`, `etcd`, `kube_node`, `storage` |
 | `local` | no | Exactly one node — the bastion running the installer |
-| `fabric_nics` | yes | At least one 100G NIC per node |
+| `fabric_nics` | yes | At least one fabric NIC per node |
 | `fabric_router` | no | **Star only.** Exactly one node. The hub that forwards between spokes |
 | `profile` | no | Reference to a `node_profiles` entry |
 
@@ -200,16 +207,25 @@ racks:
 
 ```yaml
 storage:
-  ceph_fabric_nic: ens801f0              # NIC Ceph binds to
   ceph_public_network: 10.201.1.0/28    # client → OSD traffic
   ceph_cluster_network: 10.201.1.0/28   # OSD → OSD replication
 
-  nodes:
-    - name: master1                      # must match a node name above
-      devices: [nvme1n1]                 # raw block devices (NEVER the OS disk)
+  nodes:                                 # the Ceph storage nodes and their OSD devices
+    - name: master1                      # the node's key under racks
+      devices: [nvme1n1]                 # raw block devices (NEVER the OS disk): nvme1n1 or /dev/disk/by-id/...
     - name: master2
       devices: [nvme1n1]
 ```
+
+Ceph runs with host networking and binds to the addresses in
+`ceph_public_network` and `ceph_cluster_network`, so NIC names can differ per
+node. The parser checks that every `storage` node has a fabric IP in
+`ceph_public_network` (and in `ceph_cluster_network` when set), and that its
+node IP is in the public network: a Ceph mon binds to its node IP, and Rook can
+place a mon on any storage node. The node IP is the first fabric NIC, or
+`mgmt_ip` on a control-plane node when `control_plane_on_fabric` is false. With
+topology `none` there is no fabric, so each storage node's `mgmt_ip` must be in
+the Ceph networks.
 
 ---
 
@@ -307,6 +323,11 @@ worker1:
       leaf: leaf-b              # ECMP across both uplinks
 ```
 
+`leaf:` is optional: each NIC's leaf is the one whose `fabric_subnet` holds
+its `fabric_ip`. If you set it, it must name a defined leaf and agree with the
+subnet. A `fabric_ip` in no leaf's subnet, or in two overlapping ones, is an
+error. A NIC on a leaf with `fabric_subnet: TBD` must name the leaf.
+
 ---
 
 ## L2 Topology
@@ -369,8 +390,9 @@ master1:
 ```
 
 > [!Note]
-> L2 rejects `leafs:`, `fabric_router:`, `peer:`, and `leaf:` on NICs.
-> The parser enforces these as hard errors.
+> L2 rejects `leafs:`, `fabric_router:`, `peer:`, and `leaf:` on NICs, and
+> every `fabric_ip` must be inside the one segment. The parser enforces these
+> as hard errors.
 
 ---
 
@@ -421,17 +443,21 @@ worker1:
 
 ## Upgrading Star → Clos
 
-This is a config-only change — no application modifications required.
+The topology of an installed cluster can't be changed in place. Re-running
+`install` on a running cluster skips Kubespray, so Calico's mode (VXLAN to BGP)
+never changes. Tear the cluster down and install it again. Teardown removes
+Ceph too, so back up what you need first.
 
-1. Install ToR leaf switches and cable nodes to them
-2. Edit `rack-profile.yaml`:
+1. Tear down: `./es_auto_installer.sh teardown infrastructure --env <env>`
+2. Install the ToR leaf switches and cable the nodes to them
+3. Edit `rack-profile.yaml`:
    - Change `topology: star` → `topology: clos`
    - Change `calico_mode: vxlan` → `calico_mode: bgp`
    - Change `fabric_prefix: 30` → `fabric_prefix: 16`
    - Remove `fabric_router: true` and `peer:` from nodes
    - Add `leafs:` definitions and `leaf:` on each fabric NIC
-   - Add `bgp: cluster_asn:` 
-3. Re-run `install` — the stack reconfigures automatically
+   - Add `bgp: cluster_asn:`
+4. Install: `./es_auto_installer.sh install inference --env <env>`
 
 ---
 
@@ -507,17 +533,28 @@ and continue.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `rack_scale_enabled is true but rack-profile.yaml not found` | Missing profile | Copy `configs/defaults/rack-profile.yaml.example` to `env/<env>/rack-profile.yaml` |
-| `rack_scale_enabled=true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to a management-subnet IP (e.g. `172.18.168.1/32`) |
+| `rack_scale_enabled is true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to free management-subnet addresses (e.g. `172.18.168.240-172.18.168.250`), not a node's own IP |
+| `metallb_ip_range ... overlaps the fabric subnet` | VIP range on the fabric | Move `metallb_ip_range` to free management-subnet addresses; fabric IPs are not reachable from outside the rack |
 | Kubespray can't SSH to workers | Star hub not forwarding | Check hub: `sysctl net.ipv4.ip_forward` (must be 1), `iptables -S FORWARD` (must have ACCEPT rules) |
 | `star cable faults: both ends must share...` | /30 subnet mismatch | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
 | `duplicate fabric_ip` | Two nodes share an IP | Check `rack-profile.yaml` for collisions |
-| Ceph OSDs not starting | Wrong NIC name | Verify `ceph_fabric_nic` exists on storage nodes: `ip link show` on each |
+| `storage node ... has no fabric_ip in ceph_public_network` | Ceph networks don't match the storage nodes | Give each storage node a fabric IP in the Ceph networks, or fix `ceph_public_network` / `ceph_cluster_network` |
+| `storage node ... node IP ... is outside ceph_public_network` | The node IP (first fabric NIC, or `mgmt_ip` on a control-plane node off the fabric) is on another network | List the NIC in `ceph_public_network` first; on a control-plane node set `control_plane_on_fabric: true` or move the `storage` role |
+| `storage node ... mgmt_ip ... is outside ceph_..._network` | Topology `none`: the Ceph networks don't hold the management addresses | Set the Ceph networks to the management subnet, or leave them out |
+| `fabric_ip ... is not within leafX's fabric_subnet` | IP and `leaf:` disagree | Fix the `fabric_ip`, or drop `leaf:` and let the parser derive it |
+| `fabric_ip ... is outside the L2 segment` | L2 node addressed in another subnet | Put every fabric IP in the one L2 subnet |
+| `missing required field 'mgmt_ip'` / `has no roles` | Incomplete node entry | Add `mgmt_ip` and at least one role to the node |
+| `the nodes come from rack-profile.yaml, but nodes_control_plane ... also set` | `nodes.yaml` defines nodes on a rack-scale env | Remove `nodes_control_plane` and `nodes_workers` from `env/<env>/nodes.yaml`; the rack profile lists the nodes |
 | Kubespray hangs behind proxy | Fabric CIDRs not in no_proxy | The installer injects them automatically; verify with `echo $no_proxy` |
 | `unknown field 'X' — typo?` | Schema validation | Fix the field name and re-run — the parser catches typos as hard errors |
 | `GPU operator not installing` | Missing `accelerator:`, or the vendor is not NVIDIA | Add `accelerator: nvidia-b300-hgx` (or similar) to the node or its profile |
 | BGP sessions not Established (Clos) | Leaf switch misconfigured | Verify `peer_ip`, `asn`, and `fabric_subnet` match the switch config |
 | `topology=l2 does not use leafs` | L2 profile has `leafs:` block | Remove the `leafs:` section — L2 is a flat broadcast domain |
 | `topology=none ... has fabric_nics` | None profile has fabric NICs | Remove `fabric_nics` from all nodes — topology=none uses mgmt_ip only |
+| `storage.nodes entry 'X' is not a node defined under racks` / `needs a non-empty devices list` | Storage section out of step with the racks | Use the node names from `racks`, and give each storage node its OSD devices |
+| `storage_backend is ceph, but rack-profile.yaml lists no Ceph OSD devices` | Devices not in the profile (or still only in `global_config.yaml`) | Add `storage.nodes` with each storage node's devices to `rack-profile.yaml` |
+| `rook_ceph_devices in global_config.yaml ... differs from storage.nodes` | Devices set in two places | Delete `rook_ceph_devices` from `global_config.yaml`; the rack profile is the only source |
+| `rook_ceph_teardown_wipe_devices is true, but rack-profile.yaml lists no Ceph OSD devices` | Disk wipe asked for, devices gone from the profile | Add the devices back to `storage.nodes`, or set `rook_ceph_teardown_wipe_devices: false` and wipe the disks by hand |
 | `topology=none ... calico_mode must be vxlan` | None + BGP | Change `calico_mode: vxlan` — no fabric to run BGP over |
 
 ---
@@ -576,6 +613,6 @@ kubernetes → storage
 | Variable | Default | Location | Purpose |
 |----------|---------|----------|---------|
 | `rack_scale_enabled` | `false` | `global_config.yaml` | Master gate for all fabric components |
-| `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale.** Management-subnet IP for LoadBalancer VIP (e.g. `172.18.168.1/32`). Auto-detection picks fabric IPs which are unreachable from outside the rack. |
+| `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale.** Free management-subnet addresses for LoadBalancer VIPs (e.g. `172.18.168.240-172.18.168.250`). Not a fabric address: auto-detection picks fabric IPs, which are unreachable from outside the rack, and install stops if the range overlaps a fabric subnet. Not a node's own IP: with more than one control-plane node, MetalLB can announce it from another node, which then answers ARP for that node's address. |
 | `storage_backend` | `local-path` | `global_config.yaml` | Set to `ceph` for fabric-attached storage |
 | `rack-profile.yaml` | (none) | `env/<env>/` | Hardware profile — see above |

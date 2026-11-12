@@ -56,6 +56,7 @@
       never become healthy. Set a per-node raw device map in global_config.yaml:
         rook_ceph_devices:
           <node-name>: [/dev/nvme1n1]
+      On rack-scale, list the devices under storage.nodes in rack-profile.yaml instead.
 
 - name: "rook_ceph | Assert minimum storage node count"
   ansible.builtin.assert:

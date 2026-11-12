@@ -4,7 +4,9 @@
 
 import pytest
 
-import openshift_prerequisites as op
+from plugin_loader import load_plugin
+
+op = load_plugin("openshift_prerequisites")
 
 NS = "operators"
 FORBIDDEN = {"msg": "pods is forbidden: User cannot list resource"}

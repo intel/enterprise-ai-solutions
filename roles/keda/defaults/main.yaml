@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# KEDA — event-driven autoscaling. Skipped when another install already serves
+# external.metrics.k8s.io; prometheus-adapter's custom.metrics.k8s.io can run beside it.
+
+keda_version: "2.21.0"   # chart and app
+keda_namespace: "keda"
+keda_helm_repo: "https://kedacore.github.io/charts"

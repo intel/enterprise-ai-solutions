@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the used_by handling of the resolve_components filter plugin."""
 
-import resolve_components as rc
+from plugin_loader import load_plugin
+
+rc = load_plugin("resolve_components")
 
 LAYERS = [
     {"name": "platform"},

@@ -14,14 +14,17 @@ preflight.yaml uses lookup('template', ...) (not 'file') for ext manifests so
 Jinja expressions resolve to "True"/"False" strings; _enabled() coerces those.
 """
 
-import warnings
 from collections import deque
+
+from ansible.utils.display import Display
+
+display = Display()
 
 VALID_ACTIONS = ("install", "teardown", "validate")
 
 
-def _enabled(component):
-    val = component.get("enabled", True)
+def _enabled(entry):
+    val = entry.get("enabled", True)
     if isinstance(val, bool):
         return val
     if val is None:
@@ -86,7 +89,7 @@ def _resolve_layers(layers, seed_layers, action, include_deps):
 
     cycles = _detect_cycles(graph)
     if cycles:
-        warnings.warn(
+        display.warning(
             "Cycle detected in layer dependencies: %s" %
             " | ".join(" -> ".join(c) for c in cycles)
         )
@@ -103,7 +106,7 @@ def _resolve_layers(layers, seed_layers, action, include_deps):
     if action == "teardown":
         return seen
     # Install: drop disabled layers unless explicitly targeted.
-    disabled = {layer["name"] for layer in layers if layer.get("enabled") is False}
+    disabled = {layer["name"] for layer in layers if not _enabled(layer)}
     return [n for n in seen if n not in disabled or n in seed_layers]
 
 
@@ -166,7 +169,7 @@ def _component_order(comps):
 
     ordered, unresolved = _toposort(range(len(comps)), deps)
     if unresolved:
-        warnings.warn(
+        display.warning(
             "Cycle detected in component dependencies within layer '%s': %s"
             % (comps[unresolved[0]].get("layer"),
                ", ".join(comps[i]["name"] for i in unresolved))
@@ -186,6 +189,12 @@ def resolve_components(components, layers, target, action="install",
         raise ValueError(
             "Invalid action '%s'. Valid: %s" % (action, sorted(VALID_ACTIONS))
         )
+
+    if not isinstance(target, str):
+        raise ValueError("target is required: a layer or component name, got %r" % (target,))
+    for entry in list(layers) + list(components):
+        if not entry.get("name"):
+            raise ValueError("Every layer and component needs a name, got %r" % (entry,))
 
     # Targets, skips and depends_on may use a component's alias.
     alias = _aliases(components)
@@ -207,6 +216,8 @@ def resolve_components(components, layers, target, action="install",
 
     # Classify target: each part is either a known layer or a component name.
     parts = [alias.get(t.strip(), t.strip()) for t in target.split(",") if t.strip()]
+    if not parts:
+        raise ValueError("target is required: a layer or component name, got %r" % (target,))
     targeted_layers = [p for p in parts if p in layer_names]
     targeted_components = [p for p in parts if p not in layer_names]
 
@@ -218,15 +229,11 @@ def resolve_components(components, layers, target, action="install",
                 % (cname, sorted(layer_names), sorted(by_name.keys()))
             )
 
-    # Determine seed layers
-    if targeted_layers:
-        seed_layers = targeted_layers
-    else:
-        seed_layers = []
-        for cname in targeted_components:
-            comp = by_name[cname]
-            if comp.get("layer") not in seed_layers:
-                seed_layers.append(comp["layer"])
+    seed_layers = list(targeted_layers)
+    for cname in targeted_components:
+        layer = by_name[cname].get("layer")
+        if layer not in seed_layers:
+            seed_layers.append(layer)
 
     resolved_layers = _resolve_layers(layers, seed_layers, action, include_deps)
 
@@ -256,7 +263,10 @@ def resolve_components(components, layers, target, action="install",
                     if dep not in wanted:
                         wanted.add(dep)
                         queue.append(dep)
-        pool = [c for c in pool if c["name"] in wanted]
+        # Layers named alongside components keep all of theirs (and their deps').
+        whole = set(_resolve_layers(layers, targeted_layers, action, include_deps)
+                    if targeted_layers else ())
+        pool = [c for c in pool if c["name"] in wanted or c.get("layer") in whole]
 
     # Teardown: a `used_by` component goes with its users, unless one that stays is
     # enabled (kept_components names it). It may sit in a layer the plan does not reach.
