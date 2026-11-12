@@ -399,221 +399,254 @@
     msg: "kube-prometheus-stack already deployed in {{ observability_namespace }} — skipping."
   when: _obs_prom_release.status is defined and _obs_prom_release.status is not none
 
-# =============================================================================
-# 2. Loki (monolithic mode)
-#    Single-binary log aggregation. Receives logs from OTel Collector.
-# =============================================================================
+# Loki, Tempo and the OTel Collector charts are github.com release assets: pull them with a
+# ~10 min retry window so a short github.com/proxy outage does not abort the install.
+# check_mode: false gives `--check` a chart to render.
+- name: "observability | Create chart download directory"
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: -observability-charts
+  check_mode: false
+  register: _obs_chart_dir
 
-- name: "observability | Install Loki"
-  when: _obs_loki_release.status is not defined or _obs_loki_release.status is none
+- name: "observability | Install Loki, Tempo and OpenTelemetry Collector"
   block:
-    - name: "observability | Deploy Loki"
-      kubernetes.core.helm:
-        name: loki
-        chart_ref: grafana-community/loki
-        release_namespace: "{{ observability_namespace }}"
-        create_namespace: false
-        chart_version: "{{ observability_loki_version }}"
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
-        values:
-          deploymentMode: SingleBinary
-          loki:
-            auth_enabled: false
-            commonConfig:
-              replication_factor: 1
-            limits_config:
-              retention_period: "{{ observability_loki_retention_hours }}h"
-            storage:
-              type: s3
-              bucketNames:
-                chunks: "loki-chunks"
-                ruler: "loki-ruler"
-              s3:
-                endpoint: "{{ object_store_endpoint }}"
-                accessKeyId: "{{ object_store_loki_access_key }}"
-                secretAccessKey: "{{ object_store_loki_secret_key }}"
-                region: "us-east-1"
-                s3ForcePathStyle: true
-                insecure: true
-            schemaConfig:
-              configs:
-                - from: "2024-01-01"
-                  store: tsdb
-                  object_store: s3
-                  schema: v13
-                  index:
-                    prefix: loki_index_
-                    period: 24h
-          singleBinary:
-            replicas: 1
-            affinity: "{{ _platform_affinity | default({}) }}"
-            persistence:
-              # WAL and index cache only — chunks go to the object store
-              enabled: true
-              size: "{{ observability_loki_storage_size }}"
-          # Disable gateway — nginx crashes when kube-dns is not present (cluster uses coredns).
-          # In SingleBinary mode services talk directly to the loki service, no gateway needed.
-          gateway:
-            enabled: false
-          # Disable all microservice replicas — we're in monolithic mode
-          read:
-            replicas: 0
-          write:
-            replicas: 0
-          backend:
-            replicas: 0
-          chunksCache:
-            enabled: "{{ observability_loki_cache_enabled | bool }}"
-          resultsCache:
-            enabled: "{{ observability_loki_cache_enabled | bool }}"
-          # Disable bundled Grafana agent and canary — we use OTel Collector instead
-          monitoring:
-            selfMonitoring:
-              enabled: false
-              grafanaAgent:
-                installOperator: false
-            lokiCanary:
-              enabled: false
-      register: helm_install_result
-      until: helm_install_result is succeeded
-      retries: "{{ helm_retries }}"
-      delay: 15
+    - name: "observability | Download chart {{ item.ref }}"
+      kubernetes.core.helm_pull:
+        chart_ref: "{{ item.ref }}"
+        chart_version: "{{ item.version }}"
+        destination: "{{ _obs_chart_dir.path }}"
+      check_mode: false
+      loop:
+        - { ref: grafana-community/loki, version: "{{ observability_loki_version }}", release: "{{ _obs_loki_release }}" }
+        - { ref: grafana-community/tempo, version: "{{ observability_tempo_version }}", release: "{{ _obs_tempo_release }}" }
+        - { ref: open-telemetry/opentelemetry-collector, version: "{{ observability_otel_collector_version }}", release: "{{ _obs_otel_release }}" }
+      loop_control:
+        label: "{{ item.ref }}"
+      when: item.release.status is not defined or item.release.status is none
+      register: _obs_chart_pull
+      until: _obs_chart_pull is succeeded
+      retries: 10
+      delay: 60
 
-    - name: "observability | Wait for Loki StatefulSet"
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: StatefulSet
-        name: loki
-        namespace: "{{ observability_namespace }}"
-      register: _obs_loki_sts
-      until:
-        - (_obs_loki_sts.resources | default([])) | length > 0
-        - (_obs_loki_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
-      retries: 60
-      delay: 5
+    # =============================================================================
+    # 2. Loki (monolithic mode)
+    #    Single-binary log aggregation. Receives logs from OTel Collector.
+    # =============================================================================
 
-- name: "observability | Loki already installed — skipping"
-  ansible.builtin.debug:
-    msg: "Loki already deployed in {{ observability_namespace }} — skipping."
-  when: _obs_loki_release.status is defined and _obs_loki_release.status is not none
+    - name: "observability | Install Loki"
+      when: _obs_loki_release.status is not defined or _obs_loki_release.status is none
+      block:
+        - name: "observability | Deploy Loki"
+          kubernetes.core.helm:
+            name: loki
+            chart_ref: "{{ _obs_chart_dir.path }}/loki-{{ observability_loki_version }}.tgz"
+            release_namespace: "{{ observability_namespace }}"
+            create_namespace: false
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+            values:
+              deploymentMode: SingleBinary
+              loki:
+                auth_enabled: false
+                commonConfig:
+                  replication_factor: 1
+                limits_config:
+                  retention_period: "{{ observability_loki_retention_hours }}h"
+                storage:
+                  type: s3
+                  bucketNames:
+                    chunks: "loki-chunks"
+                    ruler: "loki-ruler"
+                  s3:
+                    endpoint: "{{ object_store_endpoint }}"
+                    accessKeyId: "{{ object_store_loki_access_key }}"
+                    secretAccessKey: "{{ object_store_loki_secret_key }}"
+                    region: "us-east-1"
+                    s3ForcePathStyle: true
+                    insecure: true
+                schemaConfig:
+                  configs:
+                    - from: "2024-01-01"
+                      store: tsdb
+                      object_store: s3
+                      schema: v13
+                      index:
+                        prefix: loki_index_
+                        period: 24h
+              singleBinary:
+                replicas: 1
+                affinity: "{{ _platform_affinity | default({}) }}"
+                persistence:
+                  # WAL and index cache only — chunks go to the object store
+                  enabled: true
+                  size: "{{ observability_loki_storage_size }}"
+              # Disable gateway — nginx crashes when kube-dns is not present (cluster uses coredns).
+              # In SingleBinary mode services talk directly to the loki service, no gateway needed.
+              gateway:
+                enabled: false
+              # Disable all microservice replicas — we're in monolithic mode
+              read:
+                replicas: 0
+              write:
+                replicas: 0
+              backend:
+                replicas: 0
+              chunksCache:
+                enabled: "{{ observability_loki_cache_enabled | bool }}"
+              resultsCache:
+                enabled: "{{ observability_loki_cache_enabled | bool }}"
+              # Disable bundled Grafana agent and canary — we use OTel Collector instead
+              monitoring:
+                selfMonitoring:
+                  enabled: false
+                  grafanaAgent:
+                    installOperator: false
+                lokiCanary:
+                  enabled: false
+          register: helm_install_result
+          until: helm_install_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
 
-# ── PrometheusRule: Loki + object store PVC usage alerts ──────────────────────
+        - name: "observability | Wait for Loki StatefulSet"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: StatefulSet
+            name: loki
+            namespace: "{{ observability_namespace }}"
+          register: _obs_loki_sts
+          until:
+            - (_obs_loki_sts.resources | default([])) | length > 0
+            - (_obs_loki_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
+          retries: 60
+          delay: 5
 
-- name: "observability | Apply Loki PVC usage PrometheusRule"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'loki-pvc-usage-rule.yaml.j2') | from_yaml }}"
+    - name: "observability | Loki already installed — skipping"
+      ansible.builtin.debug:
+        msg: "Loki already deployed in {{ observability_namespace }} — skipping."
+      when: _obs_loki_release.status is defined and _obs_loki_release.status is not none
 
-# =============================================================================
-# 3. Tempo (monolithic mode)
-#    Single-binary distributed tracing. Receives OTLP traces from OTel Collector.
-# =============================================================================
+    # ── PrometheusRule: Loki + object store PVC usage alerts ──────────────────────
 
-- name: "observability | Install Tempo"
-  when: _obs_tempo_release.status is not defined or _obs_tempo_release.status is none
-  block:
-    - name: "observability | Deploy Tempo"
-      kubernetes.core.helm:
-        name: tempo
-        chart_ref: grafana-community/tempo
-        release_namespace: "{{ observability_namespace }}"
-        create_namespace: false
-        chart_version: "{{ observability_tempo_version }}"
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
-        values:
-          tempo:
-            reportingEnabled: false
-            receivers:
-              otlp:
-                protocols:
-                  grpc:
-                    endpoint: "0.0.0.0:{{ observability_otel_grpc_port }}"
-                  http:
-                    endpoint: "0.0.0.0:{{ observability_otel_http_port }}"
-            storage:
-              trace:
-                backend: s3
-                s3:
-                  endpoint: "{{ object_store_endpoint | replace('http://', '') }}"
-                  bucket: "tempo-traces"
-                  access_key: "{{ object_store_tempo_access_key }}"
-                  secret_key: "{{ object_store_tempo_secret_key }}"
-                  insecure: true
-                  forcepathstyle: true
-            retention: "{{ observability_loki_retention_hours }}h"
-          persistence:
-            enabled: false
-          affinity: "{{ _platform_affinity | default({}) }}"
-          serviceMonitor:
-            enabled: true
-      register: helm_install_result
-      until: helm_install_result is succeeded
-      retries: "{{ helm_retries }}"
-      delay: 15
+    - name: "observability | Apply Loki PVC usage PrometheusRule"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'loki-pvc-usage-rule.yaml.j2') | from_yaml }}"
 
-    - name: "observability | Wait for Tempo StatefulSet"
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: StatefulSet
-        name: tempo
-        namespace: "{{ observability_namespace }}"
-      register: _obs_tempo_sts
-      until:
-        - (_obs_tempo_sts.resources | default([])) | length > 0
-        - (_obs_tempo_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
-      retries: 60
-      delay: 5
+    # =============================================================================
+    # 3. Tempo (monolithic mode)
+    #    Single-binary distributed tracing. Receives OTLP traces from OTel Collector.
+    # =============================================================================
 
-- name: "observability | Tempo already installed — skipping"
-  ansible.builtin.debug:
-    msg: "Tempo already deployed in {{ observability_namespace }} — skipping."
-  when: _obs_tempo_release.status is defined and _obs_tempo_release.status is not none
+    - name: "observability | Install Tempo"
+      when: _obs_tempo_release.status is not defined or _obs_tempo_release.status is none
+      block:
+        - name: "observability | Deploy Tempo"
+          kubernetes.core.helm:
+            name: tempo
+            chart_ref: "{{ _obs_chart_dir.path }}/tempo-{{ observability_tempo_version }}.tgz"
+            release_namespace: "{{ observability_namespace }}"
+            create_namespace: false
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+            values:
+              tempo:
+                reportingEnabled: false
+                receivers:
+                  otlp:
+                    protocols:
+                      grpc:
+                        endpoint: "0.0.0.0:{{ observability_otel_grpc_port }}"
+                      http:
+                        endpoint: "0.0.0.0:{{ observability_otel_http_port }}"
+                storage:
+                  trace:
+                    backend: s3
+                    s3:
+                      endpoint: "{{ object_store_endpoint | replace('http://', '') }}"
+                      bucket: "tempo-traces"
+                      access_key: "{{ object_store_tempo_access_key }}"
+                      secret_key: "{{ object_store_tempo_secret_key }}"
+                      insecure: true
+                      forcepathstyle: true
+                retention: "{{ observability_loki_retention_hours }}h"
+              persistence:
+                enabled: false
+              affinity: "{{ _platform_affinity | default({}) }}"
+              serviceMonitor:
+                enabled: true
+          register: helm_install_result
+          until: helm_install_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
 
-# =============================================================================
-# 4. OpenTelemetry Collector (DaemonSet mode)
-#    Runs on every node. Collects pod stdout/stderr logs and OTLP traces,
-#    fans out to Loki (logs) and Tempo (traces).
-#    Also scrapes Prometheus metrics from annotated pods as a backup path.
-# =============================================================================
+        - name: "observability | Wait for Tempo StatefulSet"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: StatefulSet
+            name: tempo
+            namespace: "{{ observability_namespace }}"
+          register: _obs_tempo_sts
+          until:
+            - (_obs_tempo_sts.resources | default([])) | length > 0
+            - (_obs_tempo_sts.resources[0].status.readyReplicas | default(0) | int) >= 1
+          retries: 60
+          delay: 5
 
-- name: "observability | Install OpenTelemetry Collector"
-  when: _obs_otel_release.status is not defined or _obs_otel_release.status is none
-  block:
-    - name: "observability | Deploy OpenTelemetry Collector"
-      kubernetes.core.helm:
-        name: opentelemetry-collector
-        chart_ref: open-telemetry/opentelemetry-collector
-        release_namespace: "{{ observability_namespace }}"
-        create_namespace: false
-        chart_version: "{{ observability_otel_collector_version }}"
-        wait: "{{ helm_wait }}"
-        timeout: "{{ helm_timeout }}"
-        values: "{{ lookup('template', 'otel-collector-values.yaml.j2') | from_yaml }}"
-      register: helm_install_result
-      until: helm_install_result is succeeded
-      retries: "{{ helm_retries }}"
-      delay: 15
+    - name: "observability | Tempo already installed — skipping"
+      ansible.builtin.debug:
+        msg: "Tempo already deployed in {{ observability_namespace }} — skipping."
+      when: _obs_tempo_release.status is defined and _obs_tempo_release.status is not none
 
-    - name: "observability | Wait for OTel Collector DaemonSet"
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: DaemonSet
-        name: opentelemetry-collector-agent
-        namespace: "{{ observability_namespace }}"
-      register: _obs_otel_ds
-      until:
-        - (_obs_otel_ds.resources | default([])) | length > 0
-        - (_obs_otel_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
-        - (_obs_otel_ds.resources[0].status.numberReady | default(0) | int) == (_obs_otel_ds.resources[0].status.desiredNumberScheduled | int)
-      retries: 60
-      delay: 5
+    # =============================================================================
+    # 4. OpenTelemetry Collector (DaemonSet mode)
+    #    Runs on every node. Collects pod stdout/stderr logs and OTLP traces,
+    #    fans out to Loki (logs) and Tempo (traces).
+    #    Also scrapes Prometheus metrics from annotated pods as a backup path.
+    # =============================================================================
 
-- name: "observability | OTel Collector already installed — skipping"
-  ansible.builtin.debug:
-    msg: "OpenTelemetry Collector already deployed in {{ observability_namespace }} — skipping."
-  when: _obs_otel_release.status is defined and _obs_otel_release.status is not none
+    - name: "observability | Install OpenTelemetry Collector"
+      when: _obs_otel_release.status is not defined or _obs_otel_release.status is none
+      block:
+        - name: "observability | Deploy OpenTelemetry Collector"
+          kubernetes.core.helm:
+            name: opentelemetry-collector
+            chart_ref: "{{ _obs_chart_dir.path }}/opentelemetry-collector-{{ observability_otel_collector_version }}.tgz"
+            release_namespace: "{{ observability_namespace }}"
+            create_namespace: false
+            wait: "{{ helm_wait }}"
+            timeout: "{{ helm_timeout }}"
+            values: "{{ lookup('template', 'otel-collector-values.yaml.j2') | from_yaml }}"
+          register: helm_install_result
+          until: helm_install_result is succeeded
+          retries: "{{ helm_retries }}"
+          delay: 15
+
+        - name: "observability | Wait for OTel Collector DaemonSet"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: DaemonSet
+            name: opentelemetry-collector-agent
+            namespace: "{{ observability_namespace }}"
+          register: _obs_otel_ds
+          until:
+            - (_obs_otel_ds.resources | default([])) | length > 0
+            - (_obs_otel_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+            - (_obs_otel_ds.resources[0].status.numberReady | default(0) | int) == (_obs_otel_ds.resources[0].status.desiredNumberScheduled | int)
+          retries: 60
+          delay: 5
+
+    - name: "observability | OTel Collector already installed — skipping"
+      ansible.builtin.debug:
+        msg: "OpenTelemetry Collector already deployed in {{ observability_namespace }} — skipping."
+      when: _obs_otel_release.status is defined and _obs_otel_release.status is not none
+  always:
+    - name: "observability | Remove chart download directory"
+      ansible.builtin.file:
+        path: "{{ _obs_chart_dir.path }}"
+        state: absent
+      check_mode: false
 
 # =============================================================================
 # 5. Prometheus Adapter
