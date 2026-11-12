@@ -49,7 +49,23 @@
               name: "system:serviceaccounts:{{ envoy_gateway_namespace }}"
       when: _envoy_gateway_grant_nonroot_scc | bool
 
+    # With sidecars the controller stays out of the mesh, like istiod: the proxies'
+    # xDS stream on 18000 is Envoy Gateway's own mTLS, which a STRICT sidecar would
+    # cut. The port is named grpc, so the proxy's sidecar would also take that TLS
+    # for HTTP; appProtocol tcp (the chart copies the ports into the Service) makes
+    # it pass the stream through. The chart's port list, with that one addition.
     - name: "envoy_gateway | {{ gateway_platform.controller_action | capitalize }} Envoy Gateway via Helm (OCI)"
+      vars:
+        _eg_controller_unmeshed: "{{ istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'sidecar' }}"
+        _eg_controller_outside_mesh:
+          pod:
+            annotations:
+              sidecar.istio.io/inject: "false"
+          ports:
+            - {name: grpc, port: 18000, targetPort: 18000, appProtocol: tcp}
+            - {name: ratelimit, port: 18001, targetPort: 18001}
+            - {name: wasm, port: 18002, targetPort: 18002}
+            - {name: metrics, port: 19001, targetPort: 19001}
       kubernetes.core.helm:
         name: "{{ envoy_gateway_release_name }}"
         chart_ref: "{{ envoy_gateway_helm_repo }}"
@@ -65,9 +81,9 @@
         wait: "{{ helm_wait }}"
         timeout: "{{ helm_timeout }}"
         values:
-          deployment:
-            envoyGateway:
-              affinity: "{{ _platform_affinity | default({}) }}"
+          deployment: >-
+            {{ {'envoyGateway': {'affinity': _platform_affinity | default({})}}
+               | combine(_eg_controller_outside_mesh if _eg_controller_unmeshed | bool else {}) }}
           # The Backend extension API (gateway.envoyproxy.io/v1alpha1 Backend) is
           # off by default. It is how a route reaches an endpoint outside the
           # cluster with upstream TLS settings of its own - the ONTAP S3 reverse

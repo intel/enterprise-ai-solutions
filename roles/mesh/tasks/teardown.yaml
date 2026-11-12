@@ -19,3 +19,22 @@
   when: _mesh_removed.changed | default(false)
   ansible.builtin.debug:
     msg: "{{ {'policies': _mesh_removed.policies, 'records': _mesh_removed.namespaces} }}"
+
+- name: "mesh | The gateway's hostnames, for its sidecar"
+  when: _mesh_active | bool and istio_dataplane_mode == 'sidecar'
+  mesh_edge:
+    env: "{{ env_name | default('local') }}"
+    gateway: "{{ mesh_edge_gateway }}"
+    gateway_namespace: "{{ mesh_edge_gateway_namespace }}"
+    label_prefix: "{{ ownership_label_prefix | default('ai-solutions.intel.com') }}"
+  register: _mesh_edge
+
+- name: "mesh | Gateway hostnames changed"
+  when: _mesh_edge.changed | default(false)
+  ansible.builtin.debug:
+    msg: "{{ _mesh_edge.changes }}"
+
+- name: "mesh | Gateway hostnames left alone (same name, not ours)"
+  when: _mesh_edge.foreign | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _mesh_edge.foreign }}"

@@ -4,7 +4,8 @@
 # =============================================================================
 # istio_namespace_labels and istio_dataplane_mode come from preflight.
 # run_component.yaml takes snapshot.yaml before a component, this file after its
-# install, teardown.yaml after its teardown.
+# install, teardown.yaml after its teardown. In sidecar mode both also reconcile
+# the gateway hostnames (mesh_edge).
 
 - name: "mesh | Load {{ cluster_distribution }} values"
   ansible.builtin.include_tasks: vars.yaml
@@ -43,3 +44,22 @@
   when: _mesh.not_enrolled | default([]) | length > 0
   ansible.builtin.debug:
     msg: "{{ _mesh.not_enrolled }}"
+
+- name: "mesh | The gateway's hostnames, for its sidecar"
+  when: _mesh_active | bool and istio_dataplane_mode == 'sidecar'
+  mesh_edge:
+    env: "{{ env_name | default('local') }}"
+    gateway: "{{ mesh_edge_gateway }}"
+    gateway_namespace: "{{ mesh_edge_gateway_namespace }}"
+    label_prefix: "{{ ownership_label_prefix | default('ai-solutions.intel.com') }}"
+  register: _mesh_edge
+
+- name: "mesh | Gateway hostnames changed"
+  when: _mesh_edge.changed | default(false)
+  ansible.builtin.debug:
+    msg: "{{ _mesh_edge.changes }}"
+
+- name: "mesh | Gateway hostnames left alone (same name, not ours)"
+  when: _mesh_edge.foreign | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _mesh_edge.foreign }}"

@@ -17,3 +17,8 @@ mesh_mtls_mode: "STRICT"
 # open the ports ServiceMonitors and PodMonitors scrape to plaintext, on the pods
 # they select only.
 mesh_open_scraped_ports: true
+
+# In sidecar mode the gateway's sidecar has to know the hostnames it serves
+# (library/mesh_edge.py): reconciled after every component, from the HTTPRoutes.
+mesh_edge_gateway: "{{ gateway_name | default('eg-gateway') }}"
+mesh_edge_gateway_namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
