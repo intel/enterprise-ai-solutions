@@ -82,7 +82,9 @@ def test_without_yq_nothing_is_exported(tmp_path):
 
 @needs_yq
 def test_without_global_config_nothing_is_exported(tmp_path):
-    assert accel_resource(tmp_path, None, NVIDIA) == "<unset>"
+    other_env = tmp_path / "other.yaml"
+    other_env.write_text("rack_scale_enabled: true\n")
+    assert accel_resource(tmp_path, None, NVIDIA, {"MM_GLOBAL_CONFIG": str(other_env)}) == "<unset>"
 
 
 @needs_yq

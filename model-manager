@@ -121,7 +121,7 @@ fi
 rack_scale_gpu_vendor() {
     local flags="${ENV_DIR}/inventory/metadata/rack-scale-flags.env" enabled
     [[ -f "$flags" ]] && command -v yq &>/dev/null || return 0
-    enabled="$(yq -r '.rack_scale_enabled // false' "${MM_GLOBAL_CONFIG:-}" 2>/dev/null)"
+    enabled="$(yq -r '.rack_scale_enabled // false' "${ENV_DIR}/global_config.yaml" 2>/dev/null)"
     case "${enabled,,}" in
         true|yes|on|1) sed -n '/^rack_scale_gpu_vendor=/{s///;s/[[:space:]].*//;p;q}' "$flags" ;;
     esac
