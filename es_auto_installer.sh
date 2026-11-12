@@ -1783,7 +1783,8 @@ do_remove_node() {
     # Kubespray's own notion of "first" control-plane/etcd host, read from the
     # CURRENT on-disk inventory — deliberately not regenerated at any point
     # before remove-node.yml runs (see roles/kubernetes/tasks/remove-node.yaml).
-    local old_first_cp; old_first_cp=$(_inventory_group kube_control_plane | head -1)
+    # sed, not head: head exits after one line, and under pipefail yq's SIGPIPE ends the script.
+    local old_first_cp; old_first_cp=$(_inventory_group kube_control_plane | sed -n 1p)
 
     local declared live removed
     declared=$(_nodes_yaml_hostnames | sort -u)
@@ -2333,4 +2334,5 @@ main() {
     _completion_banner
 }
 
-main "$@"
+# Sourced (the unit tests do) it only defines the functions.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] || main "$@"
