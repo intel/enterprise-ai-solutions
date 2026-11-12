@@ -22,6 +22,7 @@ INSTALLER = pathlib.Path(__file__).resolve().parents[3] / "es_auto_installer.sh"
 pytestmark = pytest.mark.skipif(shutil.which("yq") is None, reason="the installer's helpers need yq v4")
 
 PENDING = "ei.intel.com/add-node-pending"
+CP_TAINT = "node-role.kubernetes.io/control-plane"
 
 FAKE_KUBECTL = """#!/bin/bash
 [[ -z "${KUBECTL_FAIL:-}" ]] || { echo "connection refused" >&2; exit 1; }
@@ -92,8 +93,10 @@ def cluster(tmp_path):
             (self.env / "global_config.yaml").write_text(yaml.safe_dump(values))
 
         def live(self, nodes):
-            (tmp_path / "nodes.json").write_text(json.dumps(
-                {"items": [n if isinstance(n, dict) else node(n) for n in nodes]}))
+            """Nodes by name ("cp*" carry the control-plane taint), or as built by node()."""
+            (tmp_path / "nodes.json").write_text(json.dumps({"items": [
+                n if isinstance(n, dict) else node(n, taints=[CP_TAINT] if n.startswith("cp") else ())
+                for n in nodes]}))
 
         def pods(self, pods):
             (tmp_path / "pods.json").write_text(json.dumps({"items": pods}))
@@ -192,13 +195,17 @@ def test_add_node_refuses_a_loopback_control_plane(cluster):
 def test_add_node_refuses_to_end_the_control_planes_worker_role(cluster):
     cluster.declare(["cp1"], ["w1"])
     cluster.inventory(["cp1"])
-    cluster.live(["cp1"])
+    cluster.live([node("cp1")])
     result = cluster.run("do_add_node")
     assert result.returncode == 1
-    assert "the control plane (cp1) is this cluster's worker" in result.stderr
+    assert "the control plane (cp1) has no NoSchedule taint" in result.stderr
     cluster.declare(["cp1"], ["cp1", "w1"])
     result = cluster.run("do_add_node")
     assert result.returncode == 0, result.stderr
+    # A tainted control plane is not a worker, whatever the inventory says.
+    cluster.declare(["cp1"], ["w1"])
+    cluster.live(["cp1"])
+    assert cluster.run("do_add_node").returncode == 0
 
 
 def test_add_node_refuses_upper_case_hostnames(cluster):
@@ -244,7 +251,8 @@ def test_kubespray_args(cluster):
     taint = json.loads(lines[2].split(" -e ", 1)[1])["kubelet_config_extra_args"]
     assert "'key': '%s', 'effect': 'NoSchedule'" % PENDING in taint and "('w1,w2' | split(','))" in taint
     assert lines[3] == 'remove-node.yml -e node=w1,w2 -e {"skip_confirmation": true}'
-    assert lines[4] == 'lost -e node=w1 -e {"skip_confirmation": true} -e {"allow_ungraceful_removal": true} -e {"reset_nodes": false}'
+    assert lines[4] == ('lost -e node=w1 -e {"skip_confirmation": true} -e {"allow_ungraceful_removal": true} '
+                        '-e {"drain_timeout": "60s"} -e {"reset_nodes": false}')
 
 
 def test_add_node_with_nothing_to_add(cluster):
@@ -282,6 +290,15 @@ def test_remove_node_refuses_a_control_plane_node(cluster):
     result = cluster.run("do_remove_node", action="remove-node")
     assert result.returncode == 1
     assert "only removes worker nodes: cp3 is a control-plane node" in result.stderr
+
+
+def test_remove_node_refuses_nodes_that_have_not_joined(cluster):
+    cluster.declare(["cp1"], ["w3"])
+    cluster.inventory(["cp1"], ["w1"])
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 1
+    assert "lists node(s) that are not in the cluster: w3" in result.stderr
 
 
 def test_remove_node_lost_refuses_a_ready_node(cluster):

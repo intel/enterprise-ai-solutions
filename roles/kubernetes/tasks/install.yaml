@@ -24,14 +24,20 @@
   ansible.builtin.meta: end_role
   when: existing_kubernetes | default('') | trim | length > 0
 
-# A first install's inventory is still the localhost file `init` seeds:
-# render nodes.yaml into it now, so the pre-flights below see the nodes. An
-# existing inventory is rendered again only when Kubespray runs
-# (install_kubespray.yaml): editing nodes.yaml must not change a live
-# cluster's inventory before add-node or remove-node does.
-- name: "kubernetes | Generate inventory from nodes.yaml (first install)"
+- name: "kubernetes | Check for existing cluster"
+  ansible.builtin.command: kubectl cluster-info --request-timeout=5s
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  register: _k8s_existing
+  changed_when: false
+  failed_when: false
+
+# When Kubespray is going to run, render nodes.yaml before the pre-flights so
+# they check the nodes it will install. A live cluster's inventory is left
+# alone: add-node and remove-node change it.
+- name: "kubernetes | Generate inventory from nodes.yaml"
   ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
-  when: groups['all'] | reject('equalto', 'localhost') | list | length == 0
+  when: _k8s_existing.rc != 0
 
 - name: "kubernetes | Reload inventory"
   ansible.builtin.meta: refresh_inventory
@@ -151,14 +157,6 @@
           Delete it and re-run or fix the YAML.
 
 # --- Existing cluster check ---
-- name: "kubernetes | Check for existing cluster"
-  ansible.builtin.command: kubectl cluster-info --request-timeout=5s
-  environment:
-    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
-  register: _k8s_existing
-  changed_when: false
-  failed_when: false
-
 - name: "kubernetes | Verify existing cluster version"
   when: _k8s_existing.rc == 0
   block:

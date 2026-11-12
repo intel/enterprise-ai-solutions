@@ -13,12 +13,7 @@
 
 # ─── Inventory ───────────────────────────────────────────────────────────────
 
-- name: "kubernetes | kubespray | Generate inventory from nodes.yaml (if defined)"
-  ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
-
-# The CPU reservation below reads the nodes from the inventory.
-- name: "kubernetes | kubespray | Reload inventory"
-  ansible.builtin.meta: refresh_inventory
+# Rendered from nodes.yaml and reloaded at the top of install.yaml.
 
 - name: "kubernetes | kubespray | Generate inventory from current config"
   ansible.builtin.include_tasks: generate_inventory.yaml

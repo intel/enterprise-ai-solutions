@@ -38,7 +38,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 | Scenario | Why |
 |---|---|
 | BYO cluster (`existing_kubernetes` set in `global_config.yaml`) | A bring-your-own cluster is not managed by Kubespray at all |
-| Adding control-plane/etcd node(s) via `add-node` | Kubespray's `scale.yml` cannot add control-plane/etcd members — use `install kubernetes` instead (re-runs `cluster.yml`) |
+| Adding control-plane/etcd node(s) via `add-node` | Kubespray's `scale.yml` cannot add control-plane/etcd members |
 | Removing control-plane/etcd node(s) via `remove-node` | Refused: see [Control-plane nodes are not removed](#control-plane-nodes-are-not-removed) |
 | Cluster with ERAG deployed | Both actions only ever touch the `kubernetes` component — ERAG's own Helm/pipeline config is never re-applied, so any node-specific placement it relies on isn't accounted for. Both refuse when any ERAG-only namespace (`rag-ui`, `chat-history`, `edp`, `fingerprint`, `vdb`, `erag-gateway`, `auth-apisix`) exists |
 | Hand-edited inventory (`env/<name>/inventory/hosts.yaml`, no `nodes.yaml`) | Both actions find their target node(s), SSH details and control-plane membership from `nodes.yaml`; without it they stop before doing anything. Convert the inventory to `nodes.yaml` first |
@@ -74,11 +74,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 
 ### Control-plane nodes are not supported by `add-node`
 
-Kubespray's `scale.yml` cannot add control-plane or etcd members — that requires a full `cluster.yml` re-run with the new host appended to the **end** of `nodes_control_plane`. If `add-node` detects a new entry under `nodes_control_plane`, it refuses and points you at:
-
-```bash
-./es_auto_installer.sh install --env <name> kubernetes
-```
+Kubespray's `scale.yml` cannot add control-plane or etcd members: that needs a full `cluster.yml` run with the new host appended to the **end** of `nodes_control_plane`. `add-node` refuses a new entry under `nodes_control_plane`.
 
 ### After adding a node
 
@@ -105,7 +101,7 @@ Kubernetes does not move running pods onto a new node. Models already deployed s
    About to run Kubespray remove-node.yml for: worker1 — this drains, resets, and removes those node(s) from the cluster. Proceed? [y/N]
    ```
 
-   If the workload has no `PodDisruptionBudget`, the drain evicts it immediately — check what's listed before confirming. Before that, a simulation refuses the removal outright (see [Preflight simulation](#preflight-simulation-capacity--spread--local-data--last-capable-node) below) if evicting these pods would leave a workload with nowhere to go — this is where "the only place a model happens to be running" is actually caught, not just displayed.
+   If the workload has no `PodDisruptionBudget`, the drain evicts it immediately — check what's listed before confirming. A pod without a controller (marked `no controller`) is deleted, not moved: nothing recreates it. Before that, a simulation refuses the removal outright (see [Preflight simulation](#preflight-simulation-capacity--spread--local-data--last-capable-node) below) if evicting these pods would leave a workload with nowhere to go — this is where "the only place a model happens to be running" is actually caught, not just displayed.
 
    If the node being removed is the **last worker**, a second warning fires — it checks whether the control-plane node currently carries the standard `NoSchedule` taint (it does if the cluster was ever provisioned multi-node from the start; it doesn't if it started single-node and workers were added later via `add-node`, since kubeadm only sets that taint at cluster bring-up, not on a later `add-node`/`scale.yml` run). Tainted means nothing will be schedulable anywhere until a worker comes back; untainted means the cluster just drops to single-node capacity, which is a supported topology on its own.
 
@@ -121,7 +117,7 @@ For a node that is unreachable or `NotReady`, use:
 ./es_auto_installer.sh remove-node --node-lost --env <name>
 ```
 
-This skips the drain and the PodDisruptionBudget check and does not reset the node's OS (`allow_ungraceful_removal=true`, `reset_nodes=false`) — only etcd membership and cluster bookkeeping are cleaned up. Every target must actually be `NotReady`, so the flag can't be used to skip the drain on a healthy node. The capacity simulation still runs.
+This skips the PodDisruptionBudget check, gives the drain up after 60 seconds instead of waiting for pods that can no longer stop, and does not reset the node's OS (`allow_ungraceful_removal=true`, `drain_timeout=60s`, `reset_nodes=false`). Every target must actually be `NotReady`, so the flag can't be used to skip the drain on a healthy node. The capacity simulation still runs.
 
 ## Safety
 
@@ -162,7 +158,7 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 - **`--dry-run`** prints the computed node diff and the exact Kubespray invocation, and changes nothing.
 - A `confirm()` gate (y/N or `--force`) — separate from Kubespray's own `skip_confirmation`, which we pass through specifically so Kubespray's prompt doesn't block a non-interactive run; ours is the one that actually gates the destructive action.
 - **No diff, no action** — if `nodes.yaml` already matches the live cluster, both actions report "nothing to do" and exit, never invoking Kubespray. A `remove-node` whose post phase failed (the node is gone from the cluster and from `nodes.yaml`, but still in the inventory) runs the post phase again instead.
-- **`nodes.yaml`, the inventory and the cluster must agree.** `add-node` refuses while a joined node is missing from `nodes.yaml` (its prep pass would drop that node from the inventory), and `remove-node` refuses a node that is no longer in the inventory (Kubespray could not reach it).
+- **`nodes.yaml`, the inventory and the cluster must agree.** `add-node` refuses while a joined node is missing from `nodes.yaml` (its prep pass would drop that node from the inventory). `remove-node` refuses a node that is no longer in the inventory (Kubespray could not reach it), and a `nodes.yaml` that also lists nodes not yet joined (its post pass would put them in the inventory and the NFS exports).
 - **Health after `remove-node`** is judged against the findings from before the removal: only new problems fail the command, and pods the drain evicted get a minute to be scheduled.
 - **Fails closed when the cluster can't be read.** If `kubectl` can't list the cluster's nodes or namespaces, both actions stop with the error rather than diffing `nodes.yaml` against an empty list. `remove-node` does the same for PodDisruptionBudgets and the preflight simulation: a check that didn't run refuses the removal, it never passes it.
 - **ERAG guard** — both actions refuse when ERAG is deployed (see [What's not supported](#whats-not-supported)).

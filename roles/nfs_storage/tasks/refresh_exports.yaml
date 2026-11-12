@@ -3,7 +3,8 @@
 # NFS exports — client package + /etc/exports refresh
 # =============================================================================
 # Run on every `install storage`, after add-node for the new node(s)
-# (_nfs_refresh_hosts_override) and after remove-node's inventory reload.
+# (_nfs_refresh_hosts_override) and, for the export line only
+# (_nfs_exports_only), after remove-node's inventory reload.
 # Resolves the NFS server itself, since add-node never runs install.yaml's
 # preamble. A re-run that leaves the client list as it was changes nothing.
 # =============================================================================
@@ -26,6 +27,7 @@
 # cluster.
 
 - name: "nfs_storage | exports | Gather OS facts on refresh hosts"
+  when: not (_nfs_exports_only | default(false) | bool)
   ansible.builtin.setup:
     gather_subset:
       - "!all"
@@ -39,6 +41,7 @@
   changed_when: false
 
 - name: "nfs_storage | exports | Install NFS client packages"
+  when: not (_nfs_exports_only | default(false) | bool)
   ansible.builtin.package:
     name: "{{ 'nfs-common' if _os_family == 'Debian' else 'nfs-utils' }}"
     state: present

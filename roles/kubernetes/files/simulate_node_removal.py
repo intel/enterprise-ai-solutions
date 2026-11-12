@@ -228,8 +228,9 @@ def main():
                 usage[nn][r] = usage[nn].get(r, 0.0) + v
     free = {n: {r: allocatable[n].get(r, 0.0) - usage[n].get(r, 0.0) for r in allocatable[n]} for n in remaining_names}
 
+    # A pod without a controller is deleted by the drain, not moved.
     evicted = [p for p in pods if p.get("spec", {}).get("nodeName") in target_nodes and is_workload_pod(p)
-               and not is_replaced(p)]
+               and not is_replaced(p) and p["metadata"].get("ownerReferences")]
 
     def capability_nodes(pod):
         sel = pod["spec"].get("nodeSelector") or {}

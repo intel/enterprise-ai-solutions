@@ -409,7 +409,11 @@
               nri.intel.com/max-tp: null
               nri.intel.com/numa-nodes: null
               nri.intel.com/physical-cpus: null
-      loop: "{{ (_nri_labeled_nodes.resources | default([])) | rejectattr('metadata.name', 'in', _nri_per_node_topology.keys() | list) | list }}"
+      loop: >-
+        {{ (_nri_labeled_nodes.resources | default([]))
+           | rejectattr('metadata.name', 'in', _nri_per_node_topology.keys() | list)
+           | rejectattr('metadata.name', 'in', _nri_unprobed_node_crs | map('regex_replace', '^node[.]', '') | list)
+           | list }}
       loop_control:
         label: "{{ item.metadata.name }} (no longer in topology)"
       failed_when: false

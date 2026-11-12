@@ -385,6 +385,12 @@ def test_terminating_pods_on_a_lost_node_are_not_placed_again(monkeypatch, capsy
     assert rc == 0
 
 
+def test_a_pod_without_a_controller_is_not_placed(monkeypatch, capsys):
+    # The drain deletes it; nothing brings it back.
+    cluster = {"nodes": [node("w1"), node("w2", cpu="1")], "pods": [pod("bare", "w1", cpu="6", owner=None)]}
+    assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
+
+
 def test_a_terminating_statefulset_pod_is_placed(monkeypatch, capsys):
     # Its controller starts the replacement only once the old pod is gone.
     old = pod("db-0", "w1", cpu="6", owner=("StatefulSet", "db"))

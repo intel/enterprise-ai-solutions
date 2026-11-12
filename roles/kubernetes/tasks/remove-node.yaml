@@ -26,6 +26,8 @@
       ansible.builtin.include_role:
         name: nfs_storage
         tasks_from: refresh_exports.yaml
+      vars:
+        _nfs_exports_only: true
       when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
 
     - name: "kubernetes | remove-node | Delete the removed node(s)' NRI balloon policies"
