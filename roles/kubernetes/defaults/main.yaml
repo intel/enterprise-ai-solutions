@@ -95,6 +95,9 @@ kubernetes_accelerator: "cpu"
 
 # --- Container Runtime ---
 kubernetes_container_manager: "containerd"
+# true = let Kubespray remove a running Docker (its containers and images) without asking.
+# The installer's --force sets it. Required when there is no terminal to answer the prompt (CI).
+kubernetes_docker_removal_ack: false
 
 # --- Kubeconfig ---
 # Repo-local path by default; installer passes env_dir/kubeconfig.yaml at runtime.

@@ -1,0 +1,111 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# kubernetes | install | detect a running Docker before Kubespray removes it
+# =============================================================================
+# Kubespray's validate-container-engine role uninstalls Docker (it kills all
+# containers, removes the packages and deletes /var/lib/docker) on every node
+# where docker.service is running and container_manager isn't docker. This
+# runs first in the prep pass, before any host change, and checks every node
+# Kubespray will manage. Docker running: it asks the operator, and fails the
+# run unless they confirm. A node that can't be checked counts as "unknown" and
+# also needs the confirmation: a failed probe must never skip the warning.
+# Not included when kubernetes_docker_removal_ack is true.
+# Output: _kubernetes_docker_nodes (Docker running), _kubernetes_docker_unknown_nodes.
+# =============================================================================
+
+# ── Nodes Kubespray will manage ───────────────────────────────────────────────
+# nodes.yaml nodes are rendered into hosts.yaml only later in this pass, so on a
+# first run they aren't in the play's inventory yet. Add them in memory, with the
+# same connection settings hosts.yaml.j2 gives them.
+- name: "kubernetes | install | runtime check | Register nodes from nodes.yaml"
+  ansible.builtin.add_host:
+    name: "{{ item.hostname }}"
+    ansible_host: "{{ item.ip }}"
+    ansible_user: "{{ item.ssh_user | default(nodes_ssh_user | default(omit, true), true) }}"
+    ansible_ssh_private_key_file: "{{ item.ssh_key | default(nodes_ssh_key | default(omit, true), true) }}"
+    ansible_python_interpreter: /usr/bin/python3            # as hosts.yaml.j2 sets for k8s_cluster
+  loop: "{{ (nodes_control_plane | default([])) + (nodes_workers | default([])) }}"
+  loop_control:
+    label: "{{ item.hostname | default(item.ip | default('?')) }}"
+  changed_when: false
+
+# Check both sources: the nodes.yaml nodes and the inventory groups (hosts.yaml). With nodes.yaml set,
+# localhost is left out: hosts.yaml is re-rendered from nodes.yaml, so the installer host isn't a node.
+# Neither source has a node: a local install, so check localhost.
+- name: "kubernetes | install | runtime check | Select nodes"
+  ansible.builtin.set_fact:
+    _kubernetes_runtime_check_nodes: >-
+      {{ (((nodes_control_plane | default([])) + (nodes_workers | default([]))) | map(attribute='hostname') | list)
+         | union(groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | reject('equalto', 'localhost' if (nodes_control_plane | default([]) | length > 0) else '')
+         | list
+         | default(['localhost'], true) }}
+
+# ── Probe ─────────────────────────────────────────────────────────────────────
+# Same condition as Kubespray: the unit is running. Without `state`, systemd_service only
+# reads the unit's status. Inactive or not installed (LoadState not-found) means nothing to remove;
+# reads as inactive. A failed probe (unreachable, no python, no systemd) is "unknown".
+# `connection: ssh`: the play runs with `connection: local`, and a delegated task
+# inherits it, so without it every "remote" probe runs on the installer host.
+# localhost keeps its own ansible_connection: local (a host var beats the keyword).
+- name: "kubernetes | install | runtime check | Check docker.service on each node"
+  ansible.builtin.systemd_service:
+    name: docker.service
+  delegate_to: "{{ item }}"
+  connection: ssh
+  loop: "{{ _kubernetes_runtime_check_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _kubernetes_docker_probe
+  changed_when: false
+  failed_when: false
+  # An unreachable node becomes "unknown" below, never a silent pass. Both flags are needed: on a
+  # looped task ignore_unreachable clears each item, but the task result still carries unreachable
+  # and would end the play here (as in netapp_trident_csi preflight_nodes.yaml).
+  ignore_unreachable: true
+  ignore_errors: true
+  check_mode: false
+
+- name: "kubernetes | install | runtime check | Collect nodes running Docker"
+  ansible.builtin.set_fact:
+    _kubernetes_docker_nodes: >-
+      {{ _kubernetes_docker_probe.results
+         | selectattr('status', 'defined') | selectattr('status.ActiveState', 'defined')
+         | selectattr('status.ActiveState', 'equalto', 'active')
+         | map(attribute='item') | list }}
+    _kubernetes_docker_unknown_nodes: >-
+      {{ _kubernetes_docker_probe.results
+         | rejectattr('status.ActiveState', 'defined')
+         | map(attribute='item') | list }}
+
+# ── Warn and ask ──────────────────────────────────────────────────────────────
+- name: "kubernetes | install | runtime check | Warn about Docker removal"
+  when: (_kubernetes_docker_nodes + _kubernetes_docker_unknown_nodes) | length > 0
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: Docker is running on {{ _kubernetes_docker_nodes | join(', ') or 'no checked node' }}{{
+      ('; could not check ' ~ (_kubernetes_docker_unknown_nodes | join(', ')))
+      if _kubernetes_docker_unknown_nodes else '' }}.
+      Kubespray installs
+      {{ kubernetes_container_manager }} and REMOVES Docker there: all containers are killed and removed,
+      the docker and containerd packages are uninstalled, and /var/lib/docker (all images) and /etc/docker
+      are deleted. Back up images first (docker save), or install onto an existing cluster (existing_kubernetes).
+
+- name: "kubernetes | install | runtime check | Confirm Docker removal"
+  when: (_kubernetes_docker_nodes + _kubernetes_docker_unknown_nodes) | length > 0
+  block:
+    # Without a terminal, pause doesn't wait and returns an empty answer: that is a "no".
+    - name: "kubernetes | install | runtime check | Ask the operator"
+      ansible.builtin.pause:
+        prompt: "Kubespray will remove Docker on the nodes above. Proceed? [y/N]"
+      register: _kubernetes_docker_confirm
+
+    - name: "kubernetes | install | runtime check | Stop unless confirmed"
+      ansible.builtin.fail:
+        msg: >-
+          Aborted before any host change: Docker would be removed. To go on, answer y, or set
+          kubernetes_docker_removal_ack: true (required when there is no terminal).
+      when: not (_kubernetes_docker_confirm.user_input | default('') | trim is match('^[Yy]([Ee][Ss])?$'))
