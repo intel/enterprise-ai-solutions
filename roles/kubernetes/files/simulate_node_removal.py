@@ -112,11 +112,19 @@ def owner_label(pod):
 
 
 def pod_requests(pod):
+    """What the scheduler reserves: the containers' and sidecars' sum, or the largest init container."""
+    def requests(container):
+        return {r: parse_quantity(v) for r, v in ((container.get("resources") or {}).get("requests") or {}).items()}
+
+    inits = pod["spec"].get("initContainers") or []
     totals = {}
-    containers = (pod["spec"].get("containers") or []) + (pod["spec"].get("initContainers") or [])
-    for c in containers:
-        for r, v in ((c.get("resources") or {}).get("requests") or {}).items():
-            totals[r] = totals.get(r, 0.0) + parse_quantity(v)
+    for c in (pod["spec"].get("containers") or []) + [i for i in inits if i.get("restartPolicy") == "Always"]:
+        for r, v in requests(c).items():
+            totals[r] = totals.get(r, 0.0) + v
+    for c in inits:
+        if c.get("restartPolicy") != "Always":
+            for r, v in requests(c).items():
+                totals[r] = max(totals.get(r, 0.0), v)
     return totals
 
 
@@ -239,7 +247,10 @@ def main():
                 usage[nn][r] = usage[nn].get(r, 0.0) + v
     free = {n: {r: allocatable[n].get(r, 0.0) - usage[n].get(r, 0.0) for r in allocatable[n]} for n in remaining_names}
 
-    evicted = [p for p in pods if p.get("spec", {}).get("nodeName") in target_nodes and is_workload_pod(p)]
+    # A terminating pod is already being replaced (on a lost node, by the
+    # replica the controller started elsewhere): placing it too counts it twice.
+    evicted = [p for p in pods if p.get("spec", {}).get("nodeName") in target_nodes and is_workload_pod(p)
+               and not p["metadata"].get("deletionTimestamp")]
 
     def capability_nodes(pod):
         sel = pod["spec"].get("nodeSelector") or {}

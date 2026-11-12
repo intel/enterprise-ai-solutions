@@ -352,3 +352,21 @@ def test_malformed_object_exits_2(monkeypatch, capsys):
     broken = {"spec": {"nodeName": "w1"}, "status": {"phase": "Running"}}  # no metadata
     rc, out = simulate(monkeypatch, capsys, {"nodes": [node("w1"), node("w2")], "pods": [broken]}, "w1")
     assert (rc, out) == (2, [])
+
+
+def test_terminating_pods_on_a_lost_node_are_not_placed_again(monkeypatch, capsys):
+    old = pod("m-old", "w1", cpu="6")
+    old["metadata"]["deletionTimestamp"] = "2026-11-12T00:00:00Z"
+    cluster = {"nodes": [node("w1"), node("w2", cpu="8")],
+               "pods": [old, pod("m-new", "w2", cpu="6")]}
+    rc, _ = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 0
+
+
+def test_init_container_requests_are_not_added_to_the_containers():
+    p = pod("x", "w1", cpu="1")
+    p["spec"]["initContainers"] = [{"name": "init", "resources": {"requests": {"cpu": "2"}}},
+                                   {"name": "sidecar", "restartPolicy": "Always", "resources": {"requests": {"cpu": "500m"}}}]
+    assert sim.pod_requests(p)["cpu"] == 2.0
+    p["spec"]["initContainers"][0]["resources"]["requests"]["cpu"] = "1"
+    assert sim.pod_requests(p)["cpu"] == 1.5

@@ -1391,6 +1391,12 @@ _require_nodes_yaml_defined() {
         || err "${ACTION} requires nodes_control_plane to be defined in env/${ENV_NAME}/nodes.yaml. A hand-edited inventory (env/${ENV_NAME}/inventory/hosts.yaml) has no per-node structure to diff against — ${ACTION} does not support that mode."
 }
 
+# _rack_scale_enabled — whether global_config.yaml sets rack_scale_enabled to true.
+_rack_scale_enabled() {
+    local v; v=$(yq -r '.rack_scale_enabled // false' "$GLOBAL_CONFIG" 2>/dev/null)
+    [[ "${v,,}" =~ ^(true|yes|on|1)$ ]]
+}
+
 # _inventory_group <group> — hostnames declared under all.children.<group>.hosts
 # in $INVENTORY, one per line.
 _inventory_group() {
@@ -1642,6 +1648,17 @@ _ssh_preflight_check() {
 # do_add_node — scale worker node(s) into an existing cluster (Kubespray scale.yml).
 do_add_node() {
     _require_nodes_yaml_defined
+
+    # The storage check (roles/storage/tasks/resolve.yaml) refuses these on more
+    # than one node: once a second node joins, every install, validate and
+    # teardown of the env would stop there.
+    local backend rwx
+    backend=$(yq -r '.storage_backend // "local-path"' "$GLOBAL_CONFIG" 2>/dev/null)
+    rwx=$(yq -r '.storage_custom_rwx' "$GLOBAL_CONFIG" 2>/dev/null)   # not // true: yq's // also replaces false
+    [[ "${backend,,}" != "local-path" ]] \
+        || err "add-node: storage_backend is local-path, which serves a single node. Move the env to nfs or ceph storage first."
+    [[ "${backend,,}" == "custom" && "${rwx,,}" =~ ^(false|no|off|0)$ ]] \
+        && err "add-node: storage_backend is custom with storage_custom_rwx false, which serves a single node. Use a storage class with ReadWriteMany first."
 
     local declared live added stray
     declared=$(_nodes_yaml_hostnames | sort -u)
@@ -2228,11 +2245,8 @@ main() {
             && err "${ACTION} is not supported on an OpenShift cluster — node lifecycle there is managed by the Machine API/Machine Config Operator, not Kubespray."
         [[ "$IS_BYO" == "false" ]] \
             || err "${ACTION} is not supported for a BYO cluster (existing_kubernetes is set in global_config.yaml)."
-        # Rack-scale nodes come from rack-profile.yaml, not nodes.yaml, and the
-        # fabric roles this pass would pull in have no add-node/remove-node
-        # (docs/customize/node_scaling.md). preflight.yaml refuses it too.
-        [[ "$(yq -r '.rack_scale_enabled // false' "$GLOBAL_CONFIG" 2>/dev/null)" != "true" ]] \
-            || err "${ACTION} is not supported in rack-scale mode (rack_scale_enabled: true in global_config.yaml)."
+        _rack_scale_enabled \
+            && err "${ACTION} is not supported on a rack-scale env (rack_scale_enabled is true in global_config.yaml): its nodes come from rack-profile.yaml, not nodes.yaml."
         # Only the kubernetes component is ever run, so ERAG's node-specific
         # placement would not be re-applied (docs/customize/node_scaling.md).
         local _erag_ns; _erag_ns=$(_erag_namespaces_present)
