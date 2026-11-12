@@ -1643,10 +1643,17 @@ _ssh_preflight_check() {
 do_add_node() {
     _require_nodes_yaml_defined
 
-    local declared live added
+    local declared live added stray
     declared=$(_nodes_yaml_hostnames | sort -u)
     live=$(_require_live_nodes)
     added=$(comm -23 <(printf '%s\n' "$declared") <(printf '%s\n' "$live") | grep -v '^$' || true)
+
+    # The prep pass renders the inventory from nodes.yaml: a joined node missing
+    # from it would drop out, and a later remove-node could no longer reach it.
+    stray=$(comm -13 <(printf '%s\n' "$declared") <(printf '%s\n' "$live") | grep -v '^$' || true)
+    [[ -z "$stray" ]] \
+        || err "add-node: node(s) in the cluster but not in env/${ENV_NAME}/nodes.yaml: ${stray//$'\n'/, }
+  add-node would drop them from the inventory. Put them back in nodes.yaml, or remove them first with remove-node."
 
     # Joined, but the post phase never finished (it removes the pending taint
     # as its last step) — e.g. it failed, or the run was interrupted. Such a
@@ -1804,6 +1811,16 @@ do_remove_node() {
   update the remaining nodes: kube-apiserver --etcd-servers and each node's nginx-proxy still list them
   until 'install kubernetes' (cluster.yml) is re-run. See docs/customize/node_scaling.md."
     fi
+
+    # remove-node.yml reaches each node through the current inventory: one an
+    # install has already dropped from it would match no host, and the removal
+    # would do nothing.
+    local unreachable
+    unreachable=$(comm -23 <(printf '%s\n' "$removed") <(yq -r '.all.hosts // {} | keys | .[]' "$INVENTORY" 2>/dev/null | sort -u) | grep -v '^$' || true)
+    [[ -z "$unreachable" ]] \
+        || err "remove-node: ${unreachable//$'\n'/, } is in the cluster but no longer in ${INVENTORY}, so remove-node.yml cannot reach it.
+  Put it back in env/${ENV_NAME}/nodes.yaml, run ./$(basename "$0") install --env ${ENV_NAME} kubernetes to restore the inventory,
+  then delete it from nodes.yaml again and re-run remove-node."
 
     local removed_csv="${removed//$'\n'/,}"
     info "remove-node: node(s) to remove: ${removed_csv//,/, }"

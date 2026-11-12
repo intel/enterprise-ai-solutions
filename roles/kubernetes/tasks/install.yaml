@@ -201,12 +201,9 @@
   when: _k8s_existing.rc != 0
   block:
 
-    # ── Docker pre-flight ──
-    # cluster.yml would otherwise wipe Docker and its data on these nodes.
-    # Here, not in the SSH pre-flight above: on a running cluster Kubespray
-    # does not run, so a docker.service unit there must not fail the install.
-    # Localhost mode installs onto the controller itself, so check it.
-    - name: "kubernetes | Pre-flight | Refuse nodes with Docker installed"
+    # cluster.yml would wipe Docker and its data on the nodes it installs:
+    # the cluster nodes, or the controller itself in localhost mode.
+    - name: "kubernetes | Refuse nodes with Docker installed"
       ansible.builtin.include_tasks: docker_preflight.yaml
       vars:
         _docker_check_hosts: >-

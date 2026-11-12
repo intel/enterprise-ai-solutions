@@ -13,8 +13,8 @@
 # migrates or removes Docker by hand.
 #
 # Input: _docker_check_hosts — nodes to check. The caller supplies the
-# connection (install.yaml's SSH block, or the k8s_cluster inventory vars for
-# add-node); 'localhost' runs on the controller.
+# connection (the k8s_cluster inventory vars, for install and add-node);
+# 'localhost' runs on the controller.
 # =============================================================================
 
 # Same unit-file search Kubespray uses to decide whether Docker is installed.
