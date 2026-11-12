@@ -1,8 +1,10 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 # Run: python3 -m pytest src/tests/unit
+import contextlib
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import time
@@ -66,14 +68,28 @@ def test_a_cleanup_namespace_that_does_not_go_stops_the_teardown():
     assert old["kubernetes.core.k8s"]["wait"] is True and not {"failed_when", "ignore_errors"} & old.keys()
 
 
+def catches_sigterm(pid):
+    status = pathlib.Path("/proc/%d/status" % pid).read_text()
+    return int(re.search(r"^SigCgt:\s*(\w+)", status, re.M).group(1), 16) >> (signal.SIGTERM - 1) & 1
+
+
 def test_a_finished_cleanup_pod_stays_until_removed_then_exits_at_once():
     ds = task("disk cleanup DaemonSet")["kubernetes.core.k8s"]["definition"]
     script = ds["spec"]["template"]["spec"]["containers"][0]["args"][0]
     pod = subprocess.Popen(["bash", "-c", script[script.index("trap "):]], start_new_session=True)
     try:
-        time.sleep(0.5)
+        deadline = time.monotonic() + 5
+        while not catches_sigterm(pod.pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert pod.poll() is None
         pod.send_signal(signal.SIGTERM)
         assert pod.wait(timeout=5) == 0
     finally:
-        os.killpg(pod.pid, signal.SIGKILL)  # its sleep, which a container's end would take with it
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pod.pid, signal.SIGKILL)  # bash exits on the trap and leaves its sleep running
+
+
+@pytest.mark.parametrize("failed, line", [([], "Host path /var/lib/rook cleaned on all nodes."),
+                                          (["store3"], "Cleanup did not finish on store3.")])
+def test_done_says_where_the_cleanup_did_not_finish(failed, line):
+    assert render(task("━━━ DONE ━━━")["ansible.builtin.debug"]["msg"][1], {"_rook_wipe_failed": failed}) == line

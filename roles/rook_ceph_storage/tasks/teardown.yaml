@@ -272,9 +272,7 @@
   delay: 5
 
 # Per pod, not label-aggregated: a single k8s_log call concatenates every pod's
-# output, so one node reporting CLEANED would mask another that failed. A pod
-# wipes its node's disks one after another, so it waits for each of them; one
-# that runs out of time is reported below like one that failed.
+# output, so one node reporting CLEANED would mask another that failed.
 - name: "rook_ceph | teardown | Verify cleanup completed on every node"
   kubernetes.core.k8s_log:
     namespace: rook-ceph-cleanup
@@ -348,7 +346,8 @@
   ansible.builtin.debug:
     msg:
       - "Rook-Ceph teardown complete."
-      - "Host path /var/lib/rook cleaned on all nodes."
+      - "{{ 'Host path /var/lib/rook cleaned on all nodes.' if _rook_wipe_failed | length == 0
+           else 'Cleanup did not finish on ' ~ _rook_wipe_failed | join(', ') ~ '.' }}"
       - >-
         {% if not (rook_ceph_teardown_wipe_devices | bool) %}
         OSD devices were NOT wiped (rook_ceph_teardown_wipe_devices is false). They
