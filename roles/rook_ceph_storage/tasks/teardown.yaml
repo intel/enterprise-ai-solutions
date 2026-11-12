@@ -299,14 +299,20 @@
       {%- endfor -%}
       {{ out }}
 
+- name: "rook_ceph | teardown | Nodes with OSD devices among them"
+  ansible.builtin.set_fact:
+    _rook_disks_failed: >-
+      {{ _rook_wipe_failed | select('in', rook_ceph_devices | default({})) | list
+         if rook_ceph_teardown_wipe_devices | bool else [] }}
+
 - name: "rook_ceph | teardown | Report nodes whose disk wipe failed"
   ansible.builtin.debug:
     msg: >-
-      Disk cleanup FAILED on {{ _rook_wipe_failed | join(', ') }}.
+      Disk cleanup FAILED on {{ _rook_disks_failed | join(', ') }}.
       Ceph writes bluestore labels at several offsets, so a partial wipe leaves a
       detectable stale cluster FSID and re-deploying OSDs on these disks will fail.
       Wipe them manually (blkdiscard -f <dev>) before re-installing.
-  when: _rook_wipe_failed | length > 0 and rook_ceph_teardown_wipe_devices | bool
+  when: _rook_disks_failed | length > 0
 
 - name: "rook_ceph | teardown | Remove cleanup DaemonSet"
   kubernetes.core.k8s:
@@ -346,7 +352,7 @@
   ansible.builtin.debug:
     msg:
       - "Rook-Ceph teardown complete."
-      - "{{ 'Host path /var/lib/rook cleaned on all nodes.' if rook_ceph_teardown_wipe_devices | bool or _rook_wipe_failed | length == 0
+      - "{{ 'Host path /var/lib/rook cleaned on all nodes.' if _rook_wipe_failed | length == 0
            else 'Host path cleanup not confirmed on ' ~ _rook_wipe_failed | join(', ') ~ '.' }}"
       - >-
         {% if not (rook_ceph_teardown_wipe_devices | bool) %}
@@ -356,8 +362,8 @@
         1000 GiB, where bluestore keeps copies of its label
         {% elif rook_ceph_devices | default({}) | length == 0 %}
         No raw devices to wipe.
-        {% elif _rook_wipe_failed | length == 0 %}
+        {% elif _rook_disks_failed | length == 0 %}
         OSD devices discarded on {{ rook_ceph_devices.keys() | list | join(', ') }} — safe to re-deploy.
         {% else %}
-        WARNING: disk wipe failed on {{ _rook_wipe_failed | join(', ') }} — wipe manually before re-installing.
+        WARNING: disk wipe failed on {{ _rook_disks_failed | join(', ') }} — wipe manually before re-installing.
         {% endif %}

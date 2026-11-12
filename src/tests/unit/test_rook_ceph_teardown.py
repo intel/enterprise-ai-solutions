@@ -93,12 +93,14 @@ def test_a_pod_out_of_time_is_reported_and_the_teardown_goes_on():
     assert task("Verify cleanup completed on every node")["failed_when"] is False
 
 
-@pytest.mark.parametrize("wipe, failed, line, report", [
-    (False, [], "Host path /var/lib/rook cleaned on all nodes.", False),
-    (False, ["store3"], "Host path cleanup not confirmed on store3.", False),  # no disk wipe to report
-    (True, ["store3"], "Host path /var/lib/rook cleaned on all nodes.", True),  # the disk wipe failed after it
+@pytest.mark.parametrize("wipe, failed, line, disks", [
+    (True, [], "Host path /var/lib/rook cleaned on all nodes.", []),
+    (True, ["store2", "gpu1"], "Host path cleanup not confirmed on store2, gpu1.", ["store2"]),  # gpu1 has no OSD device
+    (False, ["store2"], "Host path cleanup not confirmed on store2.", []),  # no disk wipe ran
 ])
-def test_the_closing_lines_match_what_ran(wipe, failed, line, report):
-    variables = {"_rook_wipe_failed": failed, "rook_ceph_teardown_wipe_devices": wipe}
+def test_the_closing_lines_match_what_ran(wipe, failed, line, disks):
+    variables = {"_rook_wipe_failed": failed, "rook_ceph_teardown_wipe_devices": wipe, "rook_ceph_devices": DEVICES}
+    variables["_rook_disks_failed"] = render(task("Nodes with OSD devices among them")["ansible.builtin.set_fact"]["_rook_disks_failed"], variables)
+    assert (variables["_rook_disks_failed"] if isinstance(variables["_rook_disks_failed"], list)
+            else yaml.safe_load(variables["_rook_disks_failed"])) == disks
     assert render(task("━━━ DONE ━━━")["ansible.builtin.debug"]["msg"][1], variables) == line
-    assert render("{{ %s }}" % task("Report nodes whose disk wipe failed")["when"], variables) in (report, str(report))
