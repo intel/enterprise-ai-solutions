@@ -128,22 +128,24 @@
 # Kubespray renames the hostname (override_system_hostname) but reset.yml
 # does NOT restore it or update /etc/hosts.  Subsequent "become" tasks
 # fail with "Timed out waiting for become success" because sudo tries
-# to resolve the new hostname via DNS.
+# to resolve the new hostname via DNS. The line is marked; it stays while the
+# hostname needs it, so later sudo calls on this host do not stall.
+- name: "kubernetes | teardown | Look up the hostname"
+  ansible.builtin.getent:
+    database: hosts
+    key: "{{ ansible_facts['nodename'] }}"
+    fail_key: false
+
+# sudo stalls on the DNS lookup before the line exists; allow it time.
 - name: "kubernetes | teardown | Ensure hostname is resolvable"
-  become: false
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      hn=$(hostname)
-      if ! getent hosts "$hn" &>/dev/null; then
-        echo "127.0.1.1 $hn" | sudo tee -a /etc/hosts >/dev/null
-        echo "added"
-      else
-        echo "ok"
-      fi
-    executable: /bin/bash
-  register: _hostname_fix
-  changed_when: "'added' in _hostname_fix.stdout"
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "127.0.1.1 {{ ansible_facts['nodename'] }}  # enterprise-ai teardown"
+  become: true
+  vars:
+    ansible_timeout: 120
+  # getent keys found hosts by address; a missing name is the only key set to none.
+  when: ansible_facts['getent_hosts'][ansible_facts['nodename']] | default('found') is none
 
 # ─── Remove Kata Containers leftovers from the nodes ───────────────────
 # Only with Kata enabled and once the cluster is down (shims and microVMs can outlive
@@ -256,6 +258,14 @@
           with dmsetup ls.
       when: _incomplete | length > 0
 
+# ─── Remove what the Kubespray reset leaves on the nodes ─────────────────
+- name: "kubernetes | teardown | Clean the nodes after the reset"
+  ansible.builtin.include_tasks: teardown_node.yaml
+  loop: "{{ _k8s_inventory_nodes }}"
+  loop_control:
+    loop_var: _node
+  when: _cluster_alive.rc != 0
+
 # Kubespray reset.yml already removes ~/.kube, /etc/kubernetes, and the
 # {{ bin_dir }}/{kubectl,helm} binaries on every node. We do NOT reinstall
 # host tooling here — teardown must not mutate the host beyond removing the
@@ -263,6 +273,14 @@
 # the installer restores. The local kubeconfig ({{ kubernetes_kubeconfig }})
 # is removed by es_auto_installer.sh after this pass. .kubespray is shared
 # across environments — never remove it during teardown.
+
+# The current hostname still needs its line; only lines for names this host no longer has go.
+- name: "kubernetes | teardown | Remove hostname lines for former hostnames"
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^127\\.0\\.1\\.1 (?!{{ ansible_facts['nodename'] | regex_escape }}  )\\S+  # enterprise-ai teardown$"
+    state: absent
+  become: true
 
 - name: "kubernetes | teardown | Kubernetes removed"
   ansible.builtin.debug:
