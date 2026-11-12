@@ -259,6 +259,61 @@
 # The exported facts, the no_proxy check and the MetalLB checks live in
 # facts.yaml, which preflight runs for every action.
 
+# With topology none the installer leaves the NIC that holds each node's IP as
+# it is, so it must already carry network.mtu.
+- name: "fabric_inventory | Check the NIC MTU of each node (topology none)"
+  when: _rack_parsed.summary.topology == 'none'
+  block:
+    - name: "fabric_inventory | Read the MTU of the NIC with each node's IP"
+      ansible.builtin.shell: |
+        addr=$(ip -o addr show to {{ item.value.ip | default(item.value.ansible_host | default('')) | quote }}) || exit 1
+        nic=$(awk '{print $2; exit}' <<< "$addr")
+        [ -n "$nic" ] || { echo "no NIC holds its IP" >&2; exit 1; }
+        mtu=$(cat "/sys/class/net/$nic/mtu") || exit 1
+        echo "$nic $mtu"
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ item.key }}"
+      become: false
+      loop: "{{ _generated_inv.all.hosts | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: _none_nic_mtu
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "fabric_inventory | Nodes whose NIC MTU could not be read, or is below network.mtu"
+      ansible.builtin.set_fact:
+        _none_unread: >-
+          {%- set out = [] -%}
+          {%- for r in _none_nic_mtu.results if r.rc | default(1) != 0 -%}
+          {%- set _ = out.append(r.item.key ~ ' (' ~ (r.stderr | default('', true) or r.msg | default('no answer', true)) ~ ')') -%}
+          {%- endfor -%}
+          {{ out }}
+        _none_too_small: >-
+          {%- set out = [] -%}
+          {%- for r in _none_nic_mtu.results if r.rc | default(1) == 0 -%}
+          {%- set nic, mtu = r.stdout.split() -%}
+          {%- if mtu | int < _rack_parsed.summary.fabric_mtu | int -%}
+          {%- set _ = out.append(r.item.key ~ ' ' ~ nic ~ ' (MTU ' ~ mtu ~ ')') -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: "fabric_inventory | Report nodes whose NIC MTU could not be read"
+      ansible.builtin.debug:
+        msg: "WARNING: network.mtu is not checked on {{ _none_unread | join(', ') }}."
+      when: _none_unread | length > 0
+
+    - name: "fabric_inventory | Fail if a node's NIC carries less than network.mtu"
+      ansible.builtin.fail:
+        msg: >-
+          network.mtu is {{ _rack_parsed.summary.fabric_mtu }}, but Calico's packets would not fit on these NICs:
+          {{ _none_too_small | join(', ') }}. Set network.mtu in rack-profile.yaml to at most the smallest MTU
+          listed (and at least 1280 plus network.vxlan_overhead), or raise the MTU on the NICs and the switch first.
+      when: _none_too_small | length > 0
+
 - name: "fabric_inventory | ━━━ DONE ━━━"
   ansible.builtin.debug:
     msg: >-

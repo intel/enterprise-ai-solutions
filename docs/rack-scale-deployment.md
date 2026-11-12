@@ -39,7 +39,7 @@ Four topologies are supported from the same `rack-profile.yaml` schema:
   anything if a node has no netplan.
 - **Hardware:** fabric NICs on all nodes (check with `ip link show`). Any link
   speed works; every fabric NIC and switch port must carry the profile's MTU
-  (`network.mtu`, 9000 by default)
+  (`network.mtu`, 9000 by default; with `topology: none` the management network's, 1500 by default)
   - Star: direct cables between hub and each node
   - Clos: cables to ToR leaf switches
 - **Network plan:** fabric IP addresses, subnet layout, cable map
@@ -139,7 +139,7 @@ network:
   calico_mode: vxlan         # vxlan (star/l2/none) | bgp (clos or l2 node-mesh)
   pod_cidr: 10.244.0.0/16
   service_cidr: 10.233.0.0/18
-  mtu: 9000                  # jumbo frames — must match switch and NIC config
+  mtu: 9000                  # jumbo frames — must match switch and NIC config (none: 1500 by default)
   fabric_prefix: 30          # /30 for star point-to-point, /16 for clos
   netplan_renderer: networkd # or NetworkManager — only if it is enabled on every node
   control_plane_on_fabric: true  # bind kubelet + etcd to fabric IP (recommended)
@@ -348,7 +348,7 @@ but limited to a single switch domain.
 | Mode | Backend | Encapsulation | MTU | Use when |
 |------|---------|--------------|-----|----------|
 | `bgp` (recommended) | bird | None (native) | full fabric MTU | Default for L2 — nodes exchange pod routes directly over the segment |
-| `vxlan` | VXLAN | Always | fabric MTU - 50 | The switch drops traffic from IPs it did not assign (e.g. IP source guard), or you otherwise need an overlay |
+| `vxlan` | VXLAN | Always | fabric MTU - `network.vxlan_overhead` (50) | The switch drops traffic from IPs it did not assign (e.g. IP source guard), or you otherwise need an overlay |
 
 With `calico_mode: bgp` on L2, Calico uses **node-to-node mesh** (all nodes peer with each other) instead of the Clos model (per-node ToR peering). BGP runs only between the nodes — the switch is never a peer, so no `BGPPeer` CRDs are generated and `ecmp_nodes` is empty. The mesh is one session per node pair, which is fine at rack scale; past roughly 100 nodes, move to Clos with ToR peering. No `leafs:` block needed.
 
@@ -409,7 +409,8 @@ deploying fabric networking.
 **How it works:**
 - All nodes use `mgmt_ip` as their Kubernetes `ip`/`access_ip`
 - No netplan files generated — fabric roles skip entirely
-- Calico forced to VXLAN on the management network
+- Calico forced to VXLAN on the management network, at its MTU (`network.mtu`, 1500 by default) less `network.vxlan_overhead` (50 by default)
+- The install stops if the NIC holding a node's `mgmt_ip` carries less than `network.mtu`: the installer does not configure that NIC. A node whose NIC MTU cannot be read is named in a warning and not checked
 - GPU operator still auto-enables from `accelerator:` field
 - `metallb_ip_range` auto-detection works (mgmt IPs are reachable)
 
@@ -419,6 +420,7 @@ deploying fabric networking.
 network:
   topology: none
   calico_mode: vxlan       # forced — bgp rejected by parser
+  # mtu: 1500             # the management network's MTU; 1500 by default
   pod_cidr: 10.244.0.0/16
   service_cidr: 10.96.0.0/12
 
@@ -512,8 +514,8 @@ The `fabric_validate` role checks:
 | Check | Star | Clos | Failure means |
 |-------|------|------|---------------|
 | Fabric IP reachability | ✓ | ✓ | NIC not configured or cable disconnected |
-| Jumbo MTU (8950-byte ping) | ✓ | ✓ | Switch or NIC MTU < 9000 |
-| NIC MTU = 9000 | ✓ | ✓ | Netplan not applied or NIC misconfigured |
+| Don't-fragment ping at the profile MTU (above 1500 only) | ✓ | ✓ | A switch port or NIC carries a smaller MTU |
+| NIC MTU = `network.mtu` | ✓ | ✓ | Netplan not applied or NIC misconfigured |
 | Spoke-to-spoke ping | ✓ | ✓ | Routing broken — check hub or BGP |
 | Hub ip_forward = 1 | ✓ | | Hub not forwarding — re-run fabric_sysctl |
 | Hub rp_filter = 2 | ✓ | | Reverse-path filtering blocking fabric traffic |
