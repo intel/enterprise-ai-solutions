@@ -1,0 +1,175 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tdx-attestation
+  namespace: tdx-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tdx-attestation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tdx-attestation
+      annotations:
+        mounts.nri.io: |
+          - source: "configfs"
+            destination: "/sys/kernel/config"
+            type: "configfs"
+            options:
+              - "nosuid"
+              - "noexec"
+              - "nodev"
+    spec:
+      nodeSelector: {{ tdx_node_selector | default({}) | to_json }}
+      initContainers:
+        - name: one-td-support-checks
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              echo "Checking TDX support on node..."
+              kernel_config="/host/boot/config-$(uname -r)"
+              if ! grep -Eq 'CONFIG_(INTEL_)?TDX_GUEST=y' "$kernel_config"; then
+                echo "ERROR: The node's kernel does not support TDX." >&2
+                exit 1
+              fi
+              echo "OK: TDX guest support is enabled in the node's kernel."
+
+              if ! test -e /host/dev/tdx_guest; then
+                echo "ERROR: The TDX guest device is absent on the node." >&2
+                exit 1
+              fi
+              echo "OK: The TDX guest device is present on the node."
+          volumeMounts:
+            - name: host-boot
+              mountPath: /host/boot
+              readOnly: true
+            - name: host-dev
+              mountPath: /host/dev
+              readOnly: true
+      containers:
+        - name: tdx-attestation
+          image: quay.io/szymon_klimek/kbs-client:latest
+          imagePullPolicy: Always
+          env:
+            - name: HTTP_PROXY
+              value: "{{ http_proxy | default('') }}"
+            - name: HTTPS_PROXY
+              value: "{{ https_proxy | default('') }}"
+            - name: NO_PROXY
+              value: "{{ no_proxy | default('') }}"
+            - name: http_proxy
+              value: "{{ http_proxy | default('') }}"
+            - name: https_proxy
+              value: "{{ https_proxy | default('') }}"
+            - name: no_proxy
+              value: "{{ no_proxy | default('') }}"
+          securityContext:
+            privileged: true
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - test -f /tmp/tdx-attestation-passed
+            periodSeconds: 5
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              (
+              set -eu
+              /usr/local/bin/kbs-client --url "{{ kbs_address }}" attest > ATTESTATION.token
+              JWT_PAYLOAD_BASE64=$(cut -d '.' -f2 ATTESTATION.token | tr '_-' '/+')
+              case $(( $(printf '%s' "$JWT_PAYLOAD_BASE64" | wc -c) % 4 )) in
+                2) JWT_PAYLOAD_BASE64="${JWT_PAYLOAD_BASE64}==" ;;
+                3) JWT_PAYLOAD_BASE64="${JWT_PAYLOAD_BASE64}=" ;;
+              esac
+              if ! printf '%s' "$JWT_PAYLOAD_BASE64" | base64 -d > ATTESTATION.payload; then
+                echo "ERROR: Could not base64url-decode the KBS JWT payload." >&2
+                exit 1
+              fi
+
+              # ATTESTATION.payload contains JSON text, so jq reads it as JSON input.
+              if ! ATTESTATION_CPU0=$(jq -e '.submods.cpu0' ATTESTATION.payload); then
+                echo "ERROR: KBS returned a JWT with invalid JSON in its payload." >&2
+                exit 1
+              fi
+
+              ATTESTATION_STATUS=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.status"]')
+              ATTESTATION_TRUSTWORTHINESS_VECTOR=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.trustworthiness-vector"] | to_entries[] | "  \(.key): \(.value)"')
+              printf 'EAR status: %s\n\n' "$ATTESTATION_STATUS"
+              printf 'EAR trustworthiness vector:\n%s\n\n' "$ATTESTATION_TRUSTWORTHINESS_VECTOR"
+
+              if [ "$ATTESTATION_STATUS" = "affirming" ]; then
+                echo "TDX attestation passed."
+                exit 0
+              fi
+
+              ATTESTATION_CONFIGURATION_STATUS=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.trustworthiness-vector"].configuration')
+              ATTESTATION_EXECUTABLES_STATUS=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.trustworthiness-vector"].executables')
+              ATTESTATION_HARDWARE_STATUS=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.trustworthiness-vector"].hardware')
+
+              if [ "$ATTESTATION_CONFIGURATION_STATUS" != "2" ] && [ "$ATTESTATION_EXECUTABLES_STATUS" != "3" ] && [ "$ATTESTATION_EXECUTABLES_STATUS" != "4" ] && [ "$ATTESTATION_HARDWARE_STATUS" != "2" ]; then
+                echo "TDX attestation failed."
+                echo "Verify Trustee configuration regarding reference values."
+                exit 1
+              fi
+              if [ "$ATTESTATION_CONFIGURATION_STATUS" != "2" ]; then
+                echo "TDX attestation failed."
+                echo "Verify if TD debug is disabled. If TD configuration was changed regarding model or features of vCPUs, remember updating the reference values."
+                exit 1
+              fi
+              if [ "$ATTESTATION_EXECUTABLES_STATUS" != "3" ] && [ "$ATTESTATION_EXECUTABLES_STATUS" != "4" ]; then
+                echo "TDX attestation failed."
+                echo "If TD configuration was changed regarding vCPU count, remember updating the reference values."
+                exit 1
+              fi
+              if [ "$ATTESTATION_HARDWARE_STATUS" = "2" ]; then
+                echo "TDX attestation failed."
+                echo "Unexpected error."
+                exit 1
+              fi
+
+              ATTESTATION_TEE_TYPE=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.veraison.annotated-evidence"].tdx.quote.header.tee_type')
+              ATTESTATION_VENDOR_ID=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.veraison.annotated-evidence"].tdx.quote.header.vendor_id')
+
+              if [ "$ATTESTATION_TEE_TYPE" != "81000000" ] || [ "$ATTESTATION_VENDOR_ID" != "939a7233f79c4ca9940a0db3957f0607" ]; then
+                echo "TDX attestation failed."
+                echo "TDX quote was not recognized as signed by Intel SGX Quoting Enclave."
+                exit 1
+              fi
+
+              ATTESTATION_TCB_STATUS=$(printf '%s\n' "$ATTESTATION_CPU0" | jq -r '.["ear.veraison.annotated-evidence"]' | jq -r '.tdx.tcb_status')
+
+              if [ "$ATTESTATION_TCB_STATUS" != "UpToDate" ]; then
+                echo "TDX attestation passed."
+                echo "[WARN] System components are not aligned with latest security patches for Intel products."
+                exit 0
+              fi
+
+              echo "TDX attestation failed."
+              echo "Verify if firmware, TDX module and kernel are in latest versions and if reference values were provided."
+              exit 1
+              )
+              attestation_exit_code=$?
+              if [ "$attestation_exit_code" -eq 0 ]; then
+                touch /tmp/tdx-attestation-passed
+                while :; do sleep 3600; done
+              fi
+              echo "TDX attestation failed; exiting with code ${attestation_exit_code}." >&2
+              exit "$attestation_exit_code"
+      volumes:
+        - name: host-boot
+          hostPath:
+            path: /boot
+            type: Directory
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: Directory
