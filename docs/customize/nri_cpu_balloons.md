@@ -344,15 +344,9 @@ design; a few are roadmap items.
 
 ### Reinstalling with models already deployed
 
-- **Existing nodes' policies are held by default.** Re-running
-  `install nri_cpu_balloons` dry-runs every existing `node.<NAME>` policy and
-  does **not** apply one whose spec would change — applying it re-balances that
-  node's balloons and can move running model containers to other CPUs. The held
-  nodes and their diff are printed. To apply anyway, in a maintenance window:
-  `-e nri_update_existing_node_policies=true`. New nodes are always applied.
-- **Forcing the update while models are running can reserve cores those
-  models are already using.** With `nri_update_existing_node_policies=true`
-  and a **larger** `nri_deployment_profile` (e.g. `standard` → `full`), the
+- **Re-running the role while models are running can reserve cores those
+  models are already using.** If you reinstall `nri_cpu_balloons` with a
+  **larger** `nri_deployment_profile` (e.g. `standard` → `full`), the
   recomputed reserved pool may claim cores currently pinned to live model
   balloons, causing contention or re-pinning churn.
 - **Recommended order:** scale **down** all models first, reinstall the
@@ -364,7 +358,7 @@ design; a few are roadmap items.
   for m in $(./model-manager list -o name); do ./model-manager undeploy "$m"; done
 
   # 2. reinstall with the new profile (set nri_deployment_profile first)
-  ./es_auto_installer.sh install nri_cpu_balloons -- -e nri_update_existing_node_policies=true
+  ./es_auto_installer.sh install nri_cpu_balloons
 
   # 3. redeploy the models
   ./model-manager deploy <model> --wait

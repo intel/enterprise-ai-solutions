@@ -22,10 +22,6 @@ nri_cpu_balloons:
     repo_url: "https://containers.github.io/nri-plugins"
     repo_name: "nri-plugins"
     chart_name: "nri-resource-policy-balloons"
-    # Pinned: unpinned, a re-run (e.g. after add-node) silently upgrades to
-    # whatever the local repo cache holds, rolling the agent DaemonSet on every
-    # node — and an agent restart re-pins running model containers.
-    chart_version: "v0.14.0"
     release_name: "nri-resource-policy-balloons"
 
 # Reserved-CPU sizing.
@@ -49,13 +45,6 @@ nri_cpu_balloons:
 # to every node, so only set it on homogeneous clusters.
 nri_deployment_profile: "siblings"
 nri_reserved_cpu_list: ""
-
-# No-reshuffle guard: re-running this role never applies a regenerated
-# node.<NAME> CR whose spec differs from the live one — that would re-balance
-# the node's balloons and can move running model containers to other CPUs.
-# Such CRs are held and their diff shown. Set true only for a planned change,
-# in a maintenance window. Nodes being added by add-node are always applied.
-nri_update_existing_node_policies: false
 
 # Maximum tensor-parallel size to generate balloons for. Auto-capped by the
 # number of NUMA nodes detected on each node.

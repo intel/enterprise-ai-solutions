@@ -2,25 +2,12 @@
 # =============================================================================
 # Kubernetes — add-node (Kubespray scale.yml, worker nodes only)
 # =============================================================================
-# Flow (driven by es_auto_installer.sh):
-#   Phase 1 (_scale_phase=prep, default): regenerate inventory from the edited
-#            nodes.yaml, SSH/internet pre-flight against just the new
-#            node(s), then their per-node kubelet CPU reservation (host_vars
-#            that scale.yml must see on its first run) → end_role. es_auto_installer.sh diffs the regenerated
-#            inventory against the live cluster to find the new worker node(s)
-#            (computed in bash before this phase even runs; see
-#            es_auto_installer.sh:do_add_node — _added_nodes is passed in
-#            already, not derived here).
-#   Phase 2: es_auto_installer.sh runs Kubespray scale.yml directly (live
-#            output), limited to the new node(s) + control-plane.
-#   Phase 3 (_scale_phase=post): topology labels, NFS export, wait-for-Ready,
-#            per-node NRI balloons policy, then lift the pending taint —
-#            scoped to just the newly added node(s).
-#
-# add-node never adds control-plane nodes — Kubespray's scale.yml cannot do
-# that (see docs/customize/node_scaling.md); es_auto_installer.sh refuses
-# before this role is ever invoked if a new node is under nodes_control_plane.
-# es_auto_installer.sh refuses BYO, OpenShift and rack-scale envs first.
+# es_auto_installer.sh (do_add_node) finds the new node(s) (_added_nodes) and runs:
+#   prep (_scale_phase=prep): the inventory from nodes.yaml, pre-flight on the
+#        new node(s), their kubelet CPU reservation;
+#   Kubespray scale.yml for the new node(s) and the control plane;
+#   post (_scale_phase=post): labels, NFS export, wait for Ready and the pod
+#        network, the node's NRI balloons policy, then lift the pending taint.
 # =============================================================================
 
 # Same refusal as es_auto_installer.sh: storage/tasks/resolve.yaml rejects
@@ -38,15 +25,10 @@
     _backend == 'local-path'
     or (_backend == 'custom' and not (storage_custom_rwx | default(true) | bool))
 
-# _added_nodes is passed by es_auto_installer.sh on both the prep and post
-# calls (it already knows the diff before either Ansible pass runs), so both
-# phases below can scope to just the new node(s) without recomputing anything.
 - name: "kubernetes | add-node | Resolve newly added node list"
   ansible.builtin.set_fact:
     _added_nodes_list: "{{ _added_nodes | default('') | split(',') | reject('equalto', '') | list }}"
 
-# Used by both phases (kubelet_reserved_cpus.yaml in prep,
-# apply_node_topology.yaml in post).
 - name: "kubernetes | add-node | Detect SSH requirement from inventory"
   ansible.builtin.set_fact:
     _k8s_needs_ssh: >-
@@ -69,10 +51,8 @@
       ansible.builtin.include_tasks: apply_node_topology.yaml
       when: node_topology_enabled | default(false) | bool
 
-    # Without its address on the export line, the new node's NFS mounts are
-    # refused. storage_backend is read directly: preflight.yaml skips
-    # storage/resolve.yaml for add-node/remove-node, so
-    # _resolved_storage_backend is not set in this run.
+    # storage_backend, not _resolved_storage_backend: preflight skips
+    # storage/resolve.yaml for add-node and remove-node.
     - name: "kubernetes | add-node | NFS exports for new node(s)"
       ansible.builtin.include_role:
         name: nfs_storage
@@ -81,8 +61,6 @@
         _nfs_refresh_hosts_override: "{{ _added_nodes_list }}"
       when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
 
-    # Looked up by exact name (not filtered from the full node list), so
-    # there are no substring collisions between e.g. worker1/worker10.
     - name: "kubernetes | add-node | Wait for new node(s) to be Ready"
       kubernetes.core.k8s_info:
         kind: Node
@@ -98,11 +76,9 @@
       delay: 10
       loop: "{{ _added_nodes_list }}"
 
-    # Ready does not prove a pod network: Calico's init container writes the
-    # CNI config before calico-node runs, so the node turns Ready even when
-    # calico-node keeps crashing. The DaemonSet pods that tolerate the pending
-    # taint (calico-node, kube-proxy, ...) are already on the node: wait for
-    # them before any workload is let in.
+    # Ready does not prove a pod network: the node turns Ready even while
+    # calico-node crash-loops. The DaemonSet pods that tolerate the pending
+    # taint (calico-node, kube-proxy, ...) must be Ready too.
     - name: "kubernetes | add-node | Wait for the DaemonSet pods on new node(s)"
       kubernetes.core.k8s_info:
         kind: Pod
@@ -134,18 +110,9 @@
         label: "{{ item.item }}"
       when: not _ds or (_ds | unready_pods | length) > 0
 
-    # Without its own node.<NAME> CR, a new node's balloons agent runs on the
-    # cluster `default` CR — sized for whichever node was most capable when
-    # nri_cpu_balloons last ran, not for this one. The node is still under the
-    # add-node pending taint here, so that agent (no tolerations) hasn't
-    # started yet; creating the CR now means it finds its own policy the
-    # moment the taint is lifted below, and never runs on `default` at all.
-    # Scoped to the new node(s): the Helm release, the default CR and every
-    # existing node's CR/labels are left untouched (see install_advanced.yaml).
-    # Runs only once the node is Ready, since the topology probe pod (which
-    # does tolerate the taint) has to schedule there, and only if the
-    # component is already installed — before that, `install nri_cpu_balloons`
-    # covers every node anyway.
+    # The node's own node.<NAME> BalloonsPolicy, before the taint lift lets its
+    # balloons agent start. Only when nri_cpu_balloons is installed; the other
+    # nodes' policies and the Helm release are left alone.
     - name: "kubernetes | add-node | Check whether NRI balloons is installed"
       kubernetes.core.k8s_info:
         api_version: config.nri/v1alpha1
@@ -169,10 +136,8 @@
         _nri_scope_nodes: "{{ _added_nodes_list }}"
       when: (_add_node_nri_default.resources | default([]) | length) > 0
 
-    # Last step on purpose: everything the node needs before it may take
-    # workloads (labels, NFS export, its own balloons CR) is in place above.
-    # If anything earlier failed, the node keeps the taint — nothing lands on
-    # it — and re-running add-node resumes from this post phase.
+    # Last: if anything above failed, the node keeps the taint and re-running
+    # add-node resumes the post phase.
     - name: "kubernetes | add-node | Lift add-node pending taint"
       kubernetes.core.k8s_taint:
         state: absent
@@ -206,24 +171,12 @@
 - name: "kubernetes | add-node | Regenerate inventory from nodes.yaml"
   ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
 
-# The template task above just rewrote hosts.yaml on disk to include the new
-# node(s), but this play's inventory was already loaded into memory at
-# startup — Ansible won't notice the file changed on its own. Without this,
-# delegate_to below finds no inventory entry for the new node (it didn't
-# exist yet when the play started), so it falls back to resolving the raw
-# hostname via DNS instead of using the ansible_host IP just templated in.
+# The play loaded the inventory before it was rewritten: without a reload,
+# delegate_to resolves a new node by DNS instead of its ansible_host.
 - name: "kubernetes | add-node | Reload inventory to pick up newly added node(s)"
   ansible.builtin.meta: refresh_inventory
 
-# ─── Pre-flight for the new node(s) ──────────────────────────────────────────
-# SSH ping and internet reachability mirror what install.yaml already runs
-# against every node before a fresh cluster.yml. Already-joined and
-# control-plane-reachability are add-node-specific: a fast, clear failure
-# here beats a 10+ minute Kubespray run timing out or half-corrupting state
-# deep inside whichever task first needs the thing that isn't actually there.
-#
-# These reach the new node(s) over SSH via the k8s_cluster
-# `ansible_connection: ssh` set in hosts.yaml.j2 — see the note there.
+# ─── Pre-flight for the new node(s), over SSH ────────────────────────────────
 
 - name: "kubernetes | add-node | SSH pre-flight | Ping new node(s)"
   ansible.builtin.ping:
@@ -232,9 +185,7 @@
   loop_control:
     label: "{{ item }}"
 
-# Adding a node that's already part of some other cluster (or a stale
-# leftover join on this one) can corrupt both — catch it before scale.yml
-# ever touches it, rather than mid-join.
+# A node joined to another cluster (or left from this one) would corrupt both.
 - name: "kubernetes | add-node | SSH pre-flight | Check new node(s) aren't already joined to a cluster"
   ansible.builtin.stat:
     path: /etc/kubernetes/kubelet.conf
@@ -262,8 +213,6 @@
   vars:
     _docker_check_hosts: "{{ _added_nodes_list }}"
 
-# scale.yml's kubeadm join needs this; failing here is faster and clearer
-# than a join timeout deep inside the Kubespray run.
 - name: "kubernetes | add-node | SSH pre-flight | Check control-plane API server reachability from new node(s)"
   ansible.builtin.wait_for:
     host: "{{ hostvars[groups['kube_control_plane'][0]].ansible_host }}"
@@ -299,12 +248,8 @@
     label: "{{ item.item }}"
   when: item.status | default(0) not in [200, 301, 302]
 
-# Before scale.yml, not after: this writes <inventory>/host_vars/<node>.yml
-# (kubelet_reserved_cpus), which Kubespray reads when it renders the new
-# node's kubelet config. Written after the join, the kubelet would start
-# without reservedSystemCPUs and keep running that way until the next full
-# cluster.yml. A no-op unless kubernetes_cpu_policy is kubelet-static or
-# best-effort (see kubelet_reserved_cpus.yaml).
+# Before scale.yml: it writes host_vars/<node>.yml (kubelet_reserved_cpus),
+# which Kubespray reads when it renders the new node's kubelet config.
 - name: "kubernetes | add-node | Kubelet CPU reservation for new node(s)"
   ansible.builtin.include_tasks: kubelet_reserved_cpus.yaml
   vars:

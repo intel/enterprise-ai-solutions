@@ -4,38 +4,20 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # remove-node preflight: capacity / spread / local-data / last-capable-node.
+# es_auto_installer.sh runs it on the controller, against the API server; it
+# is not copied to a node.
 #
-# Unlike every other file in roles/kubernetes/files/, this one is never
-# copied to a managed node — es_auto_installer.sh (do_remove_node) runs it
-# directly on the controller, against the API server, using the KUBECONFIG
-# it has already exported. It lives here only because the kubernetes role
-# is where it conceptually belongs, next to the add-node/remove-node tasks
-# that drive it.
-#
-# This is a heuristic, not a scheduler simulation: it models node selectors,
-# required node affinity (In/NotIn/Exists/DoesNotExist/Gt/Lt), taints vs
-# tolerations, required pod anti-affinity, topologySpreadConstraints
-# (whenUnsatisfiable: DoNotSchedule), and PV node affinity / known local
-# provisioners closely enough to catch the scenarios in docs/customize/
-# node_scaling.md, but it is not the kube-scheduler — an exotic combination
-# of constraints it doesn't model can still slip through. Capacity is
-# checked via a greedy best-fit bin-pack (most-constrained pod first, each
-# placement decrementing a working copy of the target node's free capacity
-# before the next pod is considered) rather than an aggregate sum — a pod
-# whose only eligible node is full is caught even when some other node that
-# pod could never run on has plenty of spare room. Not an exact solver
-# either: a different greedy order could occasionally find room this one
-# does not — intentional, since a false refusal costs a retry and a false
-# pass costs an outage.
+# A heuristic, not the kube-scheduler: it models node selectors, required node
+# affinity, taints, required pod anti-affinity, topologySpreadConstraints
+# (DoNotSchedule) and node-bound volumes. Capacity is a greedy best-fit
+# bin-pack, most constrained pod first, so it can refuse a removal another
+# order would fit: a false refusal costs a retry, a false pass an outage.
 #
 # Usage: simulate_node_removal.py [--plan] <node1> [<node2> ...]
-# Exit 0, silent, when nothing is found. Exit 1 with one finding per line
-# ("<check>: <message>") when the removal should be refused. Exit 2, with
-# the reason on stderr, when the simulation could not run at all (kubectl
-# error, unexpected API object, bad arguments) — the caller must treat that
-# as a refusal, never as a pass. --plan also prints, ahead of any findings,
-# the pod count by namespace and a target node for every pod the bin-pack
-# actually placed ("<owner> -> <node>").
+# Exit 0, silent: nothing found. Exit 1: one finding per line
+# ("<check>: <message>"). Exit 2, reason on stderr: the simulation could not
+# run, which the caller treats as a refusal. --plan first prints the pod count
+# by namespace and the target node of every pod placed ("<owner> -> <node>").
 
 import json
 import re

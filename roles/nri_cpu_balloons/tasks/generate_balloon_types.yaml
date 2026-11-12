@@ -461,3 +461,25 @@
       {{ out }}
   ansible.builtin.set_fact:
     _nri_per_node_topology: "{{ _merged }}"
+
+# -----------------------------------------------------------------------------
+# Label every probed node with its NRI balloon capability so K8s scheduling
+# (nodeSelector / affinity) and the model-manager pre-flight check can keep
+# TP=N workloads off nodes with max_tp<N. Labels are namespaced under
+# `nri.intel.com/` for clear ownership and are removed by teardown.yaml.
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | advanced | Label nodes with NRI capability"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.key }}"
+    definition:
+      metadata:
+        labels:
+          nri.intel.com/balloons-enabled: "true"
+          nri.intel.com/max-tp: "{{ item.value.max_tp | string }}"
+          nri.intel.com/numa-nodes: "{{ item.value.numa | string }}"
+          nri.intel.com/physical-cpus: "{{ item.value.physical_cpus | string }}"
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} (max_tp={{ item.value.max_tp }})"

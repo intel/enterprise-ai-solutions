@@ -29,6 +29,9 @@ case "$*" in
     "get nodes -o json") cat "$FAKE/nodes.json" ;;
     "get nodes -o jsonpath="*) yq -p json -r '.items[].metadata.name' "$FAKE/nodes.json" ;;
     "get pods -A -o json") cat "$FAKE/pods.json" ;;
+    "get namespaces -o jsonpath="*) cat "$FAKE/namespaces" ;;
+    "get pdb -A -o json") cat "$FAKE/pdbs.json" ;;
+    "get pods -n "*" -l "*" --field-selector spec.nodeName="*" -o name") cat "$FAKE/pdb_pods" ;;
     *) echo "unexpected: kubectl $*" >&2; exit 2 ;;
 esac
 """
@@ -65,6 +68,8 @@ def cluster(tmp_path):
             self.config(storage_backend="nfs")
             self.live([])
             self.pods([])
+            self.namespaces(["default", "kube-system"])
+            self.pdbs([], pods_on_node=[])
 
         def declare(self, control_plane, workers=()):
             nodes = {"nodes_control_plane": [{"ip": "10.0.0.%d" % i, "hostname": h}
@@ -90,6 +95,13 @@ def cluster(tmp_path):
 
         def pods(self, pods):
             (tmp_path / "pods.json").write_text(json.dumps({"items": pods}))
+
+        def namespaces(self, names):
+            (tmp_path / "namespaces").write_text("".join(n + "\n" for n in names))
+
+        def pdbs(self, pdbs, pods_on_node):
+            (tmp_path / "pdbs.json").write_text(json.dumps({"items": pdbs}))
+            (tmp_path / "pdb_pods").write_text("".join("pod/%s\n" % p for p in pods_on_node))
 
         def run(self, call, action="add-node", dry_run=True, node_lost=False, kubectl_fail=False):
             script = (f'source "{INSTALLER}"\n'
@@ -236,6 +248,46 @@ def test_remove_node_with_nothing_to_remove(cluster):
     result = cluster.run("do_remove_node", action="remove-node")
     assert result.returncode == 0, result.stderr
     assert "nothing to do" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Guards: ERAG, PodDisruptionBudgets
+# ---------------------------------------------------------------------------
+
+def pdb(name, allowed, match_labels=None):
+    selector = {"matchLabels": match_labels} if match_labels else {"matchExpressions": [{"key": "app", "operator": "Exists"}]}
+    return {"metadata": {"name": name, "namespace": "default"}, "spec": {"selector": selector},
+            "status": {"disruptionsAllowed": allowed}}
+
+
+def test_erag_namespaces_are_found(cluster):
+    cluster.namespaces(["default", "edp", "rag-ui", "seaweedfs"])
+    assert cluster.run("_erag_namespaces_present").stdout.split() == ["rag-ui", "edp"]
+
+
+def test_erag_check_fails_closed(cluster):
+    result = cluster.run("_erag_namespaces_present", kubectl_fail=True)
+    assert result.returncode == 1
+    assert "cannot list namespaces" in result.stderr
+
+
+def test_a_pdb_with_no_disruption_left_blocks_its_pods(cluster):
+    cluster.pdbs([pdb("app-pdb", 0, {"app": "x"}), pdb("ok-pdb", 1, {"app": "y"})], pods_on_node=["x-1"])
+    result = cluster.run("_pdb_blocked_pods w1")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["default/x-1\tdefault/app-pdb\tselector=app=x"]
+
+
+def test_a_pdb_without_match_labels_is_reported(cluster):
+    cluster.pdbs([pdb("expr-pdb", 0)], pods_on_node=[])
+    result = cluster.run("_pdb_blocked_pods w1")
+    assert "unsupported selector" in result.stdout
+
+
+def test_pdbs_that_cannot_be_listed_fail_the_check(cluster):
+    result = cluster.run("_pdb_blocked_pods w1", kubectl_fail=True)
+    assert result.returncode == 1
+    assert "connection refused" in result.stdout
 
 
 # ---------------------------------------------------------------------------

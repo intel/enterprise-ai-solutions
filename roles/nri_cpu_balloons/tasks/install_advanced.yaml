@@ -210,7 +210,6 @@
       kubernetes.core.helm:
         name: "{{ nri_cpu_balloons.helm.release_name }}"
         chart_ref: "{{ nri_cpu_balloons.helm.repo_name }}/{{ nri_cpu_balloons.helm.chart_name }}"
-        chart_version: "{{ nri_cpu_balloons.helm.chart_version }}"
         release_namespace: "{{ nri_cpu_balloons.namespace }}"
         create_namespace: true
         values_files:
@@ -269,67 +268,11 @@
   loop_control:
     label: "{{ item.key }}"
 
-# -----------------------------------------------------------------------------
-# No-reshuffle guard. Changing a live node.<NAME> CR makes that node's agent
-# re-balance its balloons on the spot, which can move running model
-# containers onto different CPUs. So an existing CR whose spec would change
-# (profile/max-TP edit, BIOS/SNC change, role template change, ...) is HELD:
-# not applied, its labels left as they are, and the diff printed — unless the
-# operator opts in with nri_update_existing_node_policies=true. Nodes in
-# add-node's scope are always updated: nothing is running on them yet, and a
-# CR left behind by an earlier node of the same name may describe different
-# hardware. Brand-new CRs and unchanged ones are applied as usual.
-# The dry run is a server-side apply diff, i.e. exactly what the real apply
-# below would change.
-# -----------------------------------------------------------------------------
-- name: "nri_cpu_balloons | List existing per-node BalloonsPolicy CRs"
-  kubernetes.core.k8s_info:
-    api_version: config.nri/v1alpha1
-    kind: BalloonsPolicy
-    namespace: "{{ nri_cpu_balloons.namespace }}"
-  register: _nri_existing_policies
-
-- name: "nri_cpu_balloons | Dry-run existing per-node BalloonsPolicy CRs"
-  kubernetes.core.k8s:
-    state: present
-    src: "{{ nri_tmp_dir }}/balloonspolicy.node.{{ item.key }}.yaml"
-  check_mode: true
-  diff: true
-  register: _nri_cr_dryrun
-  loop: >-
-    {{ _nri_per_node_topology | dict2items
-       | selectattr('key', 'in', _nri_existing_policies.resources
-                                 | map(attribute='metadata.name')
-                                 | map('regex_replace', '^node[.]', '') | list)
-       | list }}
-  loop_control:
-    label: "node.{{ item.key }}"
-
-- name: "nri_cpu_balloons | Decide which per-node CRs to apply"
-  vars:
-    _changed: "{{ _nri_cr_dryrun.results | default([]) | selectattr('changed') | map(attribute='item.key') | list }}"
-    _allowed: >-
-      {{ _changed if (nri_update_existing_node_policies | default(false) | bool)
-         else (_changed | intersect(_nri_scope_nodes_list | default([]))) }}
-  ansible.builtin.set_fact:
-    _nri_held_nodes: "{{ _changed | difference(_allowed) }}"
-    _nri_apply_nodes: "{{ _nri_per_node_topology.keys() | list | difference(_changed | difference(_allowed)) }}"
-
-- name: "nri_cpu_balloons | WARNING — existing node policies held (would reshuffle running pods)"
-  when: _nri_held_nodes | length > 0
-  ansible.builtin.debug:
-    msg:
-      - "NOT applied: {{ _nri_held_nodes | map('regex_replace', '^', 'node.') | join(', ') }}"
-      - "Their regenerated spec differs from the live one (diff in the dry-run task above)."
-      - "Applying it re-balances that node's balloons and can move running model containers"
-      - "to different CPUs. Labels on these node(s) were left unchanged too."
-      - "To apply anyway (maintenance window): -e nri_update_existing_node_policies=true"
-
 - name: "nri_cpu_balloons | Apply per-node BalloonsPolicy CRs"
   kubernetes.core.k8s:
     state: present
     src: "{{ nri_tmp_dir }}/balloonspolicy.node.{{ item.key }}.yaml"
-  loop: "{{ _nri_per_node_topology | dict2items | selectattr('key', 'in', _nri_apply_nodes) | list }}"
+  loop: "{{ _nri_per_node_topology | dict2items }}"
   loop_control:
     label: "node.{{ item.key }} (max_tp={{ item.value.max_tp }}, reserved={{ item.value.reserved_count | default('?') }})"
   register: _nri_node_policies
@@ -376,27 +319,6 @@
       retries: 30
       delay: 10
 
-# Label every applied node with its NRI balloon capability so K8s scheduling
-# (nodeSelector / affinity) and the model-manager pre-flight check can keep
-# TP=N workloads off nodes with max_tp<N. Labels are namespaced under
-# `nri.intel.com/` for clear ownership and are removed by teardown.yaml.
-# Held nodes keep their old labels so they keep matching their (old) CR.
-- name: "nri_cpu_balloons | Label nodes with NRI capability"
-  kubernetes.core.k8s:
-    state: patched
-    kind: Node
-    name: "{{ item.key }}"
-    definition:
-      metadata:
-        labels:
-          nri.intel.com/balloons-enabled: "true"
-          nri.intel.com/max-tp: "{{ item.value.max_tp | string }}"
-          nri.intel.com/numa-nodes: "{{ item.value.numa | string }}"
-          nri.intel.com/physical-cpus: "{{ item.value.physical_cpus | string }}"
-  loop: "{{ _nri_per_node_topology | dict2items | selectattr('key', 'in', _nri_apply_nodes) | list }}"
-  loop_control:
-    label: "{{ item.key }} (max_tp={{ item.value.max_tp }})"
-
 # -----------------------------------------------------------------------------
 # Drift / scale-down reconciliation.
 # If a node was removed from the cluster since the last role run, its
@@ -416,6 +338,14 @@
     # a NoSchedule taint gets no probe pod, and deleting its CR would drop it
     # onto `default` — re-balancing every model running there. Only CRs whose
     # Node object no longer exists are pruned; the rest are reported and kept.
+    - name: "nri_cpu_balloons | List existing per-node BalloonsPolicy CRs"
+      kubernetes.core.k8s_info:
+        api_version: config.nri/v1alpha1
+        kind: BalloonsPolicy
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+      register: _nri_existing_policies
+      failed_when: false
+
     - name: "nri_cpu_balloons | List cluster nodes"
       kubernetes.core.k8s_info:
         kind: Node
@@ -492,15 +422,9 @@
       ============================================================
       Per-node BalloonsPolicy CRs reconciled
       ============================================================
-      Applied / refreshed ({{ _nri_apply_nodes | length }}):
-      {% for n, meta in _nri_per_node_topology | dictsort if n in _nri_apply_nodes %}
+      Applied / refreshed ({{ _nri_per_node_topology | length }}):
+      {% for n, meta in _nri_per_node_topology | dictsort %}
         - node.{{ n }}: max_tp={{ meta.max_tp }}, reserved={{ meta.reserved_count | default('?') }}, numa={{ meta.numa }}
-      {% endfor %}
-      Held — spec changed, not applied ({{ _nri_held_nodes | length }}):
-      {% for n in _nri_held_nodes %}
-        - node.{{ n }}
-      {% else %}
-        - (none)
       {% endfor %}
       Pruned stale ({{ _nri_stale_node_crs | default([]) | length }}):
       {% for n in _nri_stale_node_crs | default([]) %}

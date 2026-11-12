@@ -2,25 +2,13 @@
 # =============================================================================
 # Kubernetes — remove-node (Kubespray remove-node.yml)
 # =============================================================================
-# Flow (driven by es_auto_installer.sh):
-#   Phase 1 (_scale_phase=prep, default): ensure kubespray stack only. The
-#            inventory is deliberately NOT regenerated here — remove-node.yml
-#            needs the node(s) being removed to still be present in it (with
-#            their connection details) so it can reach them to drain and
-#            reset. Regenerating from the already-edited nodes.yaml at this
-#            point would drop them first, and remove-node.yml's "Reset node" /
-#            "Post node removal" plays would then match zero hosts and
-#            silently do nothing — the -e node=<name> extra-var only selects
-#            among hosts the inventory actually defines.
-#   Phase 2: es_auto_installer.sh runs Kubespray remove-node.yml directly
-#            (live output) against the still-unregenerated inventory.
-#   Phase 3 (_scale_phase=post): NOW regenerate the inventory from nodes.yaml,
-#            so the removed node(s) are finally dropped, and delete their
-#            now-orphaned node.<NAME> BalloonsPolicy CR(s) (_removed_nodes).
-#            es_auto_installer.sh then deletes their now-stale host_vars file(s).
-#
-# es_auto_installer.sh refuses BYO, OpenShift and rack-scale envs first, and
-# the first kube_control_plane/etcd host, which Kubespray cannot remove.
+# es_auto_installer.sh (do_remove_node) finds the removed node(s) and runs:
+#   prep (_scale_phase=prep): the Kubespray stack only. The inventory is not
+#        regenerated yet: remove-node.yml reaches the node(s) through it, and
+#        its -e node= only selects among hosts the inventory defines;
+#   Kubespray remove-node.yml (drain, reset, remove);
+#   post (_scale_phase=post, _removed_nodes): regenerate the inventory from
+#        nodes.yaml, refresh the NFS exports, delete the node(s)' BalloonsPolicy.
 # =============================================================================
 
 - name: "kubernetes | remove-node | Post phase — drop removed node(s) from inventory"
@@ -40,14 +28,8 @@
         tasks_from: refresh_exports.yaml
       when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
 
-    # A removed node's node.<NAME> BalloonsPolicy CR outlives it, and the NRI
-    # plugin matches CRs by node name: a later node joining under the same
-    # name would pick up this one — written for the old hardware — the moment
-    # its balloons agent starts. Deleted here rather than left for the next
-    # `install nri_cpu_balloons`. Only for nodes whose Node object is really
-    # gone, so a removal that didn't complete can never strip a live node's
-    # policy. Skipped when balloons isn't installed (no CRD); an already-absent
-    # CR is a no-op under state: absent.
+    # A node.<NAME> policy left behind would be picked up by a later node of
+    # the same name. Deleted only for nodes really gone from the cluster.
     - name: "kubernetes | remove-node | Check for BalloonsPolicy CRD"
       kubernetes.core.k8s_info:
         api_version: apiextensions.k8s.io/v1

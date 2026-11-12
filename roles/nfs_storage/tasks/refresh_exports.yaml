@@ -2,26 +2,10 @@
 # =============================================================================
 # NFS exports — client package + /etc/exports refresh
 # =============================================================================
-# Extracted out of install.yaml so it can be re-run on its own: once, always,
-# on every `install storage` (install.yaml's own "Already installed — skip"
-# gate covers the Helm release/StorageClass, not this), and again, scoped to
-# just the new node(s), from add-node's post phase via
-# _nfs_refresh_hosts_override. Node membership changes independently of the
-# Helm release lifecycle — a cluster that already has the CSI driver
-# installed still needs every newly joined node added to /etc/exports, or
-# its NFS-backed PVC mounts are rejected by the server with "access denied"
-# (not a missing-binary error — nfs-common's absence looks different).
-#
-# Self-contained: resolves _nfs_target/nfs_server itself rather than reusing
-# install.yaml's facts, so this also works when included directly from
-# add-node.yaml, which never runs install.yaml's preamble.
-#
-# Idempotent and safe to re-run on every add-node/remove-node, not just when
-# the node list actually changed: lineinfile only reports changed when the
-# line differs, and exportfs -ra below is gated on that, so a run that leaves
-# the client list as it was does not touch the server at all. remove-node
-# includes it after reloading the inventory, which drops the removed node(s)
-# from the line.
+# Run on every `install storage`, after add-node for the new node(s)
+# (_nfs_refresh_hosts_override) and after remove-node's inventory reload.
+# Resolves the NFS server itself, since add-node never runs install.yaml's
+# preamble. A re-run that leaves the client list as it was changes nothing.
 # =============================================================================
 
 - name: "nfs_storage | exports | Resolve refresh host list"
