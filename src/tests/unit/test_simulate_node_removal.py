@@ -72,10 +72,33 @@ def findings(lines, check):
 
 @pytest.mark.parametrize("value,expected", [
     ("2", 2.0), ("500m", 0.5), ("1Ki", 1024.0), ("1Gi", 2.0 ** 30), ("1G", 1e9),
-    (None, 0.0), ("garbage", 0.0), ("1Xi", 0.0),
+    ("1Ei", 2.0 ** 60), ("1E", 1e18), ("1e3", 1e3), ("1.5Gi", 1.5 * 2 ** 30), (None, 0.0),
 ])
 def test_parse_quantity(value, expected):
     assert sim.parse_quantity(value) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", ["garbage", "1Xi", "", "1.2.3"])
+def test_a_quantity_that_cannot_be_read_raises(value):
+    with pytest.raises(ValueError):
+        sim.parse_quantity(value)
+
+
+def test_a_node_at_its_pod_limit_takes_no_more(monkeypatch, capsys):
+    full = node("w2", extra={"pods": "1"})
+    cluster = {"nodes": [node("w1"), full], "pods": [pod("a", "w1"), pod("b", "w2")]}
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 1
+    assert "short 1 more pods" in findings(out, "capacity")[0]
+
+
+def test_match_fields_pin_a_pod_to_its_node(monkeypatch, capsys):
+    pinned = {"nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {"nodeSelectorTerms": [
+        {"matchFields": [{"key": "metadata.name", "operator": "In", "values": ["w1"]}]}]}}}
+    cluster = {"nodes": [node("w1"), node("w2")], "pods": [pod("p", "w1", affinity=pinned)]}
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 1
+    assert findings(out, "last-capable-node")
 
 
 @pytest.mark.parametrize("op,values,labels,expected", [

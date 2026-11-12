@@ -45,4 +45,3 @@ def test_remove_node_dry_run_noop(request):
     result = _run_cli(request, "remove-node", "--dry-run")
     assert result.returncode == 0, result.stderr
     assert "nothing to do" in result.stdout, result.stdout
-

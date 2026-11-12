@@ -25,7 +25,8 @@ import shutil
 import subprocess
 import sys
 
-UNIVERSAL_RESOURCES = ("cpu", "memory", "ephemeral-storage")
+# Every node has these; "pods" is the node's pod limit, one per pod.
+UNIVERSAL_RESOURCES = ("cpu", "memory", "ephemeral-storage", "pods")
 
 
 def kubectl_json(*args):
@@ -41,7 +42,7 @@ def kubectl_json(*args):
     return json.loads(out.stdout)["items"]
 
 
-_QUANTITY_RE = re.compile(r"^([+-]?[0-9.eE+-]+)([a-zA-Z]*)$")
+_QUANTITY_RE = re.compile(r"^([+-]?(?:[0-9]+(?:[.][0-9]*)?|[.][0-9]+)(?:[eE][+-]?[0-9]+)?)([a-zA-Z]*)$")
 _SUFFIX_MULT = {
     "": 1, "m": 1e-3,
     "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12, "P": 1e15, "E": 1e18,
@@ -50,20 +51,17 @@ _SUFFIX_MULT = {
 
 
 def parse_quantity(value):
+    """A Kubernetes quantity as a number. One it cannot read raises: counted as 0 it would pass."""
     if value is None:
         return 0.0
     m = _QUANTITY_RE.match(str(value))
-    if not m:
-        return 0.0
-    num, suf = m.groups()
-    mult = _SUFFIX_MULT.get(suf)
-    if mult is None:
-        return 0.0
-    return float(num) * mult
+    if not m or m.group(2) not in _SUFFIX_MULT:
+        raise ValueError(f"cannot read the quantity {value!r}")
+    return float(m.group(1)) * _SUFFIX_MULT[m.group(2)]
 
 
 def format_quantity(resource, value):
-    if resource == "cpu":
+    if resource in ("cpu", "pods"):
         return f"{value:g}"
     gi = value / (2 ** 30)
     if gi >= 1:
@@ -112,7 +110,7 @@ def pod_requests(pod):
                 sidecars[r] = sidecars.get(r, 0.0) + v
             else:
                 init_peak[r] = max(init_peak.get(r, 0.0), v + sidecars.get(r, 0.0))
-    totals = dict(sidecars)
+    totals = {**sidecars, "pods": 1.0}
     for c in pod["spec"].get("containers") or []:
         for r, v in requests(c).items():
             totals[r] = totals.get(r, 0.0) + v
@@ -158,11 +156,14 @@ def selector_matches(labels, selector):
     return True
 
 
-def node_matches_required_affinity(labels, node_affinity):
+def node_matches_required_affinity(name, labels, node_affinity):
     terms = (node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution") or {}).get("nodeSelectorTerms") or []
     if not terms:
         return True
-    return any(selector_matches(labels, {"matchExpressions": t.get("matchExpressions") or []}) for t in terms)
+    # matchFields can only name the node (metadata.name).
+    return any(selector_matches(labels, {"matchExpressions": t.get("matchExpressions") or []})
+               and selector_matches({"metadata.name": name}, {"matchExpressions": t.get("matchFields") or []})
+               for t in terms)
 
 
 def toleration_matches(toleration, taint):
@@ -240,7 +241,7 @@ def main():
             labels = node_labels[n]
             if any(labels.get(k) != v for k, v in sel.items()):
                 continue
-            if not node_matches_required_affinity(labels, aff):
+            if not node_matches_required_affinity(n, labels, aff):
                 continue
             if not node_tolerates_taints(node_taints[n], tol):
                 continue
@@ -278,7 +279,7 @@ def main():
 
     placeable.sort(key=lambda item: (len(item[2]), -_normalized_demand(item[2], item[3])))
 
-    placements = []  # (owner, node) for every pod the bin-pack actually placed
+    placements = []
     working_free = {n: dict(free[n]) for n in remaining_names}
     for pod, owner, caps, reqs in placeable:
         def _fits(n):
@@ -344,6 +345,8 @@ def main():
     # The scheduler places a pod in its least-loaded eligible domain, where the
     # skew is at most 1: only a constraint with no eligible domain left fails.
     for pod, owner, caps in eligible:
+        if not caps:
+            continue
         for tsc in pod["spec"].get("topologySpreadConstraints") or []:
             tk = tsc.get("topologyKey")
             if tsc.get("whenUnsatisfiable") == "DoNotSchedule" and not any(tk in node_labels[n] for n in caps):
@@ -381,7 +384,7 @@ def main():
         for owner, node in sorted(placements):
             print(f"  {owner} -> {node}")
 
-    for check, workload, detail in findings:
+    for check, workload, detail in dict.fromkeys(findings):
         print(f"{check}: {workload} — {detail}")
 
     return 1 if findings else 0

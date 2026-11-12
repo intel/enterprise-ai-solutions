@@ -59,3 +59,7 @@ nri_target_models: []
 
 # Re-exposed as a single dict for templates / set_stats consumers.
 nri_cpu_balloon_annotation_key: "balloon.balloons.resource-policy.nri.io"
+
+# The taint add-node keeps on a new node until its policy exists; the probe
+# tolerates it. es_auto_installer.sh passes the same name (ADD_NODE_PENDING_TAINT).
+_add_node_pending_taint: "ei.intel.com/add-node-pending"

@@ -155,9 +155,7 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 2. **Interactive confirmation by default** — prompts "Type 'yes' to delete nodes" unless `-e skip_confirmation=true` is passed.
 3. **Graceful drain before removal** — cordons and evicts workloads from the node before touching it (seen in our test log: `TASK [remove_node/pre_remove : Remove-node | Drain node except daemonsets resource]`).
 4. **OS reset by default** (`reset_nodes=true`) — stops kubelet and containerd and removes `/etc/kubernetes` and the CNI state. It does not leave the node fully clean: `cali-*`/`KUBE-*` iptables chains and their ipsets remain, and containerd is stopped with its binary gone. Re-adding the machine as it is works; flush the chains before reusing it for anything else. The reset can be skipped (`reset_nodes=false`) for an unreachable node, but only paired with an explicit `allow_ungraceful_removal=true` — a second, deliberate opt-out.
-5. **Proper etcd membership removal** for control-plane/etcd nodes — avoids leaving a stale/unhealthy etcd member that could threaten quorum.
-6. **Refuses to remove the first `kube_control_plane`/etcd host directly** — that host is the reference used for cert generation and etcd bootstrap elsewhere in Kubespray.
-7. **Inventory is untouched by the play itself** — the node stays listed during/after the run; removing the entry is left to the caller, as a deliberate checkpoint.
+5. **Inventory is untouched by the play itself** — the node stays listed during/after the run; removing the entry is left to the caller, as a deliberate checkpoint.
 
 ### Built into `es_auto_installer.sh`
 

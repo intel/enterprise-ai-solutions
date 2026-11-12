@@ -111,8 +111,6 @@ banner() {
     printf '%s╰%s╯%s\n\n' "$GRN" "$bar" "$RST"
 }
 
-# _advanced_op_banner — shown before the add-node/remove-node confirm prompt.
-# Both change a live cluster's membership; see docs/customize/node_scaling.md.
 _advanced_op_banner() {
     warn "ADVANCED OPERATION: PROCEED ONLY IF YOU KNOW WHAT YOU'RE DOING. ${ACTION} changes the membership
   of a live cluster: review the --dry-run output and docs/customize/node_scaling.md first."
@@ -1259,9 +1257,8 @@ _kubespray_args() {
 
 # _ks_playbook <inventory> <playbook> [args...] — run a Kubespray playbook from
 # its directory, its output to the log. ANSIBLE_ROLES_PATH must be unset (not
-# empty) so ansible.cfg's roles_path takes effect. ANSIBLE_HOST_KEY_CHECKING=False
-# disables SSH host-key verification for the cluster play — fine for
-# localhost/lab, but revisit once real remote nodes are in the inventory.
+# empty) so ansible.cfg's roles_path takes effect. Host keys are not checked,
+# as on install: Kubespray reaches nodes the controller has not met yet.
 _ks_playbook() {
     local ks_dir="${SCRIPT_DIR}/.kubespray" inv="$1"; shift
     local -a become=() verbose=()
@@ -1468,8 +1465,8 @@ _pdb_blocked_pods() {
 }
 
 # _cluster_health_findings — one problem per line, empty output = healthy:
-# NotReady nodes, and non-DaemonSet pods in CrashLoopBackOff, ImagePullBackOff
-# or stuck Unschedulable. A cluster that cannot be read is a finding too. A
+# NotReady nodes, and pods in CrashLoopBackOff, ImagePullBackOff or stuck
+# Unschedulable. A cluster that cannot be read is a finding too. A
 # controller's pods are named after it (<owner>-*): a pod the drain recreates
 # elsewhere keeps its line.
 _cluster_health_findings() {
@@ -1480,7 +1477,6 @@ _cluster_health_findings() {
     local pod='"pod " + .metadata.namespace + "/" + (((.metadata.ownerReferences // [])[0].name | select(. != null) | . + "-*") // .metadata.name)'
     yq -p json -r "
         .items[]
-        | select((.metadata.ownerReferences // []) | map(.kind == \"DaemonSet\") | any | not)
         | (${pod}) as \$pod
         | ((.status.containerStatuses // []) + (.status.initContainerStatuses // []))
         | map(select(.state.waiting.reason == \"CrashLoopBackOff\" or .state.waiting.reason == \"ImagePullBackOff\"))
@@ -1508,10 +1504,8 @@ _health_regressions() {
     return 1
 }
 
-# do_health_check — `status --health`: aggregate cluster health into one
-# green/red verdict (see _cluster_health_findings). Prints "status --health:
-# green|red" plus one warn line per finding, and returns 1 on red so a
-# caller (main(), or remove-node's post-check) can fail the command on it.
+# do_health_check — `status --health`: green, or red and one line per finding
+# (see _cluster_health_findings); returns 1 on red.
 do_health_check() {
     [[ -f "$KUBE_CFG" ]] || err "No kubeconfig at ${KUBE_CFG} — nothing to check. Install the cluster first."
     local findings; findings=$(_cluster_health_findings | grep -v '^$' | sort -u || true)
@@ -1884,7 +1878,9 @@ parse_args() {
                                  || err "--only applies to install/teardown/validate only."
                              ONLY=true; shift ;;
             --force)         FORCE=true; shift ;;
-            --skip)          _opt_value --skip "${2:-}"; SKIP="$2"; shift 2 ;;
+            --skip)          [[ "$ACTION" =~ ^(add-node|remove-node)$ ]] \
+                                 && err "--skip does not apply to add-node/remove-node."
+                             _opt_value --skip "${2:-}"; SKIP="$2"; shift 2 ;;
             --dry-run)       [[ "$ACTION" =~ ^(add-node|remove-node)$ ]] \
                                  || err "--dry-run applies to add-node/remove-node only."
                              DRY_RUN=true; shift ;;
@@ -2053,9 +2049,6 @@ main() {
     export KUBECONFIG="$KUBE_CFG" K8S_AUTH_KUBECONFIG="$KUBE_CFG"
 
     # Status: reuses all the setup above, runs the status playbook, then exits.
-    # --health skips the full component-status playbook — it's a lightweight,
-    # bash-only green/red verdict (see do_health_check), not a replacement
-    # for it.
     if [[ "$ACTION" == "status" ]]; then
         if [[ ! -f "$KUBE_CFG" ]]; then
             echo -e "\n${YEL}No kubeconfig found at ${KUBE_CFG} — nothing is installed yet.${RST}"
@@ -2068,10 +2061,7 @@ main() {
         exit 0
     fi
 
-    # add-node / remove-node: every pass is scoped to the kubernetes component
-    # only — these actions never touch anything else. No node name is taken on
-    # the CLI; do_add_node/do_remove_node diff nodes.yaml against the live
-    # cluster to find it (see their definitions above).
+    # add-node / remove-node run the kubernetes component only.
     if [[ "$ACTION" == "add-node" || "$ACTION" == "remove-node" ]]; then
         [[ -f "$KUBE_CFG" ]] \
             || err "No kubeconfig at ${KUBE_CFG} — install the cluster first:  ./$(basename "$0") install --env ${ENV_NAME} kubernetes"

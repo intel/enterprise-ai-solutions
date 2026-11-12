@@ -136,7 +136,8 @@
             restartPolicy: Always
 
 # Every probe pod, not the first one Running: a node still pulling the image
-# would get no policy.
+# would get no policy. A NotReady node's pod never gets Ready, so the wait
+# gives up and the nodes probed are used; a scoped run asserts its node(s) below.
 - name: "nri_cpu_balloons | advanced | Wait for topology-probe DaemonSet full readiness"
   kubernetes.core.k8s_info:
     api_version: apps/v1
@@ -144,8 +145,7 @@
     name: node-topology-optimizer
     namespace: "{{ nri_cpu_balloons.namespace }}"
   register: _optimizer_ds
-  # observedGeneration: right after the scoped affinity patch, the status can
-  # still describe the previous generation's pods.
+  # observedGeneration: the status can lag the DaemonSet just created.
   until: >
     (_optimizer_ds.resources | default([]) | length) > 0
     and (_optimizer_ds.resources[0].status.observedGeneration | default(0) | int)
@@ -157,6 +157,7 @@
         == (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int)
   retries: 30
   delay: 5
+  failed_when: false
 
 - name: "nri_cpu_balloons | advanced | Get probe pods"
   kubernetes.core.k8s_info:
