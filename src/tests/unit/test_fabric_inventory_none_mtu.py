@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 import yaml
-from ansible_render import render as _render
+from ansible_render import render
 
 _CHECK = next(t for t in yaml.safe_load((pathlib.Path(__file__).resolve().parents[3]
                                          / "roles" / "fabric_inventory" / "tasks" / "install.yaml").read_text())
@@ -30,15 +30,16 @@ def task(name):
     return next(t for t in _CHECK["block"] if t["name"].endswith(name))
 
 
-def render(source, variables):
-    out = _render(source, variables)
+def render_value(source, variables):
+    """render, with a list read back from its text (ansible-core < 2.19 templates to text)."""
+    out = render(source, variables)
     return ast.literal_eval(out) if isinstance(out, str) and out[:1] == "[" else out
 
 
 def found(mtu=9000):
     facts = task("Nodes whose NIC MTU could not be read, or is below network.mtu")["ansible.builtin.set_fact"]
     variables = {"_none_nic_mtu": {"results": RESULTS}, "_rack_parsed": {"summary": {"fabric_mtu": mtu}}}
-    return {k: render(v, variables) for k, v in facts.items()}
+    return {k: render_value(v, variables) for k, v in facts.items()}
 
 
 def shown(name, mtu=9000):

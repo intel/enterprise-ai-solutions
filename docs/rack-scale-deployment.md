@@ -39,7 +39,8 @@ Four topologies are supported from the same `rack-profile.yaml` schema:
   anything if a node has no netplan.
 - **Hardware:** fabric NICs on all nodes (check with `ip link show`). Any link
   speed works; every fabric NIC and switch port must carry the profile's MTU
-  (`network.mtu`, 9000 by default; with `topology: none` the management network's, 1500 by default)
+  (`network.mtu`, 9000 by default). With `topology: none`, the management NICs
+  and switch must carry it instead, and it defaults to 1500.
   - Star: direct cables between hub and each node
   - Clos: cables to ToR leaf switches
 - **Network plan:** fabric IP addresses, subnet layout, cable map

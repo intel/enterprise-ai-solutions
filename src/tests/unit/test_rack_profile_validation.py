@@ -167,16 +167,22 @@ def test_a_bad_mtu_does_not_hide_the_other_errors():
     assert any("network.mtu" in e for e in errors) and any("calico_mode must be" in e for e in errors)
 
 
-@pytest.mark.parametrize("overhead, mtu, mode, error", [
-    ("50", 1500, "vxlan", ["vxlan_overhead must be"]), (-1, 1500, "vxlan", ["vxlan_overhead must be"]),
-    (300, 1500, "vxlan", ["Calico's MTU, must be at least 1280"]),
-    (300, "9000", "vxlan", ["network.mtu must be"]),  # no second error from the default it fell back to
-    (50, 1500, "vxlan", [])])
-def test_the_vxlan_overhead_must_leave_calico_a_valid_mtu(overhead, mtu, mode, error):
+@pytest.mark.parametrize("overhead, mtu, error", [
+    ("50", 1500, ["vxlan_overhead must be"]), (-1, 1500, ["vxlan_overhead must be"]),
+    (300, 1500, ["Calico's MTU, must be at least 1280"]),
+    (300, "9000", ["network.mtu must be"]),  # no second error from the default it fell back to
+    (50, 1500, [])])
+def test_the_vxlan_overhead_must_leave_calico_a_valid_mtu(overhead, mtu, error):
     profile = none_topology("192.0.2.0/24")
-    profile["network"].update(vxlan_overhead=overhead, mtu=mtu, calico_mode=mode)
+    profile["network"].update(vxlan_overhead=overhead, mtu=mtu)
     errors = [e for e in validate(profile)["errors"] if "mtu" in e or "overhead" in e]
     assert [next(x for x in error if x in e) for e in errors] == error
+
+
+def test_bgp_has_no_vxlan_overhead_floor():
+    profile = clos()
+    profile["network"].update(vxlan_overhead=300, mtu=1500)
+    assert not [e for e in validate(profile)["errors"] if "Calico's MTU" in e]
 
 
 def test_calico_mode_must_be_vxlan_or_bgp():
