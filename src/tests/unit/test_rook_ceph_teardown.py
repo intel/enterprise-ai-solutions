@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 # Run: python3 -m pytest src/tests/unit
+import os
 import pathlib
 import signal
 import subprocess
@@ -68,8 +69,11 @@ def test_a_cleanup_namespace_that_does_not_go_stops_the_teardown():
 def test_a_finished_cleanup_pod_stays_until_removed_then_exits_at_once():
     ds = task("disk cleanup DaemonSet")["kubernetes.core.k8s"]["definition"]
     script = ds["spec"]["template"]["spec"]["containers"][0]["args"][0]
-    pod = subprocess.Popen(["bash", "-c", script[script.index("trap "):]])
-    time.sleep(0.5)
-    assert pod.poll() is None
-    pod.send_signal(signal.SIGTERM)
-    assert pod.wait(timeout=5) == 0
+    pod = subprocess.Popen(["bash", "-c", script[script.index("trap "):]], start_new_session=True)
+    try:
+        time.sleep(0.5)
+        assert pod.poll() is None
+        pod.send_signal(signal.SIGTERM)
+        assert pod.wait(timeout=5) == 0
+    finally:
+        os.killpg(pod.pid, signal.SIGKILL)  # its sleep, which a container's end would take with it
