@@ -179,7 +179,6 @@ def test_the_vxlan_overhead_must_leave_calico_a_valid_mtu(overhead, mtu, mode, e
     assert [next(x for x in error if x in e) for e in errors] == error
 
 
-
 def test_calico_mode_must_be_vxlan_or_bgp():
     profile = none_topology("192.0.2.0/24")
     profile["network"]["calico_mode"] = "VXLAN"

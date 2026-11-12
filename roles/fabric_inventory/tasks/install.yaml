@@ -266,7 +266,7 @@
   block:
     - name: "fabric_inventory | Read the MTU of the NIC with each node's IP"
       ansible.builtin.shell: |
-        addr=$(ip -o addr show to {{ item.value.ip | default(item.value.ansible_host | default('')) | quote }}) || exit 1
+        addr=$(ip -o addr show to {{ item.value.ip | quote }}) || exit 1
         nic=$(awk '{print $2; exit}' <<< "$addr")
         [ -n "$nic" ] || { echo "no NIC holds its IP" >&2; exit 1; }
         mtu=$(cat "/sys/class/net/$nic/mtu") || exit 1

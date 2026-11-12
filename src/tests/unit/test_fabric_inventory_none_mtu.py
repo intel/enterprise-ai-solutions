@@ -8,14 +8,7 @@ import subprocess
 
 import pytest
 import yaml
-from ansible.parsing.dataloader import DataLoader
-from ansible.template import Templar
-
-try:
-    from ansible.template import trust_as_template
-except ImportError:  # ansible-core < 2.19 templates plain strings
-    def trust_as_template(source):
-        return source
+from ansible_render import render as _render
 
 _CHECK = next(t for t in yaml.safe_load((pathlib.Path(__file__).resolve().parents[3]
                                          / "roles" / "fabric_inventory" / "tasks" / "install.yaml").read_text())
@@ -38,7 +31,7 @@ def task(name):
 
 
 def render(source, variables):
-    out = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(source))
+    out = _render(source, variables)
     return ast.literal_eval(out) if isinstance(out, str) and out[:1] == "[" else out
 
 
@@ -77,6 +70,9 @@ def test_nics_at_or_above_the_profile_mtu_pass():
 @pytest.mark.parametrize("topology, runs", [("none", True), ("clos", False), ("l2", False), ("star", False)])
 def test_only_topology_none_reads_the_nics(topology, runs):
     assert render("{{ %s }}" % _CHECK["when"], {"_rack_parsed": {"summary": {"topology": topology}}}) in (runs, str(runs))
+
+
+def test_the_probe_needs_no_root():
     assert task("Read the MTU of the NIC with each node's IP")["become"] is False
 
 
