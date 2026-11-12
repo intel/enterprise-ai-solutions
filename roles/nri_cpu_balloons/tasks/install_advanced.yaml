@@ -16,11 +16,9 @@
 #
 # install.yaml owns the skip-on-non-cpu guard before dispatching here.
 #
-# Scoped mode: add-node's post phase includes this file directly with
-# `_nri_scope_nodes` set to the newly joined node(s). Only steps 1–3 and the
-# per-node CRs/labels run, for just those node(s); the Helm release, the
-# `default` CR, and stale-CR/label pruning are skipped, so no other node's
-# policy (or the plugin DaemonSet) is touched.
+# Scoped mode (`_nri_scope_nodes`, add-node through node_policies.yaml): only
+# the probe and those node(s)' CRs and labels; the Helm release, the `default`
+# CR and the pruning are skipped, so no other node's policy is touched.
 # =============================================================================
 
 - name: "nri_cpu_balloons | Banner"

@@ -28,36 +28,12 @@
         tasks_from: refresh_exports.yaml
       when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
 
-    # A node.<NAME> policy left behind would be picked up by a later node of
-    # the same name. Deleted only for nodes really gone from the cluster.
-    - name: "kubernetes | remove-node | Check for BalloonsPolicy CRD"
-      kubernetes.core.k8s_info:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-        name: balloonspolicies.config.nri
-      register: _remove_node_bp_crd
-      when: _removed_nodes | default('') | length > 0
-
-    - name: "kubernetes | remove-node | List remaining cluster nodes"
-      kubernetes.core.k8s_info:
-        kind: Node
-      register: _remove_node_live_nodes
-      when: (_remove_node_bp_crd.resources | default([]) | length) > 0
-
-    - name: "kubernetes | remove-node | Delete removed node(s)' BalloonsPolicy CR"
-      kubernetes.core.k8s:
-        state: absent
-        api_version: config.nri/v1alpha1
-        kind: BalloonsPolicy
-        namespace: kube-system
-        name: "node.{{ item }}"
-      loop: >-
-        {{ _removed_nodes | default('') | split(',') | reject('equalto', '')
-           | reject('in', _remove_node_live_nodes.resources | default([]) | map(attribute='metadata.name') | list)
-           | list }}
-      loop_control:
-        label: "node.{{ item }}"
-      when: (_remove_node_bp_crd.resources | default([]) | length) > 0
+    - name: "kubernetes | remove-node | Delete the removed node(s)' NRI balloon policies"
+      ansible.builtin.include_role:
+        name: nri_cpu_balloons
+        tasks_from: node_policies.yaml
+      vars:
+        _nri_removed_nodes: "{{ _removed_nodes | split(',') | reject('equalto', '') | list }}"
 
     - name: "kubernetes | remove-node | Post phase complete"
       ansible.builtin.debug:

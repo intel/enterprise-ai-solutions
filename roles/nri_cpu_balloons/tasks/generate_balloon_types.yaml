@@ -25,15 +25,10 @@
 #   _nri_per_node_topology          (per-node numa/cpus/tp/pkgnode/siblings/...)
 #   _nri_topology_heterogeneous     (bool)
 #
-# Scoped mode (`_nri_scope_nodes`, set by add-node's post phase): the probe
-# DaemonSet is pinned to just those node(s) via nodeAffinity, so existing nodes
-# get no probe pod at all, and _nri_per_node_topology holds only those node(s)
-# — every per-node step downstream (labels, node.<NAME> CRs) is then scoped
-# with no further changes. Cluster-wide facts are derived from that subset
-# too; install_advanced.yaml skips everything that consumes them (Helm
-# release, default CR) in this mode. The one exception is heterogeneity, which
-# also gates whether an operator-supplied nri_reserved_cpu_list is broadcast,
-# so it is recomputed below against the already-labelled nodes as well.
+# Scoped mode (`_nri_scope_nodes`, from add-node): the probe runs on those
+# node(s) only, so the per-node results cover only them; install_advanced.yaml
+# skips the cluster-wide steps. Heterogeneity is compared with the nodes
+# already labelled too.
 # =============================================================================
 
 - name: "nri_cpu_balloons | advanced | Resolve node scope"
@@ -49,6 +44,16 @@
            'nodeSelectorTerms': [{'matchExpressions': [{
              'key': 'kubernetes.io/hostname', 'operator': 'In',
              'values': _nri_scope_nodes_list}]}]}}} }}
+
+# A merge patch would keep a node affinity an interrupted scoped run left.
+- name: "nri_cpu_balloons | advanced | Remove a topology-probe DaemonSet left by an earlier run"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: DaemonSet
+    name: node-topology-optimizer
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+    wait: true
 
 - name: "nri_cpu_balloons | advanced | Ensure topology-probe DaemonSet (minimal, non-root)"
   kubernetes.core.k8s:
@@ -80,20 +85,16 @@
             # `node-role.kubernetes.io/control-plane:NoSchedule`.
             # Effect:
             #   - dedicated control-plane node (taint intact) -> NO probe
-            #     pod here -> node is not labeled, no `node.<NAME>` CR is
-            #     created, and any pre-existing stale `node.<NAME>` CR is
-            #     pruned on this run. The default BalloonsPolicy still
-            #     covers it as a safety net.
+            #     pod here -> node is not labeled and no `node.<NAME>` CR is
+            #     created (one it already has is kept). The default
+            #     BalloonsPolicy still covers it as a safety net.
             #   - single-node cluster (master taint removed) or hybrid
             #     cluster where master also runs workloads -> pod schedules
             #     normally and the node is treated like any other worker.
             #
-            # Empty ({}) unless scoped — see "Probe pod placement" above.
             affinity: "{{ _nri_probe_affinity }}"
-            # The one exception to "no tolerations" below: a node mid
-            # add-node is held under this taint until its node.<NAME> CR
-            # exists (ADD_NODE_PENDING_TAINT in es_auto_installer.sh), so the
-            # probe that generates that CR has to be able to land there.
+            # The one exception to "no tolerations": a node mid add-node
+            # carries this taint until its node.<NAME> CR exists.
             tolerations:
               - key: "{{ _add_node_pending_taint }}"
                 operator: Exists

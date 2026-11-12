@@ -52,9 +52,7 @@
     label: "{{ item }} ({{ hostvars[item]['ansible_os_family'] | default('unknown') }})"
 
 # ─── /etc/exports ─────────────────────────────────────────────────────────
-# Always resolved from the full kube_node + kube_control_plane groups (not
-# _nfs_refresh_hosts, which may be scoped to only the newly added node) — the
-# export line is the complete client allowlist, not an increment.
+# The export line lists every node, not only _nfs_refresh_hosts.
 
 - name: "nfs_storage | exports | Resolve NFS export client list"
   ansible.builtin.set_fact:

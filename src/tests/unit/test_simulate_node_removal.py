@@ -386,6 +386,10 @@ def test_init_container_requests_are_not_added_to_the_containers():
     assert sim.pod_requests(p)["cpu"] == 2.0
     p["spec"]["initContainers"][0]["resources"]["requests"]["cpu"] = "1"
     assert sim.pod_requests(p)["cpu"] == 1.5
+    # A sidecar started before an init container runs alongside it.
+    p["spec"]["initContainers"].reverse()
+    p["spec"]["initContainers"][1]["resources"]["requests"]["cpu"] = "2"
+    assert sim.pod_requests(p)["cpu"] == 2.5
 
 
 def _avoid(labels):

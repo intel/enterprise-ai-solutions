@@ -175,7 +175,7 @@ def test_add_node_resumes_a_node_left_tainted(cluster):
     result = cluster.run("do_add_node")
     assert result.returncode == 0, result.stderr
     assert "resuming unfinished node(s)" in result.stdout
-    assert "would run: scale.yml --limit=w1,kube_control_plane, then the post phase" in result.stdout
+    assert "would run: scale.yml --limit=w1,kube_control_plane" in result.stdout
 
 
 def test_add_node_refuses_a_loopback_control_plane(cluster):
@@ -379,6 +379,15 @@ def test_health_findings_list_not_ready_nodes_and_crashing_pods(cluster):
     cluster.pods([crashing_pod("app-1")])
     result = cluster.run("_cluster_health_findings")
     assert result.stdout.split("\n")[:2] == ["node w1 is NotReady", "pod default/app-1 is CrashLoopBackOff"]
+
+
+def test_health_findings_list_unschedulable_pods(cluster):
+    stuck = {"metadata": {"name": "web-7c-q2", "namespace": "default",
+                          "ownerReferences": [{"kind": "ReplicaSet", "name": "web-7c"}]},
+             "status": {"phase": "Pending",
+                        "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable"}]}}
+    cluster.pods([stuck])
+    assert cluster.run("_cluster_health_findings").stdout.strip() == "pod default/web-7c-* is Unschedulable"
 
 
 def test_health_findings_name_a_controllers_pods_after_it(cluster):

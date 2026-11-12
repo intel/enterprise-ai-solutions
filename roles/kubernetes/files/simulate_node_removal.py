@@ -100,20 +100,23 @@ def owner_label(pod):
 
 
 def pod_requests(pod):
-    """What the scheduler reserves: the containers' and sidecars' sum, or the largest init container."""
+    """What the scheduler reserves: the containers plus the sidecars, or an init
+    container plus the sidecars started before it, whichever is larger."""
     def requests(container):
         return {r: parse_quantity(v) for r, v in ((container.get("resources") or {}).get("requests") or {}).items()}
 
-    inits = pod["spec"].get("initContainers") or []
-    totals = {}
-    for c in (pod["spec"].get("containers") or []) + [i for i in inits if i.get("restartPolicy") == "Always"]:
+    sidecars, init_peak = {}, {}
+    for c in pod["spec"].get("initContainers") or []:
+        for r, v in requests(c).items():
+            if c.get("restartPolicy") == "Always":
+                sidecars[r] = sidecars.get(r, 0.0) + v
+            else:
+                init_peak[r] = max(init_peak.get(r, 0.0), v + sidecars.get(r, 0.0))
+    totals = dict(sidecars)
+    for c in pod["spec"].get("containers") or []:
         for r, v in requests(c).items():
             totals[r] = totals.get(r, 0.0) + v
-    for c in inits:
-        if c.get("restartPolicy") != "Always":
-            for r, v in requests(c).items():
-                totals[r] = max(totals.get(r, 0.0), v)
-    return totals
+    return {r: max(totals.get(r, 0.0), init_peak.get(r, 0.0)) for r in set(totals) | set(init_peak)}
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +253,7 @@ def main():
     eligible = [(pod, owner_label(pod), capability_nodes(pod)) for pod in evicted]
 
     # --- last-capable-node ---------------------------------------------------
-    # Pods with zero eligible nodes are an intrinsic mismatch (nodeSelector/
-    # affinity/taint/extended-resource), true regardless of load — reported
-    # here, and excluded from the capacity bin-pack below since there is
-    # nowhere for them to even compete for room.
+    # A pod no remaining node can take is reported here and left out of the bin-pack.
     placeable = []
     for pod, owner, caps in eligible:
         reqs = pod_requests(pod)
@@ -378,9 +378,6 @@ def main():
             by_ns[p["metadata"]["namespace"]] = by_ns.get(p["metadata"]["namespace"], 0) + 1
         breakdown = ", ".join(f"{ns} {n}" for ns, n in sorted(by_ns.items()))
         print(f"plan: {', '.join(sorted(target_nodes))} runs {len(evicted)} pod(s) ({breakdown})")
-        # Not deduplicated: two pods under the same owner (e.g. a multi-
-        # replica ReplicaSet) can land on different nodes, and collapsing
-        # them would silently drop that half of "target node for each pod".
         for owner, node in sorted(placements):
             print(f"  {owner} -> {node}")
 

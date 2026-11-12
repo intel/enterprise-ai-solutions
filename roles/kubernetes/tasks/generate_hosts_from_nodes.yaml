@@ -23,14 +23,8 @@
       loop_control:
         label: "{{ item.hostname | default('MISSING') }}"
 
-    # Catches a typo'd copy-paste entry (same ip or hostname reused across two
-    # nodes) before it reaches Kubespray, where it would show up as a much
-    # less obvious failure (or worse, silently join the wrong host twice).
-    # An identical entry under both nodes_control_plane and nodes_workers is
-    # allowed: that is how a control-plane node is also made a worker (common
-    # on small clusters). Identical entries are collapsed first, so only
-    # conflicting reuse (same hostname, different ip/ssh settings, or two
-    # hostnames on one ip) is left to fail here.
+    # An identical entry under both lists is how a control-plane node is also
+    # a worker; any other reuse of a hostname or ip is a mistake.
     - name: "kubernetes | nodes → inventory | Validate no conflicting hostname/ip"
       vars:
         _unique_nodes: "{{ (nodes_control_plane + (nodes_workers | default([]))) | unique }}"

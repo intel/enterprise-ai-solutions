@@ -1,11 +1,6 @@
 ---
-# Notified by tasks/refresh_exports.yaml when /etc/exports changes, and
-# flushed right there (meta: flush_handlers). Handlers run in the order
-# listed here.
-
-# exportfs -ra only reloads the export table — it does not restart nfsd or
-# disrupt sessions already in progress, so this is safe to run against a
-# live cluster.
+# Notified by tasks/refresh_exports.yaml when /etc/exports changes. exportfs
+# -ra reloads the export table without restarting nfsd.
 - name: "nfs_storage | exports | Re-export all shares"
   ansible.builtin.command: exportfs -ra
   delegate_to: "{{ _nfs_target | trim }}"

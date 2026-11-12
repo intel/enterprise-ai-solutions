@@ -58,7 +58,6 @@
       kubernetes.core.k8s_info:
         kind: Node
         name: "{{ item }}"
-        kubeconfig: "{{ kubernetes_kubeconfig }}"
       register: _k8s_new_node
       until: >-
         (_k8s_new_node.resources | default([]) | length) > 0
@@ -77,7 +76,6 @@
         kind: Pod
         field_selectors:
           - "spec.nodeName={{ item }}"
-        kubeconfig: "{{ kubernetes_kubeconfig }}"
       register: _add_node_ds_pods
       until: >-
         (_add_node_ds_pods.resources | default([]) | daemonset_pods | length) > 0
@@ -103,29 +101,20 @@
         label: "{{ item.item }}"
       when: not _ds or (_ds | unready_pods | length) > 0
 
-    # The node's own node.<NAME> BalloonsPolicy, before the taint lift lets its
-    # balloons agent start. Only when nri_cpu_balloons is installed; the other
+    # Before the taint lift lets the node's balloons agent start. The other
     # nodes' policies and the Helm release are left alone.
-    - name: "kubernetes | add-node | Check for BalloonsPolicy CRD"
-      kubernetes.core.k8s_info:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-        name: balloonspolicies.config.nri
-      register: _add_node_bp_crd
-      when:
-        - (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons'
-        - (kubernetes_accelerator | default('cpu')) == 'cpu'
-
     - name: "kubernetes | add-node | Per-node NRI balloon policy for new node(s)"
       ansible.builtin.include_role:
         name: nri_cpu_balloons
-        tasks_from: install_advanced.yaml
+        tasks_from: node_policies.yaml
         # tasks_from skips the role's main.yaml dispatcher, which is what
         # normally loads these platform values.
         vars_from: "{{ cluster_distribution }}.yaml"
       vars:
         _nri_scope_nodes: "{{ _added_nodes_list }}"
-      when: (_add_node_bp_crd.resources | default([]) | length) > 0
+      when:
+        - (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons'
+        - (kubernetes_accelerator | default('cpu')) == 'cpu'
 
     # Last: if anything above failed, the node keeps the taint and re-running
     # add-node resumes the post phase.
@@ -136,7 +125,6 @@
         taints:
           - key: "{{ _add_node_pending_taint }}"
             effect: NoSchedule
-        kubeconfig: "{{ kubernetes_kubeconfig }}"
       register: _add_node_untaint
       failed_when:
         - _add_node_untaint.failed | default(false)

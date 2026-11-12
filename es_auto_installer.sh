@@ -61,6 +61,11 @@ readonly -a ACTIONS=(configure show init install teardown validate status add-no
 # it is an unfinished add-node; re-running add-node resumes it.
 readonly ADD_NODE_PENDING_TAINT="ei.intel.com/add-node-pending"
 
+# ERAG-only namespaces (docs/reference/labels.md). Namespaces ERAG shares
+# with other layers (seaweedfs, system) or that depend on the pipeline type
+# (chatqa) are left out, so a cluster without ERAG never matches.
+readonly -a ERAG_NAMESPACES=(rag-ui chat-history edp fingerprint vdb erag-gateway auth-apisix)
+
 # =============================================================================
 # Mutable globals — every one of these, and nothing else, is written after startup
 # =============================================================================
@@ -1252,6 +1257,26 @@ _kubespray_args() {
     return 0
 }
 
+# _ks_playbook <inventory> <playbook> [args...] — run a Kubespray playbook from
+# its directory, its output to the log. ANSIBLE_ROLES_PATH must be unset (not
+# empty) so ansible.cfg's roles_path takes effect. ANSIBLE_HOST_KEY_CHECKING=False
+# disables SSH host-key verification for the cluster play — fine for
+# localhost/lab, but revisit once real remote nodes are in the inventory.
+_ks_playbook() {
+    local ks_dir="${SCRIPT_DIR}/.kubespray" inv="$1"; shift
+    local -a become=() verbose=()
+    [[ "$_NEED_BECOME_PASS" == "true" ]] && become=(--ask-become-pass)
+    (( _LOG_LEVEL >= 1 )) && verbose=(-vvv)
+    (cd "$ks_dir" && \
+     unset ANSIBLE_ROLES_PATH KUBECONFIG K8S_AUTH_KUBECONFIG && \
+     ANSIBLE_CONFIG="$ks_dir/ansible.cfg" \
+     ANSIBLE_FORCE_COLOR=true \
+     ANSIBLE_HOST_KEY_CHECKING=False \
+     PATH="$ks_dir/venv/bin:$PATH" \
+        "$ks_dir/venv/bin/ansible-playbook" -i "$inv" \
+        --become --become-user=root "${become[@]}" "${verbose[@]}" "$@" 2>&1) | tee -a "$LOG"
+}
+
 # run_kubespray: execute a kubespray playbook directly from bash so the
 # operator gets live streaming output. Ansible-in-ansible swallows all
 # progress, so the kubernetes role only does prep; this function bridges
@@ -1272,41 +1297,18 @@ run_kubespray() {
 
     _kubespray_args "$action" "${2:-}"
 
-    local -a ks_become_flag=()
-    [[ "$_NEED_BECOME_PASS" == "true" ]] && ks_become_flag=(--ask-become-pass)
-
-    local -a verbose=()
-    (( _LOG_LEVEL >= 1 )) && verbose=(-vvv)
-
-    # Run in a subshell from kubespray's directory. ANSIBLE_ROLES_PATH must be
-    # unset (not empty) so ansible.cfg's roles_path takes effect. Empty string
-    # overrides the cfg with "nothing"; unset falls through to cfg.
-    # ANSIBLE_HOST_KEY_CHECKING=False disables SSH host-key verification for the
-    # cluster play — fine for localhost/lab, but revisit once real remote nodes
-    # are in the inventory.
-    _ks_playbook() {
-        (cd "$ks_dir" && \
-         unset ANSIBLE_ROLES_PATH KUBECONFIG K8S_AUTH_KUBECONFIG && \
-         ANSIBLE_CONFIG="$ks_dir/ansible.cfg" \
-         ANSIBLE_FORCE_COLOR=true \
-         ANSIBLE_HOST_KEY_CHECKING=False \
-         PATH="$ks_dir/venv/bin:$PATH" \
-            "$ks_dir/venv/bin/ansible-playbook" -i "$inv" \
-            --become --become-user=root "${ks_become_flag[@]}" "${verbose[@]}" "$@" 2>&1) | tee -a "$LOG"
-    }
-
     # scale.yml refuses --limit unless every host it leaves out has a cached
     # fact, and Kubespray's fact cache expires after a day (ansible.cfg
     # fact_caching_timeout). Kubespray's docs (docs/operations/nodes.md) say
     # to run facts.yml without a limit first.
     if [[ "$action" == "scale" ]]; then
         info "Refreshing Kubespray's fact cache for the full inventory (required before scale.yml --limit)"
-        _ks_playbook "$ks_dir/playbooks/facts.yml" \
+        _ks_playbook "$inv" "$ks_dir/playbooks/facts.yml" \
             || err "Kubespray fact-cache refresh (facts.yml) failed. Log: $LOG"
     fi
 
     info "Kubespray $(basename "$KS_PB") — live output"
-    _ks_playbook "$KS_PB" "${KS_ARGS[@]+"${KS_ARGS[@]}"}" || err "Kubespray failed. Log: $LOG"
+    _ks_playbook "$inv" "$KS_PB" "${KS_ARGS[@]+"${KS_ARGS[@]}"}" || err "Kubespray failed. Log: $LOG"
 
     # Kubespray writes admin.conf to artifacts_dir (=ENV_DIR) via kubeconfig_localhost.
     # Rename to kubeconfig.yaml so the rest of the installer finds it.
@@ -1362,7 +1364,6 @@ _inventory_group() {
     yq -r ".all.children.${1}.hosts // {} | keys | .[]" "$INVENTORY" 2>/dev/null
 }
 
-# _inventory_hosts — every host in $INVENTORY, one per line.
 _inventory_hosts() {
     yq -r '.all.hosts // {} | keys | .[]' "$INVENTORY" 2>/dev/null
 }
@@ -1390,11 +1391,6 @@ _require_live_nodes() {
     sort -u <<< "$out"
 }
 
-# ERAG-only namespaces (docs/reference/labels.md). Namespaces ERAG shares
-# with other layers (seaweedfs, system) or that depend on the pipeline type
-# (chatqa) are left out, so a cluster without ERAG never matches.
-readonly -a ERAG_NAMESPACES=(rag-ui chat-history edp fingerprint vdb erag-gateway auth-apisix)
-
 # _erag_namespaces_present — the ERAG_NAMESPACES that exist in the cluster,
 # one per line. err() if namespaces can't be listed, so "can't tell" never
 # reads as "not deployed".
@@ -1409,30 +1405,15 @@ _erag_namespaces_present() {
     return 0
 }
 
-# _add_node_pending_nodes — joined nodes still carrying ADD_NODE_PENDING_TAINT,
-# i.e. whose add-node post phase never completed. One name per line.
-_add_node_pending_nodes() {
+# _nodes_where <yq condition> — the nodes it selects, one per line; 1 if the
+# nodes can't be listed.
+_nodes_where() {
     local json; json=$(kubectl get nodes -o json 2>/dev/null) || return 1
-    yq -p json -r ".items[]
-        | select((.spec.taints // []) | map(select(.key == \"${ADD_NODE_PENDING_TAINT}\")) | length > 0)
-        | .metadata.name" <<< "$json"
+    yq -p json -r ".items[] | select($1) | .metadata.name" <<< "$json"
 }
 
-# _not_ready_nodes — names of nodes whose Ready condition is not True, one
-# per line. Same query status --health's _cluster_health_findings uses for
-# node readiness; kept separate because this one answers "which nodes"
-# rather than "is anything wrong."
 _not_ready_nodes() {
-    local json; json=$(kubectl get nodes -o json 2>/dev/null) || return 1
-    yq -p json -r '.items[]
-        | select((.status.conditions // []) | map(select(.type == "Ready")) | .[0].status != "True")
-        | .metadata.name' <<< "$json"
-}
-
-# _is_openshift — true on OpenShift (it has the ClusterVersion CRD). Checked
-# ahead of the BYO refusal so the error names the platform.
-_is_openshift() {
-    kubectl get crd clusterversions.config.openshift.io &>/dev/null
+    _nodes_where '(.status.conditions // []) | map(select(.type == "Ready")) | .[0].status != "True"'
 }
 
 # _node_workloads <node> — "namespace/name" of the pods a drain evicts from
@@ -1443,17 +1424,6 @@ _node_workloads() {
         | select(.status.phase != "Succeeded" and .status.phase != "Failed")
         | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet" or .kind == "Node") | any | not)
         | .metadata.namespace + "/" + .metadata.name' <<< "$json"
-}
-
-# _cp_tainted_nodes — control-plane nodes with the kubeadm NoSchedule taint,
-# one per line. Read live: kubeadm sets it at init only, so a control plane
-# that started single-node never gets it.
-_cp_tainted_nodes() {
-    kubectl get nodes -l node-role.kubernetes.io/control-plane -o json 2>/dev/null \
-        | yq -p json -r '.items[]
-            | select((.spec.taints // [])
-                     | map(.key == "node-role.kubernetes.io/control-plane" and .effect == "NoSchedule") | any)
-            | .metadata.name' 2>/dev/null || true
 }
 
 # _pdb_blocked_pods <node> — "pod<TAB>pdb<TAB>detail" for every pod on <node>
@@ -1507,25 +1477,22 @@ _cluster_health_findings() {
     not_ready=$(_not_ready_nodes) || { echo "cannot list the cluster's nodes (kubectl get nodes failed)"; return; }
     pods=$(kubectl get pods -A -o json 2>/dev/null) || { echo "cannot list the cluster's pods (kubectl get pods failed)"; return; }
     sed '/^$/d; s/^/node /; s/$/ is NotReady/' <<< "$not_ready"
-    yq -p json -r '
+    local pod='"pod " + .metadata.namespace + "/" + (((.metadata.ownerReferences // [])[0].name | select(. != null) | . + "-*") // .metadata.name)'
+    yq -p json -r "
         .items[]
-        | select((.metadata.ownerReferences // []) | map(.kind == "DaemonSet") | any | not)
-        | . as $pod
+        | select((.metadata.ownerReferences // []) | map(.kind == \"DaemonSet\") | any | not)
+        | (${pod}) as \$pod
         | ((.status.containerStatuses // []) + (.status.initContainerStatuses // []))
-        | map(select(.state.waiting.reason == "CrashLoopBackOff" or .state.waiting.reason == "ImagePullBackOff"))
+        | map(select(.state.waiting.reason == \"CrashLoopBackOff\" or .state.waiting.reason == \"ImagePullBackOff\"))
         | select(length > 0)
-        | "pod " + $pod.metadata.namespace + "/"
-          + ((($pod.metadata.ownerReferences // [])[0].name | select(. != null) | . + "-*") // $pod.metadata.name)
-          + " is " + .[0].state.waiting.reason
-    ' <<< "$pods"
-    yq -p json -r '
+        | \$pod + \" is \" + .[0].state.waiting.reason
+    " <<< "$pods"
+    yq -p json -r "
         .items[]
-        | select(.status.phase == "Pending")
-        | select((.status.conditions // []) | map(select(.type == "PodScheduled" and .status == "False" and .reason == "Unschedulable")) | any)
-        | "pod " + .metadata.namespace + "/"
-          + (((.metadata.ownerReferences // [])[0].name | select(. != null) | . + "-*") // .metadata.name)
-          + " is Unschedulable"
-    ' <<< "$pods"
+        | select(.status.phase == \"Pending\")
+        | select((.status.conditions // []) | map(select(.type == \"PodScheduled\" and .status == \"False\" and .reason == \"Unschedulable\")) | any)
+        | ${pod} + \" is Unschedulable\"
+    " <<< "$pods"
 }
 
 # _health_regressions <baseline> — findings not in <baseline>. Pods a drain just
@@ -1589,34 +1556,7 @@ _ssh_preflight_check() {
 do_add_node() {
     _require_nodes_yaml_defined
 
-    # hosts.yaml.j2 runs a loopback control plane locally: a new node cannot reach it there.
-    local loopback_cp
-    loopback_cp=$(yq -r '(.nodes_control_plane // [])[] | select(.hostname == "localhost" or ((.ip | tostring) | test("^(127[.]|::1$|localhost$)"))) | .hostname' "$ENV_DIR/nodes.yaml" 2>/dev/null)
-    [[ -z "$loopback_cp" ]] \
-        || err "add-node: control-plane node ${loopback_cp//$'\n'/, } is at a loopback address in env/${ENV_NAME}/nodes.yaml, which a new node cannot reach.
-  Give it the address the other nodes reach it at, run ./$(basename "$0") install --env ${ENV_NAME} kubernetes, then add the node."
-
-    # With nodes_workers empty, the control plane is the worker (hosts.yaml.j2);
-    # the first worker added would quietly end that.
-    if [[ "$(_inventory_group kube_node | sort -u)" == "$(_inventory_group kube_control_plane | sort -u)" ]]; then
-        local cp_only; cp_only=$(_only_in "$(_nodes_yaml_hostnames control_plane)" "$(_nodes_yaml_hostnames workers)")
-        [[ -z "$cp_only" ]] \
-            || err "add-node: the control plane (${cp_only//$'\n'/, }) is this cluster's worker, and adding a worker under nodes_workers would end that.
-  To keep it a worker, list it under nodes_workers too (an identical entry), then retry."
-    fi
-
-    # The storage check (roles/storage/tasks/resolve.yaml) refuses these on more
-    # than one node: once a second node joins, every install, validate and
-    # teardown of the env would stop there.
-    local backend rwx
-    backend=$(yq -r '.storage_backend // "local-path"' "$GLOBAL_CONFIG" 2>/dev/null)
-    rwx=$(yq -r '.storage_custom_rwx' "$GLOBAL_CONFIG" 2>/dev/null)   # not // true: yq's // also replaces false
-    [[ "${backend,,}" != "local-path" ]] \
-        || err "add-node: storage_backend is local-path, which serves a single node. Move the env to nfs or ceph storage first."
-    [[ "${backend,,}" == "custom" && "${rwx,,}" =~ ^(false|no|off|0)$ ]] \
-        && err "add-node: storage_backend is custom with storage_custom_rwx false, which serves a single node. Use a storage class with ReadWriteMany first."
-
-    local declared live added stray
+    local declared live added stray pending
     declared=$(_nodes_yaml_hostnames | sort -u)
     live=$(_require_live_nodes)
     added=$(_only_in "$declared" "$live")
@@ -1628,68 +1568,63 @@ do_add_node() {
         || err "add-node: node(s) in the cluster but not in env/${ENV_NAME}/nodes.yaml: ${stray//$'\n'/, }
   add-node would drop them from the inventory. Put them back in nodes.yaml, or remove them first with remove-node."
 
-    # Joined, but the post phase never finished (it removes the pending taint
-    # as its last step) — e.g. it failed, or the run was interrupted. Such a
-    # node is already in the live cluster, so the diff above can't see it.
-    local pending pending_csv
-    pending=$(_add_node_pending_nodes) || err "add-node: cannot read the nodes' taints (kubectl get nodes failed)."
-    pending=$(sort -u <<< "$pending")
-    pending_csv="${pending//$'\n'/,}"
-
-    # scale.yml runs again for them: it can have failed after the join.
-    if [[ -z "$added" && -n "$pending" ]]; then
-        info "add-node: resuming unfinished node(s) (still tainted ${ADD_NODE_PENDING_TAINT}): ${pending_csv//,/, }"
-        if [[ "$DRY_RUN" == "true" ]]; then
-            info "  would run: scale.yml --limit=${pending_csv},kube_control_plane, then the post phase"
-            exit 0
-        fi
-        _advanced_op_banner
-        confirm "About to resume add-node for: ${pending_csv//,/, }"
-        run_kubespray scale "$pending_csv"
-        run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${pending_csv}" "${EXTRA_VARS[@]}"
-        return 0
-    fi
-
-    if [[ -z "$added" ]]; then
+    # Joined but unfinished: the post phase lifts the taint last. scale.yml runs
+    # for them again, since it can have failed after the join.
+    pending=$(_nodes_where "(.spec.taints // []) | map(.key == \"${ADD_NODE_PENDING_TAINT}\") | any") \
+        || err "add-node: cannot read the nodes' taints (kubectl get nodes failed)."
+    if [[ -z "$added" && -z "$pending" ]]; then
         ok "add-node: nothing to do — nodes.yaml matches the live cluster."
         exit 0
     fi
 
-    # storage/tasks/resolve.yaml rejects these on more than one node, so once a
-    # node joins, every later install, validate and teardown would fail there.
-    # add-node.yaml refuses them too.
-    local backend custom_rwx
-    backend=$(yq -r '.storage_backend // "local-path"' "$GLOBAL_CONFIG" 2>/dev/null | tr '[:upper:]' '[:lower:]' | xargs)
-    # Not `// true`: yq's // replaces false as well as null.
-    custom_rwx=$(yq -r '.storage_custom_rwx' "$GLOBAL_CONFIG" 2>/dev/null)
-    if [[ "$backend" == "local-path" ]] || [[ "$backend" == "custom" && "$custom_rwx" == "false" ]]; then
-        err "add-node: storage_backend '${backend}'$([[ "$backend" == "custom" ]] && echo " with storage_custom_rwx: false") only runs on a single node.
-  After a node is added, every install, validate and teardown would refuse the cluster as multi-node.
-  Move to a storage backend that runs on several nodes (nfs or ceph, in env/${ENV_NAME}/global_config.yaml) first."
-    fi
+    if [[ -n "$added" ]]; then
+        # hosts.yaml.j2 runs a loopback control plane locally: a new node cannot reach it there.
+        local loopback_cp
+        loopback_cp=$(yq -r '(.nodes_control_plane // [])[] | select(.hostname == "localhost" or ((.ip | tostring) | test("^(127[.]|::1$|localhost$)"))) | .hostname' "$ENV_DIR/nodes.yaml" 2>/dev/null || true)
+        [[ -z "$loopback_cp" ]] \
+            || err "add-node: control-plane node ${loopback_cp//$'\n'/, } is at a loopback address in env/${ENV_NAME}/nodes.yaml, which a new node cannot reach.
+  Give it the address the other nodes reach it at, run ./$(basename "$0") install --env ${ENV_NAME} kubernetes, then add the node."
 
-    local declared_cp added_cp
-    declared_cp=$(_nodes_yaml_hostnames control_plane | sort -u)
-    added_cp=$(_in_both "$declared_cp" "$added")
-    if [[ -n "$added_cp" ]]; then
-        err "add-node only scales worker nodes. New control-plane node(s) detected: ${added_cp//$'\n'/, }
+        # With nodes_workers empty, the control plane is the worker (hosts.yaml.j2);
+        # the first worker added would quietly end that.
+        if [[ "$(_inventory_group kube_node | sort -u)" == "$(_inventory_group kube_control_plane | sort -u)" ]]; then
+            local cp_only; cp_only=$(_only_in "$(_nodes_yaml_hostnames control_plane)" "$(_nodes_yaml_hostnames workers)")
+            [[ -z "$cp_only" ]] \
+                || err "add-node: the control plane (${cp_only//$'\n'/, }) is this cluster's worker, and adding a worker under nodes_workers would end that.
+  To keep it a worker, list it under nodes_workers too (an identical entry), then retry."
+        fi
+
+        # The storage check (roles/storage/tasks/resolve.yaml) refuses these on
+        # more than one node: every later install, validate and teardown would stop.
+        local backend rwx
+        backend=$(yq -r '.storage_backend // "local-path"' "$GLOBAL_CONFIG" 2>/dev/null | tr -d '[:space:]')
+        rwx=$(yq -r '.storage_custom_rwx' "$GLOBAL_CONFIG" 2>/dev/null)   # not // true: yq's // also replaces false
+        [[ "${backend,,}" != "local-path" ]] \
+            || err "add-node: storage_backend is local-path, which serves a single node. Move the env to nfs or ceph storage first."
+        [[ "${backend,,}" == "custom" && "${rwx,,}" =~ ^(false|no|off|0)$ ]] \
+            && err "add-node: storage_backend is custom with storage_custom_rwx false, which serves a single node. Use a storage class with ReadWriteMany first."
+
+        local added_cp; added_cp=$(_in_both "$(_nodes_yaml_hostnames control_plane)" "$added")
+        [[ -z "$added_cp" ]] \
+            || err "add-node only scales worker nodes. New control-plane node(s) detected: ${added_cp//$'\n'/, }
   Kubespray's scale.yml cannot add control-plane nodes. Use instead:
     ./$(basename "$0") install --env ${ENV_NAME} kubernetes"
+        info "add-node: new worker node(s): ${added//$'\n'/, }"
     fi
+    [[ -z "$pending" ]] || info "add-node: resuming unfinished node(s) (still tainted ${ADD_NODE_PENDING_TAINT}): ${pending//$'\n'/, }"
 
-    local added_csv="${added//$'\n'/,}"
-    info "add-node: new worker node(s): ${added_csv//,/, }"
+    local nodes; nodes=$(printf '%s\n' "$added" "$pending" | sort -u | grep -v '^$' || true)
+    local nodes_csv="${nodes//$'\n'/,}" added_csv="${added//$'\n'/,}"
 
     local ssh_hits="" n ssh_err
-    for n in ${added//$'\n'/ }; do
+    for n in $nodes; do
         ssh_err=$(_ssh_preflight_check "$n") || ssh_hits+="  ${n}: ${ssh_err}"$'\n'
     done
-    if [[ -n "$ssh_hits" ]]; then
-        err "add-node: cannot SSH to the new node(s) below:
+    [[ -z "$ssh_hits" ]] \
+        || err "add-node: cannot SSH to the node(s) below:
 ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or fix ssh_user/ssh_key in nodes.yaml, then retry."
-    fi
 
-    # run_kubespray scale passes kubelet_config_extra_args to register the new
+    # run_kubespray scale passes kubelet_config_extra_args to register the
     # node(s) with the pending taint; the env's own kubespray_extra files are
     # passed after it and would silently replace it (and with it the taint).
     local _ks_f
@@ -1700,23 +1635,18 @@ ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or f
   out of it (or merge registerWithTaints in yourself) before running add-node."
     done
 
-    # Finish any earlier, unfinished node(s) in the same post phase.
-    local post_csv="$added_csv"
-    [[ -n "$pending_csv" ]] && post_csv+=",${pending_csv}"
-
     if [[ "$DRY_RUN" == "true" ]]; then
-        info "  would run: scale.yml --limit=${added_csv},kube_control_plane"
-        info "  not checked by a dry run: whether the new node(s) are already joined, run Docker, or reach the API server and the internet"
-        [[ -n "$pending_csv" ]] && info "  and resume unfinished node(s): ${pending_csv//,/, }"
+        info "  would run: scale.yml --limit=${nodes_csv},kube_control_plane"
+        [[ -z "$added" ]] || info "  not checked by a dry run: whether the new node(s) are already joined, run Docker, or reach the API server and the internet"
         exit 0
     fi
 
     _advanced_op_banner
-    confirm "About to run Kubespray scale.yml for: ${added_csv//,/, }"
+    confirm "About to run Kubespray scale.yml for: ${nodes_csv//,/, }"
     # The prep pass writes the new node(s) into the inventory: scale.yml reaches them through it.
-    run site "${vars[@]}" -e "_scale_phase=prep" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
-    run_kubespray scale "$post_csv"
-    run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${post_csv}" "${EXTRA_VARS[@]}"
+    [[ -z "$added" ]] || run site "${vars[@]}" -e "_scale_phase=prep" -e "_added_nodes=${added_csv}" "${EXTRA_VARS[@]}"
+    run_kubespray scale "$nodes_csv"
+    run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${nodes_csv}" "${EXTRA_VARS[@]}"
 }
 
 # do_remove_node — remove node(s) from an existing cluster (Kubespray remove-node.yml).
@@ -1840,8 +1770,11 @@ $(sed 's/^/  /' <<< "$sim_findings")
     live_workers=$(_in_both "$live" "$(_inventory_group kube_node)")
     remaining_workers=$(_only_in "$live_workers" "$removed")
     if [[ -n "$live_workers" && -z "$remaining_workers" ]]; then
-        local tainted_cp; tainted_cp=$(_cp_tainted_nodes)
-        if [[ -n "$tainted_cp" ]]; then
+        # Read live: kubeadm taints a control plane at init only.
+        local tainted_cp
+        if ! tainted_cp=$(_nodes_where '(.spec.taints // []) | map(.key == "node-role.kubernetes.io/control-plane" and .effect == "NoSchedule") | any'); then
+            warn "  this removes the last worker node, and the control plane's taints cannot be read (kubectl get nodes failed)."
+        elif [[ -n "$tainted_cp" ]]; then
             warn "  this removes the last worker node. Control-plane node(s) ${tainted_cp//$'\n'/, } carry the NoSchedule taint — nothing will be schedulable for regular workloads until a worker is added back (or the taint is removed manually)."
         else
             warn "  this removes the last worker node. The control-plane node has no NoSchedule taint, so workloads can still schedule there, but this reduces the cluster to single-node capacity."
@@ -2142,8 +2075,6 @@ main() {
     if [[ "$ACTION" == "add-node" || "$ACTION" == "remove-node" ]]; then
         [[ -f "$KUBE_CFG" ]] \
             || err "No kubeconfig at ${KUBE_CFG} — install the cluster first:  ./$(basename "$0") install --env ${ENV_NAME} kubernetes"
-        _is_openshift \
-            && err "${ACTION} is not supported on an OpenShift cluster — node lifecycle there is managed by the Machine API/Machine Config Operator, not Kubespray."
         [[ "$IS_BYO" == "false" ]] \
             || err "${ACTION} is not supported for a BYO cluster (existing_kubernetes is set in global_config.yaml)."
         _rack_scale_enabled \
