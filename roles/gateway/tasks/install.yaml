@@ -40,8 +40,7 @@
       kind: Namespace
       metadata:
         name: "{{ gateway_namespace }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
+        labels: "{{ istio_namespace_labels }}"
   when:
     - gateway_create
     - gateway_namespace != gateway_platform.controller_namespace

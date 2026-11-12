@@ -1,0 +1,21 @@
+---
+# The component's PeerAuthentications, also in namespaces it does not delete (the
+# admin's keycloak), and the records main.yaml wrote for it.
+- name: "mesh | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_tasks: vars.yaml
+
+- name: "mesh | Remove what {{ component.name }} added to the mesh"
+  when: _mesh_active | bool
+  mesh_k8s:
+    env: "{{ env_name | default('local') }}"
+    layer: "{{ component.layer | default('unknown') }}"
+    component: "{{ component.name }}"
+    label_prefix: "{{ ownership_label_prefix | default('ai-solutions.intel.com') }}"
+    mesh_labels: "{{ istio_namespace_labels }}"
+    state: absent
+  register: _mesh_removed
+
+- name: "mesh | Removed"
+  when: _mesh_removed.changed | default(false)
+  ansible.builtin.debug:
+    msg: "{{ {'policies': _mesh_removed.policies, 'records': _mesh_removed.namespaces} }}"

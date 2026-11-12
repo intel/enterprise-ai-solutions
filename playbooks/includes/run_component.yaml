@@ -7,9 +7,35 @@
       ┃  Layer: {{ component.layer | default('unknown') }}{{ ' ' * (66 - (component.layer | default('unknown')) | length) }}┃
       ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
+# The namespaces that join the mesh while the component installs are the ones it
+# put there (roles/mesh).
+- name: "Mesh before {{ component.name }}"
+  ansible.builtin.include_role:
+    name: mesh
+    tasks_from: snapshot
+  when:
+    - component_action == 'install'
+    - istio_enabled | default(false) | bool
+
 - name: "Execute {{ component.name }}"
   ansible.builtin.include_role:
     name: "{{ component.name }}"
+
+# The policies it adds carry the component's labels, so its teardown deletes them.
+- name: "Mesh for what {{ component.name }} installed"
+  ansible.builtin.include_role:
+    name: mesh
+  when:
+    - component_action == 'install'
+    - istio_enabled | default(false) | bool
+
+- name: "Mesh for what {{ component.name }} tore down"
+  ansible.builtin.include_role:
+    name: mesh
+    tasks_from: teardown
+  when:
+    - component_action == 'teardown'
+    - istio_enabled | default(false) | bool
 
 - name: "{{ component.name }} — {{ (_component_prep_only | default(false)) | ternary('prep complete (install continues from caller)', component_action + ' complete') }}"
   ansible.builtin.debug:

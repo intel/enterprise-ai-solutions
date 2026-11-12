@@ -1,0 +1,19 @@
+---
+# The namespaces before the component runs, and which are in the mesh: one that
+# joins in between is the component's (main.yaml records it).
+- name: "mesh | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_tasks: vars.yaml
+
+- name: "mesh | Namespaces before {{ component.name }}"
+  when: _mesh_active | bool
+  mesh_k8s:
+    env: "{{ env_name | default('local') }}"
+    component: "{{ component.name }}"
+    label_prefix: "{{ ownership_label_prefix | default('ai-solutions.intel.com') }}"
+    mesh_labels: "{{ istio_namespace_labels }}"
+    state: snapshot
+  register: _mesh_snapshot
+
+- name: "mesh | Remember them"
+  ansible.builtin.set_fact:
+    _mesh_before: "{{ _mesh_snapshot.namespaces | default(none) }}"

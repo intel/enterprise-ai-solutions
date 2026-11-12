@@ -69,19 +69,10 @@
 # provides are gated off in components.yaml (istio among them, whatever
 # istio_enabled says; observability uses the cluster's operators), roles pick their
 # vars/<cluster_distribution>.yaml, and storage is mapped in storage/tasks/resolve.yaml.
-# istio_enabled stays true by default on both: on OpenShift it only labels namespaces
-# for the cluster's Service Mesh 3, which the warning below points out.
+# The mesh mode follows the platform too (preflight_mesh.yaml).
 
-- name: "Preflight - OpenShift: warn about mesh enrollment"
-  ansible.builtin.debug:
-    msg: >-
-      WARNING: istio_enabled is true on OpenShift. The installer does not deploy
-      Istio here, but roles still label their namespaces for ambient mode, which
-      enrolls them in the cluster's Service Mesh 3. Set istio_enabled: false in
-      env/<env>/global_config.yaml to keep them out.
-  when:
-    - cluster_distribution == 'openshift'
-    - istio_enabled | default(false) | bool
+- name: "Preflight - Mesh"
+  ansible.builtin.include_tasks: preflight_mesh.yaml
 
 # Captured before the ext merge. ai-solutions' own layers are always in scope; a
 # solution's layer is in scope only when this env was inited for it, which

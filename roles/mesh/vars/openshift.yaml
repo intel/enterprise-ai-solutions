@@ -1,0 +1,5 @@
+---
+# The mesh is the cluster's (Service Mesh 3): no mesh-wide policy, so each
+# namespace the env enrolled gets its own, and the cluster's Prometheus (not in
+# the mesh) is let through to the ports it scrapes.
+_mesh_per_namespace_mtls: true

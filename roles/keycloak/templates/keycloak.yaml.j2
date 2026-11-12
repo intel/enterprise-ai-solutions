@@ -56,9 +56,18 @@ spec:
       value: "{{ keycloak_relative_path }}"
 {% endif %}
 {% set _keycloak_proxy = (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0) %}
-{% if _platform_affinity | default({}) | length > 0 or _keycloak_proxy %}
+{% set _keycloak_sidecar = istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'sidecar' %}
+{% if _platform_affinity | default({}) | length > 0 or _keycloak_proxy or _keycloak_sidecar %}
   unsupported:
     podTemplate:
+{% if _keycloak_sidecar %}
+      # The operator owns the StatefulSet: a pod label that changes rolls it, so
+      # pods started before the namespace joined the mesh get their sidecar.
+      metadata:
+        labels:
+          sidecar.istio.io/inject: "true"
+{% endif %}
+{% if _platform_affinity | default({}) | length > 0 or _keycloak_proxy %}
       spec:
 {% if _keycloak_proxy %}
         # Identity brokering is a backchannel call: Keycloak itself fetches the
@@ -80,5 +89,6 @@ spec:
 {% if _platform_affinity | default({}) | length > 0 %}
         affinity:
 {{ _platform_affinity | to_nice_yaml(indent=2) | indent(10, True) }}
+{% endif %}
 {% endif %}
 {% endif %}

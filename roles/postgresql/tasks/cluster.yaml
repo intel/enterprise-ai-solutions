@@ -23,8 +23,7 @@
       kind: Namespace
       metadata:
         name: "{{ postgresql_namespace }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
+        labels: "{{ istio_namespace_labels }}"
   when: istio_enabled | default(false) | bool
 
 # Under mesh-wide STRICT the host-network apiserver (no mesh identity) can't reach the
@@ -50,6 +49,28 @@
   when:
     - istio_enabled | default(false) | bool
     - not _postgresql_from_olm | bool
+
+# The marketplace CNPG operator runs outside the mesh and polls each instance's
+# manager on its status port; the rest of the pod stays STRICT.
+- name: "postgresql | Allow the CNPG operator to reach the instances (port-level mTLS)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: allow-operator
+        namespace: "{{ postgresql_namespace }}"
+      spec:
+        selector:
+          matchLabels:
+            cnpg.io/cluster: "{{ postgresql_cluster_name }}"
+        mtls:
+          mode: STRICT
+        portLevelMtls: "{{ {(postgresql_cnpg_status_port | string): {'mode': 'PERMISSIVE'}} }}"
+  when:
+    - istio_enabled | default(false) | bool
+    - _postgresql_from_olm | bool
 
 - name: "postgresql | Label namespace — PSS"
   kubernetes.core.k8s:
@@ -287,8 +308,7 @@
       kind: Namespace
       metadata:
         name: "{{ item.target_namespace | default(item.name) }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
+        labels: "{{ istio_namespace_labels }}"
   loop: "{{ __postgresql_consumer_databases | default(__postgresql_effective_databases) }}"
   loop_control:
     label: "{{ item.target_namespace | default(item.name) }}"

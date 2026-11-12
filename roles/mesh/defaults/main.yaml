@@ -1,0 +1,19 @@
+---
+# =============================================================================
+# Mesh Role Defaults
+# =============================================================================
+# The namespaces an env puts in a mesh it does not run (OpenShift Service Mesh 3).
+# run_component.yaml takes a snapshot of the namespaces before every component,
+# and calls it after the component installs:
+#   - mutual TLS per namespace (vars/<cluster_distribution>.yaml decides; where
+#     the istio component runs the mesh, its mesh-wide policy covers them all)
+#   - in sidecar mode, restart our workloads whose pods started before the
+#     namespace was labelled, so they get a proxy
+# =============================================================================
+
+mesh_mtls_mode: "STRICT"
+
+# The cluster's Prometheus (OpenShift user workload monitoring) is not in the mesh:
+# open the ports ServiceMonitors and PodMonitors scrape to plaintext, on the pods
+# they select only.
+mesh_open_scraped_ports: true

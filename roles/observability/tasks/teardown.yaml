@@ -217,7 +217,7 @@
         api_version: "{{ item.api_version }}"
         kind: "{{ item.kind }}"
         name: "{{ item.name }}"
-        namespace: "{{ observability_namespace }}"
+        namespace: "{{ item.namespace | default(observability_namespace) }}"
         state: absent
         wait: true
       loop: "{{ observability_openshift_instances | reverse | list }}"
@@ -244,6 +244,15 @@
         - {kind: ClusterRole, name: grafana-dashboards}
       loop_control:
         label: "{{ item.kind }} {{ observability_namespace }}-{{ item.name }}"
+      failed_when: false
+
+    # Ours alone (the ClusterLogForwarder's), so it goes even when the stack's stays.
+    - name: "observability | olm | Delete the log collector namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ observability_openshift_log_collector_namespace }}"
+        state: absent
+        wait: true
       failed_when: false
 
     - name: "observability | olm | Find the datasources"

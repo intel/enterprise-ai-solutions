@@ -77,8 +77,7 @@
               kind: Namespace
               metadata:
                 name: "{{ certmanager_namespace }}"
-                labels:
-                  istio.io/dataplane-mode: "ambient"
+                labels: "{{ istio_namespace_labels }}"
           when: istio_enabled | default(false) | bool
 
         - name: "cert_manager | Label namespace — PSS"
