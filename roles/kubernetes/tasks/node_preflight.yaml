@@ -1,0 +1,101 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "kubernetes | node preflight | Plan the checks"
+  vars:
+    _np_proxy_url: "{{ https_proxy | default('') or http_proxy | default('') }}"
+  ansible.builtin.set_fact:
+    _np_skip: "{{ kubernetes_node_preflight_skip | node_preflight_skip }}"
+    _np_proxy_host: >-
+      {{ ((_np_proxy_url if '://' in _np_proxy_url else 'http://' ~ _np_proxy_url) | urlsplit('hostname'))
+         if _np_proxy_url | length > 0 else '' }}
+    _np_ceph: "{{ (_resolved_storage_backend | default(storage_backend | default('local-path'))) | string | trim | lower == 'ceph' }}"
+
+- name: "kubernetes | node preflight | Probe each node"
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/node_preflight_probe.py"
+    # RHEL 8 has /usr/libexec/platform-python, not python3: use the node's interpreter.
+    executable: >-
+      {{ hostvars[item].ansible_python_interpreter
+         | default(hostvars[item].ansible_facts.discovered_interpreter_python | default('python3')) }}
+  delegate_to: "{{ item }}"
+  become: true
+  vars:
+    _np_etcd: "{{ item in groups['etcd'] | default([]) }}"
+    _np_spec:
+      controller_epoch: "{{ now().timestamp() }}"
+      etcd: "{{ _np_etcd }}"
+      ports: >-
+        {{ ([6443, 10257, 10259] if item in groups['kube_control_plane'] | default([]) else [])
+           + ([2379, 2380] if _np_etcd | bool else []) + [10250]
+           + ([179] if (rack_scale_calico_mode | default('')) == 'bgp' else []) }}
+      dns_names: "{{ ([_np_proxy_host] if _np_proxy_host | length > 0 else []) + kubernetes_node_preflight_dns_names }}"
+      urls: "{{ kubernetes_node_preflight_urls }}"
+      ceph_devices: >-
+        {{ ((rook_ceph_devices | default({})).get(item)
+            or (rook_ceph_devices | default({})).get(hostvars[item].node_hostname | default(item))
+            or []) if _np_ceph | bool else [] }}
+      skip: "{{ _np_skip }}"
+      # Kubespray installs its binaries here; on the deploy node itself, in its own tree.
+      bin_dirs: "{{ ['/usr/local/bin'] + ([kubespray_bin_dir_local] if not (_k8s_needs_ssh | bool) else []) }}"
+  # The proxy settings come from the play's environment (playbooks/site.yaml).
+  environment:
+    NODE_PREFLIGHT_SPEC: "{{ _np_spec | to_json }}"
+  timeout: 300
+  loop: "{{ _k8s_nodes or ['localhost'] }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _np_probe
+  changed_when: false
+  failed_when: false
+  # A timeout, a become error or an unreachable node is not a result failed_when sees;
+  # these hand it to the rules, which report it as N0 or N9.
+  ignore_errors: true
+  ignore_unreachable: true
+
+- name: "kubernetes | node preflight | Evaluate"
+  ansible.builtin.set_fact:
+    _np: >-
+      {{ _np_probe.results | node_preflight_evaluate({
+           'skip': _np_skip,
+           'local': not (_k8s_needs_ssh | bool),
+           'rack_scale': rack_scale_enabled | default(false) | bool,
+           'ceph': _np_ceph | bool,
+           'proxy_host': _np_proxy_host,
+           'api_lb': apiserver_loadbalancer_domain_name | default('lb-apiserver.kubernetes.local'),
+           'control_plane': groups['kube_control_plane'] | default([]),
+           'cp_hostvars': groups['kube_control_plane'] | default([]) | map('extract', hostvars) | list,
+           'min_free_gib': kubernetes_node_preflight_min_free_gib | int,
+           'warn_free_gib': kubernetes_node_preflight_warn_free_gib | int,
+           'max_used_pct': kubernetes_node_preflight_max_used_pct | int,
+           'etcd_warn_free_gib': kubernetes_node_preflight_etcd_warn_free_gib | int,
+           'max_skew_s': kubernetes_node_preflight_max_clock_skew_s | float,
+           'warn_skew_s': kubernetes_node_preflight_warn_clock_skew_s | float}) }}
+
+- name: "kubernetes | node preflight | Results"
+  ansible.builtin.debug:
+    msg: "{{ _np.table }}"
+
+- name: "kubernetes | node preflight | Results directory"
+  ansible.builtin.file:
+    path: "{{ log_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: "kubernetes | node preflight | Save the results"
+  ansible.builtin.copy:
+    content: "{{ _np.rows | to_nice_json }}"
+    dest: "{{ log_dir }}/node-preflight-{{ now().strftime('%Y%m%d-%H%M%S') }}.json"
+    mode: "0644"
+
+- name: "kubernetes | node preflight | Stop on failed checks"
+  ansible.builtin.fail:
+    msg: |-
+      Node preflight: {{ _np.failures | length }} check(s) failed; Kubespray did not start.
+      {% for r in _np.failures %}
+      - {{ r.node }}: {{ r.id }} {{ r.check }}: {{ r.evidence }}
+        Fix: {{ r.hint }}
+      {% endfor %}
+      Fix these and re-run.{% if _np.skippable %} To skip a check, set kubernetes_node_preflight_skip (e.g. [{{ _np.skippable | join(', ') }}]) in global_config.yaml.{% endif %}{% if _np.unprobed %} The probe did not run on {{ _np.unprobed | join(', ') }}, so nothing was checked there: fix SSH, sudo or python3 on the node, or set kubernetes_node_preflight: false to install without these checks.{% endif %}
+  when: _np.failures | length > 0

@@ -24,16 +24,16 @@
   ansible.builtin.meta: end_role
   when: existing_kubernetes | default('') | trim | length > 0
 
+# localhost is a placeholder: the seeded single-node inventory, which on a fresh
+# rack-scale env still sits next to the nodes fabric_inventory added.
 - name: "kubernetes | Detect SSH requirement from inventory"
+  vars:
+    _nodes: >-
+      {{ (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([])
+          + groups['etcd'] | default([])) | unique | reject('equalto', 'localhost') | list }}
   ansible.builtin.set_fact:
-    _k8s_needs_ssh: >-
-      {{
-        (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
-        | unique
-        | reject('equalto', 'localhost')
-        | list
-        | length > 0
-      }}
+    _k8s_nodes: "{{ _nodes }}"
+    _k8s_needs_ssh: "{{ _nodes | length > 0 }}"
 
 - name: "kubernetes | Compute execution phase"
   ansible.builtin.set_fact:
@@ -57,34 +57,9 @@
     - name: "kubernetes | SSH pre-flight | Ping all cluster nodes"
       ansible.builtin.ping:
       delegate_to: "{{ item }}"
-      loop: "{{ groups['kube_control_plane'] | default([]) | union(groups['kube_node'] | default([])) | unique }}"
+      loop: "{{ _k8s_nodes }}"
       loop_control:
         label: "{{ item }}"
-
-    - name: "kubernetes | SSH pre-flight | Check internet on cluster nodes"
-      ansible.builtin.uri:
-        url: https://github.com
-        method: GET
-        timeout: 10
-        status_code: [200, 301, 302]
-      delegate_to: "{{ item }}"
-      loop: "{{ groups['kube_control_plane'] | default([]) | union(groups['kube_node'] | default([])) | unique }}"
-      loop_control:
-        label: "{{ item }}"
-      environment:
-        http_proxy: "{{ http_proxy | default('') }}"
-        https_proxy: "{{ https_proxy | default('') }}"
-        no_proxy: "{{ no_proxy | default('') }}"
-      failed_when: false
-      register: _inet_results
-
-    - name: "kubernetes | SSH pre-flight | Report nodes without internet"
-      ansible.builtin.debug:
-        msg: "WARNING: {{ item.item }} cannot reach https://github.com — check proxy settings"
-      loop: "{{ _inet_results.results | default([]) }}"
-      loop_control:
-        label: "{{ item.item }}"
-      when: item.status | default(0) not in [200, 301, 302]
 
 # =====================================================================
 # PHASE: post-kubespray — kubeconfig + validation only
@@ -181,6 +156,28 @@
   when: _k8s_existing.rc == 0
   ansible.builtin.debug:
     msg: "Kubernetes cluster already running. Skipping."
+
+# nodes.yaml nodes join the inventory only when install_kubespray.yaml writes it, after this.
+- name: "kubernetes | Node preflight"
+  when:
+    - _k8s_existing.rc != 0
+    - kubernetes_node_preflight | bool
+  vars:
+    _np_new: >-
+      {{ (nodes_control_plane | default([], true) + nodes_workers | default([], true))
+         | map(attribute='hostname', default='') | select | reject('in', groups['all']) | list }}
+  block:
+    - name: "kubernetes | Node preflight | Skipped: nodes.yaml nodes not in the inventory yet"
+      ansible.builtin.debug:
+        msg: >-
+          Node preflight skipped: {{ _np_new | join(', ') }} from nodes.yaml are not in the
+          inventory yet. It is written later in this run, so a re-run before the cluster
+          exists checks them.
+      when: _np_new | length > 0
+
+    - name: "kubernetes | Node preflight | Run"
+      ansible.builtin.include_tasks: node_preflight.yaml
+      when: _np_new | length == 0
 
 # --- Install via Kubespray ---
 - name: "kubernetes | Install via Kubespray"
