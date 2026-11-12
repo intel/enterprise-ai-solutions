@@ -1,0 +1,103 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Intel GPU Device Plugin — Install
+# =============================================================================
+# Runs only when NFD found an Intel GPU on at least one node; otherwise a no-op,
+# so CPU-only clusters are unchanged. The DaemonSet's node affinity keeps it on
+# the Intel GPU nodes of a mixed cluster. Done when every such node advertises
+# its GPUs, so the inference layer that follows can schedule GPU models.
+# =============================================================================
+
+- name: "intel_gpu_plugin | Install"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "intel_gpu_plugin | Detect Intel GPU nodes"
+      ansible.builtin.import_tasks: detect.yaml
+
+    - name: "intel_gpu_plugin | Warn — nodes NFD has not labelled"
+      ansible.builtin.debug:
+        msg:
+          - "WARNING: NFD has not labelled node(s) {{ _intel_gpu_unlabelled_nodes | join(', ') }}."
+          - "An Intel GPU on them cannot be detected, so the plugin is not installed there."
+          - "Check the node_feature_discovery component (nfd_enabled), then re-run: install intel_gpu_plugin"
+      when: _intel_gpu_unlabelled_nodes | length > 0
+
+    - name: "intel_gpu_plugin | Skip — no Intel GPU node"
+      ansible.builtin.debug:
+        msg: "No node carries an Intel GPU label ({{ intel_gpu_plugin_node_labels | join(', ') }}) — Intel GPU plugin not needed."
+      when: _intel_gpu_nodes | length == 0
+
+    - name: "intel_gpu_plugin | End role (no Intel GPU)"
+      ansible.builtin.meta: end_role
+      when: _intel_gpu_nodes | length == 0
+
+    - name: "intel_gpu_plugin | Intel GPU nodes"
+      ansible.builtin.debug:
+        msg: "Intel GPU node(s): {{ _intel_gpu_nodes | join(', ') }}"
+
+    # One nodeSelectorTerm per label: Kubernetes ORs the terms, so any Intel GPU
+    # class selects the node.
+    - name: "intel_gpu_plugin | Load the vendored DaemonSet"
+      ansible.builtin.set_fact:
+        _intel_gpu_src: "{{ lookup('ansible.builtin.file', intel_gpu_plugin_manifest) | from_yaml_all | select | first }}"
+
+    # The image is set from intel_gpu_plugin_image so a mirror registry can be used.
+    - name: "intel_gpu_plugin | Render the DaemonSet"
+      ansible.builtin.set_fact:
+        _intel_gpu_ds: >-
+          {{ _intel_gpu_src | combine({
+               'metadata': {'namespace': intel_gpu_plugin_namespace},
+               'spec': {'template': {'spec': {
+                 'containers': [_intel_gpu_src.spec.template.spec.containers[0] | combine({'image': intel_gpu_plugin_image})],
+                 'affinity': {'nodeAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': {
+                   'nodeSelectorTerms': _intel_gpu_terms}}}}}}}, recursive=true) }}
+      vars:
+        _intel_gpu_terms: >-
+          {% set terms = [] %}{% for label in intel_gpu_plugin_node_labels %}{%
+            set _ = terms.append({'matchExpressions': [{'key': label, 'operator': 'In', 'values': ['true']}]}) %}{%
+          endfor %}{{ terms }}
+
+    - name: "intel_gpu_plugin | Apply the DaemonSet"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ _intel_gpu_ds }}"
+
+    - name: "intel_gpu_plugin | Wait for the plugin on every Intel GPU node"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: intel-gpu-plugin
+        namespace: "{{ intel_gpu_plugin_namespace }}"
+      register: _intel_gpu_ds_state
+      until:
+        - _intel_gpu_ds_state.resources | default([]) | length > 0
+        - (_intel_gpu_ds_state.resources[0].status.desiredNumberScheduled | default(0) | int) >= (_intel_gpu_nodes | length)
+        - (_intel_gpu_ds_state.resources[0].status.numberReady | default(0) | int) == (_intel_gpu_ds_state.resources[0].status.desiredNumberScheduled | default(0) | int)
+      retries: "{{ intel_gpu_plugin_ready_retries }}"
+      delay: 10
+
+    # The kubelet adds the extended resource once the plugin registers; the
+    # inference layer's GPU models are only schedulable after that.
+    - name: "intel_gpu_plugin | Wait for each node to advertise its GPUs"
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ item }}"
+      loop: "{{ _intel_gpu_nodes }}"
+      register: _intel_gpu_node_state
+      until: >-
+        (_intel_gpu_node_state.resources[0].status.allocatable['gpu.intel.com/xe'] | default(0) | int) +
+        (_intel_gpu_node_state.resources[0].status.allocatable['gpu.intel.com/i915'] | default(0) | int) > 0
+      retries: "{{ intel_gpu_plugin_ready_retries }}"
+      delay: 10
+
+    - name: "intel_gpu_plugin | ━━━ DONE ━━━"
+      ansible.builtin.debug:
+        msg: >-
+          Intel GPU plugin {{ intel_gpu_plugin_version }} in {{ intel_gpu_plugin_namespace }}:
+          {% for r in _intel_gpu_node_state.results %}{{ r.item }}
+          xe={{ r.resources[0].status.allocatable['gpu.intel.com/xe'] | default(0) }}
+          i915={{ r.resources[0].status.allocatable['gpu.intel.com/i915'] | default(0) }}{{ '; ' if not loop.last }}{% endfor %}

@@ -5,8 +5,8 @@
 # =============================================================================
 # NVIDIA GPU Operator Role Defaults
 # =============================================================================
-# NVIDIA only. One role per vendor: the Intel stack is intel_gpu_operator
-# (planner epic B2), so the two never install on the same node.
+# NVIDIA only. One role per vendor: the Intel stack is intel_gpu_plugin, which
+# installs on nodes NFD labels with an Intel GPU.
 # Runs when rack_scale_gpu_vendor == nvidia, which the rack-profile parser sets
 # from the accelerator: field of a node.
 # =============================================================================

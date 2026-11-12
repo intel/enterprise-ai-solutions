@@ -1,0 +1,22 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Intel GPU Device Plugin — Teardown
+# =============================================================================
+# Removes the DaemonSet whether or not GPUs are still detected, so a node whose
+# GPUs were pulled does not keep a stale plugin. The kubelet drops the
+# gpu.intel.com/* resource once the plugin's socket is gone.
+
+- name: "intel_gpu_plugin | teardown | Delete the DaemonSet"
+  kubernetes.core.k8s:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: intel-gpu-plugin
+    namespace: "{{ intel_gpu_plugin_namespace }}"
+    state: absent
+    wait: true
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  failed_when: false

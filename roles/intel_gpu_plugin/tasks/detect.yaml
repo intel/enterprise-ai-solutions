@@ -1,0 +1,40 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Intel GPU Device Plugin — Detect Intel GPU nodes
+# =============================================================================
+# Sets _intel_gpu_nodes: names of the nodes NFD labelled with an Intel GPU.
+# Shared by install, validate and teardown so all three agree on the nodes.
+# Label selectors, not Jinja, match the keys: they contain dots and slashes.
+# =============================================================================
+
+# NFD has only just been installed on a fresh cluster: wait until its worker has
+# labelled every node (no node lacks its CPU vendor label), so "no Intel GPU
+# label" means no GPU rather than "not labelled yet".
+- name: "intel_gpu_plugin | Wait for NFD to label every node"
+  kubernetes.core.k8s_info:
+    kind: Node
+    label_selectors:
+      - "!feature.node.kubernetes.io/cpu-model.vendor_id"
+  register: _intel_gpu_unlabelled
+  until: _intel_gpu_unlabelled.resources | default([]) | length == 0
+  retries: "{{ intel_gpu_plugin_nfd_retries if component_action == 'install' else 0 }}"
+  delay: 10
+  failed_when: false
+
+- name: "intel_gpu_plugin | Find nodes with an Intel GPU"
+  kubernetes.core.k8s_info:
+    kind: Node
+    label_selectors:
+      - "{{ item }}=true"
+  loop: "{{ intel_gpu_plugin_node_labels }}"
+  register: _intel_gpu_by_label
+
+- name: "intel_gpu_plugin | Record the Intel GPU nodes"
+  ansible.builtin.set_fact:
+    _intel_gpu_nodes: >-
+      {{ _intel_gpu_by_label.results | map(attribute='resources') | flatten
+         | map(attribute='metadata.name') | unique | sort }}
+    _intel_gpu_unlabelled_nodes: "{{ _intel_gpu_unlabelled.resources | default([]) | map(attribute='metadata.name') | list }}"

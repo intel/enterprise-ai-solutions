@@ -7,7 +7,7 @@
 # =============================================================================
 # NVIDIA only. Runs when the rack-profile parser found an NVIDIA accelerator:
 # (rack_scale_gpu_vendor == nvidia). Other vendors are not handled here: the
-# Intel stack is intel_gpu_operator (planner epic B2).
+# Intel stack is the intel_gpu_plugin component.
 # =============================================================================
 
 - name: "nvidia_gpu_operator | Skip — no GPU vendor detected"
@@ -20,7 +20,7 @@
     msg:
       - "WARNING: rack-profile.yaml declares accelerator vendor '{{ rack_scale_gpu_vendor }}'."
       - "This role installs the NVIDIA stack only. No GPU stack is installed for that vendor."
-      - "Intel GPUs: intel_gpu_operator (planner epic B2) is not available on this branch yet."
+      - "Intel GPUs are handled by the intel_gpu_plugin component (detected from NFD labels)."
   when:
     - (rack_scale_gpu_vendor | default('')) | length > 0
     - rack_scale_gpu_vendor != 'nvidia'

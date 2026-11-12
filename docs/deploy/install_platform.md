@@ -12,12 +12,21 @@ The installer sets up these layers automatically, in dependency order:
 
 ```
 1. Infrastructure                — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
-2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability
+2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability,
+                                   Node Feature Discovery, Intel GPU device plugin (only on nodes with an Intel GPU)
 3. Intel® Inference Toolkit     — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
 4. Intel® Chatbot Toolkit   — opt-in (vector DB, ingestion, chat, UI) — requires init erag + install erag
 ```
 
 You run **one command** and everything is installed.
+
+**Intel GPUs (Arc Pro B-Series / B70 and other Xe GPUs).** The `intel_gpu_plugin` platform
+component installs the [Intel GPU device plugin](https://github.com/intel/intel-device-plugins-for-kubernetes)
+(v0.37.1) when Node Feature Discovery labels a node with an Intel GPU
+(`feature.node.kubernetes.io/pci-0300_8086.present` or `pci-0380_8086.present`). It runs
+only on those nodes, waits until they advertise `gpu.intel.com/xe`, and is skipped on
+CPU-only clusters — so the inference layer's GPU runtimes (SGLang, vLLM XPU) can schedule
+right after. Set `intel_gpu_plugin_enabled: false` to turn it off.
 
 ---
 

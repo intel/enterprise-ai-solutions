@@ -1,0 +1,47 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Intel GPU Device Plugin — Validate
+# =============================================================================
+
+- name: "intel_gpu_plugin | validate"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "intel_gpu_plugin | validate | Detect Intel GPU nodes"
+      ansible.builtin.import_tasks: detect.yaml
+
+    - name: "intel_gpu_plugin | validate | PASS — no Intel GPU node"
+      ansible.builtin.debug:
+        msg: "No Intel GPU node; nothing to validate."
+      when: _intel_gpu_nodes | length == 0
+
+    - name: "intel_gpu_plugin | validate | Check DaemonSet readiness"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: intel-gpu-plugin
+        namespace: "{{ intel_gpu_plugin_namespace }}"
+      register: _intel_gpu_val_ds
+      failed_when: >-
+        _intel_gpu_val_ds.resources | default([]) | length == 0 or
+        (_intel_gpu_val_ds.resources[0].status.numberReady | default(0) | int) < (_intel_gpu_nodes | length)
+      when: _intel_gpu_nodes | length > 0
+
+    - name: "intel_gpu_plugin | validate | Check every Intel GPU node advertises its GPUs"
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ item }}"
+      loop: "{{ _intel_gpu_nodes }}"
+      register: _intel_gpu_val_node
+      failed_when: >-
+        (_intel_gpu_val_node.resources[0].status.allocatable['gpu.intel.com/xe'] | default(0) | int) +
+        (_intel_gpu_val_node.resources[0].status.allocatable['gpu.intel.com/i915'] | default(0) | int) == 0
+      when: _intel_gpu_nodes | length > 0
+
+    - name: "intel_gpu_plugin | validate | PASS"
+      ansible.builtin.debug:
+        msg: "Intel GPU plugin ready on {{ _intel_gpu_nodes | join(', ') }}."
+      when: _intel_gpu_nodes | length > 0
