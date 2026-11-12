@@ -36,6 +36,17 @@
     - name: "kubernetes | remove-node | Regenerate inventory from nodes.yaml"
       ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
 
+    - name: "kubernetes | remove-node | Reload inventory without the removed node(s)"
+      ansible.builtin.meta: refresh_inventory
+
+    # The export allowlist comes from the inventory: until it is rewritten, a
+    # removed node's address keeps rw,no_root_squash on the share.
+    - name: "kubernetes | remove-node | NFS exports without the removed node(s)"
+      ansible.builtin.include_role:
+        name: nfs_storage
+        tasks_from: refresh_exports.yaml
+      when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
+
     # A removed node's node.<NAME> BalloonsPolicy CR outlives it, and the NRI
     # plugin matches CRs by node name: a later node joining under the same
     # name would pick up this one — written for the old hardware — the moment

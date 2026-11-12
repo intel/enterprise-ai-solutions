@@ -18,9 +18,10 @@
 #
 # Idempotent and safe to re-run on every add-node/remove-node, not just when
 # the node list actually changed: lineinfile only reports changed when the
-# line differs, and exportfs -ra below is gated on that, so a no-op run (e.g.
-# remove-node, which doesn't add anything here) does not touch the server at
-# all.
+# line differs, and exportfs -ra below is gated on that, so a run that leaves
+# the client list as it was does not touch the server at all. remove-node
+# includes it after reloading the inventory, which drops the removed node(s)
+# from the line.
 # =============================================================================
 
 - name: "nfs_storage | exports | Resolve refresh host list"

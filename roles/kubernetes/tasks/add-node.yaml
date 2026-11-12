@@ -111,6 +111,42 @@
       delay: 10
       loop: "{{ _added_nodes_list }}"
 
+    # Ready does not prove a pod network: Calico's init container writes the
+    # CNI config before calico-node runs, so the node turns Ready even when
+    # calico-node keeps crashing. The DaemonSet pods that tolerate the pending
+    # taint (calico-node, kube-proxy, ...) are already on the node: wait for
+    # them before any workload is let in.
+    - name: "kubernetes | add-node | Wait for the DaemonSet pods on new node(s)"
+      kubernetes.core.k8s_info:
+        kind: Pod
+        field_selectors:
+          - "spec.nodeName={{ item }}"
+        kubeconfig: "{{ kubernetes_kubeconfig }}"
+      register: _add_node_ds_pods
+      until: >-
+        (_add_node_ds_pods.resources | default([]) | daemonset_pods | length) > 0
+        and not (_add_node_ds_pods.resources | default([]) | daemonset_pods | unready_pods)
+      retries: 30
+      delay: 10
+      failed_when: false
+      loop: "{{ _added_nodes_list }}"
+
+    - name: "kubernetes | add-node | Fail if a DaemonSet pod on a new node is not Ready"
+      vars:
+        _ds: "{{ item.resources | default([]) | daemonset_pods }}"
+      ansible.builtin.fail:
+        msg: >-
+          {{ item.item }} is Ready, but its pod network is not:
+          {{ ('not Ready: ' ~ (_ds | unready_pods | join(', '))) if _ds else 'no DaemonSet pod has started' }}.
+          It keeps the {{ _add_node_pending_taint | default('add-node pending') }} taint, so no workload lands on it.
+          Check those pods (kubectl describe pod -n kube-system); a large node can need a higher
+          calico_node_memory_limit in env/{{ env_name | default('ENV') }}/kubespray_extra.yml.
+          Then re-run add-node, which resumes here.
+      loop: "{{ _add_node_ds_pods.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: not _ds or (_ds | unready_pods | length) > 0
+
     # Without its own node.<NAME> CR, a new node's balloons agent runs on the
     # cluster `default` CR — sized for whichever node was most capable when
     # nri_cpu_balloons last ran, not for this one. The node is still under the
