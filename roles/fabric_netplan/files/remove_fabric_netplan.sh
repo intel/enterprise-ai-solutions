@@ -13,11 +13,6 @@ for f in "$marker" $FABRIC_FILES; do
     [ -e "$f" ] && pending=1
 done
 [ -n "$pending" ] || exit 0
-on_nics=()
-for pair in $FABRIC_ADDRESSES; do
-    nic=${pair%%=*} addr=${pair#*=}
-    [ -n "$(ip -o addr show dev "$nic" to "${addr%/*}" 2>/dev/null)" ] && on_nics+=("$pair")
-done
 
 touch "$marker" || { echo "cannot create $marker" >&2; exit 1; }
 echo fabric-netplan-changed
@@ -26,8 +21,9 @@ for f in $FABRIC_FILES; do
 done
 netplan get >/dev/null || { echo "netplan get fails: the fabric netplan files are removed and no address was; fix what it reports, then re-run" >&2; exit 1; }
 rc=0
-for pair in "${on_nics[@]}"; do
+for pair in $FABRIC_ADDRESSES; do
     nic=${pair%%=*} addr=${pair#*=}
+    [ -n "$(ip -o addr show dev "$nic" to "${addr%/*}" 2>/dev/null)" ] || continue
     # ip exits 2 when the address is already gone.
     if ip addr del "$addr" dev "$nic"; then
         echo "removed $addr from $nic"

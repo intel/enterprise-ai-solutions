@@ -137,8 +137,10 @@ def test_the_old_fabric_file_alone_is_enough(node):
     assert node.files_left() == []
 
 
-def test_the_task_passes_each_node_its_own_addresses():
+def test_the_task_passes_each_node_its_own_addresses_and_both_fabric_files():
     addresses = [{"node": "n1", "nic": "ens1", "addr": "10.0.0.1/24"},
                  {"node": "n2", "nic": "ens1", "addr": "10.0.0.2/24"},
                  {"node": "n1", "nic": "ens2", "addr": "10.0.1.1/24"}]
     assert render(TASK["environment"]["FABRIC_ADDRESSES"], {"_fabric_addresses": addresses, "item": "n1"}) == N1
+    files = {"rack_scale_netplan_dest": "/etc/netplan/99-fabric.yaml", "rack_scale_netplan_old": "/etc/netplan/60-fabric.yaml"}
+    assert render(TASK["environment"]["FABRIC_FILES"], files) == "/etc/netplan/99-fabric.yaml /etc/netplan/60-fabric.yaml"
