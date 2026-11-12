@@ -98,7 +98,6 @@ def _safe_ip_network(val, context, errors, strict=False):
 
 
 def _whole(val, lo, hi=None):
-    """True for an int (not a bool) from lo to hi."""
     return not isinstance(val, bool) and isinstance(val, int) and lo <= val and (hi is None or val <= hi)
 
 

@@ -274,7 +274,6 @@
       args:
         executable: /bin/bash
       delegate_to: "{{ item.key }}"
-      become: false
       loop: "{{ _generated_inv.all.hosts | dict2items }}"
       loop_control:
         label: "{{ item.key }}"

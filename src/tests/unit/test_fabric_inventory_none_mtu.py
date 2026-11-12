@@ -72,16 +72,10 @@ def test_only_topology_none_reads_the_nics(topology, runs):
     assert render("{{ %s }}" % _CHECK["when"], {"_rack_parsed": {"summary": {"topology": topology}}}) in (runs, str(runs))
 
 
-def test_the_probe_needs_no_root():
-    assert task("Read the MTU of the NIC with each node's IP")["become"] is False
-
-
 @pytest.mark.skipif(shutil.which("ip") is None, reason="needs iproute2")
-@pytest.mark.parametrize("ip, rc, stdout, stderr", [
-    ("127.0.0.1", 0, "lo " + pathlib.Path("/sys/class/net/lo/mtu").read_text().strip() + "\n", ""),
-    ("192.0.2.254", 1, "", "no NIC holds its IP\n"),
-])
-def test_the_probe_on_this_host(ip, rc, stdout, stderr):
+@pytest.mark.parametrize("ip, rc, nic, stderr", [("127.0.0.1", 0, "lo", ""), ("192.0.2.254", 1, None, "no NIC holds its IP\n")])
+def test_the_probe_on_this_host(ip, rc, nic, stderr):
     script = render(task("Read the MTU of the NIC with each node's IP")["ansible.builtin.shell"], {"item": node("n1", ip)})
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    stdout = "%s %s\n" % (nic, pathlib.Path("/sys/class/net", nic, "mtu").read_text().strip()) if nic else ""
     assert (p.returncode, p.stdout, p.stderr) == (rc, stdout, stderr)
