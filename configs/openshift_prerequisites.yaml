@@ -85,9 +85,10 @@ openshift_prerequisites:
 
   - name: keycloak
     title: Red Hat build of Keycloak
-    doc: "#6-red-hat-build-of-keycloak-when-auth_type-jwt"
+    doc: "#6-red-hat-build-of-keycloak"
     layers: [platform]
-    when: "{{ auth_type | default('jwt') == 'jwt' and keycloak_enabled | default(true) | bool }}"
+    # Both auth modes run Keycloak (auth_type picks how clients authenticate to the gateway).
+    when: "{{ keycloak_enabled | default(true) | bool }}"
     package: rhbk-operator
     channel: stable-v26.6
     version: "26.6.7-opr.1"
