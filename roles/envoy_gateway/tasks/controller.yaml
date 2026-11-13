@@ -49,7 +49,23 @@
               name: "system:serviceaccounts:{{ envoy_gateway_namespace }}"
       when: _envoy_gateway_grant_nonroot_scc | bool
 
+    # With sidecars the controller stays out of the mesh, like istiod: the proxies'
+    # xDS stream on 18000 is Envoy Gateway's own mTLS, which a STRICT sidecar would
+    # cut. The port is named grpc, so the proxy's sidecar would also take that TLS
+    # for HTTP; appProtocol tcp (the chart copies the ports into the Service) makes
+    # it pass the stream through. The chart's port list, with that one addition.
     - name: "envoy_gateway | {{ gateway_platform.controller_action | capitalize }} Envoy Gateway via Helm (OCI)"
+      vars:
+        _eg_controller_unmeshed: "{{ istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'sidecar' }}"
+        _eg_controller_outside_mesh:
+          pod:
+            annotations:
+              sidecar.istio.io/inject: "false"
+          ports:
+            - {name: grpc, port: 18000, targetPort: 18000, appProtocol: tcp}
+            - {name: ratelimit, port: 18001, targetPort: 18001}
+            - {name: wasm, port: 18002, targetPort: 18002}
+            - {name: metrics, port: 19001, targetPort: 19001}
       kubernetes.core.helm:
         name: "{{ envoy_gateway_release_name }}"
         chart_ref: "{{ envoy_gateway_helm_repo }}"
@@ -65,9 +81,9 @@
         wait: "{{ helm_wait }}"
         timeout: "{{ helm_timeout }}"
         values:
-          deployment:
-            envoyGateway:
-              affinity: "{{ _platform_affinity | default({}) }}"
+          deployment: >-
+            {{ {'envoyGateway': {'affinity': _platform_affinity | default({})}}
+               | combine(_eg_controller_outside_mesh if _eg_controller_unmeshed | bool else {}) }}
           # The Backend extension API (gateway.envoyproxy.io/v1alpha1 Backend) is
           # off by default. It is how a route reaches an endpoint outside the
           # cluster with upstream TLS settings of its own - the ONTAP S3 reverse
@@ -109,8 +125,7 @@
       kind: Namespace
       metadata:
         name: "{{ envoy_gateway_namespace }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
+        labels: "{{ istio_namespace_labels }}"
   when:
     - gateway_platform.controller_managed | bool or gateway_platform.configure_existing | bool
     - istio_enabled | default(false) | bool
@@ -198,6 +213,9 @@
 # owns :80/:443 on the nodes and forwards to Envoy through passthrough Routes
 # (openshift_routes.yaml), so Envoy is a plain Deployment behind a ClusterIP
 # Service and any node can run it.
+#
+# With sidecars (preflight_mesh.yaml) Envoy sends to the Service, not to its pod
+# IPs: the sidecar beside it then picks the endpoint and wraps the call in mTLS.
 - name: "envoy_gateway | Create EnvoyProxy config ({{ _envoy_gateway_proxy_shape }})"
   vars:
     _eg_k8s_provider:
@@ -215,6 +233,7 @@
           replicas: "{{ gateway_envoy_replicas | int }}"
         envoyService:
           type: ClusterIP
+    _eg_sidecar: "{{ istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'sidecar' }}"
     _eg_workload: "{{ 'envoyDaemonSet' if _envoy_gateway_proxy_shape == 'controlplane_daemonset' else 'envoyDeployment' }}"
     _eg_image: >-
       {{ {_eg_workload: {'container': {'image': gateway_platform.envoy_proxy_image}}}
@@ -227,10 +246,10 @@
       metadata:
         name: eg-proxy-config
         namespace: "{{ _eg_proxy_config_namespace }}"
-      spec:
-        provider:
-          type: Kubernetes
-          kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"
+      spec: >-
+        {{ {'provider': {'type': 'Kubernetes',
+                         'kubernetes': _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true)}}
+           | combine({'routingType': 'Service'} if _eg_sidecar | bool else {}) }}
 
 - name: "envoy_gateway | Create GatewayClass"
   kubernetes.core.k8s:

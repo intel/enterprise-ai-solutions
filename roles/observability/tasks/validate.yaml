@@ -177,7 +177,7 @@
         api_version: "{{ _r.api_version }}"
         kind: "{{ _r.kind }}"
         name: "{{ _r.name }}"
-        namespace: "{{ observability_namespace }}"
+        namespace: "{{ _r.namespace | default(observability_namespace) }}"
       register: _obs_os_instances
       loop: "{{ observability_openshift_instances }}"
       loop_control:
@@ -192,7 +192,7 @@
           - >-
             ((item.resources | first).status | default({})).conditions | default([])
             | selectattr('type', 'equalto', _r.condition) | selectattr('status', 'equalto', 'True') | list | length > 0
-        fail_msg: "{{ _r.kind }} {{ observability_namespace }}/{{ _r.name }} is not {{ _r.condition }}"
+        fail_msg: "{{ _r.kind }} {{ _r.namespace | default(observability_namespace) }}/{{ _r.name }} is not {{ _r.condition }}"
         success_msg: "{{ _r.kind }} {{ _r.name }} {{ _r.condition }}"
       loop: "{{ _obs_os_instances.results }}"
       loop_control:

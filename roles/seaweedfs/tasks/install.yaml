@@ -29,7 +29,8 @@
       metadata:
         name: "{{ seaweedfs_namespace }}"
 
-# In the observability namespace, observability sets the labels.
+# In the observability namespace, observability sets the labels; with sidecars the
+# namespace joins now, so SeaweedFS's pods start in the mesh.
 - name: "seaweedfs | Label namespace — Istio"
   kubernetes.core.k8s:
     state: present
@@ -38,11 +39,11 @@
       kind: Namespace
       metadata:
         name: "{{ seaweedfs_namespace }}"
-        labels:
-          istio.io/dataplane-mode: "ambient"
+        labels: "{{ istio_namespace_labels }}"
   when:
     - istio_enabled | default(false) | bool
     - seaweedfs_namespace != (observability_namespace | default('monitoring'))
+      or istio_dataplane_mode | default('ambient') == 'sidecar'
 
 - name: "seaweedfs | Bootstrap credentials"
   ansible.builtin.include_tasks: credentials.yaml

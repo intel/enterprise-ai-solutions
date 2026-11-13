@@ -20,7 +20,8 @@
 
 - name: "gateway | backend ingress | {{ gateway_backend_namespace }}/{{ gateway_backend_policy_name }}"
   vars:
-    _mesh: "{{ istio_enabled | default(false) | bool }}"
+    # Sidecars take mesh traffic on the service ports themselves; only ambient needs more.
+    _mesh: "{{ istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'ambient' }}"
     _ports: >-
       {%- set out = [] -%}
       {%- for p in gateway_backend_ports + ([15008] if _mesh | bool else []) -%}

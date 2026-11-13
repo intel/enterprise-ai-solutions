@@ -7,6 +7,12 @@ metadata:
 spec:
   instances: {{ postgresql_instances }}
   imageName: {{ postgresql_image }}
+{% if istio_enabled | default(false) | bool and istio_pod_annotations | default({}) | length > 0 %}
+  # The initdb Job's pod ends only when its sidecar does: native sidecars do.
+  inheritedMetadata:
+    annotations:
+{{ istio_pod_annotations | to_nice_yaml(indent=2) | indent(6, True) }}
+{% endif %}
 
   bootstrap:
     initdb:

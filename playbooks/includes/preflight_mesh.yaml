@@ -1,0 +1,96 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Preflight | Detect how namespaces join the mesh
+# =============================================================================
+# The mesh follows the platform, nothing to configure:
+#   kubernetes  the istio component runs an ambient mesh
+#   openshift   the cluster's Service Mesh 3. Its ambient mode needs a cluster-wide
+#               network change (routingViaHost) under OVN-Kubernetes, so pods join
+#               with sidecars, injected by the revision the cluster runs
+#
+# Published facts (repo-wide, no prefix), empty when istio_enabled is false:
+#   istio_dataplane_mode    ambient | sidecar
+#   istio_namespace_labels  labels that put a namespace in the mesh
+#   istio_pod_annotations   annotations for pods that need the network before their
+#                           containers run (Jobs, network-needing init containers):
+#                           the sidecar starts first and a Job ends with its pod
+#
+# Set istio_revision to pick one revision when the cluster runs several.
+# =============================================================================
+
+- name: "Preflight - Mesh: the mode is not a setting"
+  ansible.builtin.fail:
+    msg: >-
+      istio_dataplane_mode is {{ istio_dataplane_mode }} in the env, but on {{ cluster_distribution }}
+      the mesh mode is {{ _mesh_mode }}. Remove it from env/<env>/global_config.yaml.
+  vars:
+    _mesh_mode: "{{ 'sidecar' if cluster_distribution == 'openshift' else 'ambient' }}"
+  when:
+    - istio_dataplane_mode is defined
+    - istio_dataplane_mode != _mesh_mode
+
+- name: "Preflight - Mesh: ambient"
+  ansible.builtin.set_fact:
+    istio_dataplane_mode: ambient
+    istio_namespace_labels: {istio.io/dataplane-mode: ambient}
+    istio_pod_annotations: {}
+  when: cluster_distribution != 'openshift'
+
+- name: "Preflight - Mesh: sidecars from the cluster's Service Mesh"
+  when: cluster_distribution == 'openshift'
+  block:
+    # The default revision (an Istio named default with the InPlace strategy, or an
+    # IstioRevisionTag named default) serves istio-injection=enabled; any other
+    # revision is picked by istio.io/rev.
+    - name: "Preflight - Mesh: read the cluster's Istio revisions"
+      kubernetes.core.k8s_info:
+        api_version: sailoperator.io/v1
+        kind: "{{ item }}"
+      loop: [Istio, IstioRevisionTag]
+      register: _mesh_revisions
+      failed_when: false
+
+    - name: "Preflight - Mesh: injection label"
+      vars:
+        _istios: "{{ _mesh_revisions.results[0].resources | default([]) }}"
+        _tags: "{{ _mesh_revisions.results[1].resources | default([]) | map(attribute='metadata.name') | list }}"
+        _active: "{{ _istios | map(attribute='status') | map('default', {}) | selectattr('activeRevisionName', 'defined')
+                     | map(attribute='activeRevisionName') | list }}"
+        _revision: >-
+          {{ istio_revision | default('') if istio_revision | default('') | length > 0
+             else ('default' if 'default' in _tags or 'default' in _active
+                   else (_active | first if _active | length == 1 else '')) }}
+      ansible.builtin.set_fact:
+        istio_dataplane_mode: sidecar
+        istio_namespace_labels: >-
+          {{ {'istio-injection': 'enabled'} if _revision == 'default' else {'istio.io/rev': _revision} }}
+        istio_pod_annotations: {sidecar.istio.io/nativeSidecar: "true"}
+        _mesh_revision: "{{ _revision }}"
+        _mesh_active: "{{ _active }}"
+
+    # Without a revision the labels would enrol nothing. The prerequisite check
+    # reports a missing Service Mesh; this is the case of several revisions.
+    - name: "Preflight - Mesh: one revision to join"
+      ansible.builtin.fail:
+        msg: >-
+          The cluster runs the Istio revisions {{ _mesh_active | join(', ') }} and none is the
+          default. Set istio_revision in env/<env>/global_config.yaml to the one to join,
+          or istio_enabled: false to keep the namespaces out of the mesh.
+      when:
+        - _mesh_revision | length == 0
+        - _mesh_active | length > 1
+        - istio_enabled | default(true) | bool
+
+- name: "Preflight - Mesh: off"
+  ansible.builtin.set_fact:
+    istio_namespace_labels: {}
+    istio_pod_annotations: {}
+  when: not (istio_enabled | default(true) | bool)
+
+- name: "Preflight - Mesh"
+  ansible.builtin.debug:
+    msg: >-
+      {{ istio_dataplane_mode }} mode, namespaces labelled {{ istio_namespace_labels | to_json }}
+  when: istio_enabled | default(true) | bool

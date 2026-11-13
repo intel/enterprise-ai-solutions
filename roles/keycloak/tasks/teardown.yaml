@@ -30,6 +30,16 @@
         namespace: "{{ keycloak_namespace }}"
         state: absent
 
+    # The realm goes with the instance's database; where the namespace stays (the
+    # admin's, with _keycloak_from_olm) the marker would skip the next import.
+    - name: "keycloak | Delete the platform realm's import marker"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ keycloak_platform_realm }}-realm-imported"
+        namespace: "{{ keycloak_namespace }}"
+        state: absent
+
     # With _keycloak_from_olm the operator, its CRDs and the namespace come from the
     # admin's RHBK Subscription (OperatorHub) and stay.
     - name: "keycloak | Operator, CRDs and namespace"

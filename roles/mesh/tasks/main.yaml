@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# Mesh — the namespaces an env put in a mesh it does not run
+# =============================================================================
+# istio_namespace_labels and istio_dataplane_mode come from preflight.
+# run_component.yaml takes snapshot.yaml before a component, this file after its
+# install, teardown.yaml after its teardown. In sidecar mode both also reconcile
+# the gateway hostnames (mesh_edge).
+
+- name: "mesh | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_tasks: vars.yaml
+
+- name: "mesh | Namespaces {{ env_name | default('local') }} put in the mesh"
+  when: _mesh_active | bool
+  mesh_k8s:
+    env: "{{ env_name | default('local') }}"
+    layer: "{{ component.layer | default('unknown') }}"
+    component: "{{ component.name }}"
+    label_prefix: "{{ ownership_label_prefix | default('ai-solutions.intel.com') }}"
+    mesh_labels: "{{ istio_namespace_labels }}"
+    mtls: "{{ _mesh_per_namespace_mtls | default(false) | bool }}"
+    mode: "{{ mesh_mtls_mode }}"
+    monitors: "{{ mesh_open_scraped_ports | bool }}"
+    enroll: "{{ istio_dataplane_mode == 'sidecar' }}"
+    before: "{{ _mesh_before if _mesh_before | default(none) is mapping else omit }}"
+  register: _mesh
+
+- name: "mesh | PeerAuthentications {{ component.name }} added"
+  when: _mesh.policies | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _mesh.policies }}"
+
+- name: "mesh | Scraped ports not resolved yet (no pod to read the port name from)"
+  when: _mesh.unresolved | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _mesh.unresolved }}"
+
+- name: "mesh | Restarted for a sidecar (their pods started before the namespace joined the mesh)"
+  when: _mesh.restarted | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _mesh.restarted }}"
+
+- name: "mesh | Pods without a sidecar that are not ours to restart"
+  when: _mesh.not_enrolled | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _mesh.not_enrolled }}"
+
+- name: "mesh | The gateway's hostnames, for its sidecar"
+  when: _mesh_active | bool and istio_dataplane_mode == 'sidecar'
+  mesh_edge:
+    env: "{{ env_name | default('local') }}"
+    gateway: "{{ mesh_edge_gateway }}"
+    gateway_namespace: "{{ mesh_edge_gateway_namespace }}"
+    label_prefix: "{{ ownership_label_prefix | default('ai-solutions.intel.com') }}"
+  register: _mesh_edge
+
+- name: "mesh | Gateway hostnames changed"
+  when: _mesh_edge.changed | default(false)
+  ansible.builtin.debug:
+    msg: "{{ _mesh_edge.changes }}"
+
+- name: "mesh | Gateway hostnames left alone (same name, not ours)"
+  when: _mesh_edge.foreign | default([]) | length > 0
+  ansible.builtin.debug:
+    msg: "{{ _mesh_edge.foreign }}"

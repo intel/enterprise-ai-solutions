@@ -47,9 +47,32 @@
 
 # =============================================================================
 # 1. Logs: LokiStack + our own ClusterLogForwarder
-#    A ClusterLogForwarder in our namespace, with its own service account, leaves
-#    any forwarding the admin set up untouched.
+#    A ClusterLogForwarder in our own namespace, with its own service account,
+#    leaves any forwarding the admin set up untouched. That namespace is not in
+#    the mesh (observability_openshift_log_collector_namespace), so the Loki
+#    gateway takes the collector's TLS on its port without mutual TLS.
 # =============================================================================
+
+# Before the LokiStack, so it is the oldest policy on the gateway pods: Istio
+# applies that one, and the mesh role adds the ports Prometheus scrapes to it.
+- name: "observability | olm | Let the log collector reach the Loki gateway"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: allow-log-collector
+        namespace: "{{ observability_namespace }}"
+      spec:
+        selector:
+          matchLabels:
+            app.kubernetes.io/component: lokistack-gateway
+            app.kubernetes.io/instance: logging-loki
+        mtls:
+          mode: STRICT
+        portLevelMtls: "{{ {'8080': {'mode': 'PERMISSIVE'}} }}"
+  when: istio_enabled | default(false) | bool
 
 - name: "observability | olm | LokiStack"
   kubernetes.core.k8s:
@@ -72,6 +95,9 @@
             type: s3
         limits:
           global:
+            ingestion:
+              ingestionRate: "{{ observability_openshift_loki_ingestion_rate | int }}"
+              ingestionBurstSize: "{{ observability_openshift_loki_ingestion_burst | int }}"
             retention:
               days: "{{ (observability_loki_retention_hours | int / 24) | round(0, 'ceil') | int }}"
             # Stream labels the dashboards select on, as on K8s ({k8s_container_name="…"});
@@ -86,6 +112,15 @@
         tenants:
           mode: openshift-logging
 
+- name: "observability | olm | Log collector namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ observability_openshift_log_collector_namespace }}"
+
 - name: "observability | olm | Log collector service account"
   kubernetes.core.k8s:
     state: present
@@ -94,7 +129,7 @@
       kind: ServiceAccount
       metadata:
         name: log-collector
-        namespace: "{{ observability_namespace }}"
+        namespace: "{{ observability_openshift_log_collector_namespace }}"
 
 # ClusterRoles from the Logging operator: read application logs on the nodes,
 # write them to a LokiStack.
@@ -113,7 +148,7 @@
       subjects:
         - kind: ServiceAccount
           name: log-collector
-          namespace: "{{ observability_namespace }}"
+          namespace: "{{ observability_openshift_log_collector_namespace }}"
   loop:
     - collect-application-logs
     - logging-collector-logs-writer
@@ -133,11 +168,17 @@
       kind: ClusterLogForwarder
       metadata:
         name: platform-logs
-        namespace: "{{ observability_namespace }}"
+        namespace: "{{ observability_openshift_log_collector_namespace }}"
       spec:
         managementState: Managed
         serviceAccount:
           name: log-collector
+        # The operator's defaults but the memory limit. The CPU limit stays: the
+        # collector sizes its threads, and the memory they take, to it.
+        collector:
+          resources:
+            requests: {cpu: 500m, memory: 64Mi}
+            limits: {cpu: "6", memory: "{{ observability_openshift_log_collector_memory_limit }}"}
         inputs: "{{ _obs_os_inputs if _obs_os_custom_input else [] }}"
         outputs:
           - name: lokistack
@@ -404,6 +445,27 @@
                 foldersFromFilesStructure: true
                 path: /tmp/dashboards
 
+# The marketplace grafana-operator runs outside the mesh and calls the instance's
+# API on 3000 to add the datasources and dashboards; the rest of the pod stays
+# STRICT. Before the Grafana, so it is the oldest policy on its pod.
+- name: "observability | olm | Let grafana-operator reach Grafana"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: allow-grafana-operator
+        namespace: "{{ observability_namespace }}"
+      spec:
+        selector:
+          matchLabels:
+            app: "{{ observability_openshift_grafana_name }}"
+        mtls:
+          mode: STRICT
+        portLevelMtls: "{{ {'3000': {'mode': 'PERMISSIVE'}} }}"
+  when: istio_enabled | default(false) | bool
+
 - name: "observability | olm | Grafana"
   vars:
     _obs_os_admin_env:
@@ -585,7 +647,7 @@
     api_version: "{{ _r.api_version }}"
     kind: "{{ _r.kind }}"
     name: "{{ _r.name }}"
-    namespace: "{{ observability_namespace }}"
+    namespace: "{{ _r.namespace | default(observability_namespace) }}"
   register: _obs_os_ready
   until: >-
     (_obs_os_ready.resources | default([])) | length > 0

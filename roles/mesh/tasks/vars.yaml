@@ -1,0 +1,10 @@
+---
+- name: "mesh | Load {{ cluster_distribution }} values"
+  ansible.builtin.include_vars: "{{ role_path }}/vars/{{ cluster_distribution }}.yaml"
+  when: (role_path ~ '/vars/' ~ cluster_distribution ~ '.yaml') is file
+
+# Where the istio component runs the mesh (ambient), its mesh-wide policy covers
+# every namespace: nothing to do per namespace.
+- name: "mesh | Per-namespace work"
+  ansible.builtin.set_fact:
+    _mesh_active: "{{ _mesh_per_namespace_mtls | default(false) | bool or istio_dataplane_mode == 'sidecar' }}"

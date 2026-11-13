@@ -1,0 +1,4 @@
+---
+# The istio component runs the mesh: its mesh-wide PeerAuthentication covers every
+# namespace, and Prometheus is in the mesh.
+_mesh_per_namespace_mtls: false

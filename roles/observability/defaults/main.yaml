@@ -140,11 +140,24 @@ observability_wait_timeout: "600s"
 
 # LokiStack size: 1x.pico is the smallest supported; 1x.demo for test clusters.
 observability_openshift_loki_size: "1x.pico"
+# Per-tenant ingestion limits, MB/s. The size's own (2) refuses the collector's
+# batches of ~4 MB while it catches up with the logs already on a node, and it
+# holds what Loki refuses until it runs out of memory.
+observability_openshift_loki_ingestion_rate: 8
+observability_openshift_loki_ingestion_burst: 16
 # Empty: the cluster's default StorageClass (LokiStack and Tempo need one named).
 observability_openshift_storage_class: ""
 # Namespaces whose logs are collected; empty collects every application namespace
 # (all but openshift-*, kube-* and default), as the K8s collector does.
 observability_openshift_log_namespaces: []
+# The log collector's namespace, kept out of the mesh: the collector runs under
+# logging-scc, which refuses the sidecar's downwardAPI volume, and a
+# ClusterLogForwarder cannot opt its pods out of injection.
+observability_openshift_log_collector_namespace: "{{ observability_namespace }}-logs"
+# The collector's memory. Its first start reads every log already on the node,
+# which takes more than the Logging operator's default limit (2Gi); it dies before
+# it saves where it read up to, and starts over.
+observability_openshift_log_collector_memory_limit: "4Gi"
 observability_openshift_tempo_wal_size: "10Gi"
 
 observability_openshift_thanos_url: "https://thanos-querier.openshift-monitoring.svc.cluster.local:9091"
@@ -159,7 +172,8 @@ observability_openshift_sidecar_image: "quay.io/kiwigrid/k8s-sidecar:2.7.3"
 # ready: the object whose condition shows the instance is up, if not the instance.
 observability_openshift_instances:
   - {api_version: loki.grafana.com/v1, kind: LokiStack, name: logging-loki, condition: Ready}
-  - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready}
+  - {api_version: observability.openshift.io/v1, kind: ClusterLogForwarder, name: platform-logs, condition: Ready,
+     namespace: "{{ observability_openshift_log_collector_namespace }}"}
   - {api_version: tempo.grafana.com/v1alpha1, kind: TempoMonolithic, name: tempo, condition: Ready}
   - api_version: opentelemetry.io/v1beta1
     kind: OpenTelemetryCollector
