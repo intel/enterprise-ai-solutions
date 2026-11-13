@@ -3,7 +3,7 @@
 # NRI CPU Balloons — Advanced: generate per-TP balloon types
 # =============================================================================
 # Discovers each node's NUMA/HT topology and generates vLLM per-TP balloon
-# types (vllm-balloon-tp{1,2,4,8}, auto-capped by NUMA count).
+# types (model-balloon-tp{1,2,4,8}, auto-capped by NUMA count).
 #
 # SECURITY / FOOTPRINT (revised approach, replaces the old ubuntu:22.04 +
 # root + apt-get optimizer):
@@ -418,9 +418,9 @@
 - name: "nri_cpu_balloons | advanced | Validate generated output"
   ansible.builtin.assert:
     that:
-      - "'vllm-balloon-tp1' in _gen_balloons.stdout"
+      - "'model-balloon-tp1' in _gen_balloons.stdout"
     fail_msg: >-
-      gen-balloon-types.py did not emit a vllm-balloon-tp1 entry. Output:
+      gen-balloon-types.py did not emit a model-balloon-tp1 entry. Output:
       {{ _gen_balloons.stdout[:400] }}
 
 - name: "nri_cpu_balloons | advanced | Export balloon types fact"

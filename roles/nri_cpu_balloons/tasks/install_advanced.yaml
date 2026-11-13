@@ -5,7 +5,7 @@
 # Multi-model, topology-aware policy generation:
 #   1. Ensure a "node-topology-optimizer" pod is running (kube-system).
 #   2. Run gen-balloon-types.py against live NUMA topology to produce
-#      vllm-balloon-tp{1,2,4,8} balloon types (auto-capped by NUMA count).
+#      model-balloon-tp{1,2,4,8} balloon types (auto-capped by NUMA count).
 #   3. Compute a NUMA-balanced reserved cpuset sized by the configured
 #      `nri_deployment_profile` (unless operator already supplied
 #      `nri_reserved_cpu_list`).
@@ -242,7 +242,7 @@
 # above already created the `default` CR as a safety net for any node we have
 # not discovered. Now overlay a `node.<NAME>` CR per worker node, each carrying
 # reservedResources + balloonTypes sized to that node's own NUMA layout (so a
-# 2-NUMA node never advertises vllm-balloon-tp4 etc.).
+# 2-NUMA node never advertises model-balloon-tp4 etc.).
 # -----------------------------------------------------------------------------
 - name: "nri_cpu_balloons | Wait for BalloonsPolicy CRD"
   kubernetes.core.k8s_info:
@@ -454,9 +454,9 @@
           nri_actual_reserved_count: "{{ _nri_actual_reserved_count }}"
           nri_reserved_cpu_list: "{{ _nri_reserved_cpu_list }}"
           nri_deployment_profile: "{{ nri_deployment_profile }}"
-          # Hint for model_manager: produce vllm-balloon-tp<N> annotations.
+          # Hint for model_manager: produce model-balloon-tp<N> annotations.
           cpu_balloon_annotation_template:
-            "{{ nri_cpu_balloon_annotation_key }}": "vllm-balloon-tp{TP}"
+            "{{ nri_cpu_balloon_annotation_key }}": "model-balloon-tp{TP}"
         aggregate: false
 
     - name: "nri_cpu_balloons | Final summary"
@@ -470,10 +470,10 @@
           - "Reserved cpuset:   {{ _nri_reserved_cpu_list }} ({{ _nri_actual_reserved_count }} CPUs)"
           - "Deployment profile: {{ nri_deployment_profile }}"
           - "Max TP size:       {{ _nri_max_tp_size }}"
-          - "Balloon types:     vllm-balloon-tp1{% if (_nri_max_tp_size | int) >= 2 %}, -tp2{% endif %}{% if (_nri_max_tp_size | int) >= 4 %}, -tp4{% endif %}{% if (_nri_max_tp_size | int) >= 8 %}, -tp8{% endif %}"
+          - "Balloon types:     model-balloon-tp1{% if (_nri_max_tp_size | int) >= 2 %}, -tp2{% endif %}{% if (_nri_max_tp_size | int) >= 4 %}, -tp4{% endif %}{% if (_nri_max_tp_size | int) >= 8 %}, -tp8{% endif %}"
           - ""
           - "Pods should be annotated with:"
-          - "  {{ nri_cpu_balloon_annotation_key }}: vllm-balloon-tp<N>"
+          - "  {{ nri_cpu_balloon_annotation_key }}: model-balloon-tp<N>"
           - "================================================================="
 
 - name: "nri_cpu_balloons | Clean up tmp dir"
