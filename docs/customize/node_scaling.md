@@ -198,7 +198,7 @@ Neither action rolls back. What was done stays done; re-running is the recovery 
 |---|---|---|
 | `add-node` pre-flight | Nothing installed on the node | Fix the cause, re-run `add-node` |
 | `add-node` `scale.yml` | Packages/containerd/kubelet partly installed | Re-run `add-node` (`scale.yml` is safe to repeat) |
-| `add-node` post phase | Node joined, still tainted `add-node-pending` — nothing schedules there | Re-run `add-node`; it resumes the post phase |
+| `add-node` post phase | Node joined, still tainted `add-node-pending` — nothing schedules there | Re-run `add-node`; it runs `scale.yml` again for the tainted node, then the post phase |
 | `remove-node` checks | Nothing changed | Fix the cause, re-run |
 | `remove-node` drain | Node left cordoned | Re-run `remove-node`, or `kubectl uncordon <node>` to keep it |
 | `remove-node` reset / post phase | Node partly reset, or removed but still in the inventory | Re-run `remove-node` (`--node-lost` if unreachable) |

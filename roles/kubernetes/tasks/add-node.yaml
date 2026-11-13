@@ -14,7 +14,6 @@
   ansible.builtin.set_fact:
     _added_nodes_list: "{{ _added_nodes | default('') | split(',') | reject('equalto', '') | list }}"
 
-
 # =====================================================================
 # PHASE: post — finishing steps for the newly added node(s)
 # =====================================================================
@@ -80,7 +79,7 @@
           It keeps the {{ _add_node_pending_taint }} taint, so no workload lands on it.
           Check those pods (kubectl describe pod -n kube-system); a large node can need a higher
           calico_node_memory_limit in env/{{ env_name | default('ENV') }}/kubespray_extra.yml.
-          Then re-run add-node, which resumes here.
+          Then re-run add-node: it runs scale.yml again for the node, then this phase.
       loop: "{{ _add_node_ds_pods.results }}"
       loop_control:
         label: "{{ item.item }}"
@@ -101,8 +100,7 @@
         - (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons'
         - (kubernetes_accelerator | default('cpu')) == 'cpu'
 
-    # Last: if anything above failed, the node keeps the taint and re-running
-    # add-node resumes the post phase.
+    # Last: if anything above failed, the node keeps the taint.
     - name: "kubernetes | add-node | Lift add-node pending taint"
       kubernetes.core.k8s_taint:
         state: absent
