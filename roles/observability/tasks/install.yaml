@@ -64,107 +64,30 @@
           istio.io/dataplane-mode: "ambient"
   when: istio_enabled | default(false) | bool
 
-# Under mesh-wide STRICT the host-network apiserver reaches these over plaintext:
-# the prometheus-operator admission webhook (10250) and the prometheus-adapter
-# aggregated API (6443). Open only those ports; the rest of each pod stays STRICT.
-- name: "observability | Allow apiserver to reach operator webhook + metrics adapter (port-level mTLS)"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: security.istio.io/v1
-      kind: PeerAuthentication
-      metadata:
-        name: "{{ item.name }}"
-        namespace: "{{ observability_namespace }}"
-      spec:
-        selector:
-          matchLabels: "{{ item.selector }}"
-        mtls:
-          mode: STRICT
-        portLevelMtls: "{{ {(item.port | string): {'mode': 'PERMISSIVE'}} }}"
-  loop:
-    - name: allow-webhook-operator
-      selector: {app: kube-prometheus-stack-operator}
-      port: 10250
-    - name: allow-metrics-adapter
-      selector: {app.kubernetes.io/name: prometheus-adapter}
-      port: 6443
-  loop_control:
-    label: "{{ item.name }}:{{ item.port }}"
-  when: istio_enabled | default(false) | bool
-
-# The PERMISSIVE exception above is a mesh-edge bridge: it lets *any* plaintext peer
-# reach the operator on 10250, and mTLS mode alone cannot tell callers apart. Only two
-# clients are legitimate — the host-network apiserver (plaintext, so identifiable only
-# by node IP) and Prometheus scraping /metrics over mTLS. An ALLOW policy turns the
-# workload deny-by-default, closing 10250 to every other pod in the mesh.
-- name: "observability | Read node internal IPs (apiserver webhook source)"
-  kubernetes.core.k8s_info:
-    kind: Node
-  register: _obs_nodes
-  when: istio_enabled | default(false) | bool
-
-- name: "observability | Collect node internal IPs"
-  ansible.builtin.set_fact:
-    _obs_node_ips: >-
-      {{ _obs_nodes.resources | map(attribute='status.addresses') | flatten
-         | selectattr('type', 'eq', 'InternalIP') | map(attribute='address')
-         | unique | list }}
-  when: istio_enabled | default(false) | bool
-
-# The node addresses are a snapshot taken at this moment. A node joining, or being
-# replaced with a different address, leaves the policy naming an address that no
-# longer serves the apiserver, and the webhook calls are then rejected. That failure
-# is silent: the admission webhook is registered failurePolicy: Ignore, so the
-# apiserver admits the object anyway and validation is skipped rather than reported.
-# Re-running this role refreshes the addresses, which is the remedy.
-- name: "observability | Restrict the mesh-edge ports to the apiserver and Prometheus"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: security.istio.io/v1
-      kind: AuthorizationPolicy
-      metadata:
-        name: "{{ item.name }}"
-        namespace: "{{ observability_namespace }}"
-      spec:
-        selector:
-          matchLabels: "{{ item.selector }}"
-        action: ALLOW
-        rules: "{{ item.rules }}"
-  loop:
-    # The operator's webhook and its /metrics both listen on 10250, so one port has two
-    # legitimate callers: the apiserver and Prometheus.
-    - name: authz-webhook-operator
-      selector: {app: kube-prometheus-stack-operator}
-      rules:
-        - from:
-            - source:
-                ipBlocks: "{{ _obs_node_ips }}"      # the apiserver, plaintext from the host network
-          to:
-            - operation:
-                ports: ["10250"]
-        - from:
-            - source:
-                principals:                          # Prometheus scraping /metrics over mTLS
-                  - "cluster.local/ns/{{ observability_namespace }}/sa/kube-prometheus-stack-prometheus"
-          to:
-            - operation:
-                ports: ["10250"]
-    # The adapter serves the aggregated metrics API to the apiserver on 6443 and is reached
-    # by nothing else in the mesh, so the apiserver is its only caller. Without this the
-    # PERMISSIVE exception on 6443 stays open to every peer in the mesh.
-    - name: authz-metrics-adapter
-      selector: {app.kubernetes.io/name: prometheus-adapter}
-      rules:
-        - from:
-            - source:
-                ipBlocks: "{{ _obs_node_ips }}"
-          to:
-            - operation:
-                ports: ["6443"]
-  loop_control:
-    label: "{{ item.name }}"
+# The apiserver calls the operator's admission webhook (10250) and the adapter's
+# metrics API (6443); Prometheus also scrapes the operator's /metrics on 10250 over
+# mTLS. The webhook is failurePolicy: Ignore, so a blocked call skips validation silently.
+- name: "observability | Mesh exception for the apiserver"
+  ansible.builtin.include_role:
+    name: istio
+    tasks_from: apiserver_exception.yaml
+  vars:
+    istio_apiserver_exception_namespace: "{{ observability_namespace }}"
+    istio_apiserver_exception_workloads:
+      - name: webhook-operator
+        selector: {app: kube-prometheus-stack-operator}
+        port: 10250
+        extra_rules:
+          - from:
+              - source:
+                  principals:
+                    - "cluster.local/ns/{{ observability_namespace }}/sa/kube-prometheus-stack-prometheus"
+            to:
+              - operation:
+                  ports: ["10250"]
+      - name: metrics-adapter
+        selector: {app.kubernetes.io/name: prometheus-adapter}
+        port: 6443
   when: istio_enabled | default(false) | bool
 
 # The policy this replaces carried the same name as the PeerAuthentication above.

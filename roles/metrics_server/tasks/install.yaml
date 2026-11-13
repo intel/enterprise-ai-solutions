@@ -36,55 +36,15 @@
                             'pod-security.kubernetes.io/warn': 'restricted'}
                            if enforce_pss | default(false) | bool else {}) }}
 
-    # The host-network apiserver calls the aggregated API over plaintext: only
-    # 10250 is PERMISSIVE, and only the node addresses may reach it.
     - name: "metrics_server | Mesh exception for the apiserver"
+      ansible.builtin.include_role:
+        name: istio
+        tasks_from: apiserver_exception.yaml
+      vars:
+        istio_apiserver_exception_namespace: "{{ metrics_server_namespace }}"
+        istio_apiserver_exception_workloads:
+          - {name: metrics-server, selector: {app.kubernetes.io/name: metrics-server}, port: 10250}
       when: istio_enabled | default(false) | bool
-      block:
-        - name: "metrics_server | Read node internal IPs"
-          kubernetes.core.k8s_info:
-            kind: Node
-          register: _ms_nodes
-
-        - name: "metrics_server | Allow apiserver plaintext on 10250 (port-level mTLS)"
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: security.istio.io/v1
-              kind: PeerAuthentication
-              metadata:
-                name: allow-metrics-server
-                namespace: "{{ metrics_server_namespace }}"
-              spec:
-                selector:
-                  matchLabels: {app.kubernetes.io/name: metrics-server}
-                mtls:
-                  mode: STRICT
-                portLevelMtls: {"10250": {mode: PERMISSIVE}}
-
-        # Node addresses are a snapshot; re-running the role refreshes them.
-        - name: "metrics_server | Restrict 10250 to the apiserver"
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: security.istio.io/v1
-              kind: AuthorizationPolicy
-              metadata:
-                name: authz-metrics-server
-                namespace: "{{ metrics_server_namespace }}"
-              spec:
-                selector:
-                  matchLabels: {app.kubernetes.io/name: metrics-server}
-                action: ALLOW
-                rules:
-                  - from:
-                      - source:
-                          ipBlocks: >-
-                            {{ _ms_nodes.resources | map(attribute='status.addresses') | flatten
-                               | selectattr('type', 'eq', 'InternalIP') | map(attribute='address') | unique | list }}
-                    to:
-                      - operation:
-                          ports: ["10250"]
 
     - name: "metrics_server | Add Helm repo"
       kubernetes.core.helm_repository:
@@ -120,10 +80,7 @@
         kind: APIService
         name: v1beta1.metrics.k8s.io
       register: _ms_api_ready
-      until:
-        - _ms_api_ready.resources | length > 0
-        - _ms_api_ready.resources[0].status.conditions | default([])
-          | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0
+      until: _ms_api_ready.resources | apiservice_available
       retries: 30
       delay: 10
 

@@ -175,6 +175,13 @@ components:
     # keycloak: Grafana sign-in (observability_grafana_sso).
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 
+  # Event-driven autoscaling (external.metrics.k8s.io); triggers query the platform
+  # Prometheus. On OpenShift the role checks the Custom Metrics Autoscaler instead.
+  - name: keda
+    layer: platform
+    enabled: "{{ keda_enabled | default(false) | bool }}"
+    depends_on: [observability]
+
   # depends_on orders, it does not gate: a disabled observability component
   # does not disable this one, so it is gated on observability_enabled too, and
   # off on OpenShift like nvidia_gpu_operator.

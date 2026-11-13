@@ -19,13 +19,10 @@
 
 - name: "metrics_server | Classify"
   vars:
-    _api: "{{ _ms_api.resources | first | default(none) }}"
-    _available: >-
-      {{ _api is not none and _api.status.conditions | default([])
-         | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length > 0 }}
-    _ours: "{{ (_ms_release.status | default(none)) is not none }}"
+    _state: "{{ _ms_api.resources | apiservice_state(_ms_release.status | default(none)) }}"
   ansible.builtin.set_fact:
-    _ms_ours: "{{ _ours | bool }}"
-    _ms_foreign: "{{ not _ours | bool and _available | bool }}"
-    _ms_stale: "{{ not _ours | bool and _api is not none and not _available | bool }}"
-    _ms_api_service: "{{ (_api.spec.service | default({}, true)) if _api is not none else {} }}"
+    _ms_ours: "{{ _state.ours }}"
+    _ms_foreign: "{{ _state.foreign }}"
+    _ms_stale: "{{ _state.stale }}"
+    _ms_available: "{{ _state.available }}"
+    _ms_api_service: "{{ _state.service }}"

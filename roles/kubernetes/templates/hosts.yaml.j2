@@ -8,9 +8,14 @@ all:
 {% for node in (_nodes_control_plane + _nodes_workers) | unique %}
         {{ node.hostname }}:
             ansible_host: {{ node.ip }}
+{% if node.hostname == 'localhost' or node.ip | string is match('^(127[.]|::1$|localhost$)') %}
+            ansible_connection: local
+            ansible_python_interpreter: "{% raw %}{{ ansible_playbook_python }}{% endraw %}"
+{% else %}
             ansible_user: {{ node.ssh_user | default(_nodes_ssh_user) }}
 {% if node.ssh_key is defined or _nodes_ssh_key | default('') | length > 0 %}
             ansible_ssh_private_key_file: {{ node.ssh_key | default(_nodes_ssh_key) }}
+{% endif %}
 {% endif %}
 {% endfor %}
     children:
@@ -42,9 +47,7 @@ all:
                 kube_node:
             vars:
                 ansible_become: true
-{# site.yaml's play runs with connection: local, and delegate_to alone does
-   not override that: without this, tasks delegated to these nodes silently
-   run on the controller instead. Inventory vars do override it. #}
+                # The playbooks run with connection: local; delegated node tasks need SSH.
                 ansible_connection: ssh
                 ansible_python_interpreter: /usr/bin/python3
         calico_rr:
