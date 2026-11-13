@@ -87,8 +87,9 @@
       {% set mtp = lbl.get('nri.intel.com/max-tp', '-') %}
       {% set numa = lbl.get('nri.intel.com/numa-nodes', '-') %}
       {% set pcpu = lbl.get('nri.intel.com/physical-cpus', '-') %}
+      {% set numacpus = 'yes' if 'nri.intel.com/numa-cpus' in (n.metadata.annotations | default({})) else 'no' %}
       {% if mtp != '-' %}{% set ns.labeled = ns.labeled + 1 %}{% if (mtp | int) > ns.best %}{% set ns.best = mtp | int %}{% endif %}{% else %}{% set ns.unlabeled = ns.unlabeled + 1 %}{% endif %}
-        - {{ '%-40s' | format(n.metadata.name) }}  enabled={{ enabled }}  max-tp={{ mtp }}  numa={{ numa }}  pcpus={{ pcpu }}
+        - {{ '%-40s' | format(n.metadata.name) }}  enabled={{ enabled }}  max-tp={{ mtp }}  numa={{ numa }}  pcpus={{ pcpu }}  numa-cpus={{ numacpus }}
       {% endfor %}
       ------------------------------------------------------------
       labeled nodes : {{ ns.labeled }}

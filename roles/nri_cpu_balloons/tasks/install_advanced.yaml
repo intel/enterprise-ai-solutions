@@ -409,6 +409,8 @@
               nri.intel.com/max-tp: null
               nri.intel.com/numa-nodes: null
               nri.intel.com/physical-cpus: null
+            annotations:
+              nri.intel.com/numa-cpus: null
       loop: >-
         {{ (_nri_labeled_nodes.resources | default([]))
            | rejectattr('metadata.name', 'in', _nri_per_node_topology.keys() | list)
