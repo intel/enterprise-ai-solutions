@@ -1,0 +1,37 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# One report per layer of an upgrade or downgrade run. Parameters, set by the
+# caller (playbooks/includes/run_layer.yaml):
+#   upgrade_record_layer:  layer the report describes
+#   upgrade_report_outcome: complete | halted
+- name: "upgrade_checks | Create the report directory"
+  ansible.builtin.file:
+    path: "{{ upgrade_report_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: "upgrade_checks | Write the {{ upgrade_record_layer }} upgrade report"
+  vars:
+    _now: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+    _forced: "{{ _upgrade_gate.forcedChecks | select('match', upgrade_record_layer ~ '/') | list }}"
+  ansible.builtin.copy:
+    dest: "{{ upgrade_report_dir }}/{{ upgrade_record_layer }}-upgrade-report-{{ _now | regex_replace('[-:]', '') }}.yaml"
+    content: >-
+      {{ {'generatedAt': _now,
+          'environment': env_name | default(env_dir | basename),
+          'layer': upgrade_record_layer,
+          'class': _layer_class[upgrade_record_layer],
+          'sourceVersion': _layer_records.get(upgrade_record_layer, {}).version | default(none),
+          'targetVersion': _layer_release[upgrade_record_layer],
+          'outcome': upgrade_report_outcome,
+          'forced': _forced | length > 0,
+          'forcedChecks': _forced,
+          'checks': _upgrade_gate.checks | selectattr('layer', 'equalto', upgrade_record_layer) | list,
+          'consistency': {'verdict': 'not run'}} | to_nice_yaml(indent=2, sort_keys=false) }}
+    mode: "0644"
+  register: _upgrade_report_file
+
+- name: "upgrade_checks | Show where the {{ upgrade_record_layer }} report is"
+  ansible.builtin.debug:
+    msg: "Upgrade report: {{ _upgrade_report_file.dest }}"

@@ -191,7 +191,8 @@ usage() {
                            rewrites your configs, only reports what changed.
     --only                 skip dep auto-pull; run target alone
     --force                skip the confirmation prompt (required in CI, where there
-                           is no terminal to answer it)
+                           is no terminal to answer it); on install, also run past
+                           a refusing upgrade check, recorded as forced
     --skip <names>         comma-separated layers or components to leave out of the
                            plan, e.g. --skip erag to tear down the cluster without
                            uninstalling it first
@@ -2039,6 +2040,7 @@ main() {
         -e "kubespray_custom_inventory=${INVENTORY}"
         -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}"
     )
+    [[ "$ACTION" == "install" && "$FORCE" == "true" ]] && vars+=(-e "_upgrade_force=true")
     # Solution configs, in the order the provisioning record lists them (dependencies
     # first, so a layer's own config wins over its deps'). Collected before the loop:
     # solution_configs errors on a config the record names but that is gone, and inside

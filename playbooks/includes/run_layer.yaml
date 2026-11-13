@@ -1,0 +1,77 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Runs one layer's components between the writes of its deployment record
+# (roles/upgrade_checks/tasks/record.yaml). The record describes the layer, so
+# only a run that holds the layer's full component list writes it; an upgrade
+# or downgrade run also leaves one report per layer.
+- name: "Decide what the {{ layer }} run records"
+  ansible.builtin.set_fact:
+    _layer_recorded: >-
+      {{ _record_cluster | default(false) and component_action in ['install', 'teardown']
+         and components | resolve_components(layers, target=layer, action=component_action, include_deps=false)
+                        | map(attribute='name') | layer_fully_planned(_active_components | map(attribute='name')) }}
+    _layer_reported: "{{ component_action == 'install' and _layer_class[layer] | default('') | report_due }}"
+    _layer_outcome: complete
+    _running_component: null
+
+- name: "Record the {{ layer }} {{ component_action }} start"
+  ansible.builtin.include_role:
+    name: upgrade_checks
+    tasks_from: record.yaml
+  vars:
+    upgrade_record_layer: "{{ layer }}"
+    upgrade_record_status: "{{ 'deleting' if component_action == 'teardown' else 'in-progress' }}"
+  when: _layer_recorded
+
+- name: "Execute {{ layer }} components"
+  block:
+    - name: "Execute components"
+      ansible.builtin.include_tasks: run_component.yaml
+      loop: "{{ _active_components | selectattr('layer', 'equalto', layer) | list }}"
+      loop_control:
+        label: "{{ component.name }}"
+        loop_var: component
+
+    # A failure from here on is the layer's own step, not a component's.
+    - name: "Note that no {{ layer }} component is running"
+      ansible.builtin.set_fact:
+        _running_component: null
+
+    - name: "Record the {{ layer }} {{ component_action }} end"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: record.yaml
+      vars:
+        upgrade_record_layer: "{{ layer }}"
+        upgrade_record_status: "{{ 'absent' if component_action == 'teardown' else 'complete' }}"
+      when: _layer_recorded
+
+  # A failed teardown keeps its deleting record, so a later install sees it.
+  rescue:
+    - name: "Note the {{ layer }} run as halted"
+      ansible.builtin.set_fact:
+        _layer_outcome: halted
+
+    - name: "Record {{ layer }} as halted"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: record.yaml
+      vars:
+        upgrade_record_layer: "{{ layer }}"
+        upgrade_record_status: halted
+      when: _layer_recorded and component_action == 'install'
+
+    - name: "Stop after the {{ layer }} failure"
+      ansible.builtin.fail:
+        msg: "{{ layer }} {{ component_action }} failed in {{ _running_component or 'its deployment record write' }}; the failing task is reported above."
+
+  always:
+    - name: "Report the {{ layer }} run"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: report.yaml
+      vars:
+        upgrade_record_layer: "{{ layer }}"
+        upgrade_report_outcome: "{{ _layer_outcome }}"
+      when: _layer_reported
