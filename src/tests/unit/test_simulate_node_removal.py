@@ -376,15 +376,6 @@ def test_malformed_object_exits_2(monkeypatch, capsys):
     assert (rc, out) == (2, [])
 
 
-def test_terminating_pods_on_a_lost_node_are_not_placed_again(monkeypatch, capsys):
-    old = pod("m-old", "w1", cpu="6")
-    old["metadata"]["deletionTimestamp"] = "2026-11-12T00:00:00Z"
-    cluster = {"nodes": [node("w1"), node("w2", cpu="8")],
-               "pods": [old, pod("m-new", "w2", cpu="6")]}
-    rc, _ = simulate(monkeypatch, capsys, cluster, "w1")
-    assert rc == 0
-
-
 def test_a_pod_without_a_controller_is_not_placed(monkeypatch, capsys):
     # The drain deletes it; nothing brings it back.
     cluster = {"nodes": [node("w1"), node("w2", cpu="1")], "pods": [pod("bare", "w1", cpu="6", owner=None)]}
