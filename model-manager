@@ -118,4 +118,21 @@ if [[ -f "${ENV_DIR}/models.yaml" ]]; then
     export MM_CONFIG="${MM_CONFIG:-${ENV_DIR}/models.yaml}"
 fi
 
+rack_scale_gpu_vendor() {
+    local flags="${ENV_DIR}/inventory/metadata/rack-scale-flags.env" enabled
+    [[ -f "$flags" ]] && command -v yq &>/dev/null || return 0
+    enabled="$(yq -r '.rack_scale_enabled // false' "${ENV_DIR}/global_config.yaml" 2>/dev/null)"
+    case "${enabled,,}" in
+        true|yes|on|1) sed -n '/^rack_scale_gpu_vendor=/{s///;s/[[:space:]].*//;p;q}' "$flags" ;;
+    esac
+}
+
+# GPU runtimes deploy only with the resource the GPUs advertise. The installer passes it for the models it
+# deploys by the same table (inference roles/llm_services/tasks/accel_resource.yaml): keep the two in step.
+if [[ -z "${MM_ACCEL_RESOURCE:-}" ]]; then
+    case "$(rack_scale_gpu_vendor)" in
+        nvidia) export MM_ACCEL_RESOURCE=nvidia.com/gpu ;;
+    esac
+fi
+
 exec "$MM_REAL" "$@"
