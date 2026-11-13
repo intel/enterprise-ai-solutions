@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # The host that runs the NFS server (_nfs_target) and the address clients
 # mount it at (nfs_server): the nfs_server group, else the first control plane.

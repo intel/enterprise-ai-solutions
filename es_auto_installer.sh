@@ -1569,7 +1569,8 @@ do_add_node() {
     stray=$(_only_in "$live" "$declared")
     [[ -z "$stray" ]] \
         || err "add-node: node(s) in the cluster but not in env/${ENV_NAME}/nodes.yaml: ${stray//$'\n'/, }
-  add-node would drop them from the inventory. Put them back in nodes.yaml, or remove them first with remove-node."
+  add-node would drop them from the inventory. Put them back in nodes.yaml and run add-node; remove them in a
+  separate step with remove-node (one kind of change per edit)."
 
     # Joined but unfinished: the post phase lifts the taint last. scale.yml runs
     # for them again, since it can have failed after the join.
@@ -1666,7 +1667,8 @@ do_remove_node() {
     local unjoined; unjoined=$(_only_in "$declared" "$live")
     [[ -z "$unjoined" ]] \
         || err "remove-node: env/${ENV_NAME}/nodes.yaml lists node(s) that are not in the cluster: ${unjoined//$'\n'/, }
-  The removal would put them in the inventory and the NFS exports. Add them with add-node first, or take them out of nodes.yaml."
+  The removal would put them in the inventory and the NFS exports. Take them out of nodes.yaml and run remove-node;
+  add them in a separate step with add-node (one kind of change per edit)."
 
     if [[ -z "$removed" ]]; then
         # remove-node.yml ran but the post phase did not finish: the node is

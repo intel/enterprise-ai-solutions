@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # Notified by tasks/refresh_exports.yaml when /etc/exports changes. exportfs
 # -ra reloads the export table without restarting nfsd.

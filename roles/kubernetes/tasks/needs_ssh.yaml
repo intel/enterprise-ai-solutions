@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 - name: "kubernetes | Detect SSH requirement from inventory"
   ansible.builtin.set_fact:

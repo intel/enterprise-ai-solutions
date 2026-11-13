@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Kubernetes — add-node (Kubespray scale.yml, worker nodes only)
@@ -120,7 +122,7 @@
 
 - name: "kubernetes | add-node | End role (post phase complete)"
   when: _scale_phase | default('prep') == 'post'
-  meta: end_role
+  ansible.builtin.meta: end_role
 
 # =====================================================================
 # PHASE: prep — regenerate inventory from nodes.yaml
@@ -219,4 +221,4 @@
       es_auto_installer.sh now runs Kubespray scale.yml for the new worker node(s).
 
 - name: "kubernetes | add-node | End role (prep complete — scale.yml runs from caller)"
-  meta: end_role
+  ansible.builtin.meta: end_role

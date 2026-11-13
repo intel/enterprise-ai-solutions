@@ -1,3 +1,5 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Kubernetes — remove-node (Kubespray remove-node.yml)
@@ -43,7 +45,7 @@
 
 - name: "kubernetes | remove-node | End role (post phase complete)"
   when: _scale_phase | default('prep') == 'post'
-  meta: end_role
+  ansible.builtin.meta: end_role
 
 # =====================================================================
 # PHASE: prep — ensure kubespray only, inventory untouched
@@ -59,4 +61,4 @@
       node(s), against the current inventory (unregenerated on purpose).
 
 - name: "kubernetes | remove-node | End role (prep complete — remove-node.yml runs from caller)"
-  meta: end_role
+  ansible.builtin.meta: end_role

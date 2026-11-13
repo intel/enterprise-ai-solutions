@@ -17,6 +17,8 @@ Two CLI actions, both driven entirely from `env/<name>/nodes.yaml` — neither t
 
 The workflow is always: **edit `nodes.yaml`, then run the action**. The installer regenerates the inventory from the edited file and diffs it against the live cluster (`kubectl get nodes`) to figure out which host(s) changed — there is nothing else to specify.
 
+**One kind of change per edit.** `add-node` refuses while `nodes.yaml` is missing a node that is in the cluster, and `remove-node` refuses while it lists a node that has not joined, so an edit that both adds and removes nodes is refused by both. Revert one half, run that command, then reapply the other half and run the other one.
+
 ```bash
 ./es_auto_installer.sh add-node --dry-run     # preview after editing nodes.yaml
 ./es_auto_installer.sh add-node                # scale in the new worker(s)
@@ -197,7 +199,8 @@ Neither action rolls back. What was done stays done; re-running is the recovery 
 | Fails during | State | Recovery |
 |---|---|---|
 | `add-node` pre-flight | Nothing installed on the node | Fix the cause, re-run `add-node` |
-| `add-node` `scale.yml` | Packages/containerd/kubelet partly installed | Re-run `add-node` (`scale.yml` is safe to repeat) |
+| `add-node` `scale.yml`, before the join | Packages/containerd/kubelet partly installed; the node is not in `kubectl get nodes` | Re-run `add-node` (`scale.yml` is safe to repeat) |
+| `add-node` `scale.yml`, after the join wrote `/etc/kubernetes/kubelet.conf` but before the node registered | The node is not in `kubectl get nodes`, and a re-run refuses it as already joined | Run `kubeadm reset -f` on the node, then re-run `add-node` |
 | `add-node` post phase | Node joined, still tainted `add-node-pending` — nothing schedules there | Re-run `add-node`; it runs `scale.yml` again for the tainted node, then the post phase |
 | `remove-node` checks | Nothing changed | Fix the cause, re-run |
 | `remove-node` drain | Node left cordoned | Re-run `remove-node`, or `kubectl uncordon <node>` to keep it |
