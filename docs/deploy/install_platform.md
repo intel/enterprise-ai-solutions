@@ -405,6 +405,12 @@ all:
 
 Most of the time you won't need this — only if there's a double-hop.
 
+**With a double hop, the bastion must still reach the API server** at `https://<control-plane-ip>:6443`: after Kubespray, the installer checks the cluster and applies the node labels from the bastion. If it reaches the nodes only through the extra jump host, Kubespray succeeds over SSH, that check times out, and a re-run sees a live cluster and skips the post-install phase. Forward the API port through the jump host, point `env/local/kubeconfig.yaml` at the forwarded port, and run the post-install phase on its own:
+
+```bash
+./es_auto_installer.sh install --env local kubernetes --only -- -e _kubespray_skip_cluster_yml=true
+```
+
 #### C.3 — Install
 
 ```bash

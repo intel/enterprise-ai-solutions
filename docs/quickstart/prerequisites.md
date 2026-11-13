@@ -37,6 +37,7 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 | Passwordless sudo on installer host | Required | Required |
 | Passwordless SSH from installer host to all nodes | — | Required |
 | Passwordless sudo on all target nodes | — | Required |
+| Installer host reaches the API server at `https://<control-plane-ip>:6443` (not only SSH to the nodes); see [Bastion (Jump Host)](../deploy/install_platform.md#option-c-bastion-jump-host) | — | Required |
 
 ---
 

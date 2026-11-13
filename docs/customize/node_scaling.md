@@ -24,6 +24,10 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 ./es_auto_installer.sh remove-node             # remove the dropped node(s)
 ```
 
+## Before you start
+
+`add-node` and `remove-node` run against the live cluster from the installer host, so it must reach the API server at `https://<control-plane-ip>:6443`, not only the nodes over SSH. Without that access, both stop before Kubespray runs.
+
 ## What's supported
 
 | Scenario | Supported? |
