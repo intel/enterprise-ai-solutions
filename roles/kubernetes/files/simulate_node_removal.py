@@ -94,7 +94,8 @@ def owner_label(pod):
 
 def pod_requests(pod):
     """What the scheduler reserves: the containers plus the sidecars, or an init
-    container plus the sidecars started before it, whichever is larger."""
+    container plus the sidecars started before it, whichever is larger, plus the
+    RuntimeClass overhead (Kata sets one)."""
     def requests(container):
         return {r: parse_quantity(v) for r, v in ((container.get("resources") or {}).get("requests") or {}).items()}
 
@@ -109,7 +110,9 @@ def pod_requests(pod):
     for c in pod["spec"].get("containers") or []:
         for r, v in requests(c).items():
             totals[r] = totals.get(r, 0.0) + v
-    return {r: max(totals.get(r, 0.0), init_peak.get(r, 0.0)) for r in set(totals) | set(init_peak)}
+    overhead = {r: parse_quantity(v) for r, v in (pod["spec"].get("overhead") or {}).items()}
+    return {r: max(totals.get(r, 0.0), init_peak.get(r, 0.0)) + overhead.get(r, 0.0)
+            for r in set(totals) | set(init_peak) | set(overhead)}
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +322,11 @@ def main():
             domains = {node_labels[n][tk] for n in caps if tk in node_labels[n]}
             ns_list = term.get("namespaces") or [pod["metadata"]["namespace"]]
             sel = term.get("labelSelector") or {}
+            # The drain deletes a pod without a controller on the removed nodes:
+            # it takes no domain. One on a remaining node keeps its own.
             matching = [p for p in pods
                         if is_workload_pod(p) and not is_replaced(p)
+                        and (p["metadata"].get("ownerReferences") or p.get("spec", {}).get("nodeName") not in target_nodes)
                         and p["metadata"]["namespace"] in ns_list
                         and selector_matches(p["metadata"].get("labels") or {}, sel)]
             if selector_matches(pod["metadata"].get("labels") or {}, sel):

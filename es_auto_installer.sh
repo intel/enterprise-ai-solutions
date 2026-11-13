@@ -1229,8 +1229,8 @@ run() {
 
 # _kubespray_args <action> [nodes] — the playbook (KS_PB) and its arguments
 # (KS_ARGS, the env's kubespray_extra files KS_EXTRA among them) for <action>:
-# what run_kubespray runs and remove-node --dry-run prints. Booleans go as JSON: a key=value is a string, which ansible-core
-# 2.19 rejects in a conditional.
+# what run_kubespray runs and remove-node --dry-run prints. Booleans go as
+# JSON: a key=value is a string, which ansible-core 2.19 rejects in a conditional.
 _kubespray_args() {
     local action="$1" nodes="${2:-}" ks_dir="${SCRIPT_DIR}/.kubespray"
     KS_PB="$ks_dir/cluster.yml" KS_ARGS=()
@@ -1580,6 +1580,17 @@ do_add_node() {
         exit 0
     fi
 
+    # The storage check (roles/storage/tasks/resolve.yaml) refuses these on
+    # more than one node: every later install, validate and teardown would stop.
+    # Before a resume too: it runs scale.yml again.
+    local backend rwx
+    backend=$(yq -r '.storage_backend // "local-path"' "$GLOBAL_CONFIG" 2>/dev/null | tr -d '[:space:]')
+    rwx=$(yq -r '.storage_custom_rwx' "$GLOBAL_CONFIG" 2>/dev/null)   # not // true: yq's // also replaces false
+    [[ "${backend,,}" != "local-path" ]] \
+        || err "add-node: storage_backend is local-path, which serves a single node. Move the env to nfs or ceph storage first."
+    [[ "${backend,,}" == "custom" && "${rwx,,}" =~ ^(false|no|off|0)$ ]] \
+        && err "add-node: storage_backend is custom with storage_custom_rwx false, which serves a single node. Use a storage class with ReadWriteMany first."
+
     if [[ -n "$added" ]]; then
         # hosts.yaml.j2 runs a loopback control plane locally: a new node cannot reach it there.
         local loopback_cp
@@ -1597,16 +1608,6 @@ do_add_node() {
         [[ -z "$worker_cp" ]] \
             || err "add-node: the control plane (${worker_cp//$'\n'/, }) has no NoSchedule taint, so it is this cluster's worker, and
   adding one under nodes_workers would end that. To keep it a worker, list it under nodes_workers too (an identical entry)."
-
-        # The storage check (roles/storage/tasks/resolve.yaml) refuses these on
-        # more than one node: every later install, validate and teardown would stop.
-        local backend rwx
-        backend=$(yq -r '.storage_backend // "local-path"' "$GLOBAL_CONFIG" 2>/dev/null | tr -d '[:space:]')
-        rwx=$(yq -r '.storage_custom_rwx' "$GLOBAL_CONFIG" 2>/dev/null)   # not // true: yq's // also replaces false
-        [[ "${backend,,}" != "local-path" ]] \
-            || err "add-node: storage_backend is local-path, which serves a single node. Move the env to nfs or ceph storage first."
-        [[ "${backend,,}" == "custom" && "${rwx,,}" =~ ^(false|no|off|0)$ ]] \
-            && err "add-node: storage_backend is custom with storage_custom_rwx false, which serves a single node. Use a storage class with ReadWriteMany first."
 
         local added_cp; added_cp=$(_in_both "$(_nodes_yaml_hostnames control_plane)" "$added")
         [[ -z "$added_cp" ]] \

@@ -2,13 +2,6 @@
 # -*- coding: utf-8 -*-
 # Copyright (C) 2024-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-#
-# Live-cluster smoke tests for the add-node/remove-node CLI actions, in the
-# same style as the rest of src/tests/e2e/platform: they assert against a
-# real cluster reached via --build-config-dir, not mocks.
-#
-# Both tests only exercise --dry-run: they run no Kubespray playbook and
-# mutate nothing, so they're always safe to run against a live cluster.
 
 import os
 import subprocess

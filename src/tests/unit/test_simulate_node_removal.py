@@ -412,6 +412,29 @@ def test_init_container_requests_are_not_added_to_the_containers():
     assert sim.pod_requests(p)["cpu"] == 2.5
 
 
+def test_runtime_class_overhead_is_added_to_the_requests():
+    p = pod("x", "w1", cpu="1", overhead={"cpu": "250m", "memory": "160Mi"})
+    assert sim.pod_requests(p)["cpu"] == 1.25
+    assert sim.pod_requests(p)["memory"] == 2 ** 30 + 160 * 2 ** 20
+
+
+def test_overhead_of_the_moved_pod_counts(monkeypatch, capsys):
+    cluster = {"nodes": [node("w1"), node("w2", cpu="4")], "pods": [pod("p", "w1", cpu="3")]}
+    assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
+    cluster["pods"][0]["spec"]["overhead"] = {"cpu": "1500m"}
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 1 and "0.5 more cpu" in findings(out, "capacity")[0]
+
+
+def test_overhead_of_a_pod_already_on_the_target_counts(monkeypatch, capsys):
+    cluster = {"nodes": [node("w1"), node("w2", cpu="4")],
+               "pods": [pod("p", "w1", cpu="2"), pod("r", "w2", cpu="1", owner=("ReplicaSet", "r"))]}
+    assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
+    cluster["pods"][1]["spec"]["overhead"] = {"cpu": "1500m"}
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 1 and "0.5 more cpu" in findings(out, "capacity")[0]
+
+
 def _avoid(labels):
     return {"affinity": {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [
         {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": labels}}]}}}
@@ -426,3 +449,14 @@ def test_anti_affinity_against_another_app_needs_one_free_node(monkeypatch, caps
     cluster["pods"].append(pod("b-3", "w3", labels={"app": "b"}, owner=("ReplicaSet", "b-rs")))
     rc, out = simulate(monkeypatch, capsys, cluster, "w1")
     assert rc == 1 and "every eligible kubernetes.io/hostname runs a pod it must avoid" in findings(out, "spread")[0]
+
+
+def test_self_anti_affinity_ignores_pods_the_drain_deletes(monkeypatch, capsys):
+    a = {"labels": {"app": "a"}, **_avoid({"app": "a"})}
+    cluster = {"nodes": [node("w1"), node("w2")],
+               "pods": [pod("a-1", "w1", **a), pod("bare", "w1", owner=None, **a)]}
+    assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
+    # A pod without a controller on a remaining node still takes its node.
+    cluster["pods"][1] = pod("bare", "w2", owner=None, **a)
+    rc, out = simulate(monkeypatch, capsys, cluster, "w1")
+    assert rc == 1 and "requires 2 distinct kubernetes.io/hostname" in findings(out, "spread")[0]

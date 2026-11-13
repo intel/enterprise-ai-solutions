@@ -175,10 +175,21 @@ def test_add_node_refuses_a_new_control_plane_node(cluster):
 def test_add_node_resumes_a_node_left_tainted(cluster):
     cluster.declare(["cp1"], ["w1"])
     cluster.live(["cp1", node("w1", taints=[PENDING])])
+    cluster.config(storage_backend="nfs")
     result = cluster.run("do_add_node")
     assert result.returncode == 0, result.stderr
     assert "resuming unfinished node(s)" in result.stdout
     assert "would run: scale.yml --limit=w1,kube_control_plane" in result.stdout
+
+
+def test_add_node_refuses_to_resume_on_single_node_storage(cluster):
+    # The resume runs scale.yml again; refused before it, not after.
+    cluster.declare(["cp1"], ["w1"])
+    cluster.live(["cp1", node("w1", taints=[PENDING])])
+    cluster.config()
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "storage_backend is local-path" in result.stderr
 
 
 def test_add_node_refuses_a_loopback_control_plane(cluster):
