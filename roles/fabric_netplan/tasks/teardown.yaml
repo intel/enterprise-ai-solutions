@@ -15,8 +15,8 @@
          | union(groups['kube_node'] | default([]))
          | unique }}
 
-# netplan apply leaves an address in place once its definition is gone, so read
-# what 99-fabric.yaml assigned before removing it.
+# netplan apply leaves an address on a NIC that no netplan file configures any
+# more, so read what 99-fabric.yaml assigned before removing it.
 - name: "fabric_netplan | teardown | Read fabric netplan on each node"
   ansible.builtin.slurp:
     src: "{{ rack_scale_netplan_dest }}"
@@ -54,45 +54,16 @@
       {%- endfor -%}
       {{ out | unique }}
 
-- name: "fabric_netplan | teardown | Remove 99-fabric.yaml from all nodes"
-  ansible.builtin.file:
-    path: "{{ rack_scale_netplan_dest }}"
-    state: absent
+- name: "fabric_netplan | teardown | Remove the fabric netplan and addresses, then re-apply netplan"
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/remove_fabric_netplan.sh"
+  environment:
+    FABRIC_FILES: "{{ rack_scale_netplan_dest }} {{ rack_scale_netplan_old }}"
+    FABRIC_ADDRESSES: "{% for a in _fabric_addresses if a.node == item %}{{ a.nic }}={{ a.addr }} {% endfor %}"
   delegate_to: "{{ item }}"
   become: true
   loop: "{{ _fabric_all_nodes }}"
   loop_control:
     label: "{{ item }}"
-  register: _netplan_removed
-
-- name: "fabric_netplan | teardown | Remove old 60-fabric.yaml from all nodes"
-  ansible.builtin.file:
-    path: "{{ rack_scale_netplan_old }}"
-    state: absent
-  delegate_to: "{{ item }}"
-  become: true
-  loop: "{{ _fabric_all_nodes }}"
-  loop_control:
-    label: "{{ item }}"
-
-- name: "fabric_netplan | teardown | Re-apply netplan on nodes where config was removed"
-  ansible.builtin.command: netplan apply
-  delegate_to: "{{ item.item }}"
-  become: true
-  loop: "{{ _netplan_removed.results | selectattr('changed') | list }}"
-  loop_control:
-    label: "{{ item.item }}"
-  changed_when: true
-
-# Only the addresses the fabric file assigned: other addresses on the NIC stay.
-# rc 2 means the address is already gone.
-- name: "fabric_netplan | teardown | Remove fabric addresses still on the NICs"
-  ansible.builtin.command: "ip addr del {{ item.addr }} dev {{ item.nic }}"
-  delegate_to: "{{ item.node }}"
-  become: true
-  loop: "{{ _fabric_addresses }}"
-  loop_control:
-    label: "{{ item.node }}: {{ item.addr }} on {{ item.nic }}"
-  register: _addr_removed
-  changed_when: _addr_removed.rc == 0
-  failed_when: _addr_removed.rc not in [0, 2]
+  register: _fabric_netplan_removed
+  changed_when: "'fabric-netplan-changed' in _fabric_netplan_removed.stdout"
