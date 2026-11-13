@@ -18,7 +18,7 @@ The NRI (Node Resource Interface) balloons policy works in two stages:
 
 1. **Declare CPU pools.** The role generates a `BalloonsPolicy` per node
    that defines a set of *balloon types* — per-NUMA + per-TP pools
-   (`vllm-balloon-tp1`, `-tp2`, `-tp4`, plus cross-package combos) sized to
+   (`model-balloon-tp1`, `-tp2`, `-tp4`, plus cross-package combos) sized to
    that node's own NUMA topology — plus one elastic `reserved` pool.
 2. **Pin at runtime.** When a container starts, the plugin assigns it to a
    matching balloon and pins its processes to that balloon's cpuset, so
@@ -34,11 +34,11 @@ than staying fixed to its seed cpuset.
 
 On a node with 2 NUMA domains the role generates:
 
-- `vllm-balloon-tp1` — a single-NUMA balloon; one instance is created per
+- `model-balloon-tp1` — a single-NUMA balloon; one instance is created per
   NUMA **on demand** (a TP=1 model lands entirely on one NUMA).
-- `vllm-balloon-tp2` — a balloon that **spans both NUMA** domains (a TP=2
+- `model-balloon-tp2` — a balloon that **spans both NUMA** domains (a TP=2
   model is split across the two NUMA nodes).
-- `vllm-balloon-tp4` is **not** generated, because TP=4 needs ≥4 NUMA
+- `model-balloon-tp4` is **not** generated, because TP=4 needs ≥4 NUMA
   domains. (TP=8 likewise needs ≥8 NUMA.)
 
 ### 1.2 Why balloons help — two levels of isolation
@@ -48,14 +48,14 @@ Balloons isolate model workloads on two axes:
 - **NUMA-level:** each balloon's cpuset is kept within one NUMA domain (or,
   for multi-NUMA TP balloons, a fixed set of whole NUMA domains), so memory
   stays local to the cores running the model.
-- **Physical-core-level:** model balloon types set `hideHyperthreads: true`,
-  so the balloon reserves **both** SMT siblings of each physical core but
-  runs work on only one — the sibling is held idle. This removes
-  hyperthread contention between co-located workloads.
+- **Physical-core-level:** the SMT siblings of every physical core are put in
+  the `reserved` pool, and model balloon types set `hideHyperthreads: false`,
+  so a balloon gets physical cores only. This removes hyperthread contention
+  between co-located workloads.
 
-Verified live: a TP=1 model pod was pinned to cpuset `132-147` (16 distinct
-physical cores) while their siblings `304-319` were held idle. Note this
-applies only to the `vllm-balloon-tp*` types, not to the `reserved` pool.
+Verified live: a TP=1 model pod requesting 8 CPUs was pinned to cpuset `0-7`
+(8 physical cores) while their siblings `172-179` stayed in the `reserved`
+pool.
 
 ---
 
@@ -238,7 +238,7 @@ POD=$(kubectl -n llm-inference get pod \
 # Which balloon was picked
 kubectl -n llm-inference get $POD -o jsonpath=\
 '{.metadata.annotations.balloon\.balloons\.resource-policy\.nri\.io/container\.main}{"\n"}'
-# Expect: vllm-balloon-tp1  (for TP=1 models in advanced mode)
+# Expect: model-balloon-tp1  (for TP=1 models in advanced mode)
 
 # Which physical CPUs the container is pinned to
 kubectl -n llm-inference exec $POD -c main -- \
@@ -261,7 +261,7 @@ All variables below are **optional** — defaults work out of the box.
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `MM_NRI_PREFLIGHT=warn`   | Pre-flight failures become warnings (deploy proceeds). Default: hard fail.                                |
 | `MM_NRI_SKIP_PREFLIGHT=1` | Skip pre-flight entirely (no log lines). Default: run pre-flight.                                         |
-| `MM_NRI_BALLOON_NAME=…`   | Hard-pin one deploy to a specific balloon (e.g. `vllm-balloon-tp4`). Default: auto-pick by TP.            |
+| `MM_NRI_BALLOON_NAME=…`   | Hard-pin one deploy to a specific balloon (e.g. `model-balloon-tp4`). Default: auto-pick by TP.            |
 | `HF_TOKEN=hf_…`           | Required only for gated Hugging Face models (Llama, etc.).                                                |
 
 Per-model override in `models.yaml`:
@@ -270,9 +270,9 @@ Per-model override in `models.yaml`:
 - name: my-model
   model_id: ...
   cpu: 16
-  nri_balloon: vllm-balloon-tp2     # top-level scalar, or
+  nri_balloon: model-balloon-tp2     # top-level scalar, or
   raw:
-    nri_balloon: vllm-balloon-tp2   # nested form — both work
+    nri_balloon: model-balloon-tp2   # nested form — both work
 ```
 
 ---
@@ -283,7 +283,7 @@ Per-model override in `models.yaml`:
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Deploy aborts with `NRI balloons pre-flight failed`                     | Lower `cpu:` / `tp`, or set `MM_NRI_PREFLIGHT=warn` to override                              |
 | Pod stuck `Pending` with `Insufficient cpu`                             | Balloons exhausted — undeploy something or shrink the model                                  |
-| Workload landed in `reserved` instead of `vllm-balloon-tp*`             | Pod missing the `balloon.balloons.resource-policy.nri.io` annotation                          |
+| Workload landed in `reserved` instead of `model-balloon-tp*`             | Pod missing the `balloon.balloons.resource-policy.nri.io` annotation                          |
 | System pods CPU-throttling (kube-system / cert-manager / metallb / etc.) | Reserved balloon is under-sized — bump `nri_deployment_profile` (e.g. `standard` → `full`) or set `minBalloons: 2` on the `reserved` type (see §3.1) |
 | Need to see which balloon each container got                            | `kubectl -n kube-system logs ds/nri-resource-policy-balloons \| grep "assigning container"` |
 
@@ -297,7 +297,7 @@ design; a few are roadmap items.
 ### Parallelism: TP-only NUMA awareness
 
 - **Only tensor parallelism (TP) is NUMA-aware.** Balloon types are generated
-  per-TP (`vllm-balloon-tp1/-tp2/-tp4/-tp8`) and a model is pinned to a NUMA
+  per-TP (`model-balloon-tp1/-tp2/-tp4/-tp8`) and a model is pinned to a NUMA
   layout chosen from its TP size.
 - **Data parallelism (DP) and pipeline parallelism (PP) are *not*
   NUMA-aware.** There are no DP/PP-specific balloon types. A model that uses
@@ -369,9 +369,10 @@ design; a few are roadmap items.
 - **Node-local only.** NRI balloons never span nodes; a single model instance
   cannot be split across two nodes. "Cluster capacity" is per-node capacity
   plus Kubernetes scheduling.
-- **Hyperthreads are doubled.** With `hideHyperthreads: true`, a model's
-  effective CPU footprint is **2× its `cpu:` request** (the physical core plus
-  its idle SMT sibling). Size requests with this in mind.
+- **A `cpu:` request is physical cores.** The siblings are reserved, so a
+  model's `cpu:` request is the number of physical cores it is pinned to.
+  model-manager places replicas on each node's real NUMA layout, published by
+  this role as the `nri.intel.com/numa-cpus` node annotation.
 - **Explicit cpuset override is homogeneous-only.** `nri_reserved_cpu_list` is
   applied as a fixed cpuset **only** when every node has an identical CPU
   layout. On heterogeneous fleets it is ignored in favour of `count` mode to

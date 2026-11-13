@@ -44,7 +44,7 @@ config:
 {% endif %}
 
   # Route every pod without an explicit balloon annotation to the reserved
-  # CPU pool. Annotation-bound model pods still go to their vllm-balloon-tpN.
+  # CPU pool. Annotation-bound model pods still go to their model-balloon-tpN.
   reservedPoolNamespaces:
     - "*"
     - kube-system

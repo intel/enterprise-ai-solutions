@@ -84,6 +84,8 @@
           nri.intel.com/max-tp: null
           nri.intel.com/numa-nodes: null
           nri.intel.com/physical-cpus: null
+        annotations:
+          nri.intel.com/numa-cpus: null
   loop: "{{ _nri_all_nodes.resources | default([]) }}"
   loop_control:
     label: "{{ item.metadata.name }}"

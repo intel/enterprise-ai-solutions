@@ -17,10 +17,10 @@ output can be included in the "balloonTypes:" list of NRI balloons
 resource policy configuration. Containers are associated with correct
 balloon type with one of the following pod annotations:
 
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp1
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp2
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp4
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp8
+balloon.balloons.resource-policy.nri.io: model-balloon-tp1
+balloon.balloons.resource-policy.nri.io: model-balloon-tp2
+balloon.balloons.resource-policy.nri.io: model-balloon-tp4
+balloon.balloons.resource-policy.nri.io: model-balloon-tp8
 
 Environment variables:
 
@@ -35,7 +35,7 @@ Environment variables:
                 will not be generated unless there are at least 2, 4 or 8 NUMA
                 nodes in the system (or PKG_NODE corresponding to a system).
 
-  BALLOON_NAME  optional, base name for balloon types. The default is "vllm-balloon".
+  BALLOON_NAME  optional, base name for balloon types. The default is "model-balloon".
 
   INDENT        optional, number of spaces to indent each output line.
 
@@ -59,7 +59,7 @@ import os
 import sys
 
 # balloon_name is the base name for -tp1, -tp2 and -tp4 balloon types.
-balloon_name = os.getenv("BALLOON_NAME", "vllm-balloon")
+balloon_name = os.getenv("BALLOON_NAME", "model-balloon")
 
 # tp1_match_label is an optional "key=value" pod label selecting -tp1 pods.
 tp1_match_label = os.getenv("TP1_MATCH_LABEL", "")

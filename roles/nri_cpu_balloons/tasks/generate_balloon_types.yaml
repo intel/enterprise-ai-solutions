@@ -3,7 +3,7 @@
 # NRI CPU Balloons — Advanced: generate per-TP balloon types
 # =============================================================================
 # Discovers each node's NUMA/HT topology and generates vLLM per-TP balloon
-# types (vllm-balloon-tp{1,2,4,8}, auto-capped by NUMA count).
+# types (model-balloon-tp{1,2,4,8}, auto-capped by NUMA count).
 #
 # SECURITY / FOOTPRINT (revised approach, replaces the old ubuntu:22.04 +
 # root + apt-get optimizer):
@@ -284,10 +284,12 @@
       - item.value.logical_cpus | int > 0
       - item.value.threads_per_core | int > 0
       - (item.value.pkgnode | regex_search('^\\{.*\\}$')) is not none
+      - item.value.node_cpus | length == item.value.numa | int
     fail_msg: >-
       Topology probe on node '{{ item.key }}' returned invalid data:
       numa={{ item.value.numa }} logical={{ item.value.logical_cpus }}
       tpc={{ item.value.threads_per_core }} pkgnode='{{ item.value.pkgnode }}'
+      numa_cpulists={{ item.value.node_cpus | length }}
   loop: "{{ _nri_per_node_topology | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
@@ -416,9 +418,9 @@
 - name: "nri_cpu_balloons | advanced | Validate generated output"
   ansible.builtin.assert:
     that:
-      - "'vllm-balloon-tp1' in _gen_balloons.stdout"
+      - "'model-balloon-tp1' in _gen_balloons.stdout"
     fail_msg: >-
-      gen-balloon-types.py did not emit a vllm-balloon-tp1 entry. Output:
+      gen-balloon-types.py did not emit a model-balloon-tp1 entry. Output:
       {{ _gen_balloons.stdout[:400] }}
 
 - name: "nri_cpu_balloons | advanced | Export balloon types fact"
@@ -478,6 +480,9 @@
           nri.intel.com/max-tp: "{{ item.value.max_tp | string }}"
           nri.intel.com/numa-nodes: "{{ item.value.numa | string }}"
           nri.intel.com/physical-cpus: "{{ item.value.physical_cpus | string }}"
+        # Per-NUMA CPU lists from sysfs: model-manager's placement.
+        annotations:
+          nri.intel.com/numa-cpus: "{{ item.value.node_cpus | to_json(sort_keys=True) }}"
   loop: "{{ _nri_per_node_topology | dict2items }}"
   loop_control:
     label: "{{ item.key }} (max_tp={{ item.value.max_tp }})"
