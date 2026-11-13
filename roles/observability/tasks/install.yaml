@@ -190,7 +190,7 @@
       vars:
         keycloak_client:
           id: "{{ observability_grafana_oidc_client_id }}"
-          redirect_uris: ["{{ observability_grafana_url }}/login/generic_oauth", "{{ observability_grafana_url }}/oauth2/callback"]
+          redirect_uris: ["{{ observability_grafana_url }}/login/generic_oauth"]
           post_logout_uris: ["{{ observability_grafana_url }}/login"]
 
     - name: "observability | Grafana client secret"
@@ -230,13 +230,11 @@
         _oidc: "{{ keycloak_client_issuer | default('') }}/protocol/openid-connect"
         _oidc_internal: "{{ keycloak_client_issuer_internal | default('') }}/protocol/openid-connect"
         _ini_sso:
-          auth:
-            # The gateway clears its cookies and ends the Keycloak session.
-            signout_redirect_url: "{{ observability_grafana_url }}/oauth2/logout"
           auth.generic_oauth:
             enabled: true
             name: Keycloak
-            auto_login: true
+            # The login form stays, so the local admin can sign in; Keycloak is a button on it.
+            auto_login: false
             allow_sign_up: true
             client_id: "{{ observability_grafana_oidc_client_id }}"
             scopes: openid profile email
@@ -247,6 +245,8 @@
             api_url: "{{ _oidc_internal }}/userinfo"
             login_attribute_path: preferred_username
             name_attribute_path: name
+            groups_attribute_path: groups
+            allowed_groups: "{{ observability_grafana_allowed_groups | join(',') }}"
             # Re-evaluated at every login, so leaving the group removes admin.
             role_attribute_path: >-
               contains(groups[*], '{{ keycloak_client_admin_group | default('') }}') && 'Admin' || 'Viewer'
@@ -688,7 +688,7 @@
     - _ini['grafana.ini'] is defined
     - (observability_grafana_url ~ '/') not in _ini['grafana.ini']
       or (observability_grafana_sso | bool) != ('[auth.generic_oauth]' in _ini['grafana.ini'])
-      or (observability_grafana_sso | bool and (observability_grafana_url ~ '/oauth2/logout') not in _ini['grafana.ini'])
+      or (observability_grafana_sso | bool and 'auto_login = false' not in _ini['grafana.ini'])
 
 - name: "observability | Publish Grafana"
   ansible.builtin.include_role:
@@ -734,21 +734,8 @@
                 port: 80
   when: observability_gateway_publish | bool
 
-# With Keycloak sign-in nobody reaches Grafana without a realm session; without
-# it Grafana's own login is the only gate. One policy per route: the other is
-# removed first.
-- name: "observability | Remove the other Grafana gateway policy"
-  ansible.builtin.include_role:
-    name: gateway
-    tasks_from: "{{ 'route_auth_exempt.yaml' if observability_grafana_sso | bool else 'route_sso.yaml' }}"
-  vars:
-    gateway_route_name: grafana
-    gateway_route_namespace: "{{ observability_namespace }}"
-    gateway_route_policy_name: "{{ 'grafana-no-auth' if observability_grafana_sso | bool else 'grafana-sso' }}"
-    gateway_route_state: absent
-  when: observability_gateway_publish | bool
-
-- name: "observability | Sign in to Grafana at the gateway"
+# Grafana's login form is the gate; an earlier install signed people in at the gateway instead.
+- name: "observability | Remove the gateway sign-in from Grafana"
   ansible.builtin.include_role:
     name: gateway
     tasks_from: route_sso.yaml
@@ -756,16 +743,10 @@
     gateway_route_name: grafana
     gateway_route_namespace: "{{ observability_namespace }}"
     gateway_route_policy_name: grafana-sso
-    gateway_sso:
-      issuer: "{{ keycloak_client_issuer }}"
-      issuer_internal: "{{ keycloak_client_issuer_internal }}"
-      client_id: "{{ observability_grafana_oidc_client_id }}"
-      client_secret_name: grafana-sso
-      redirect_url: "{{ observability_grafana_url }}/oauth2/callback"
-      allowed_groups: "{{ observability_grafana_allowed_groups }}"
-  when: observability_gateway_publish | bool and observability_grafana_sso | bool
+    gateway_route_state: absent
+  when: observability_gateway_publish | bool
 
-- name: "observability | Bypass gateway auth for Grafana (Keycloak sign-in off)"
+- name: "observability | Bypass gateway auth for Grafana (Grafana has its own login)"
   ansible.builtin.include_role:
     name: gateway
     tasks_from: route_auth_exempt.yaml
@@ -773,7 +754,7 @@
     gateway_route_name: grafana
     gateway_route_namespace: "{{ observability_namespace }}"
     gateway_route_policy_name: grafana-no-auth
-  when: observability_gateway_publish | bool and not (observability_grafana_sso | bool)
+  when: observability_gateway_publish | bool
 
 - name: "observability | Store Grafana admin credentials as a cluster Secret"
   kubernetes.core.k8s:

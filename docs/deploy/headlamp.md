@@ -29,9 +29,15 @@ lands on it).
    app, and admits only the groups the app allows.
 2. The app's own Keycloak sign-in then runs on the same Keycloak session, with
    no second password prompt.
-3. Signing out of Headlamp, Grafana or the LiteLLM admin UI ends the gateway
-   session and the Keycloak session. Signing out of Langfuse ends only its own
+3. Signing out of Headlamp or the LiteLLM admin UI ends the gateway session and
+   the Keycloak session. Signing out of Grafana or Langfuse ends only its own
    session.
+
+Grafana is the exception to step 1: it opens on its own login form. Sign in
+there as its local `admin` (password in Secret `grafana-admin-credentials`,
+namespace `monitoring`), or click **Sign in with Keycloak** for the `platform`
+realm. `observability_grafana_allowed_groups` limits which Keycloak groups
+Grafana admits; empty admits every realm user.
 
 The first administrator is `platform-admin` (group `platform-admins`). Its
 temporary password, which must be changed at first login, is in a Secret:
