@@ -5,6 +5,15 @@
 
 import allure
 import kr8s
+import pytest
+
+from conftest import cfg, is_openshift
+
+pytestmark = pytest.mark.skipif(
+    not cfg.get("metallb_enabled", True) or is_openshift(),
+    reason="MetalLB not installed by the platform (metallb_enabled is false, or OpenShift, "
+           "where the router provides it)"
+)
 
 
 @allure.testcase("IEASG-T673")

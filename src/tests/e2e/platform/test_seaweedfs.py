@@ -5,6 +5,16 @@
 
 import allure
 import kr8s
+import pytest
+
+from conftest import cfg, is_openshift
+
+pytestmark = pytest.mark.skipif(
+    cfg.get("object_store_backend", "seaweedfs") != "seaweedfs"
+    or (is_openshift() and not cfg.get("observability_enabled", True)),
+    reason="the platform's SeaweedFS is not installed (object_store_backend is not seaweedfs, or "
+           "OpenShift without observability, where it has no store to back)"
+)
 
 
 @allure.testcase("IEASG-T682")

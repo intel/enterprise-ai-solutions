@@ -6,6 +6,12 @@
 import allure
 import kr8s
 
+from conftest import is_openshift
+
+# Service Mesh 3 runs the ambient dataplane in its own namespace; upstream Istio
+# keeps it next to istiod.
+ZTUNNEL_NAMESPACE = "ztunnel" if is_openshift() else "istio-system"
+
 
 @allure.testcase("IEASG-T671")
 def test_istiod_available():
@@ -18,7 +24,7 @@ def test_istiod_available():
 
 @allure.testcase("IEASG-T672")
 def test_ztunnel_daemonset_ready():
-    ds = list(kr8s.get("daemonsets", namespace="istio-system",
+    ds = list(kr8s.get("daemonsets", namespace=ZTUNNEL_NAMESPACE,
                        field_selector={"metadata.name": "ztunnel"}))[0]
     assert ds.status.numberReady > 0
     assert ds.status.numberReady == ds.status.desiredNumberScheduled
