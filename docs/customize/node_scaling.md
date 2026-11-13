@@ -30,7 +30,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 |---|---|
 | Installer-managed cluster, no ERAG deployed | Yes |
 | Adding worker node(s) via `add-node` | Yes |
-| A control-plane node that is also a worker (an identical entry under both `nodes_control_plane` and `nodes_workers`) | Yes, as long as it stays in both lists — `add-node`/`remove-node` treat it as control-plane, so changing its role (worker on/off) needs `install kubernetes`, and deleting it from both lists is a control-plane removal (refused) |
+| A control-plane node that is also a worker (an identical entry under both `nodes_control_plane` and `nodes_workers`) | Yes, as long as it stays in both lists — `add-node`/`remove-node` treat it as control-plane: changing its role (worker on/off) is not something they do, and deleting it from both lists is a control-plane removal (refused) |
 | Removing worker node(s) via `remove-node` | Yes |
 
 ## What's not supported
@@ -70,7 +70,7 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
    3. Computes their kubelet CPU reservation, then runs Kubespray `scale.yml` for just the new node(s).
    4. Applies the `workload-class` label (and NFS export, on NFS storage), waits for `Ready` and for the node's DaemonSet pods (calico-node, kube-proxy, ...), and — if `nri_cpu_balloons` is installed — creates each node's own `node.<NAME>` BalloonsPolicy. Existing nodes and running models are not touched.
 
-   New nodes join with an `ei.intel.com/add-node-pending:NoSchedule` taint that is removed only after the last step, so nothing is scheduled on a half-configured node. If a step fails, re-run `add-node` to resume: it runs `scale.yml` again for the tainted node, then the post phase. The taint stays in the node's kubelet configuration until the next `install kubernetes`: if its Node object is deleted and the kubelet registers it again, it comes back tainted, and `add-node` lifts it the same way.
+   New nodes join with an `ei.intel.com/add-node-pending:NoSchedule` taint that is removed only after the last step, so nothing is scheduled on a half-configured node. If a step fails, re-run `add-node` to resume: it runs `scale.yml` again for the tainted node, then the post phase. The taint stays in the node's kubelet configuration until Kubespray renders it again: if its Node object is deleted and the kubelet registers it again, it comes back tainted, and `add-node` lifts it the same way.
 
 ### Control-plane nodes are not supported by `add-node`
 
