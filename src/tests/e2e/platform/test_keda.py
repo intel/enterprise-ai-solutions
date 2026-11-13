@@ -9,10 +9,10 @@ import kr8s
 import pytest
 from kr8s.objects import Deployment, HorizontalPodAutoscaler, Namespace, new_class
 
-from conftest import cfg
+from conftest import cfg, is_openshift
 
 pytestmark = pytest.mark.skipif(
-    not cfg.get("keda_enabled", False) or cfg.get("cluster_distribution", "kubernetes") == "openshift",
+    not cfg.get("keda_enabled", False) or is_openshift(),
     reason="KEDA not installed by the platform (keda_enabled is false, or OpenShift's Custom Metrics Autoscaler)"
 )
 
