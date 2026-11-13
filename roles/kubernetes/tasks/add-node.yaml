@@ -29,6 +29,21 @@
     msg: "add-node is not supported for a BYO cluster (existing_kubernetes is set)."
   when: existing_kubernetes | default('') | trim | length > 0
 
+# Same refusal as es_auto_installer.sh: storage/tasks/resolve.yaml rejects
+# these on a multi-node cluster, so every later install, validate and teardown
+# would fail once a node joins. storage_backend is read directly, since
+# preflight.yaml skips resolve.yaml for add-node.
+- name: "kubernetes | add-node | Refuse single-node storage backend"
+  vars:
+    _backend: "{{ storage_backend | default('local-path') | string | trim | lower }}"
+  ansible.builtin.fail:
+    msg: >-
+      add-node is not supported with storage_backend '{{ _backend }}'{{ ' and storage_custom_rwx: false'
+      if _backend == 'custom' else '' }}: it only runs on a single node. Move to nfs or ceph first.
+  when: >-
+    _backend == 'local-path'
+    or (_backend == 'custom' and not (storage_custom_rwx | default(true) | bool))
+
 # _added_nodes is passed by es_auto_installer.sh on both the prep and post
 # calls (it already knows the diff before either Ansible pass runs), so both
 # phases below can scope to just the new node(s) without recomputing anything.

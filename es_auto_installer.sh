@@ -1673,6 +1673,19 @@ do_add_node() {
         exit 0
     fi
 
+    # storage/tasks/resolve.yaml rejects these on more than one node, so once a
+    # node joins, every later install, validate and teardown would fail there.
+    # add-node.yaml refuses them too.
+    local backend custom_rwx
+    backend=$(yq -r '.storage_backend // "local-path"' "$GLOBAL_CONFIG" 2>/dev/null | tr '[:upper:]' '[:lower:]' | xargs)
+    # Not `// true`: yq's // replaces false as well as null.
+    custom_rwx=$(yq -r '.storage_custom_rwx' "$GLOBAL_CONFIG" 2>/dev/null)
+    if [[ "$backend" == "local-path" ]] || [[ "$backend" == "custom" && "$custom_rwx" == "false" ]]; then
+        err "add-node: storage_backend '${backend}'$([[ "$backend" == "custom" ]] && echo " with storage_custom_rwx: false") only runs on a single node.
+  After a node is added, every install, validate and teardown would refuse the cluster as multi-node.
+  Move to a storage backend that runs on several nodes (nfs or ceph, in env/${ENV_NAME}/global_config.yaml) first."
+    fi
+
     local declared_cp added_cp
     declared_cp=$(_nodes_yaml_hostnames control_plane | sort -u)
     added_cp=$(comm -12 <(printf '%s\n' "$declared_cp") <(printf '%s\n' "$added") | grep -v '^$' || true)
@@ -1748,6 +1761,21 @@ do_remove_node() {
     if [[ -z "$removed" ]]; then
         ok "remove-node: nothing to do — nodes.yaml matches the live cluster."
         exit 0
+    fi
+
+    # remove-node.yml can only reach hosts the inventory defines: -e node=<name>
+    # for any other node matches no host, and the play passes having done
+    # nothing. A node dropped from nodes.yaml is also dropped from the
+    # inventory by any run that re-renders it first (install, add-node).
+    local not_in_inventory
+    not_in_inventory=$(comm -23 <(printf '%s\n' "$removed") \
+        <({ _inventory_group kube_control_plane; _inventory_group kube_node; } | sort -u) | grep -v '^$' || true)
+    if [[ -n "$not_in_inventory" ]]; then
+        err "remove-node: not in the inventory (${INVENTORY}), so Kubespray cannot reach them to remove them: ${not_in_inventory//$'\n'/, }
+  An earlier run re-rendered the inventory from nodes.yaml after the entry was deleted. Put the entry back in
+  env/${ENV_NAME}/nodes.yaml, run:
+    ./$(basename "$0") install --env ${ENV_NAME} kubernetes
+  to re-render the inventory (the running cluster is left as it is), then delete the entry and retry remove-node."
     fi
 
     if [[ -n "$old_first_cp" ]] && grep -qxF -- "$old_first_cp" <<< "$removed"; then
@@ -2183,6 +2211,11 @@ main() {
             && err "${ACTION} is not supported on an OpenShift cluster — node lifecycle there is managed by the Machine API/Machine Config Operator, not Kubespray."
         [[ "$IS_BYO" == "false" ]] \
             || err "${ACTION} is not supported for a BYO cluster (existing_kubernetes is set in global_config.yaml)."
+        # Rack-scale nodes come from rack-profile.yaml, not nodes.yaml, and the
+        # fabric roles this pass would pull in have no add-node/remove-node
+        # (docs/customize/node_scaling.md). preflight.yaml refuses it too.
+        [[ "$(yq -r '.rack_scale_enabled // false' "$GLOBAL_CONFIG" 2>/dev/null)" != "true" ]] \
+            || err "${ACTION} is not supported in rack-scale mode (rack_scale_enabled: true in global_config.yaml)."
         # Only the kubernetes component is ever run, so ERAG's node-specific
         # placement would not be re-applied (docs/customize/node_scaling.md).
         local _erag_ns; _erag_ns=$(_erag_namespaces_present)

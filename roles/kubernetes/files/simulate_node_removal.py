@@ -95,6 +95,11 @@ def format_quantity(resource, value):
 def is_workload_pod(pod):
     if pod.get("status", {}).get("phase") in ("Succeeded", "Failed"):
         return False
+    # Terminating: its controller has already created a replacement, which is
+    # counted where it runs. On a lost node every pod ends up like this, and
+    # counting both would double the demand.
+    if pod["metadata"].get("deletionTimestamp"):
+        return False
     owners = pod["metadata"].get("ownerReferences") or []
     return not any(o.get("kind") in ("DaemonSet", "Node") for o in owners)
 

@@ -231,6 +231,18 @@ def test_daemonset_static_and_finished_pods_are_ignored(monkeypatch, capsys):
     assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
 
 
+def test_terminating_pods_are_ignored(monkeypatch, capsys):
+    # --node-lost: the lost node's pod is Terminating and its replacement
+    # already runs on w2, which has no room for a second copy.
+    stale = pod("old", "w1", cpu="3")
+    stale["metadata"]["deletionTimestamp"] = "2026-11-11T00:00:00Z"
+    cluster = {
+        "nodes": [node("w1"), node("w2", cpu="4")],
+        "pods": [stale, pod("new", "w2", cpu="3")],
+    }
+    assert simulate(monkeypatch, capsys, cluster, "w1") == (0, [])
+
+
 def test_required_pod_anti_affinity_is_refused(monkeypatch, capsys):
     anti = {"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [
         {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": {"app": "db"}}}]}}
