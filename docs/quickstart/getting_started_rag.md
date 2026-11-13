@@ -75,8 +75,8 @@ The installer deploys in layers, each building on the previous:
 | Layer | Components | Purpose |
 |-------|-----------|---------|
 | **infrastructure** | Kubernetes (Kubespray), storage (local-path / NFS / Ceph) | Cluster foundation |
-| **platform** | cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, object store (SeaweedFS), Observability | Shared services |
-| **inference** | KServe, Envoy AI Gateway, LLM services, NRI CPU balloons | Model serving |
+| **platform** | NRI CPU balloons, cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, object store (SeaweedFS), Observability | Shared services |
+| **inference** | KServe, Envoy AI Gateway, LLM services | Model serving |
 | **erag** | models, APISIX, vector DBs, NATS, fingerprint, HPA, pipelines, EDP, chat history, UI | RAG application |
 
 The **erag** layer is opt-in — it lives in `ext/enterprise.ai-erag/deployment/components.yaml` and only appears in the
