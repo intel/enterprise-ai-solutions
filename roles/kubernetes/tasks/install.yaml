@@ -24,16 +24,26 @@
   ansible.builtin.meta: end_role
   when: existing_kubernetes | default('') | trim | length > 0
 
+- name: "kubernetes | Check for existing cluster"
+  ansible.builtin.command: kubectl cluster-info --request-timeout=5s
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  register: _k8s_existing
+  changed_when: false
+  failed_when: false
+
+# When Kubespray is going to run, render nodes.yaml before the pre-flights so
+# they check the nodes it will install. A live cluster's inventory is left
+# alone: add-node and remove-node change it.
+- name: "kubernetes | Generate inventory from nodes.yaml"
+  ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+  when: _k8s_existing.rc != 0
+
+- name: "kubernetes | Reload inventory"
+  ansible.builtin.meta: refresh_inventory
+
 - name: "kubernetes | Detect SSH requirement from inventory"
-  ansible.builtin.set_fact:
-    _k8s_needs_ssh: >-
-      {{
-        (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
-        | unique
-        | reject('equalto', 'localhost')
-        | list
-        | length > 0
-      }}
+  ansible.builtin.include_tasks: needs_ssh.yaml
 
 - name: "kubernetes | Compute execution phase"
   ansible.builtin.set_fact:
@@ -53,6 +63,10 @@
   when:
     - _k8s_needs_ssh | bool
     - _k8s_phase | trim != 'post-kubespray'
+  # Reaches the nodes over SSH only because the inventory sets
+  # ansible_connection: ssh under k8s_cluster vars (hosts.yaml.j2, and the
+  # remote examples in inventory/hosts.yaml). Without it, delegate_to runs these
+  # on the controller.
   block:
     - name: "kubernetes | SSH pre-flight | Ping all cluster nodes"
       ansible.builtin.ping:
@@ -143,14 +157,6 @@
           Delete it and re-run or fix the YAML.
 
 # --- Existing cluster check ---
-- name: "kubernetes | Check for existing cluster"
-  ansible.builtin.command: kubectl cluster-info --request-timeout=5s
-  environment:
-    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
-  register: _k8s_existing
-  changed_when: false
-  failed_when: false
-
 - name: "kubernetes | Verify existing cluster version"
   when: _k8s_existing.rc == 0
   block:
@@ -186,6 +192,15 @@
 - name: "kubernetes | Install via Kubespray"
   when: _k8s_existing.rc != 0
   block:
+
+    # cluster.yml would wipe Docker and its data on the nodes it installs:
+    # the cluster nodes, or the controller itself in localhost mode.
+    - name: "kubernetes | Refuse nodes with Docker installed"
+      ansible.builtin.include_tasks: docker_preflight.yaml
+      vars:
+        _docker_check_hosts: >-
+          {{ (groups['kube_control_plane'] | default([]) | union(groups['kube_node'] | default([])) | unique)
+             if (_k8s_needs_ssh | bool) else ['localhost'] }}
 
     # ── Prerequisites ──
     - name: "kubernetes | Prerequisites (local node)"

@@ -331,6 +331,17 @@ design; a few are roadmap items.
   to model balloons. There is no guarantee that model cores stay untouched if
   the node is oversubscribed — plan headroom with the profile.
 
+### Adding and removing nodes
+
+- **`add-node`** creates the new node's own `node.<NAME>` BalloonsPolicy and
+  `nri.intel.com/*` labels from its probed topology. The Helm release, the
+  `default` policy and every existing node's policy and labels are left
+  untouched, so running models are not re-pinned. The new node carries a
+  `NoSchedule` taint until its policy exists, so its balloons agent never
+  starts on `default`.
+- **`remove-node`** deletes the removed node's `node.<NAME>` policy once the
+  node is gone. See [Node Scaling](node_scaling.md).
+
 ### Reinstalling with models already deployed
 
 - **Re-running the role while models are running can reserve cores those

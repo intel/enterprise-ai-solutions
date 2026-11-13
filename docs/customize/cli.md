@@ -128,12 +128,46 @@ Checks are implemented per-component as `tasks/validate.yaml` (asserts, connecti
 
 ---
 
+### `add-node`
+
+Scale worker node(s) into an already-provisioned cluster. No node name is passed — edit `nodes.yaml` first, and the new node(s) are found by diffing the rendered inventory against the live cluster.
+
+```bash
+# 1. Add an entry to nodes_workers in env/<name>/nodes.yaml, then:
+./es_auto_installer.sh add-node --dry-run --env local   # preview
+./es_auto_installer.sh add-node --env local              # apply
+```
+
+Control-plane node additions are refused. See [Node Scaling](node_scaling.md).
+
+---
+
+### `remove-node`
+
+Remove worker node(s) from an already-provisioned cluster. As with `add-node`, no node name is passed on the command line — delete the entry from `nodes_workers` in `nodes.yaml` first, and the removed node(s) are found the same way (diffing `nodes.yaml` against the live cluster), just in the opposite direction: nodes present in the cluster but missing from `nodes.yaml`.
+
+```bash
+./es_auto_installer.sh remove-node --dry-run --env local
+./es_auto_installer.sh remove-node --env local
+./es_auto_installer.sh remove-node --node-lost --env local   # node already NotReady: drain given up after 60 s, no reset
+```
+
+Removing a control-plane node is refused — see [Node Scaling](node_scaling.md#control-plane-nodes-are-not-removed). Both `add-node` and `remove-node` refuse on a cluster with ERAG deployed. Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these, and a check that can't run refuses the removal. After the node is gone, it runs the same checks as `status --health` and fails the command on a problem the removal introduced. See [Node Scaling](node_scaling.md).
+
+---
+
 ### `status`
 
 Print a component status table.
 
 ```bash
 ./es_auto_installer.sh status --env local
+```
+
+`status --health` prints a green/red verdict instead (node Readiness, no crash-looping/image-pull-failing/unschedulable pods cluster-wide) and exits with that verdict:
+
+```bash
+./es_auto_installer.sh status --health --env local
 ```
 
 ---
@@ -158,6 +192,9 @@ List all available layers and components, including which are opt-in.
 | `--only` | Skip dependency auto-inclusion — run the named target alone |
 | `--skip <names>` | Comma-separated layers or components to leave out of the plan (e.g., `--skip erag` to tear down the cluster without uninstalling erag first) |
 | `--force` | Skip the confirmation prompt (required in CI, where there is no terminal to answer it) |
+| `--dry-run` | (`add-node`/`remove-node` only) print the computed node diff and Kubespray command, then exit |
+| `--node-lost` | (`remove-node` only) for a node that is already `NotReady`: no PDB check, the drain given up after 60 s, no reset; refused if any target is still `Ready` |
+| `--health` | (`status` only) print a green/red cluster health verdict and exit with it, instead of the full component-status table |
 | `-- <ansible-flags>` | Pass remaining args directly to `ansible-playbook` (e.g. `-- -vvv`, `-- --check`, `-- -e key=value`) |
 
 ---
@@ -227,4 +264,5 @@ For more Ansible detail, append `-- -vvv` to any command.
 | Look up what each `global_config.yaml` field controls | [Configuration Reference](configuration.md) |
 | Deploy, access, and manage LLM inference with `model-manager` | [Deploy an LLM](../deploy/deploy_models.md) |
 | Set up multi-node or bring-your-own-cluster installs | [Deployment Guide](../deploy/install_platform.md) |
+| Add or remove nodes from an already-provisioned cluster | [Node Scaling](node_scaling.md) |
 | See the full command dispatch flow this CLI triggers | [Architecture & Design Document](../reference/architecture.md) |

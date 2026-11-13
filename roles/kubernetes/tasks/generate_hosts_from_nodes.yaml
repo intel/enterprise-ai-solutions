@@ -23,6 +23,33 @@
       loop_control:
         label: "{{ item.hostname | default('MISSING') }}"
 
+    # An identical entry under both lists is how a control-plane node is also
+    # a worker; any other reuse of a hostname or ip is a mistake.
+    - name: "kubernetes | nodes → inventory | Validate no conflicting hostname/ip"
+      vars:
+        _unique_nodes: "{{ (nodes_control_plane + (nodes_workers | default([]))) | unique }}"
+        _hostnames: "{{ _unique_nodes | map(attribute='hostname') | list }}"
+        _ips: "{{ _unique_nodes | map(attribute='ip') | list }}"
+        # Values used by more than one distinct entry, for the message below.
+        _conflicts: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for v in (_hostnames + _ips) | unique -%}
+          {%- if ((_hostnames + _ips) | select('equalto', v) | list | length) > 1 -%}
+          {%- set ns.out = ns.out + [v] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out | join(', ') }}
+      ansible.builtin.assert:
+        that:
+          - (_hostnames | length) == (_hostnames | unique | length)
+          - (_ips | length) == (_ips | unique | length)
+        fail_msg: >-
+          Conflicting node entries in nodes.yaml for: {{ _conflicts }}.
+          Each is used by more than one distinct entry across
+          nodes_control_plane/nodes_workers. A node listed under both must be
+          an identical entry in both; otherwise each node needs its own
+          hostname and ip.
+
     - name: "kubernetes | nodes → inventory | Set template vars"
       ansible.builtin.set_fact:
         _nodes_control_plane: "{{ nodes_control_plane }}"

@@ -1,0 +1,24 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Notified by tasks/refresh_exports.yaml when /etc/exports changes. exportfs
+# -ra reloads the export table without restarting nfsd.
+- name: "nfs_storage | exports | Re-export all shares"
+  ansible.builtin.command: exportfs -ra
+  delegate_to: "{{ _nfs_target | trim }}"
+  become: true
+  changed_when: true
+  listen: nfs_storage exports changed
+
+- name: "nfs_storage | exports | Current exports"
+  ansible.builtin.command: exportfs -v
+  delegate_to: "{{ _nfs_target | trim }}"
+  become: true
+  changed_when: false
+  register: _nfs_verify_exports
+  listen: nfs_storage exports changed
+
+- name: "nfs_storage | exports | NFS exports"
+  ansible.builtin.debug:
+    msg: "{{ _nfs_verify_exports.stdout_lines }}"
+  listen: nfs_storage exports changed
