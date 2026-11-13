@@ -126,6 +126,13 @@ seaweedfs_volume_storage_size: "10Gi"
 # observability_prometheus_retention: "30d"
 # observability_prometheus_storage_size: "50Gi"
 
+# --- OpenShift prerequisite check (preflight_openshift.yaml; read on OpenShift only) ---
+# openshift_prereq_check: true                 # false skips the check (not recommended)
+# openshift_prereq_strict: false               # true: an operator newer than tested fails too
+# openshift_prereq_storage_probe: true         # false: no probe PVC when StorageClasses are unreadable
+# openshift_prereq_probe_namespace: "ai-solutions-preflight"
+# openshift_prereq_probe_timeout: 30           # seconds
+
 # Envoy Gateway 1.7.5 by default; true installs 1.9.3 (ListenerSets) and
 # upgrades this platform's own older release. Never downgrades.
 # envoy_gateway_upgrade: false
