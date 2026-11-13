@@ -53,7 +53,7 @@ def node(tmp_path):
         (tmp_path / "log").write_text("")
         env = dict(os.environ, PATH="%s:%s" % (tmp_path, os.environ["PATH"]), FABRIC_ADDRESSES=addresses,
                    FABRIC_FILES=" ".join(str(f) for f in fabric_files), FABRIC_REAPPLY_MARKER=str(marker))
-        done = subprocess.run(["bash", str(SCRIPT)], cwd=tmp_path, env=env, check=False,
+        done = subprocess.run([str(SCRIPT)], cwd=tmp_path, env=env, check=False,
                               capture_output=True, text=True)
         changed = render("{{ %s }}" % TASK["changed_when"], {"_fabric_netplan_removed": {"stdout": done.stdout}})
         return Run(done.returncode, (tmp_path / "log").read_text().splitlines(), done.stdout.splitlines(),
