@@ -29,23 +29,23 @@ The gateway `SecurityPolicy` is a Keycloak JWT, deny-by-default, in both modes: 
 Toolkit Manager installs in four ordered layers, each depending on the one before it:
 
 ```
-infrastructure  →  platform  →  inference  →  erag (opt-in)
-      │               │              │               │
-  kubernetes      cert_manager    envoy_ai_gw    app_inference_models
-  storage         istio           kserve         app_pre_install
-                  metallb         litellm        app_vector_databases
-                  envoy_gateway   langfuse       app_keycloak_config
-                  postgresql      keycloak_cfg   app_apisix
-                  keycloak*       llm_services   app_chat_history
-                  object_store    nri_cpu_balloons  app_nats
-                  seaweedfs                      app_fingerprint
-                  observability                  app_hpa
-                  velero†                        app_pipeline
-                                                 app_edp
-                                                 app_mcp_gateway
-                                                 app_ui
-                                                 app_watcher
-                                                 app_post_install
+infrastructure  →  platform   →  inference  →  erag (opt-in)
+      │               │               │               │
+  kubernetes      nri_cpu_balloons envoy_ai_gw    app_inference_models
+  storage         cert_manager     kserve         app_pre_install
+                  istio            litellm        app_vector_databases
+                  metallb          langfuse       app_keycloak_config
+                  envoy_gateway    keycloak_cfg   app_apisix
+                  postgresql       llm_services   app_chat_history
+                  keycloak*                       app_nats
+                  object_store                    app_fingerprint
+                  seaweedfs                       app_hpa
+                  observability                   app_pipeline
+                  velero†                         app_edp
+                                                  app_mcp_gateway
+                                                  app_ui
+                                                  app_watcher
+                                                  app_post_install
 
 * keycloak is always on (keycloak_enabled defaults true)
 † velero is opt-in (velero_enabled) and needs snapshot-capable storage
@@ -94,6 +94,7 @@ playbooks/site.yaml (universal dispatcher)
 │         └─ storage, metallb (infrastructure components)
 │
 ├─ [Platform Layer]
+│   ├─ role: nri_cpu_balloons     → tasks/install.yaml (CPU pinning — only when cpu_policy=nri-balloons)
 │   ├─ role: cert_manager         → tasks/install.yaml (helm install)
 │   ├─ role: istio                → tasks/install.yaml (ambient mesh — all workload namespaces enrolled)
 │   ├─ role: metallb              → tasks/install.yaml (LoadBalancer services)
@@ -110,8 +111,7 @@ playbooks/site.yaml (universal dispatcher)
 │   ├─ role: kserve               → tasks/install.yaml (CRDs + controller + deploy mode)
 │   ├─ role: litellm              → tasks/install.yaml (proxy — auth_type=litellm_vkey, or litellm_enabled)
 │   ├─ role: langfuse             → tasks/install.yaml (observability — with LiteLLM unless langfuse_enabled: false)
-│   ├─ role: llm_services         → tasks/install.yaml (runtimes + default models)
-│   └─ role: nri_cpu_balloons     → tasks/install.yaml (CPU pinning — only when cpu_policy=nri-balloons)
+│   └─ role: llm_services         → tasks/install.yaml (runtimes + default models)
 │
 └─ [Intel® Chatbot Toolkit] (opt-in, not included by `install inference`)
     └─ roles from ext/enterprise.ai-erag (15 components: app_inference_models, app_pre_install,
@@ -343,8 +343,8 @@ Components are defined in `components.yaml` files (this repo + ext repos). Each 
 | Layer | Components | Installation |
 |-------|-----------|--------------|
 | infrastructure | kubernetes, storage | Auto-pulled by `install inference` or `install erag` |
-| platform | cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak*, object_store, seaweedfs, observability | Auto-pulled by `install inference` or `install erag` |
-| inference | keycloak_config*, envoy_ai_gateway, kserve, litellm**, langfuse**, llm_services, nri_cpu_balloons*** | `install inference` (explicitly named, or auto-pulled by `install erag`) |
+| platform | nri_cpu_balloons***, cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak*, object_store, seaweedfs, observability | Auto-pulled by `install inference` or `install erag` |
+| inference | keycloak_config*, envoy_ai_gateway, kserve, litellm**, langfuse**, llm_services | `install inference` (explicitly named, or auto-pulled by `install erag`) |
 | erag | app_inference_models, app_pre_install, app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats, app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher, app_post_install | `install erag` (opt-in, requires `init erag` first) |
 
 \* Keycloak + keycloak_config run in both auth modes (`keycloak_enabled` defaults `true`)

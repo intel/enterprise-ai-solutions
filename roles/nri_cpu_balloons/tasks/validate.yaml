@@ -3,18 +3,6 @@
 # NRI CPU Balloons — Validate
 # =============================================================================
 
-- name: "nri_cpu_balloons | Skip on non-CPU accelerator"
-  when: (kubernetes_accelerator | default('cpu')) != 'cpu'
-  block:
-    - name: "nri_cpu_balloons | Not CPU — nothing to validate"
-      ansible.builtin.debug:
-        msg: >-
-          kubernetes_accelerator='{{ kubernetes_accelerator | default('cpu') }}'
-          — skipping validation.
-
-    - name: "nri_cpu_balloons | End host"
-      ansible.builtin.meta: end_host
-
 - name: "nri_cpu_balloons | Check Helm release"
   kubernetes.core.helm_info:
     name: "{{ nri_cpu_balloons.helm.release_name }}"
