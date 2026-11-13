@@ -35,9 +35,8 @@
       ansible.builtin.include_tasks: includes/preflight.yaml
 
   tasks:
-    - name: "Execute components"
-      ansible.builtin.include_tasks: includes/run_component.yaml
-      loop: "{{ _active_components }}"
+    - name: "Execute layers"
+      ansible.builtin.include_tasks: includes/run_layer.yaml
+      loop: "{{ _active_components | map(attribute='layer') | unique | list }}"
       loop_control:
-        label: "{{ component.name }}"
-        loop_var: component
+        loop_var: layer

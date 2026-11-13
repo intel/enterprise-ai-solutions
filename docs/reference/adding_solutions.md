@@ -94,6 +94,7 @@ my-solution/
 └── deployment/                     ← deployment_subdir
     ├── components.yaml             ← declares the layer + components
     ├── config.yaml                 ← seeded to env/<env>/config.mylayer.yaml
+    ├── data_consistency.yaml       ← probes counted around an upgrade (optional)
     ├── pipelines/                  ← config_dir (optional)
     │   ├── chatqna/config.yaml
     │   ├── docsum/config.yaml
@@ -107,6 +108,43 @@ my-solution/
 The installer appends `ext/<dest>/<deployment_subdir>/roles` to `ANSIBLE_ROLES_PATH` at
 runtime, so roles are found by name with no path coupling - moving a role between repos is
 just a `mv`.
+
+### Data-consistency probes (optional)
+
+On an `install` that upgrades or downgrades the layer, the installer counts the layer's stores
+before its first change and after its last, and puts the comparison into the layer's upgrade
+report (`env/<env>/reports/<layer>-upgrade-report-<timestamp>.yaml`, key `consistency`). The
+probes are listed in `data_consistency.yaml`, next to `components.yaml`:
+
+```yaml
+probes:                                  # run in this order
+  - probes/count_stores.yaml             # an Ansible task file, relative to this file
+```
+
+Each probe is included in the installer's play with the env's configuration loaded (not the
+defaults of your roles; it may `include_role` them). It gets `data_consistency_phase` (`pre` or
+`post`), `data_consistency_tmp_dir` (removed when the layer's run ends) and
+`data_consistency_layer_dir` (the absolute path of the layer's directory, the one holding
+`components.yaml`, for files the probe ships beside it), must not change anything, and sets `data_consistency_counts` to one entry per store it counts:
+
+```yaml
+- name: Report the counts
+  ansible.builtin.set_fact:
+    data_consistency_counts:
+      vdb: "{{ _vdb_keys | int }}"
+      chat_history: {skipped: "chat history disabled (chat_history_enabled: false)"}
+```
+
+A count is an integer `>= 0`. A store the probe cannot count is `{skipped: <reason>}`, never `0`:
+`0` means counted and empty. Store names are unique across the layer's probes; a store a second
+probe reports again is recorded as skipped. A probe that fails, or sets anything else, is
+recorded as skipped with the reason; it never fails the run.
+
+Both counts are kept in `env/<env>/reports/<layer>-consistency-pre.yaml` and `-post.yaml`,
+replaced by the next upgrade. A store with fewer entries after the run makes the verdict
+`blocking`; for a layer with `supports.upgrade: true` that stops the run and leaves the layer's
+deployment record `halted`, otherwise it is reported only. Without `data_consistency.yaml` the
+verdict is `skipped`.
 
 ---
 

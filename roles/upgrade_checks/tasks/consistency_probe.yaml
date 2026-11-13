@@ -1,0 +1,31 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# One probe of consistency.yaml. A probe that fails or returns something other
+# than counts is recorded as skipped with the reason; it never fails the run.
+- name: "upgrade_checks | Run probe {{ upgrade_consistency_probe }}"
+  block:
+    - name: "upgrade_checks | Clear the previous probe's counts"
+      ansible.builtin.set_fact:
+        data_consistency_counts: {}
+
+    - name: "upgrade_checks | Count with {{ upgrade_consistency_probe }}"
+      ansible.builtin.include_tasks: "{{ _probe_list | dirname }}/{{ upgrade_consistency_probe }}"
+      vars:
+        data_consistency_phase: "{{ upgrade_consistency_phase }}"
+        data_consistency_tmp_dir: "{{ upgrade_consistency_tmp_dir }}"
+        data_consistency_layer_dir: "{{ _layer_dirs[upgrade_record_layer] }}"
+
+    - name: "upgrade_checks | Keep the counts of {{ upgrade_consistency_probe }}"
+      ansible.builtin.set_fact:
+        _probe_counts: >-
+          {{ _probe_counts | consistency_merge(data_consistency_counts | consistency_counts(upgrade_consistency_probe),
+                                               upgrade_consistency_probe) }}
+
+  rescue:
+    - name: "upgrade_checks | Note {{ upgrade_consistency_probe }} as failed"
+      ansible.builtin.set_fact:
+        _probe_counts: >-
+          {{ _probe_counts | consistency_merge(upgrade_consistency_probe
+             | consistency_failed((ansible_failed_result.msg | default('no message', true) | string).splitlines() | first),
+             upgrade_consistency_probe) }}
