@@ -57,7 +57,6 @@
 - name: "fabric_netplan | teardown | Remove the fabric netplan and addresses, then re-apply netplan"
   ansible.builtin.script:
     cmd: "{{ role_path }}/files/remove_fabric_netplan.sh"
-    executable: /bin/bash
   environment:
     FABRIC_FILES: "{{ rack_scale_netplan_dest }} {{ rack_scale_netplan_old }}"
     FABRIC_ADDRESSES: "{% for a in _fabric_addresses if a.node == item %}{{ a.nic }}={{ a.addr }} {% endfor %}"
