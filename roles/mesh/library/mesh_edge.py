@@ -23,7 +23,8 @@ namespace and visible there only (exportTo "."):
 Both carry <prefix>/env and <prefix>/mesh-edge=<gateway>. Every call reconciles
 all of them: one for a hostname no route serves any more is deleted, so it runs
 after each component's install and teardown. One of the same name without those
-labels is someone else's: it is left alone and reported. Backends other than Services (an
+labels is someone else's: it is left alone and reported. state=absent deletes all
+of ours (teardown with the mesh turned off since). Backends other than Services (an
 InferencePool) are left to the gateway. Nothing happens when the gateway's namespace
 does not exist or is being deleted.
 """
@@ -38,8 +39,11 @@ from ansible.module_utils.basic import AnsibleModule
 try:
     from kubernetes import client, config
     from kubernetes.client.rest import ApiException
+    from kubernetes.config import ConfigException
+    from urllib3.exceptions import HTTPError
 except ImportError:  # reported by main()
     client = None
+    ConfigException = HTTPError = Exception
 
     class ApiException(Exception):
         def __init__(self, status=None):
@@ -53,9 +57,11 @@ VS = ("networking.istio.io", "v1", "virtualservices")
 KINDS = {SE: "ServiceEntry", VS: "VirtualService"}
 
 
-def _name(host):
+def _name(host, hashed=False):
+    """edge-<host>; with a hash of the host when too long, or when hashed (two hosts
+    that read the same, like a-b.example and a.b.example)."""
     name = "edge-" + re.sub(r"[^a-z0-9-]", "-", host.lower()).strip("-")
-    if len(name) > 63:
+    if hashed or len(name) > 63:
         name = name[:54].rstrip("-") + "-" + hashlib.sha256(host.encode()).hexdigest()[:8]
     return name
 
@@ -87,7 +93,9 @@ def hosts(routes, listeners, gateway, namespace, domain):
         if not sections:
             continue
         spec, own = route.get("spec") or {}, route["metadata"]["namespace"]
-        names = spec.get("hostnames") or [listeners.get(s) for s in sections if listeners.get(s)]
+        # Without a sectionName the route attaches to every listener.
+        names = spec.get("hostnames") or sorted(
+            {h for s, h in listeners.items() if h and (s in sections or None in sections)})
         for rule in spec.get("rules") or []:
             refs = [r for r in rule.get("backendRefs") or []
                     if r.get("group", "") == "" and r.get("kind", "Service") == "Service" and r.get("port")]
@@ -106,9 +114,11 @@ def hosts(routes, listeners, gateway, namespace, domain):
 
 
 def desired(found, owner):
-    objects = {}
+    objects, names = {}, {}
+    for host in found:
+        names.setdefault(_name(host), []).append(host)
     for host, ports in sorted(found.items()):
-        name, http = _name(host), []
+        name, http = _name(host, len(names[_name(host)]) > 1), []
         for port, entries in sorted(ports.items()):
             services = {d for *_, dests in entries for d, _ in dests}
             if len(services) == 1:
@@ -151,11 +161,17 @@ def run(core, custom, p, module):
         if e.status != 404:
             raise
         listeners, routes = {}, []
-    want = desired(hosts(routes, listeners, gateway, namespace, p["cluster_domain"]), owner)
+    want = desired(hosts(routes, listeners, gateway, namespace, p["cluster_domain"]), owner) \
+        if p.get("state", "present") == "present" else {}
     changes, foreign = [], []
     for res in (SE, VS):
-        have = {o["metadata"]["name"]: o for o in custom.list_namespaced_custom_object(
-            res[0], res[1], namespace, res[2])["items"]}
+        try:
+            items = custom.list_namespaced_custom_object(res[0], res[1], namespace, res[2])["items"]
+        except ApiException as e:
+            if e.status != 404:  # no Istio CRDs: nothing of ours either
+                raise
+            items = []
+        have = {o["metadata"]["name"]: o for o in items}
         for name, obj in have.items():
             if any((obj["metadata"].get("labels") or {}).get(k) != v for k, v in owner.items()):
                 if (res, name) in want:
@@ -194,6 +210,7 @@ def main():
             "gateway_namespace": {"type": "str", "required": True},
             "label_prefix": {"type": "str", "default": "ai-solutions.intel.com"},
             "cluster_domain": {"type": "str", "default": "cluster.local"},
+            "state": {"type": "str", "default": "present", "choices": ["present", "absent"]},
         },
         supports_check_mode=True,
     )
@@ -213,6 +230,8 @@ def main():
         except (TypeError, ValueError):
             reason = e.reason
         module.fail_json(msg="mesh edge failed: %s %s" % (e.status, reason))
+    except (ConfigException, HTTPError) as e:  # no kubeconfig, API server unreachable
+        module.fail_json(msg="mesh edge failed: %s" % e)
 
 
 if __name__ == "__main__":

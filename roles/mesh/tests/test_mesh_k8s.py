@@ -6,6 +6,7 @@
 """
 
 import copy
+import datetime
 import json
 import os
 import sys
@@ -118,8 +119,6 @@ def pa(name, selector=None, mode="STRICT", ports=None, created="2026-10-01T00:00
     return {"metadata": {"name": name, "creationTimestamp": created}, "spec": spec}
 
 
-
-
 def test_only_the_envs_namespaces_get_a_policy():
     core = Core([
         ns("ours", AMBIENT, record()),
@@ -144,9 +143,9 @@ def test_namespaces_that_joined_since_the_snapshot_are_recorded():
     out = mesh_k8s.run(core, Custom(), params(before=before), Module())
     assert out["namespaces"] == ["labelled", "new"]
     assert json.loads(core.namespaces[0].metadata.annotations[PREFIX + "/mesh.ocp"]) == \
-        {"component": "keycloak", "created": True}
+        {"component": "keycloak", "created": True, "labels": AMBIENT}
     assert json.loads(core.namespaces[1].metadata.annotations[PREFIX + "/mesh.ocp"]) == \
-        {"component": "keycloak", "created": False}
+        {"component": "keycloak", "created": False, "labels": AMBIENT}
     assert core.namespaces[2].metadata.annotations == {}
 
     # A later component finds them by the record, and records nothing of its own.
@@ -330,29 +329,42 @@ def ref(kind, name):
     return NS(kind=kind, name=name, controller=True)
 
 
-def running(name, owner, containers=("app",), init=(), annotations=None):
-    return NS(metadata=NS(name=name, labels={}, annotations=annotations or {}, owner_references=[owner]),
+def running(name, owner, containers=("app",), init=(), annotations=None, created=None, deleted=None,
+            host_network=None):
+    return NS(metadata=NS(name=name, labels={}, annotations=annotations or {}, owner_references=[owner],
+                          creation_timestamp=created, deletion_timestamp=deleted),
               spec=NS(containers=[NS(name=c, ports=[]) for c in containers],
-                      init_containers=[NS(name=c) for c in init]))
+                      init_containers=[NS(name=c) for c in init], host_network=host_network))
 
 
-def workload(name, labels=None, owners=None):
-    return NS(metadata=NS(name=name, labels=labels or {}, owner_references=owners))
+def workload(name, labels=None, owners=None, restarted=None):
+    annotations = {mesh_k8s.RESTARTED: restarted} if restarted else None
+    return NS(metadata=NS(name=name, labels=labels or {}, owner_references=owners),
+              spec=NS(template=NS(metadata=NS(annotations=annotations))))
 
 
 class Apps:
-    def __init__(self, replicasets=None, deployments=None, statefulsets=None):
-        self.rs, self.deploy, self.sts = replicasets or {}, deployments or {}, statefulsets or {}
+    def __init__(self, replicasets=None, deployments=None, statefulsets=None, daemonsets=None):
+        self.objects = {"replica_set": replicasets or {}, "deployment": deployments or {},
+                        "stateful_set": statefulsets or {}, "daemon_set": daemonsets or {}}
         self.patched = []
 
+    def _read(self, kind, name):
+        if name not in self.objects[kind]:
+            raise mesh_k8s.ApiException(status=404)
+        return self.objects[kind][name]
+
     def read_namespaced_replica_set(self, name, ns):
-        return self.rs[name]
+        return self._read("replica_set", name)
 
     def read_namespaced_deployment(self, name, ns):
-        return self.deploy[name]
+        return self._read("deployment", name)
 
     def read_namespaced_stateful_set(self, name, ns):
-        return self.sts[name]
+        return self._read("stateful_set", name)
+
+    def read_namespaced_daemon_set(self, name, ns):
+        return self._read("daemon_set", name)
 
     def patch_namespaced_deployment(self, name, ns, body):
         self.patched.append(("Deployment", ns, name, body))
@@ -360,7 +372,8 @@ class Apps:
     def patch_namespaced_stateful_set(self, name, ns, body):
         self.patched.append(("StatefulSet", ns, name, body))
 
-
+    def patch_namespaced_daemon_set(self, name, ns, body):
+        self.patched.append(("DaemonSet", ns, name, body))
 
 
 def test_sidecar_labels_select_the_namespaces():
@@ -421,3 +434,59 @@ def test_enroll_check_mode_patches_nothing():
     module.check_mode = True
     out = mesh_k8s.run(core, Custom(), params(mesh_labels=SIDECAR, mtls=False, enroll=True), module, apps=apps, now="x")
     assert out["restarted"] == ["ours/StatefulSet/db"] and apps.patched == []
+
+
+def test_enroll_restarts_a_daemonset_and_reports_what_it_cannot_trace():
+    pods = [running("agent-x", ref("DaemonSet", "agent")),
+            running("bare-1", ref("ReplicaSet", "bare")),
+            running("gone-1", ref("ReplicaSet", "gone")),
+            running("orphan-1", ref("ReplicaSet", "orphan-rs"))]
+    apps = Apps(daemonsets={"agent": workload("agent")},
+                replicasets={"bare": workload("bare"),
+                             "orphan-rs": workload("orphan-rs", owners=[ref("Deployment", "deleted")])})
+    core = Core([ns("ours", SIDECAR, record())], pods={"ours": pods})
+    out = mesh_k8s.run(core, Custom(), params(mesh_labels=SIDECAR, mtls=False, enroll=True), Module(),
+                       apps=apps, now="x")
+    assert out["restarted"] == ["ours/DaemonSet/agent"] and [p[0] for p in apps.patched] == ["DaemonSet"]
+    assert out["not_enrolled"] == ["ours/bare-1 (owned by a ReplicaSet)", "ours/gone-1 (owned by a ReplicaSet)",
+                                   "ours/orphan-1 (owned by a Deployment)"]
+
+
+def test_enroll_skips_terminating_host_network_and_rolling_pods():
+    started = datetime.datetime(2026, 11, 2, tzinfo=datetime.timezone.utc)
+    pods = [running("term-0", ref("StatefulSet", "db"), deleted=started),
+            running("host-0", ref("StatefulSet", "db"), host_network=True),
+            running("old-1", ref("ReplicaSet", "web-1"), created=started)]
+    apps = Apps(statefulsets={"db": workload("db")},
+                replicasets={"web-1": workload("web-1", owners=[ref("Deployment", "web")])},
+                deployments={"web": workload("web", restarted="2026-11-02T00:05:00Z")})
+    core = Core([ns("ours", SIDECAR, record())], pods={"ours": pods})
+    out = mesh_k8s.run(core, Custom(), params(mesh_labels=SIDECAR, mtls=False, enroll=True), Module(),
+                       apps=apps, now="x")
+    assert out["restarted"] == [] and out["not_enrolled"] == [] and apps.patched == []
+    # A restart from before the pod started does not count.
+    apps.objects["deployment"]["web"] = workload("web", restarted="2026-11-01T23:00:00+00:00")
+    out = mesh_k8s.run(core, Custom(), params(mesh_labels=SIDECAR, mtls=False, enroll=True), Module(),
+                       apps=apps, now="x")
+    assert out["restarted"] == ["ours/Deployment/web"]
+
+
+def test_a_podmonitor_with_match_expressions_is_reported():
+    mon = {"metadata": {"name": "m"}, "spec": {
+        "selector": {"matchLabels": {"app": "a"}, "matchExpressions": [{"key": "tier", "operator": "Exists"}]},
+        "podMetricsEndpoints": [{"portNumber": 9090}]}}
+    core = Core([ns("ours", AMBIENT, record())], pods={"ours": [pod("a-1", {"app": "a", "tier": "x"}, {})]})
+    custom = Custom({("ours", "podmonitors"): [mon]})
+    out = mesh_k8s.run(core, custom, params(), Module())
+    assert out["unresolved"] == ["ours/PodMonitor/m selector with matchExpressions"]
+    assert [o["metadata"]["name"] for o in custom.created] == ["default"]
+
+
+def test_teardown_takes_off_the_labels_it_joined_with():
+    """istio_enabled turned off since: the labels in the record go, not today's (none)."""
+    joined = {"%s/mesh.ocp" % PREFIX: json.dumps({"component": "keycloak", "created": False, "labels": SIDECAR})}
+    keycloak = ns("keycloak", dict(SIDECAR, team="x"), joined)
+    core = Core([keycloak])
+    out = mesh_k8s.remove(core, Custom(), params(mesh_labels={}, state="absent"), Module())
+    assert out["namespaces"] == ["keycloak"]
+    assert keycloak.metadata.labels == {"team": "x"} and keycloak.metadata.annotations == {}

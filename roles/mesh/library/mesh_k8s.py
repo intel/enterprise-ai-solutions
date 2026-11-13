@@ -21,8 +21,8 @@ A namespace is the env's when it carries `mesh_labels` (istio.io/dataplane-mode=
 or the sidecar injection label) and the annotation <prefix>/mesh.<env>. The module
 adds it: with state=snapshot it reports which namespaces exist and which are in the
 mesh; run before a component, that is `before` of the run after it, and each
-namespace that joined the mesh in between gets the annotation, with the component
-and whether the namespace is new. One already in the mesh is someone else's.
+namespace that joined the mesh in between gets the annotation, with the component,
+whether the namespace is new and the labels it joined with. One already in the mesh is someone else's.
 
 In sidecar mode only pods created after the label get a proxy. With `enroll`, the
 Running pods in those namespaces that have no istio-proxy (container or native
@@ -50,8 +50,11 @@ from ansible.module_utils.basic import AnsibleModule
 try:
     from kubernetes import client, config
     from kubernetes.client.rest import ApiException
+    from kubernetes.config import ConfigException
+    from urllib3.exceptions import HTTPError
 except ImportError:  # reported by main()
     client = None
+    ConfigException = HTTPError = Exception
 
     class ApiException(Exception):
         def __init__(self, status=None):
@@ -79,6 +82,7 @@ PROXY = "istio-proxy"
 RESTARTED = "kubectl.kubernetes.io/restartedAt"
 PA = ("security.istio.io", "v1", "peerauthentications")
 MONITORS = (("ServiceMonitor", "servicemonitors"), ("PodMonitor", "podmonitors"))
+WORKLOADS = {"Deployment": "deployment", "StatefulSet": "stateful_set", "DaemonSet": "daemon_set"}
 
 
 def _selector(sel):
@@ -125,7 +129,7 @@ def _ours(core, ns, p, module, before):
     name = ns.metadata.name
     if record is not None or before is None or before.get(name):
         return record
-    record = {"component": p["component"], "created": name not in before}
+    record = {"component": p["component"], "created": name not in before, "labels": p["mesh_labels"]}
     if not module.check_mode:
         core.patch_namespace(name, {"metadata": {"annotations": {_key(p): json.dumps(record, sort_keys=True)}}})
     return record
@@ -183,12 +187,17 @@ def _targets(core, custom, ns):
                         if number:
                             ports.add(number)
                         else:
-                            missing.append(str(want))
+                            missing.append("port %s" % want)
                     found.append((name, dict(svc.spec.selector), ports, pods, missing))
             else:
                 match = (spec.get("selector") or {}).get("matchLabels")
+                if (spec.get("selector") or {}).get("matchExpressions"):
+                    # A PeerAuthentication selects by matchLabels only: it would open the
+                    # ports on more pods than the monitor scrapes.
+                    found.append((name, dict(match or {}), set(), [], ["selector with matchExpressions"]))
+                    continue
                 if not match:
-                    continue  # a PeerAuthentication selects by matchLabels only
+                    continue
                 pods = core.list_namespaced_pod(ns, label_selector=sel).items
                 ports, missing = set(), []
                 for ep in spec.get("podMetricsEndpoints") or []:
@@ -197,7 +206,7 @@ def _targets(core, custom, ns):
                     if number:
                         ports.add(number)
                     else:
-                        missing.append(str(want))
+                        missing.append("port %s" % want)
                 found.append((name, dict(match), ports, pods, missing))
     return found
 
@@ -234,22 +243,45 @@ def _controller(refs):
     return next((r for r in refs or [] if r.controller), None)
 
 
+def _read(apps, kind, name, ns):
+    """The object, None when it is gone (deleted since the pod was listed)."""
+    try:
+        return getattr(apps, "read_namespaced_" + kind)(name, ns)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        return None
+
+
 def _workload(apps, ns, pod):
     """(kind, object) of the Deployment/StatefulSet/DaemonSet that runs pod, else (kind of its owner, None)."""
     ref = _controller(pod.metadata.owner_references)
     if ref is None:
         return "Pod", None
     if ref.kind == "ReplicaSet":
-        rs = apps.read_namespaced_replica_set(ref.name, ns)
-        ref = _controller(rs.metadata.owner_references)
+        rs = _read(apps, "replica_set", ref.name, ns)
+        ref = _controller(rs.metadata.owner_references) if rs else None
         if ref is None or ref.kind != "Deployment":
             return "ReplicaSet", None
-        return "Deployment", apps.read_namespaced_deployment(ref.name, ns)
-    if ref.kind == "StatefulSet":
-        return ref.kind, apps.read_namespaced_stateful_set(ref.name, ns)
-    if ref.kind == "DaemonSet":
-        return ref.kind, apps.read_namespaced_daemon_set(ref.name, ns)
+        return "Deployment", _read(apps, "deployment", ref.name, ns)
+    if ref.kind in WORKLOADS:
+        return ref.kind, _read(apps, WORKLOADS[ref.kind], ref.name, ns)
     return ref.kind, None
+
+
+def _restarted_since(obj, pod):
+    """The workload was restarted after the pod started: its rollout replaces the pod."""
+    template = getattr(getattr(obj, "spec", None), "template", None)
+    meta = getattr(template, "metadata", None)
+    value = (getattr(meta, "annotations", None) or {}).get(RESTARTED)
+    created = getattr(pod.metadata, "creation_timestamp", None)
+    if not value or created is None:
+        return False
+    try:
+        when = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return when > created
 
 
 def enroll(core, apps, p, module, namespaces, now):
@@ -261,7 +293,9 @@ def enroll(core, apps, p, module, namespaces, now):
         if record.get("component") != p["component"]:
             continue
         for pod in core.list_namespaced_pod(ns, field_selector="status.phase=Running").items:
-            if _has_proxy(pod) or _opted_out(pod):
+            # Istio injects no sidecar into a hostNetwork pod; a terminating one is going.
+            if _has_proxy(pod) or _opted_out(pod) or getattr(pod.metadata, "deletion_timestamp", None) \
+                    or getattr(pod.spec, "host_network", None):
                 continue
             kind, obj = _workload(apps, ns, pod)
             if obj is None:
@@ -271,6 +305,8 @@ def enroll(core, apps, p, module, namespaces, now):
             if name in seen:
                 continue
             seen.add(name)
+            if _restarted_since(obj, pod):
+                continue  # a rollout under way (an earlier run's restart) replaces the pod
             # In a namespace the env did not create, or run by an operator (owner reference),
             # it is not ours to roll.
             if not record.get("created") or obj.metadata.owner_references:
@@ -278,8 +314,7 @@ def enroll(core, apps, p, module, namespaces, now):
                 continue
             if not module.check_mode:
                 patch = {"spec": {"template": {"metadata": {"annotations": {RESTARTED: now}}}}}
-                patcher = {"Deployment": "deployment", "StatefulSet": "stateful_set", "DaemonSet": "daemon_set"}[kind]
-                getattr(apps, "patch_namespaced_" + patcher)(obj.metadata.name, ns, patch)
+                getattr(apps, "patch_namespaced_" + WORKLOADS[kind])(obj.metadata.name, ns, patch)
             restarted.append(name)
     return restarted, reported
 
@@ -315,7 +350,9 @@ def remove(core, custom, p, module):
             continue
         # The namespace leaves the mesh too: in one that stays (the admin's keycloak),
         # a later install sees it join again and records it again.
-        labels = {k: None for k, v in p["mesh_labels"].items() if (ns.metadata.labels or {}).get(k) == v}
+        # The labels it joined with (teardown may run with istio_enabled false since).
+        joined = record.get("labels") if isinstance(record.get("labels"), dict) else p["mesh_labels"]
+        labels = {k: None for k, v in joined.items() if (ns.metadata.labels or {}).get(k) == v}
         if not module.check_mode:
             try:
                 core.patch_namespace(ns.metadata.name, {"metadata": {"labels": labels, "annotations": {_key(p): None}}})
@@ -355,7 +392,7 @@ def run(core, custom, p, module, apps=None, now=None):
         if not p["monitors"]:
             continue
         for monitor, match, ports, pods, missing in _targets(core, custom, name):
-            unresolved += ["%s/%s port %s" % (name, monitor, m) for m in missing]
+            unresolved += ["%s/%s %s" % (name, monitor, m) for m in missing]
             if not ports:
                 continue
             labels = [pod.metadata.labels or {} for pod in pods] or [match]
@@ -426,6 +463,8 @@ def main():
         except (TypeError, ValueError):
             reason = e.reason
         module.fail_json(msg="mesh policies failed: %s %s" % (e.status, reason))
+    except (ConfigException, HTTPError) as e:  # no kubeconfig, API server unreachable
+        module.fail_json(msg="mesh policies failed: %s" % e)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,8 @@
   ansible.builtin.include_role:
     name: "{{ component.name }}"
 
-# The policies it adds carry the component's labels, so its teardown deletes them.
+# The policies it adds carry the component's labels, so its teardown deletes them,
+# also when istio_enabled was turned off since.
 - name: "Mesh for what {{ component.name }} installed"
   ansible.builtin.include_role:
     name: mesh
@@ -33,9 +34,7 @@
   ansible.builtin.include_role:
     name: mesh
     tasks_from: teardown
-  when:
-    - component_action == 'teardown'
-    - istio_enabled | default(false) | bool
+  when: component_action == 'teardown'
 
 - name: "{{ component.name }} — {{ (_component_prep_only | default(false)) | ternary('prep complete (install continues from caller)', component_action + ' complete') }}"
   ansible.builtin.debug:

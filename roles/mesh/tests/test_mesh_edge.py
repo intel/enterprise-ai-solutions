@@ -200,3 +200,54 @@ def test_long_hostnames_fit_a_name():
     host = "a" * 40 + "." + "b" * 40 + ".example"
     name = mesh_edge._name(host)  # pylint: disable=protected-access
     assert len(name) <= 63 and name.startswith("edge-a") and name != mesh_edge._name(host + "x")  # pylint: disable=protected-access
+
+
+def test_a_route_without_a_section_takes_every_listener_hostname():
+    r = route("a", "r", [svc("s", 80)])
+    del r["spec"]["parentRefs"][0]["sectionName"]
+    custom = Custom([r], listeners=[{"name": "https", "hostname": "one.example"},
+                                    {"name": "https-apex", "hostname": "two.example"}, {"name": "http"}])
+    assert mesh_edge.run(Core(), custom, params(), Module())["hosts"] == ["one.example", "two.example"]
+
+
+def test_hostnames_that_read_the_same_get_their_own_names():
+    custom = Custom([route("a", "r", [svc("s", 80)], ["foo-bar.example", "foo.bar.example", "other.example"])])
+    mesh_edge.run(Core(), custom, params(), Module())
+    names = sorted(custom.objects["serviceentries"])
+    assert len(names) == 3 and "edge-other-example" in names
+    by_host = {o["spec"]["hosts"][0]: n for n, o in custom.objects["serviceentries"].items()}
+    assert by_host["foo-bar.example"] != by_host["foo.bar.example"]
+    assert all(by_host[h].startswith("edge-foo-bar-example-") for h in ("foo-bar.example", "foo.bar.example"))
+
+
+def test_state_absent_deletes_ours_only():
+    custom = Custom(ROUTES)
+    mesh_edge.run(Core(), custom, params(), Module())
+    custom.objects["serviceentries"]["edge-someone"] = {"metadata": {"name": "edge-someone", "labels": {}}, "spec": {}}
+    out = mesh_edge.run(Core(), custom, params(state="absent"), Module())
+    assert out["hosts"] == [] and out["changed"]
+    assert list(custom.objects["serviceentries"]) == ["edge-someone"] and not custom.objects["virtualservices"]
+
+
+class NoIstio(Custom):
+    def list_namespaced_custom_object(self, group, version, namespace, plural):
+        raise mesh_edge.ApiException(status=404)
+
+
+def test_no_istio_crds_is_nothing_to_delete():
+    out = mesh_edge.run(Core(), NoIstio(ROUTES), params(state="absent"), Module())
+    assert out == {"changed": False, "hosts": [], "changes": [], "foreign": []}
+
+
+class Forbidden(Custom):
+    def list_cluster_custom_object(self, group, version, plural):
+        raise mesh_edge.ApiException(status=403)
+
+
+def test_other_api_errors_are_raised():
+    try:
+        mesh_edge.run(Core(), Forbidden(ROUTES), params(), Module())
+    except mesh_edge.ApiException as e:
+        assert e.status == 403
+    else:
+        raise AssertionError("403 swallowed")
