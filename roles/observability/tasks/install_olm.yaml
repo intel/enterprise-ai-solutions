@@ -418,13 +418,6 @@
     _obs_os_grafana_container:
       name: grafana
       env: "{{ _obs_os_admin_env + _obs_os_proxy_env }}"
-      # The erag layer's sign-in (app_keycloak_config) overrides the platform's:
-      # GF_* variables win over the config, so the client secret is read from a
-      # file, not set as a variable.
-      envFrom:
-        - secretRef:
-            name: grafana-sso-env
-            optional: true
       volumeMounts: >-
         {{ [{'name': 'sc-dashboard-volume', 'mountPath': '/tmp/dashboards'},
             {'name': 'sc-dashboard-provider', 'mountPath': '/etc/grafana/provisioning/dashboards'}]
