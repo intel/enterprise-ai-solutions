@@ -20,7 +20,7 @@ from ansible.utils.display import Display
 
 display = Display()
 
-VALID_ACTIONS = ("install", "teardown", "validate")
+VALID_ACTIONS = ("install", "teardown", "validate", "add-node", "remove-node")
 
 
 def _enabled(entry):

@@ -5,26 +5,12 @@
 # KEDA — Install via Helm, or check the cluster's Custom Metrics Autoscaler
 # =============================================================================
 
-- name: "keda | Check the cluster's Custom Metrics Autoscaler"
+# Preflight checks the Custom Metrics Autoscaler and its KedaController
+# (configs/openshift_prerequisites.yaml).
+- name: "keda | Custom Metrics Autoscaler provided by the cluster"
+  ansible.builtin.debug:
+    msg: KEDA is the cluster's Custom Metrics Autoscaler (openshift-keda); skipping the Helm install.
   when: _keda_from_olm | bool
-  block:
-    - name: "keda | Look up KedaController instances"
-      kubernetes.core.k8s_info:
-        api_version: keda.sh/v1alpha1
-        kind: KedaController
-      register: _keda_olm_instances
-      failed_when: false
-
-    - name: "keda | Require the Custom Metrics Autoscaler"
-      ansible.builtin.assert:
-        that: _keda_olm_instances.resources | default([]) | length > 0
-        fail_msg: |-
-          No KedaController found. Install the Custom Metrics Autoscaler operator from
-          OperatorHub and create the KedaController named keda in openshift-keda
-          (docs/deploy/openshift.md, step 7), or set keda_enabled: false.
-        success_msg: >-
-          KEDA provided by the cluster (Custom Metrics Autoscaler,
-          {{ _keda_olm_instances.resources | map(attribute='metadata.namespace') | join(', ') }}) — skipping Helm install.
 
 - name: "keda | Helm release"
   when: not _keda_from_olm | bool
