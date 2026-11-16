@@ -1771,8 +1771,9 @@ do_remove_node() {
   add them in a separate step with add-node (one kind of change per edit)."
 
     if [[ -z "$removed" ]]; then
-        # remove-node.yml ran but the post phase did not finish: the node is
-        # gone from the cluster and from ${DECLARED_IN}, yet still in the inventory.
+        # remove-node.yml ran but the post phase did not finish: the node is gone
+        # from the cluster and from nodes.yaml or rack-profile.yaml, yet still in
+        # the inventory.
         local unfinished
         unfinished=$(_only_in "$(_inventory_hosts)" "$(_declared_hostnames any_role)"$'\n'"$live")
         if [[ -z "$unfinished" ]]; then
@@ -1792,8 +1793,7 @@ do_remove_node() {
     fi
 
     # Kubespray takes a control-plane node out of etcd but does not update the
-    # nodes that stay (kube-apiserver --etcd-servers, every nginx-proxy). On a
-    # rack, _require_declared_nodes has refused this already.
+    # nodes that stay (kube-apiserver --etcd-servers, every nginx-proxy).
     local removed_cp; removed_cp=$(_in_both "$(_inventory_group kube_control_plane)" "$removed")
     [[ -z "$removed_cp" ]] \
         || err "remove-node only removes worker nodes: ${removed_cp//$'\n'/, } is a control-plane node.

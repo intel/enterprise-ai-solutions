@@ -29,10 +29,14 @@ GPU_WORKER = {"mgmt_ip": "172.16.0.3", "roles": ["kube_node"], "node_family": "g
               "fabric_nics": [{"nic": "ens1", "fabric_ip": "10.201.1.3", "leaf": "leaf1"}]}
 
 
+def run_script(profile, inventory_dir):
+    return subprocess.run([sys.executable, str(SCRIPT), str(profile), str(inventory_dir)],
+                          capture_output=True, text=True, timeout=60)
+
+
 def report(tmp_path, profile):
     (tmp_path / "rack-profile.yaml").write_text(yaml.safe_dump(profile))
-    result = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path / "rack-profile.yaml"), str(tmp_path / "inv")],
-                            capture_output=True, text=True, timeout=60)
+    result = run_script(tmp_path / "rack-profile.yaml", tmp_path / "inv")
     lines = [line.split("\t") for line in result.stdout.splitlines()]
     return result, lines
 
@@ -102,15 +106,13 @@ def test_an_edit_to_the_nodes_that_stay_is_reported(installed, change, expected)
 @pytest.mark.parametrize("text", ["racks: [1]\n", "site: [\n", "", "racks: {}\n"])
 def test_a_profile_that_does_not_parse_exits_2(installed, text):
     (installed / "rack-profile.yaml").write_text(text)
-    result = subprocess.run([sys.executable, str(SCRIPT), str(installed / "rack-profile.yaml"), str(installed / "inv")],
-                            capture_output=True, text=True, timeout=60)
+    result = run_script(installed / "rack-profile.yaml", installed / "inv")
     assert result.returncode == 2
     assert result.stdout == "" and result.stderr.strip()
 
 
 def test_a_missing_profile_exits_2(tmp_path):
-    result = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path / "none.yaml"), str(tmp_path)],
-                            capture_output=True, text=True, timeout=60)
+    result = run_script(tmp_path / "none.yaml", tmp_path)
     assert result.returncode == 2 and "No such file" in result.stderr
 
 
