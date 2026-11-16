@@ -2,7 +2,10 @@
 # Re-generated each run when nodes.yaml defines control_plane/workers.
 all:
     hosts:
-{% for node in _nodes_control_plane + _nodes_workers %}
+{# A node may be listed under both nodes_control_plane and nodes_workers
+   (control-plane that is also a worker); generate_hosts_from_nodes.yaml has
+   already checked such entries are identical, so render each host once. #}
+{% for node in (_nodes_control_plane + _nodes_workers) | unique %}
         {{ node.hostname }}:
             ansible_host: {{ node.ip }}
 {% if node.hostname == 'localhost' or node.ip | string is match('^(127[.]|::1$|localhost$)') %}
@@ -18,17 +21,17 @@ all:
     children:
         kube_control_plane:
             hosts:
-{% for node in _nodes_control_plane %}
+{% for node in _nodes_control_plane | unique %}
                 {{ node.hostname }}: {}
 {% endfor %}
         kube_node:
             hosts:
 {% if _nodes_workers | length > 0 %}
-{% for node in _nodes_workers %}
+{% for node in _nodes_workers | unique %}
                 {{ node.hostname }}: {}
 {% endfor %}
 {% else %}
-{% for node in _nodes_control_plane %}
+{% for node in _nodes_control_plane | unique %}
                 {{ node.hostname }}: {}
 {% endfor %}
 {% endif %}

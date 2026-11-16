@@ -24,7 +24,36 @@
 #   _nri_max_tp_size                (auto-capped by NUMA count)
 #   _nri_per_node_topology          (per-node numa/cpus/tp/pkgnode/siblings/...)
 #   _nri_topology_heterogeneous     (bool)
+#
+# Scoped mode (`_nri_scope_nodes`, from add-node): the probe runs on those
+# node(s) only, so the per-node results cover only them; install_advanced.yaml
+# skips the cluster-wide steps. Heterogeneity is compared with the nodes
+# already labelled too.
 # =============================================================================
+
+- name: "nri_cpu_balloons | advanced | Resolve node scope"
+  ansible.builtin.set_fact:
+    _nri_scope_nodes_list: "{{ _nri_scope_nodes | default([]) | list }}"
+    _nri_scoped: "{{ (_nri_scope_nodes | default([]) | length) > 0 }}"
+
+- name: "nri_cpu_balloons | advanced | Probe pod placement"
+  ansible.builtin.set_fact:
+    _nri_probe_affinity: >-
+      {{ {} if not (_nri_scoped | bool) else
+         {'nodeAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': {
+           'nodeSelectorTerms': [{'matchExpressions': [{
+             'key': 'kubernetes.io/hostname', 'operator': 'In',
+             'values': _nri_scope_nodes_list}]}]}}} }}
+
+# A merge patch would keep a node affinity an interrupted scoped run left.
+- name: "nri_cpu_balloons | advanced | Remove a topology-probe DaemonSet left by an earlier run"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: apps/v1
+    kind: DaemonSet
+    name: node-topology-optimizer
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+    wait: true
 
 - name: "nri_cpu_balloons | advanced | Ensure topology-probe DaemonSet (minimal, non-root)"
   kubernetes.core.k8s:
@@ -56,14 +85,20 @@
             # `node-role.kubernetes.io/control-plane:NoSchedule`.
             # Effect:
             #   - dedicated control-plane node (taint intact) -> NO probe
-            #     pod here -> node is not labeled, no `node.<NAME>` CR is
-            #     created, and any pre-existing stale `node.<NAME>` CR is
-            #     pruned on this run. The default BalloonsPolicy still
-            #     covers it as a safety net.
+            #     pod here -> node is not labeled and no `node.<NAME>` CR is
+            #     created (one it already has is kept). The default
+            #     BalloonsPolicy still covers it as a safety net.
             #   - single-node cluster (master taint removed) or hybrid
             #     cluster where master also runs workloads -> pod schedules
             #     normally and the node is treated like any other worker.
             #
+            affinity: "{{ _nri_probe_affinity }}"
+            # The one exception to "no tolerations": a node mid add-node
+            # carries this taint until its node.<NAME> CR exists.
+            tolerations:
+              - key: "{{ _add_node_pending_taint }}"
+                operator: Exists
+                effect: NoSchedule
             # Pod-level hardening: non-root, no privilege escalation, seccomp.
             # The UID stays fixed on OpenShift too: kube-system is exempt from
             # SCC admission there, so nothing would assign one, and busybox
@@ -100,28 +135,49 @@
                     memory: 32Mi
             restartPolicy: Always
 
-- name: "nri_cpu_balloons | advanced | Wait for probe pods Running"
+# Every probe pod, not the first one Running: a node still pulling the image
+# would get no policy. A NotReady node's pod never gets Ready, so the wait
+# gives up and the nodes probed are used; a scoped run asserts its node(s) below.
+- name: "nri_cpu_balloons | advanced | Wait for topology-probe DaemonSet full readiness"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: node-topology-optimizer
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _optimizer_ds
+  # observedGeneration: the status can lag the DaemonSet just created.
+  until: >
+    (_optimizer_ds.resources | default([]) | length) > 0
+    and (_optimizer_ds.resources[0].status.observedGeneration | default(0) | int)
+        >= (_optimizer_ds.resources[0].metadata.generation | int)
+    and (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+    and (_optimizer_ds.resources[0].status.updatedNumberScheduled | default(0) | int)
+        == (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int)
+    and (_optimizer_ds.resources[0].status.numberReady | default(0) | int)
+        == (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int)
+  retries: 30
+  delay: 5
+  failed_when: false
+
+- name: "nri_cpu_balloons | advanced | Get probe pods"
   kubernetes.core.k8s_info:
     kind: Pod
     namespace: "{{ nri_cpu_balloons.namespace }}"
     label_selectors:
       - app=node-topology-optimizer
   register: _optimizer_pods
-  until: >
-    (_optimizer_pods.resources | default([]) | length) > 0
-    and (_optimizer_pods.resources
-         | selectattr('status.phase', 'equalto', 'Running')
-         | list | length) > 0
-  retries: 30
-  delay: 5
 
+# The nodeName filter matters in scoped mode only if a DaemonSet left behind
+# by an interrupted full run still has pods on other nodes terminating.
 - name: "nri_cpu_balloons | advanced | Filter Running probe pods (one per node)"
   ansible.builtin.set_fact:
     _optimizer_running: >-
-      {{ (_optimizer_pods.resources
-          | selectattr('status.phase', 'equalto', 'Running')
-          | rejectattr('metadata.deletionTimestamp', 'defined')
-          | list) }}
+      {%- set running = _optimizer_pods.resources
+            | selectattr('status.phase', 'equalto', 'Running')
+            | rejectattr('metadata.deletionTimestamp', 'defined')
+            | list -%}
+      {{ (running | selectattr('spec.nodeName', 'in', _nri_scope_nodes_list) | list)
+         if (_nri_scoped | bool) else running }}
 
 - name: "nri_cpu_balloons | advanced | Assert at least one probe pod ready"
   ansible.builtin.assert:
@@ -129,6 +185,20 @@
       - (_optimizer_running | length) > 0
     fail_msg: >-
       No Running node-topology-optimizer pods after wait. Cannot probe topology.
+
+# Scoped mode exists to give each named node its own node.<NAME> CR; one that
+# silently got no probe pod would be left on the default CR, which is exactly
+# what this mode is meant to prevent.
+- name: "nri_cpu_balloons | advanced | Assert every scoped node was probed"
+  when: _nri_scoped | bool
+  vars:
+    _probed: "{{ _optimizer_running | map(attribute='spec.nodeName') | list }}"
+  ansible.builtin.assert:
+    that:
+      - (_nri_scope_nodes_list | difference(_probed)) | length == 0
+    fail_msg: >-
+      No Running topology-probe pod on: {{ _nri_scope_nodes_list | difference(_probed) | join(', ') }}.
+      Cannot generate a per-node BalloonsPolicy for it.
 
 - name: "nri_cpu_balloons | advanced | Pick a pod for cluster-wide tasks (first Running)"
   ansible.builtin.set_fact:
@@ -245,6 +315,43 @@
     # Heterogeneous when not all nodes share the same (numa, pcpu, tpc) tuple.
     _nri_topology_heterogeneous: "{{ (_signatures | length) > 1 }}"
     _nri_node_count: "{{ _nodes_meta | length }}"
+
+# Scoped mode: the facts above only saw the scoped node(s), so a new node that
+# differs from the existing fleet would read as homogeneous — and an operator
+# nri_reserved_cpu_list would then be broadcast onto a CPU layout it was never
+# written for. Compare against the nodes this role already labelled instead
+# (logical CPUs from node capacity; threads/core = logical / physical).
+- name: "nri_cpu_balloons | advanced | Scoped | List already-labelled nodes"
+  when: _nri_scoped | bool
+  kubernetes.core.k8s_info:
+    kind: Node
+    label_selectors:
+      - "nri.intel.com/balloons-enabled=true"
+  register: _nri_labelled_nodes
+
+- name: "nri_cpu_balloons | advanced | Scoped | Heterogeneity against existing fleet"
+  when: _nri_scoped | bool
+  vars:
+    _existing_sigs: >-
+      {%- set out = [] -%}
+      {%- for n in _nri_labelled_nodes.resources | default([]) -%}
+        {%- if n.metadata.name not in _nri_scope_nodes_list -%}
+          {%- set l = n.metadata.labels -%}
+          {%- set pcpu = l['nri.intel.com/physical-cpus'] | default(0) | int -%}
+          {%- set lcpu = n.status.capacity.cpu | default(0) | int -%}
+          {%- set _ = out.append([l['nri.intel.com/numa-nodes'] | default(0) | int, pcpu,
+                                  (lcpu // pcpu) if pcpu > 0 else 0] | join('/')) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    _scoped_sigs: >-
+      {%- set out = [] -%}
+      {%- for m in _nri_per_node_topology.values() -%}
+        {%- set _ = out.append([m.numa | int, m.physical_cpus | int, m.threads_per_core | int] | join('/')) -%}
+      {%- endfor -%}
+      {{ out }}
+  ansible.builtin.set_fact:
+    _nri_topology_heterogeneous: "{{ ((_existing_sigs + _scoped_sigs) | unique | length) > 1 }}"
 
 - name: "nri_cpu_balloons | advanced | Per-node topology summary"
   ansible.builtin.debug:

@@ -78,6 +78,15 @@ nri_reserved_cpu_list: ""
 nri_deployment_profile: "siblings"
 ```
 
+`nri_cpu_balloons` is a **platform-layer** component: `install platform` (and
+`install inference`/`install erag`, which pull in the platform layer) installs or
+re-applies it, and `teardown platform` removes it. `teardown inference` keeps
+it, because every pod on the node is placed in a balloon, not only model pods.
+Each of these installs re-applies the role, so a changed `nri_deployment_profile`
+or `nri_reserved_cpu_list` takes effect on the next one, even an `install platform`
+run for another reason. With models deployed, see
+[Reinstalling with models already deployed](#reinstalling-with-models-already-deployed) first.
+
 Install / re-apply the role only (no full cluster re-run):
 
 ```bash
@@ -330,6 +339,17 @@ design; a few are roadmap items.
   heavy system-pod load it can consume cores that would otherwise be available
   to model balloons. There is no guarantee that model cores stay untouched if
   the node is oversubscribed — plan headroom with the profile.
+
+### Adding and removing nodes
+
+- **`add-node`** creates the new node's own `node.<NAME>` BalloonsPolicy and
+  `nri.intel.com/*` labels from its probed topology. The Helm release, the
+  `default` policy and every existing node's policy and labels are left
+  untouched, so running models are not re-pinned. The new node carries a
+  `NoSchedule` taint until its policy exists, so its balloons agent never
+  starts on `default`.
+- **`remove-node`** deletes the removed node's `node.<NAME>` policy once the
+  node is gone. See [Node Scaling](node_scaling.md).
 
 ### Reinstalling with models already deployed
 

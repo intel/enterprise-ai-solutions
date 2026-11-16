@@ -10,21 +10,7 @@
 #      `nri_deployment_profile` (operator can override with
 #      `nri_reserved_cpu_list`),
 #   4. apply the chart + per-node BalloonsPolicy CRs.
-#
-# This role is CPU-only. On non-CPU accelerators it logs a skip and returns.
 # =============================================================================
-
-- name: "nri_cpu_balloons | Skip on non-CPU accelerator"
-  when: (kubernetes_accelerator | default('cpu')) != 'cpu'
-  block:
-    - name: "nri_cpu_balloons | Not CPU — skipping"
-      ansible.builtin.debug:
-        msg: >-
-          kubernetes_accelerator='{{ kubernetes_accelerator | default('cpu') }}'
-          — NRI balloons is CPU-only, nothing to do.
-
-    - name: "nri_cpu_balloons | End play"
-      ansible.builtin.meta: end_host
 
 - name: "nri_cpu_balloons | Run topology-aware install"
   ansible.builtin.include_tasks: install_advanced.yaml
