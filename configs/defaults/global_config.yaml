@@ -35,6 +35,7 @@ storage_backend: local-path               # local-path (single-node) | nfs | cep
 
 # true = teardown wipes every device above, no confirmation. Off means wiping them by hand (blkdiscard -f) before any re-install, or Ceph creates 0 OSDs.
 # rook_ceph_teardown_wipe_devices: false
+# rook_ceph_teardown_wipe_seconds_per_device: 300   # how long teardown waits for each device's wipe
 
 # --- Proxy (uncomment if behind corporate proxy) ---
 # kubernetes_service_cidr: "10.233.0.0/18"    # ClusterIP range
