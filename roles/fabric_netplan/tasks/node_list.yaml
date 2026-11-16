@@ -1,0 +1,16 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Fabric Netplan — Cluster node list (install, validate and teardown)
+# =============================================================================
+
+- name: "fabric_netplan | Compute cluster node list"
+  ansible.builtin.set_fact:
+    _fabric_all_nodes: >-
+      {{ (groups['kube_control_plane'] | default([]))
+         | union(groups['kube_node'] | default([]))
+         | union(groups.get('ceph_storage_nodes', []))
+         | reject('equalto', 'localhost')
+         | unique }}
