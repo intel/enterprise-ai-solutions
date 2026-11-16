@@ -58,8 +58,18 @@ local_path_provisioner_enabled: true
 local_path_provisioner_storage_class: "local-path"
 local_path_provisioner_is_default_storageclass: "true"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
+{% elif _resolved_storage_backend == 'nfs' %}
+# Node-local class, not the default, for scratch volumes that NFS makes slow (OpenShell sandbox workspaces)
+local_path_provisioner_enabled: true
+local_path_provisioner_storage_class: "local-path"
+local_path_provisioner_is_default_storageclass: "false"
+local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
+# The precheck raises these on this host only; Kubespray sets them on every node
+additional_sysctl:
+  - { name: fs.inotify.max_user_instances, value: 8192 }
+  - { name: fs.inotify.max_user_watches, value: 1048576 }
 # An extra-var: Kubespray's per-OS include_vars (resolved's file on Ubuntu) outrank inventory.
 # /etc/resolv.conf is Kubespray's own default on other OSes: host_resolvconf lists the
 # cluster DNS first and keeps the upstream after it, so pods still reach a real resolver.
