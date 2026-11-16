@@ -13,7 +13,6 @@
 #   name, title, doc     id, label in the report, anchor in docs/deploy/openshift.md
 #   layers               needed when the plan reaches any of these layers
 #   when                 extra gate, rendered like a component's enabled:
-#   required             false → reported as a warning only
 #   package              OLM package; its Subscription (or OLM v1 ClusterExtension)
 #                        gives the installed CSV, which must be Succeeded
 #   channel              tested channel, named in the message when the package is missing
