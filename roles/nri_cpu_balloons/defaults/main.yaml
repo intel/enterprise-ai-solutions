@@ -6,7 +6,7 @@
 # vLLM model pods can be pinned to CPU sets that respect NUMA topology and
 # expose only physical cores (hyperthreads filtered).
 #
-# This role is CPU-only. It is a no-op when kubernetes_accelerator != "cpu".
+# CPU-only: configs/components.yaml enables it only when kubernetes_accelerator is "cpu".
 # =============================================================================
 
 # Helm release coordinates

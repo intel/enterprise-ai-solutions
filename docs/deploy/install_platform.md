@@ -12,8 +12,8 @@ The installer sets up these layers automatically, in dependency order:
 
 ```
 1. Infrastructure                — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
-2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability
-3. Intel® Inference Toolkit     — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
+2. Platform                      — NRI CPU Balloons, cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability
+3. Intel® Inference Toolkit     — components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
 4. Intel® Chatbot Toolkit   — opt-in (vector DB, ingestion, chat, UI) — requires init erag + install erag
 ```
 

@@ -78,6 +78,15 @@ nri_reserved_cpu_list: ""
 nri_deployment_profile: "siblings"
 ```
 
+`nri_cpu_balloons` is a **platform-layer** component: `install platform` (and
+`install inference`/`install erag`, which pull in the platform layer) installs or
+re-applies it, and `teardown platform` removes it. `teardown inference` keeps
+it, because every pod on the node is placed in a balloon, not only model pods.
+Each of these installs re-applies the role, so a changed `nri_deployment_profile`
+or `nri_reserved_cpu_list` takes effect on the next one, even an `install platform`
+run for another reason. With models deployed, see
+[Reinstalling with models already deployed](#reinstalling-with-models-already-deployed) first.
+
 Install / re-apply the role only (no full cluster re-run):
 
 ```bash
