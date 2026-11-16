@@ -7,6 +7,15 @@ import os
 import subprocess
 
 import allure
+import pytest
+
+from conftest import cfg
+
+pytestmark = pytest.mark.skipif(
+    bool(cfg.get("existing_kubernetes")),
+    reason="the installer refuses add-node and remove-node on a BYO cluster "
+           "(existing_kubernetes is set), which is how every OpenShift deployment runs"
+)
 
 
 def _installer_root(build_config_dir):

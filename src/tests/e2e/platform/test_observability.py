@@ -22,6 +22,15 @@ NAMESPACE = "monitoring"
 UWM_NAMESPACE = "openshift-user-workload-monitoring"
 CLUSTER_MONITORING_NAMESPACE = "openshift-monitoring"
 GRAFANA = "grafana-platform"
+# The dashboards address datasources by uid, so every one of them has to reach Grafana.
+GRAFANA_DATASOURCES = ["loki", "prometheus", "tempo"]
+
+
+def synced_datasources():
+    objs = kr8s.get("grafanadatasources.grafana.integreatly.org", namespace=NAMESPACE)
+    return sorted(obj.name for obj in objs
+                  if any(c.type == "DatasourceSynchronized" and c.status == "True"
+                         for c in (obj.status.conditions or [])))
 
 
 def assert_condition(kind, name, condition, namespace=NAMESPACE):
@@ -53,6 +62,9 @@ def test_prometheus_operator_ready():
 def test_grafana_ready():
     if is_openshift():
         assert_condition("deployments", f"{GRAFANA}-deployment", "Available")
+        synced = synced_datasources()
+        assert synced == GRAFANA_DATASOURCES, \
+            f"datasources synced to Grafana: {synced or 'none'}; expected {GRAFANA_DATASOURCES}"
         return
     deploys = list(kr8s.get("deployments", namespace="monitoring",
                             field_selector={"metadata.name": "kube-prometheus-stack-grafana"}))
