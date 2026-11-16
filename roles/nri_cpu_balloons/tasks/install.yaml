@@ -5,7 +5,7 @@
 # Single install path: topology-aware multi-TP policy.
 #
 #   1. ensure node-topology-optimizer DaemonSet is running (kube-system),
-#   2. generate per-node vllm-balloon-tp{1,2,4,8} balloon types,
+#   2. generate per-node model-balloon-tp{1,2,4,8} balloon types,
 #   3. compute a NUMA-balanced reserved cpuset sized by the configured
 #      `nri_deployment_profile` (operator can override with
 #      `nri_reserved_cpu_list`),
