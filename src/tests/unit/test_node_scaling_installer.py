@@ -19,7 +19,8 @@ import sys
 import pytest
 import yaml
 
-from plugin_loader import CLOS_PROFILE as CLOS, EXAMPLE_PROFILE, write_rack_inventory
+from ansible_render import render
+from plugin_loader import CLOS_PROFILE as CLOS, EXAMPLE_PROFILE, edited, nic, write_rack_inventory
 
 INSTALLER = pathlib.Path(__file__).resolve().parents[3] / "es_auto_installer.sh"
 
@@ -27,6 +28,9 @@ pytestmark = pytest.mark.skipif(shutil.which("yq") is None, reason="the installe
 
 PENDING = "ei.intel.com/add-node-pending"
 CP_TAINT = "node-role.kubernetes.io/control-plane"
+
+POST_PHASE_STUBS = 'run() { echo "RUN $*"; }; _health_regressions() { :; }; _cluster_health_findings() { :; }; '
+PROMPT_STUBS = '_advanced_op_banner() { :; }; confirm() { echo "CONFIRM $*"; }; '
 
 FAKE_KUBECTL = """#!/bin/bash
 [[ -z "${KUBECTL_FAIL:-}" ]] || { echo "connection refused" >&2; exit 1; }
@@ -95,6 +99,10 @@ def cluster(tmp_path):
                 "children": {"kube_control_plane": group(control_plane), "etcd": group(control_plane),
                              "kube_node": group(workers or control_plane)}}}))
 
+        def pending(self, *lines):
+            """A remove-node whose post phase did not finish: "<node> <node-lost>" lines."""
+            (self.env / "remove-node.pending").write_text("".join(line + "\n" for line in lines))
+
         def config(self, **values):
             (self.env / "global_config.yaml").write_text(yaml.safe_dump(values))
 
@@ -126,7 +134,7 @@ def cluster(tmp_path):
                       f'ENV_INVENTORY_DIR="{self.env}/inventory" INVENTORY="{self.env}/inventory/hosts.yaml" '
                       f'VENV="{tmp_path / "venv"}" ACTION={action} '
                       f'DRY_RUN={str(dry_run).lower()} NODE_LOST={str(node_lost).lower()} EXTRA_VARS=()\n'
-                      f'sleep() {{ :; }}\n'
+                      f'sleep() {{ :; }}; _set_declared_in\n'
                       f'{call}\n')
             env = {"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin:{pathlib.Path(shutil.which('yq')).parent}",
                    "HOME": str(tmp_path), "FAKE": str(tmp_path)}
@@ -334,14 +342,273 @@ def test_remove_node_lost_refuses_a_ready_node(cluster):
     assert "still Ready, not lost: w2" in result.stderr
 
 
-def test_remove_node_finishes_an_unfinished_post_phase(cluster):
+def test_remove_node_finishes_a_recorded_removal(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    cluster.pending("w2 false")
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 0, result.stderr
+    assert "finishing the removal of: w2\n" in result.stdout
+    assert "would run: remove-node post phase only" in result.stdout
+
+
+def test_remove_node_takes_out_an_add_node_that_did_not_finish(cluster):
     cluster.declare(["cp1"], ["w1"])
     cluster.inventory(["cp1"], ["w1", "w2"])
     cluster.live(["cp1", "w1"])
     result = cluster.run("do_remove_node", action="remove-node")
     assert result.returncode == 0, result.stderr
-    assert "finishing the post phase for: w2" in result.stdout
+    assert "w2 is in the inventory but neither in nodes.yaml nor in the cluster: an add-node that did not finish" in result.stdout
+    assert "taken out too (run kubeadm reset -f" in result.stdout
     assert "would run: remove-node post phase only" in result.stdout
+
+
+def test_an_add_node_that_did_not_finish_is_taken_out_with_a_removal(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2", "w3"])
+    cluster.live(["cp1", "w1", "w3"])
+    result = remove_for_real(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "then take w2 out of the inventory\n" in result.stdout
+    assert "KUBESPRAY remove w3\nw2 false\nw3 false\nPOST w2,w3" in result.stdout
+
+
+def test_taking_out_an_add_node_that_did_not_finish_asks_first(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    stubs = POST_PHASE_STUBS + PROMPT_STUBS
+    result = cluster.run(stubs + "do_remove_node", action="remove-node", dry_run=False)
+    assert result.returncode == 0, result.stderr
+    assert "CONFIRM About to take w2 out of the inventory\n" in result.stdout
+    assert "-e _removed_nodes=w2 -e _lost_nodes=" in result.stdout
+
+
+def test_with_node_lost_an_add_node_that_did_not_finish_is_taken_out_as_lost(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    stubs = POST_PHASE_STUBS + PROMPT_STUBS
+    result = cluster.run(stubs + "do_remove_node", action="remove-node", dry_run=False, node_lost=True)
+    assert result.returncode == 0, result.stderr
+    assert "CONFIRM About to take w2 out of the inventory\n" in result.stdout
+    assert "-e _removed_nodes=w2 -e _lost_nodes=w2" in result.stdout
+
+
+@pytest.mark.parametrize("record, node_lost, note", [
+    (["w2 false"], False, " with its fabric"),
+    (["w2 true"], False, " (--node-lost: its fabric is left as it is)"),
+    (["w2 false", "w3 true"], False, " with its fabric, except on w3 (--node-lost)"),
+    (["w2 false"], True, " (--node-lost: its fabric is left as it is)"),
+])
+def test_the_prompt_says_which_fabric_is_taken_down_on_a_rack(cluster, record, node_lost, note):
+    cluster.rack(CLOS, CLOS)
+    cluster.pending(*record)
+    nodes = " ".join(line.split()[0] for line in record)
+    result = cluster.run(f'_fabric_note "$(printf "%s\\n" {nodes})"', action="remove-node", node_lost=node_lost)
+    assert result.stdout == note + "\n", result.stdout
+
+
+def test_the_prompt_does_not_mention_a_fabric_on_a_nodes_yaml_env(cluster):
+    assert cluster.run('_fabric_note w2', action="remove-node").stdout == ""
+
+
+def test_add_node_and_remove_node_run_the_kubernetes_role_with_its_fabric_steps_on_a_rack(cluster):
+    assert "-e target=kubernetes -e _node_scaling_rack=false \n" in cluster.run('v=(); _node_scaling_vars v; printf "%s " "${v[@]}"; echo').stdout
+    cluster.rack(CLOS, CLOS)
+    result = cluster.run('v=(); _node_scaling_vars v; printf "%s " "${v[@]}"; echo')
+    assert "-e target=kubernetes -e _node_scaling_rack=true -e _include_deps=false \n" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "on", "1", "t", "y", "false", "no", "n", "0"])
+def test_the_installer_reads_rack_scale_enabled_as_ansible_does(cluster, value):
+    (cluster.env / "global_config.yaml").write_text("rack_scale_enabled: %s\n" % value)
+    result = cluster.run("_rack_scale_enabled && echo rack || echo nodes.yaml")
+    expected = render("{{ v | bool }}", {"v": yaml.safe_load("v: %s" % value)["v"]})
+    assert result.stdout == ("rack\n" if expected else "nodes.yaml\n"), result.stderr
+
+
+@pytest.mark.parametrize("extra, refused", [
+    ("-e rack_scale_enabled=false", True),
+    ("-e '{\"rack_scale_enabled\": false}'", True),
+    ("-e @rack_scale_enabled_lab.yml", False),
+    ("-e rack_scale_enabled_x=1", False),
+])
+def test_add_node_and_remove_node_refuse_rack_scale_enabled_after_the_double_dash(cluster, extra, refused):
+    result = cluster.run(f'EXTRA_VARS=({extra}); v=(); _node_scaling_vars v', action="add-node")
+    assert (result.returncode == 1) == refused, result.stderr
+    assert ("add-node reads rack_scale_enabled from env/t/global_config.yaml: set it there" in result.stderr) == refused
+
+
+@pytest.mark.parametrize("action, only, target, byo, refused", [
+    ("install", "false", "platform", "false", True),
+    ("install", "true", "kubernetes", "false", True),
+    ("install", "true", "fabric_inventory", "false", True),
+    ("install", "true", "gpu_observability", "false", False),
+    ("install", "false", "platform", "true", False),
+    ("teardown", "false", "platform", "false", False),
+])
+def test_an_install_that_renders_the_inventory_refuses_during_a_removal(cluster, action, only, target, byo, refused):
+    cluster.pending("w2 false")
+    result = cluster.run(f"ONLY={only} TARGET={target} IS_BYO={byo}; _install_guard", action=action)
+    assert (result.returncode == 1) == refused, result.stderr
+    assert (f"{action}: the removal of w2 did not finish" in result.stderr) == refused
+
+
+def test_add_node_refuses_while_a_removal_is_unfinished(cluster):
+    cluster.declare(["cp1"], ["w1", "w3"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    cluster.pending("w2 false")
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "add-node: the removal of w2 did not finish" in result.stderr
+
+
+def test_add_node_refuses_while_an_add_node_that_did_not_finish_is_in_the_inventory(cluster):
+    cluster.declare(["cp1"], ["w1", "w3"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "add-node: w2 is in the inventory but neither in env/t/nodes.yaml nor in the cluster" in result.stderr
+
+
+def test_remove_node_refuses_a_new_removal_while_one_is_unfinished(cluster):
+    cluster.declare(["cp1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    cluster.pending("w2 false")
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 1
+    assert "the removal of w2 did not finish" in result.stderr
+    assert "Put w1 back in nodes.yaml" in result.stderr
+
+
+def test_a_resumed_removal_keeps_its_node_lost(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    cluster.pending("w2 true")
+    result = cluster.run(POST_PHASE_STUBS + "do_remove_node", action="remove-node", dry_run=False)
+    assert result.returncode == 0, result.stderr
+    assert "-e _removed_nodes=w2 -e _lost_nodes=w2" in result.stdout
+    assert not (cluster.env / "remove-node.pending").exists()
+
+
+def remove_for_real(cluster, dry_run=False, node_lost=False):
+    """do_remove_node past its checks: the placement simulation finds nothing, and
+    Kubespray and the post phase print what they get."""
+    python = cluster.env.parent / "venv" / "bin" / "python3"
+    python.unlink()
+    python.write_text("#!/bin/bash\nexit 0\n")
+    python.chmod(0o755)
+    stubs = (PROMPT_STUBS + 'run() { :; }; '
+             'run_kubespray() { echo "KUBESPRAY $*"; cat "$ENV_DIR/remove-node.pending"; }; '
+             '_remove_node_post() { echo "POST $(_pending_removals | paste -sd, -)"; }; ')
+    return cluster.run(stubs + "do_remove_node", action="remove-node", dry_run=dry_run, node_lost=node_lost)
+
+
+def test_remove_node_records_the_removal_before_remove_node_yml(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1", "w2"])
+    result = remove_for_real(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "KUBESPRAY remove w2\nw2 false\nPOST w2" in result.stdout
+
+
+def test_a_resumed_removal_finishes_every_recorded_node(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2", "w3"])
+    cluster.live(["cp1", "w1", "w3"])
+    cluster.pending("w2 false", "w3 false")
+    result = remove_for_real(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "KUBESPRAY remove w3\nw2 false\nw3 false\nPOST w2,w3" in result.stdout
+
+
+def test_a_recorded_lost_node_that_came_back_is_removed_as_this_run_says(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1", "w2"])
+    cluster.pending("w2 true")
+    result = remove_for_real(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "KUBESPRAY remove w2\nw2 false\nPOST w2" in result.stdout
+
+
+def test_a_finishing_rerun_with_node_lost_skips_the_lost_nodes_fabric(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    cluster.pending("w2 false")
+    result = cluster.run(POST_PHASE_STUBS + "do_remove_node", action="remove-node", dry_run=False, node_lost=True)
+    assert result.returncode == 0, result.stderr
+    assert "-e _removed_nodes=w2 -e _lost_nodes=w2" in result.stdout
+
+
+@pytest.mark.parametrize("ssh, refusal", [
+    ("return 1", "w2 is in nodes.yaml again, but has no /etc/kubernetes/kubelet.conf or no running kubelet: remove-node.yml may have reset it"),
+    ("echo 'ssh: connect to host w2: No route to host'; return 255",
+     "w2 is in nodes.yaml again, but cannot be reached to check that Kubespray has not reset it: ssh: connect"),
+])
+def test_a_reset_or_unreachable_node_declared_again_is_not_called_off(cluster, ssh, refusal):
+    cluster.declare(["cp1"], ["w1", "w2"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1", "w2"])  # a reset node can read Ready for a while
+    cluster.pending("w2 false")
+    result = cluster.run(f"_ssh_node() {{ {ssh}; }}; do_remove_node", action="remove-node", dry_run=False)
+    assert result.returncode == 1
+    assert refusal in result.stderr
+    assert (cluster.env / "remove-node.pending").exists()
+
+
+def test_a_dry_run_names_only_the_removal_left_after_calling_one_off(cluster):
+    cluster.declare(["cp1"], ["w2"])
+    cluster.inventory(["cp1"], ["w1", "w2", "w3"])
+    cluster.live(["cp1", "w1", "w2"])
+    cluster.pending("w2 false", "w3 false")
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 1
+    assert "w2 is in nodes.yaml again: its removal would be called off" in result.stdout
+    assert "the removal of w3 did not finish" in result.stderr and "Put w1 back" in result.stderr
+
+
+def test_a_dry_run_shows_the_recorded_nodes_the_post_phase_takes_too(cluster):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1", "w2", "w3"])
+    cluster.live(["cp1", "w1", "w3"])
+    cluster.pending("w2 false", "w3 false")
+    result = remove_for_real(cluster, dry_run=True)
+    assert result.returncode == 0, result.stderr
+    assert "then the post phase for these too: w2\n" in result.stdout
+
+
+def test_the_kubernetes_reset_deletes_the_removal_record(cluster):
+    cluster.pending("w2 false")
+    fake = cluster.env.parent / "repo"
+    (fake / ".kubespray" / "venv").mkdir(parents=True)
+    (fake / ".kubespray" / "cluster.yml").touch()
+    call = f'SCRIPT_DIR="{fake}"; _ks_playbook() {{ :; }}; '
+    assert cluster.run(call + "run_kubespray remove w2", action="remove-node").returncode == 0
+    assert (cluster.env / "remove-node.pending").exists()
+    result = cluster.run(call + "run_kubespray teardown", action="teardown")
+    assert result.returncode == 0, result.stderr
+    assert not (cluster.env / "remove-node.pending").exists()
+
+
+def test_a_recorded_node_declared_again_calls_its_removal_off(cluster):
+    cluster.declare(["cp1"], ["w1", "w2"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1", "w2"])
+    cluster.pending("w2 false")
+    result = cluster.run("do_remove_node", action="remove-node", dry_run=False)
+    assert result.returncode == 0, result.stderr
+    assert "w2 is in nodes.yaml again: its removal is called off" in result.stdout
+    assert "nothing to do" in result.stdout
+    assert not (cluster.env / "remove-node.pending").exists()
 
 
 def test_remove_node_with_nothing_to_remove(cluster):
@@ -412,17 +679,7 @@ def test_pdbs_that_cannot_be_listed_fail_the_check(cluster):
 
 def rack_node(name, ip, *roles, **extra):
     return name, {"mgmt_ip": "172.16.0.%d" % ip, "roles": list(roles),
-                  "fabric_nics": [{"nic": "ens1", "fabric_ip": "10.201.1.%d" % ip, "leaf": "leaf1"}], **extra}
-
-
-def edited(profile, add=(), remove=(), **network):
-    out = copy.deepcopy(profile)
-    nodes = out["racks"]["r1"]["nodes"]
-    nodes.update(dict(add))
-    for name in remove:
-        del nodes[name]
-    out["network"].update(network)
-    return out
+                  "fabric_nics": [nic("ens1", "10.201.1.%d" % ip, "leaf1")], **extra}
 
 
 def test_rack_add_node_takes_the_new_worker_from_the_profile(cluster):
@@ -498,21 +755,12 @@ def test_rack_remove_node_refuses_a_storage_node(cluster):
     assert "s2 is an etcd or storage node" in result.stderr
 
 
-def test_rack_remove_node_refuses_a_control_plane_node(cluster):
+@pytest.mark.parametrize("live", [["cp1", "cp2", "cp3", "w1"], ["cp1", "cp2", "w1"]])
+def test_rack_remove_node_refuses_a_control_plane_node(cluster, live):
     three = edited(CLOS, add=[rack_node("cp2", 4, "kube_control_plane", "etcd"),
                               rack_node("cp3", 5, "kube_control_plane", "etcd")])
     cluster.rack(three, edited(three, remove=["cp3"]))
-    cluster.live(["cp1", "cp2", "cp3", "w1"])
-    result = cluster.run("do_remove_node", action="remove-node")
-    assert result.returncode == 1
-    assert "cp3 is a control-plane node" in result.stderr
-
-
-def test_rack_refuses_a_control_plane_node_gone_from_the_cluster_and_the_profile(cluster):
-    three = edited(CLOS, add=[rack_node("cp2", 4, "kube_control_plane", "etcd"),
-                              rack_node("cp3", 5, "kube_control_plane", "etcd")])
-    cluster.rack(three, edited(three, remove=["cp3"]))
-    cluster.live(["cp1", "cp2", "w1"])
+    cluster.live(live)
     result = cluster.run("do_remove_node", action="remove-node")
     assert result.returncode == 1
     assert "cp3 is a control-plane node" in result.stderr
@@ -526,6 +774,59 @@ def test_rack_remove_node_targets_the_worker_deleted_from_the_profile(cluster):
     assert "still Ready, not lost: w1" in result.stderr
 
 
+@pytest.mark.parametrize("change", [{"mgmt_ip": "172.16.0.9"}, {"roles": ["etcd", "kube_node"]}])
+def test_rack_add_node_refuses_an_edit_to_an_etcd_only_node(cluster, change):
+    e1 = rack_node("e1", 6, "etcd")
+    cluster.rack(edited(CLOS, add=[e1]), edited(CLOS, add=[(e1[0], {**e1[1], **change})]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "the rack-profile.yaml edit also changes the nodes that stay:\n  e1: " in result.stderr
+
+
+@pytest.mark.parametrize("change", [{"roles": ["kube_node", "etcd"]}, {"mgmt_ip": "172.16.0.9"}])
+def test_rack_add_node_refuses_an_edit_to_an_add_node_that_did_not_finish(cluster, change):
+    w2 = rack_node("w2", 3, "kube_node")
+    cluster.rack(edited(CLOS, add=[w2]), edited(CLOS, add=[(w2[0], {**w2[1], **change})]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "edit changes an add-node that did not finish (in the inventory, not in the cluster):\n  w2: " in result.stderr
+
+
+@pytest.mark.parametrize("action, call", [("add-node", "do_add_node"), ("remove-node", "do_remove_node"),
+                                          ("install", "ONLY=false TARGET=platform IS_BYO=false; _install_guard")])
+def test_a_removal_record_that_cannot_be_read_fails_the_run(cluster, action, call):
+    cluster.declare(["cp1"], ["w1"])
+    cluster.inventory(["cp1"], ["w1"])
+    cluster.live(["cp1", "w1"])
+    (cluster.env / "remove-node.pending").mkdir()
+    result = cluster.run(call, action=action)
+    assert result.returncode != 0
+    assert "cannot read env/t/remove-node.pending" in result.stderr
+
+
+@pytest.mark.parametrize("node_lost, hint", [(False, "add --node-lost if it cannot be reached"), (True, "")])
+def test_a_rack_remove_node_suggests_node_lost_unless_it_was_given(cluster, node_lost, hint):
+    three = edited(CLOS, add=[rack_node("w2", 3, "kube_node"), rack_node("w3", 4, "kube_node")])
+    cluster.rack(three, edited(three, remove=["w2", "w3"]))
+    cluster.live(["cp1", "w1"])
+    cluster.pending("w3 false")
+    result = cluster.run("do_remove_node", action="remove-node", node_lost=node_lost)
+    assert result.returncode == 0, result.stderr
+    assert "finishing the removal of: w3%s\n" % (" (%s)" % hint if hint else "") in result.stdout
+    assert "an add-node that did not finish, taken out too (%srun kubeadm reset -f" % (hint + "; " if hint else "") in result.stdout
+
+
+def test_the_node_lost_hint_for_an_add_node_that_did_not_finish_is_given_on_its_own(cluster):
+    two = edited(CLOS, add=[rack_node("w2", 3, "kube_node"), rack_node("w3", 4, "kube_node")])
+    cluster.rack(two, edited(two, remove=["w2", "w3"]))
+    cluster.live(["cp1", "w1", "w3"])
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert "w2 is in the inventory but neither in rack-profile.yaml nor in the cluster" in result.stdout, result.stderr
+    assert "--node-lost if it cannot be reached" not in result.stdout
+
+
 def test_rack_remove_node_leaves_etcd_only_nodes_alone(cluster):
     etcd = edited(CLOS, add=[rack_node("e1", 6, "etcd"), rack_node("e2", 7, "etcd")])
     cluster.rack(etcd, etcd)
@@ -535,32 +836,24 @@ def test_rack_remove_node_leaves_etcd_only_nodes_alone(cluster):
     assert "nothing to do" in result.stdout
 
 
-def test_add_node_refuses_while_a_removal_is_unfinished(cluster):
-    cluster.declare(["cp1"], ["w1", "w3"])
-    cluster.inventory(["cp1"], ["w1", "w2"])
-    cluster.live(["cp1", "w1"])
-    result = cluster.run("do_add_node")
-    assert result.returncode == 1
-    assert "neither in env/t/nodes.yaml nor in the cluster: w2" in result.stderr
-
-
 def test_rack_add_node_refuses_while_a_removal_is_unfinished(cluster):
     two = edited(CLOS, add=[rack_node("w2", 3, "kube_node")])
     cluster.rack(two, edited(two, remove=["w2"], add=[rack_node("w3", 4, "kube_node")]))
     cluster.live(["cp1", "w1"])
+    cluster.pending("w2 false")
     result = cluster.run("do_add_node")
     assert result.returncode == 1
-    assert "neither in env/t/rack-profile.yaml nor in the cluster: w2" in result.stderr
+    assert "add-node: the removal of w2 did not finish" in result.stderr
 
 
 def test_rack_remove_node_finishes_an_unfinished_post_phase(cluster):
     two = edited(CLOS, add=[rack_node("w2", 3, "kube_node")])
     cluster.rack(two, edited(two, remove=["w2"]))
     cluster.live(["cp1", "w1"])
+    cluster.pending("w2 false")
     result = cluster.run("do_remove_node", action="remove-node")
     assert result.returncode == 0, result.stderr
-    assert "finishing the post phase for: w2" in result.stdout
-    assert "removed with --node-lost, re-run with --node-lost" in result.stdout
+    assert "finishing the removal of: w2 (add --node-lost if it cannot be reached)\n" in result.stdout
 
 
 def test_rack_refuses_a_star_rack(cluster):
@@ -574,6 +867,7 @@ def test_rack_refuses_a_star_rack(cluster):
 def test_rack_refuses_nodes_in_nodes_yaml(cluster):
     cluster.rack(CLOS, CLOS)
     cluster.declare(["cp1"], ["w1"])
+    cluster.live(["cp1", "w1"])
     result = cluster.run("do_add_node")
     assert result.returncode == 1
     assert "takes them from rack-profile.yaml" in result.stderr
@@ -582,6 +876,7 @@ def test_rack_refuses_nodes_in_nodes_yaml(cluster):
 def test_rack_refuses_a_profile_that_does_not_parse(cluster):
     cluster.rack(CLOS, CLOS)
     (cluster.env / "rack-profile.yaml").write_text("racks: [1]\n")
+    cluster.live(["cp1", "w1"])
     result = cluster.run("do_add_node")
     assert result.returncode == 1
     assert "cannot read env/t/rack-profile.yaml or its inventory (env/t/inventory)" in result.stderr

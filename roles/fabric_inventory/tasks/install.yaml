@@ -201,7 +201,7 @@
 
 # ── Register parsed nodes into the running inventory ────────────────────────
 
-- name: "fabric_inventory | Register cluster nodes into running inventory"
+- name: "fabric_inventory | Register the hosts (register_hosts.yaml)"
   ansible.builtin.include_tasks: register_hosts.yaml
 
 - name: "fabric_inventory | Report registered groups"

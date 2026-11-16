@@ -152,7 +152,7 @@
   ansible.builtin.meta: end_role
 
 # =====================================================================
-# PHASE: prep — regenerate inventory from nodes.yaml
+# PHASE: prep — regenerate the inventory (nodes.yaml, or on a rack rack-profile.yaml)
 # =====================================================================
 
 - name: "kubernetes | add-node | Ensure kubespray stack"
@@ -162,18 +162,18 @@
   ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
   when: not (rack_scale_enabled | default(false) | bool)
 
-# The play loaded the inventory before nodes.yaml rewrote it: without a reload,
-# delegate_to resolves a new node by DNS instead of its ansible_host. (A rack's
-# inventory is written further down, and fabric_inventory registers its nodes.)
+# On nodes.yaml the inventory was just rewritten, and the play loaded it before:
+# without a reload, delegate_to resolves a new node by DNS instead of its
+# ansible_host. On a rack nothing is rewritten yet, and the reload changes nothing.
 - name: "kubernetes | add-node | Reload inventory to pick up newly added node(s)"
   ansible.builtin.meta: refresh_inventory
 
 - name: "kubernetes | add-node | Detect SSH requirement from the new inventory"
   ansible.builtin.include_tasks: needs_ssh.yaml
 
-# A rack's inventory is written only after the refusals below: a refused node
-# left in it would read to remove-node as an unfinished removal. Until then the
-# new node(s) are registered in memory from the parsed rack-profile.yaml.
+# A rack's inventory and fabric are written only after the already-joined and
+# Docker refusals below, so a node they refuse is in neither. Until then the new
+# node(s) are registered in memory from the parsed rack-profile.yaml.
 - name: "kubernetes | add-node | Rack-scale | Reach the new node(s) over SSH"
   ansible.builtin.include_role:
     name: fabric_inventory
@@ -234,11 +234,13 @@
         name: fabric_sysctl
         tasks_from: install.yaml
 
-# access_ip: on a rack with control_plane_on_fabric, nodes reach the API
-# server over the fabric.
+# On a rack with control_plane_on_fabric the inventory's access_ip is the fabric
+# address the nodes reach the API server at.
 - name: "kubernetes | add-node | SSH pre-flight | Check control-plane API server reachability from new node(s)"
+  vars:
+    _cp: "{{ hostvars[groups['kube_control_plane'][0]] }}"
   ansible.builtin.wait_for:
-    host: "{{ hostvars[groups['kube_control_plane'][0]].access_ip | default(hostvars[groups['kube_control_plane'][0]].ansible_host) }}"
+    host: "{{ _cp.access_ip | default(_cp.ansible_host) }}"
     port: 6443
     timeout: 10
   delegate_to: "{{ item }}"

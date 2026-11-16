@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 """Setup shared by the filter-plugin unit tests."""
+import copy
 import importlib.util
 import pathlib
 
@@ -10,11 +11,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 EXAMPLE_PROFILE = yaml.safe_load((ROOT / "configs" / "defaults" / "rack-profile.yaml.example").read_text())
 
 
-def _nic(name, ip, leaf):
+def nic(name, ip, leaf):
     return {"nic": name, "fabric_ip": ip, "leaf": leaf}
 
 
-# A Clos rack: a control-plane/storage node and a worker on two leaves.
 CLOS_PROFILE = {
     "site": {"name": "test"},
     "network": {
@@ -25,9 +25,9 @@ CLOS_PROFILE = {
     "access": {"ansible_user": "ops", "ansible_ssh_private_key_file": "~/.ssh/rack"},
     "racks": {"r1": {"nodes": {
         "cp1": {"hostname": "host-cp1", "mgmt_ip": "172.16.0.1", "roles": ["kube_control_plane", "etcd", "storage"],
-                "fabric_nics": [_nic("ens1", "10.201.1.1", "leaf1")]},
+                "fabric_nics": [nic("ens1", "10.201.1.1", "leaf1")]},
         "w1": {"mgmt_ip": "172.16.0.2", "roles": ["kube_node"],
-               "fabric_nics": [_nic("ens1", "10.201.1.2", "leaf1"), _nic("ens2", "10.202.1.2", "leaf2")]},
+               "fabric_nics": [nic("ens1", "10.201.1.2", "leaf1"), nic("ens2", "10.202.1.2", "leaf2")]},
     }}},
     "storage": {"nodes": [{"name": "cp1", "devices": ["nvme1n1"]}]},
 }
@@ -38,6 +38,17 @@ def load_plugin(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def edited(profile, add=(), remove=(), **network):
+    """A copy of <profile> with nodes (name, node) added to rack r1, nodes removed, and network keys set."""
+    out = copy.deepcopy(profile)
+    nodes = out["racks"]["r1"]["nodes"]
+    nodes.update(dict(add))
+    for name in remove:
+        del nodes[name]
+    out["network"].update(network)
+    return out
 
 
 def write_rack_inventory(profile, inventory_dir):

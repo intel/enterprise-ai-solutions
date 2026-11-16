@@ -15,6 +15,11 @@
   ansible.builtin.set_fact:
     _gpu_added: "{{ _added_nodes_list | select('in', groups.get('gpu_nodes', [])) | list }}"
 
+- name: "nvidia_gpu_operator | add-node | GPUs wanted on each new GPU node"
+  ansible.builtin.set_fact:
+    _gpu_wanted: "{{ _gpu_wanted | default({}) | combine({item: hostvars[item].node_gpu_count | default(1) | int}) }}"
+  loop: "{{ _gpu_added }}"
+
 - name: "nvidia_gpu_operator | add-node | GPU node(s) of another vendor"
   ansible.builtin.debug:
     msg: >-
@@ -31,7 +36,6 @@
   environment:
     KUBECONFIG: "{{ kubernetes_kubeconfig }}"
   block:
-    # The taint is already lifted: a re-run of add-node finds nothing to do.
     - name: "nvidia_gpu_operator | add-node | The rack's GPU stack"
       block:
         - name: "nvidia_gpu_operator | add-node | Find the operator release"
@@ -97,7 +101,7 @@
       until: >-
         (_gpu_node.resources | default([]) | length) > 0
         and (_gpu_node.resources[0].status.allocatable['nvidia.com/gpu'] | default(0) | int)
-            >= (hostvars[item].node_gpu_count | default(1) | int)
+            >= _gpu_wanted[item]
       retries: 60
       delay: 30
       failed_when: false
@@ -108,11 +112,11 @@
       vars:
         _node: "{{ item.resources | default([]) | first | default({}) }}"
         _allocatable: "{{ ((_node.status | default({})).allocatable | default({}))['nvidia.com/gpu'] | default(0) | int }}"
-        _wanted: "{{ hostvars[item.item].node_gpu_count | default(1) | int }}"
+        _wanted: "{{ _gpu_wanted[item.item] }}"
       ansible.builtin.fail:
         msg: >-
           {{ item.item }} is in the cluster, but {{ _allocatable }} of its {{ _wanted }} GPU(s)
-          are allocatable after 30 minutes. Check the operator's pods on it:
+          are allocatable after 30 minutes{{ (' (the last check failed: ' ~ item.msg ~ ')') if item.resources is not defined and item.msg is defined else '' }}. Check the operator's pods on it:
           kubectl -n {{ nvidia_gpu_operator_namespace }} get pods -o wide --field-selector spec.nodeName={{ item.item }}.
           They keep reconciling; re-check with ./es_auto_installer.sh validate --env {{ env_name }} nvidia_gpu_operator.
       loop: "{{ _gpu_node.results | default([]) }}"

@@ -120,6 +120,21 @@
   loop_control:
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
 
+# ── Node scaling: rack_scale_enabled as the installer read it ────────────────
+# es_auto_installer.sh works out the node changes (and refuses a rack's
+# unsupported ones) from global_config.yaml; a run that overrides it, or does
+# not come through the installer, would render the inventory from another source.
+
+- name: "Preflight - Node scaling: refuse a rack_scale_enabled the installer did not read"
+  ansible.builtin.fail:
+    msg: >-
+      {{ component_action }} on a rack-scale env runs through es_auto_installer.sh, which reads
+      rack_scale_enabled from global_config.yaml{{ (' (it read ' ~ _node_scaling_rack ~ ')') if _node_scaling_rack is defined else '' }};
+      this run has {{ rack_scale_enabled | default(false) | bool | lower }}. Set it in global_config.yaml only.
+  when:
+    - component_action | default('install') in ['add-node', 'remove-node']
+    - (rack_scale_enabled | default(false) | bool) != (_node_scaling_rack | default(false) | bool)
+
 # ── Rack scale: profile facts (every action) ─────────────────────────────────
 # The GPU and fabric_validate roles gate on these facts in validate and
 # teardown as well, and a --only run never reaches fabric_inventory.
