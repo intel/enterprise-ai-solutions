@@ -1235,9 +1235,10 @@ run() {
 # JSON: a key=value is a string, which ansible-core 2.19 rejects in a conditional.
 _kubespray_args() {
     local action="$1" nodes="${2:-}" ks_dir="${SCRIPT_DIR}/.kubespray"
-    KS_PB="$ks_dir/cluster.yml" KS_ARGS=()
+    # --flush-cache: facts are cached per host name for a day, so a name reused for another machine gets the old IP
+    KS_PB="$ks_dir/cluster.yml" KS_ARGS=(--flush-cache)
     case "$action" in
-        teardown) KS_PB="$ks_dir/reset.yml";       KS_ARGS=(-e '{"reset_confirmation": true}') ;;
+        teardown) KS_PB="$ks_dir/reset.yml";       KS_ARGS=(--flush-cache -e '{"reset_confirmation": true}') ;;
         scale)    KS_PB="$ks_dir/scale.yml"
                   # Register only the new node(s) with the pending taint (see
                   # ADD_NODE_PENDING_TAINT). Templated per host, so the
@@ -2232,6 +2233,8 @@ main() {
         fi
         run site "${vars[@]}" -e "target=kubernetes" -e "_kubespray_prep_only=true" -e "_include_deps=false" "${EXTRA_VARS[@]}"
         run_kubespray teardown
+        # reset.yml deletes kubectl/helm from bin_dir, which is /usr/local/bin on multi-node: put them back
+        _install_kubectl; _install_helm
         run site "${vars[@]}" -e "target=kubernetes" -e "component_action=teardown" -e "_include_deps=false" "${EXTRA_VARS[@]}"
         if [[ "$TARGET" != "kubernetes" ]]; then
             run site "${vars[@]}" -e "_skip_components=kubernetes${SKIP:+,${SKIP}}" \

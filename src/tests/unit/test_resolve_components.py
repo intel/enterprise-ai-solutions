@@ -5,6 +5,7 @@ import importlib.util
 import pathlib
 
 import pytest
+import yaml
 
 _PLUGIN = pathlib.Path(__file__).resolve().parents[3] / "filter_plugins" / "resolve_components.py"
 _spec = importlib.util.spec_from_file_location("resolve_components", _PLUGIN)
@@ -93,3 +94,23 @@ def test_disabled_components_and_component_deps():
 def test_filters_are_registered():
     assert set(_mod.FilterModule().filters()) == {
         "resolve_components", "disabled_components", "component_deps"}
+
+
+# The real registry. enabled: is a Jinja expression there, so every component counts as enabled.
+_REGISTRY = yaml.safe_load((_PLUGIN.parents[1] / "configs" / "components.yaml").read_text())
+
+
+def resolve_registry(target, action):
+    components = [dict(c, enabled=True) for c in _REGISTRY["components"]]
+    return [c["name"] for c in _mod.resolve_components(components, _REGISTRY["layers"], target, action=action)]
+
+
+def test_teardown_inference_keeps_nri_cpu_balloons():
+    assert "nri_cpu_balloons" not in resolve_registry("inference", "teardown")
+    assert "nri_cpu_balloons" in resolve_registry("platform", "teardown")
+
+
+def test_install_platform_runs_nri_cpu_balloons_before_the_platform_services():
+    order = [n for n in resolve_registry("platform", "install")
+             if n in {c["name"] for c in _REGISTRY["components"] if c["layer"] == "platform"}]
+    assert set(order[:order.index("nri_cpu_balloons")]) == {"node_feature_discovery", "nvidia_gpu_operator"}

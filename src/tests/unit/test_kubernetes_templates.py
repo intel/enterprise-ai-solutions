@@ -68,3 +68,32 @@ def test_kubelet_uses_resolved_file_only_behind_its_stub(nameservers, expected):
 
 def test_kubelet_resolv_conf_without_dns_facts():
     assert kube_resolv_conf({}) == _ETC
+
+
+_EXTRA_AUTO_VARS = {
+    "env_dir": "/env", "playbook_dir": "/playbooks", "kubernetes_version": "v1", "kubernetes_cni": "calico",
+    "kubernetes_container_manager": "containerd", "kubernetes_cluster_cidr": "pods", "kubernetes_service_cidr": "services",
+    "kubernetes_dns_mode": "coredns", "kubernetes_kube_proxy_mode": "iptables", "_k8s_needs_ssh": False,
+    "kubespray_bin_dir_local": "/kubespray/bin", "kubernetes_accelerator": "cpu", "kubernetes_apiserver_authn_enabled": False,
+}
+
+
+def extra_auto(**overrides):
+    text = render((_TEMPLATES / "kubespray_extra_auto.yml.j2").read_text(), {**_EXTRA_AUTO_VARS, **overrides})
+    return yaml.safe_load(text)
+
+
+@pytest.mark.parametrize("backend, is_default", [("local-path", "true"), ("nfs", "false")])
+def test_local_path_class(backend, is_default):
+    values = extra_auto(_resolved_storage_backend=backend)
+    assert values["local_path_provisioner_enabled"] is True
+    assert values["local_path_provisioner_is_default_storageclass"] == is_default
+
+
+def test_no_local_path_class_on_other_backends():
+    assert "local_path_provisioner_enabled" not in extra_auto(_resolved_storage_backend="ceph")
+
+
+def test_inotify_limits_on_every_node():
+    sysctl = {item["name"]: item["value"] for item in extra_auto()["additional_sysctl"]}
+    assert sysctl == {"fs.inotify.max_user_instances": 8192, "fs.inotify.max_user_watches": 1048576}

@@ -269,8 +269,8 @@ def test_kubespray_args(cluster):
                          'echo "$(basename $KS_PB) ${KS_ARGS[*]}"; done; '
                          'NODE_LOST=true; _kubespray_args remove w1; echo "lost ${KS_ARGS[*]}"')
     lines = result.stdout.splitlines()
-    assert lines[0] == "cluster.yml "
-    assert lines[1] == 'reset.yml -e {"reset_confirmation": true}'
+    assert lines[0] == "cluster.yml --flush-cache"
+    assert lines[1] == 'reset.yml --flush-cache -e {"reset_confirmation": true}'
     assert lines[2].startswith("scale.yml --limit=w1,w2,kube_control_plane -e ")
     taint = json.loads(lines[2].split(" -e ", 1)[1])["kubelet_config_extra_args"]
     assert "'key': '%s', 'effect': 'NoSchedule'" % PENDING in taint and "('w1,w2' | split(','))" in taint

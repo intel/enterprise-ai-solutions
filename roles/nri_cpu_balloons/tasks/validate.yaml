@@ -3,18 +3,6 @@
 # NRI CPU Balloons — Validate
 # =============================================================================
 
-- name: "nri_cpu_balloons | Skip on non-CPU accelerator"
-  when: (kubernetes_accelerator | default('cpu')) != 'cpu'
-  block:
-    - name: "nri_cpu_balloons | Not CPU — nothing to validate"
-      ansible.builtin.debug:
-        msg: >-
-          kubernetes_accelerator='{{ kubernetes_accelerator | default('cpu') }}'
-          — skipping validation.
-
-    - name: "nri_cpu_balloons | End host"
-      ansible.builtin.meta: end_host
-
 - name: "nri_cpu_balloons | Check Helm release"
   kubernetes.core.helm_info:
     name: "{{ nri_cpu_balloons.helm.release_name }}"
@@ -87,8 +75,9 @@
       {% set mtp = lbl.get('nri.intel.com/max-tp', '-') %}
       {% set numa = lbl.get('nri.intel.com/numa-nodes', '-') %}
       {% set pcpu = lbl.get('nri.intel.com/physical-cpus', '-') %}
+      {% set numacpus = 'yes' if 'nri.intel.com/numa-cpus' in (n.metadata.annotations | default({})) else 'no' %}
       {% if mtp != '-' %}{% set ns.labeled = ns.labeled + 1 %}{% if (mtp | int) > ns.best %}{% set ns.best = mtp | int %}{% endif %}{% else %}{% set ns.unlabeled = ns.unlabeled + 1 %}{% endif %}
-        - {{ '%-40s' | format(n.metadata.name) }}  enabled={{ enabled }}  max-tp={{ mtp }}  numa={{ numa }}  pcpus={{ pcpu }}
+        - {{ '%-40s' | format(n.metadata.name) }}  enabled={{ enabled }}  max-tp={{ mtp }}  numa={{ numa }}  pcpus={{ pcpu }}  numa-cpus={{ numacpus }}
       {% endfor %}
       ------------------------------------------------------------
       labeled nodes : {{ ns.labeled }}

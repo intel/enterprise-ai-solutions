@@ -102,6 +102,13 @@ components:
     enabled: "{{ rack_scale_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [node_feature_discovery]
 
+  # Platform, not inference: every pod lands in a balloon, so `teardown inference` must keep it.
+  # Runs before the other platform services only by registry order (no depends_on).
+  - name: nri_cpu_balloons
+    layer: platform
+    enabled: "{{ (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons' and (kubernetes_accelerator | default('cpu')) == 'cpu' }}"
+    depends_on: []
+
   - name: cert_manager
     layer: platform
     enabled: "{{ cert_manager_enabled | default(true) | bool }}"
@@ -194,13 +201,3 @@ components:
     layer: platform
     enabled: "{{ velero_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: []
-
-  # --- Inference ---
-  # Only nri_cpu_balloons remains here — it configures kubelet-level CPU policy
-  # and is tightly coupled to the kubernetes role. All other inference components
-  # are registered in ext/enterprise.ai-inference/components.yaml.
-  - name: nri_cpu_balloons
-    layer: inference
-    enabled: "{{ (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons' and (kubernetes_accelerator | default('cpu')) == 'cpu' }}"
-    depends_on: []
-
