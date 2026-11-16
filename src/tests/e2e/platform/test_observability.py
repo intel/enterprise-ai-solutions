@@ -14,15 +14,11 @@ pytestmark = pytest.mark.skipif(
     reason="observability_enabled is false for this deployment"
 )
 
+# Names and readiness follow observability_openshift_instances in roles/observability.
 NAMESPACE = "monitoring"
-# OpenShift serves metrics from the cluster's own monitoring and gets the rest from
-# instances of the OperatorHub operators, so the objects to check are different ones.
-# Names and readiness conditions follow observability_openshift_instances and the
-# user_workload_monitoring prerequisite in roles/observability.
 UWM_NAMESPACE = "openshift-user-workload-monitoring"
 CLUSTER_MONITORING_NAMESPACE = "openshift-monitoring"
 GRAFANA = "grafana-platform"
-# The dashboards address datasources by uid, so every one of them has to reach Grafana.
 GRAFANA_DATASOURCES = ["loki", "prometheus", "tempo"]
 
 
@@ -37,8 +33,6 @@ def assert_condition(kind, name, condition, namespace=NAMESPACE):
     try:
         objs = list(kr8s.get(kind, namespace=namespace, field_selector={"metadata.name": name}))
     except ValueError as unknown_kind:
-        # kr8s raises this for a kind the cluster does not serve, which here means
-        # the operator that owns it was never installed.
         pytest.fail(f"{kind} is not served by the cluster, so its operator is missing: {unknown_kind}")
     assert objs, f"{kind}/{name} not found in {namespace}"
     conditions = objs[0].status.conditions or []

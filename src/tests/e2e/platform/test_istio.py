@@ -8,8 +8,6 @@ import kr8s
 
 from conftest import is_openshift
 
-# Service Mesh 3 runs the ambient dataplane in its own namespace; upstream Istio
-# keeps it next to istiod.
 ZTUNNEL_NAMESPACE = "ztunnel" if is_openshift() else "istio-system"
 
 

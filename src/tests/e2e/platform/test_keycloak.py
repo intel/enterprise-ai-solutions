@@ -8,8 +8,6 @@ import kr8s
 
 from conftest import is_openshift
 
-# OpenShift takes the operator from OperatorHub, where it ships as the Red Hat
-# build of Keycloak under its own name.
 KEYCLOAK_OPERATOR = "rhbk-operator" if is_openshift() else "keycloak-operator"
 
 

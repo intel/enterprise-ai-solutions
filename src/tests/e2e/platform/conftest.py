@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 
 cfg = {}
 
-# Served by OpenShift's aggregated apiservers, so a chart or a CRD cannot put
-# them on upstream Kubernetes.
 OPENSHIFT_API_GROUPS = ("security.openshift.io", "project.openshift.io")
 
 
