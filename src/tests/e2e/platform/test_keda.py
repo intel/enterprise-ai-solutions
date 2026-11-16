@@ -5,6 +5,7 @@
 
 import time
 
+import allure
 import kr8s
 import pytest
 from kr8s.objects import Deployment, HorizontalPodAutoscaler, Namespace, new_class
@@ -95,6 +96,7 @@ def scaled_workload():
         wait_for(lambda: not namespace_exists(NAMESPACE), timeout=120)
 
 
+@allure.testcase("DSPTV-T422")
 def test_keda_serves_external_metrics():
     if namespace_exists(KEDA_NAMESPACE):
         for name in ("keda-operator", "keda-operator-metrics-apiserver", "keda-admission-webhooks"):
@@ -105,6 +107,7 @@ def test_keda_serves_external_metrics():
     assert available and available[0]["status"] == "True", f"external.metrics.k8s.io not Available: {available}"
 
 
+@allure.testcase("DSPTV-T423")
 @pytest.mark.skipif(not cfg.get("observability_enabled", True),
                     reason="no platform Prometheus for the trigger (observability_enabled is false)")
 def test_keda_scales_on_prometheus_trigger(scaled_workload):
@@ -119,6 +122,7 @@ def test_keda_scales_on_prometheus_trigger(scaled_workload):
     assert hpa.spec["metrics"][0]["type"] == "External"
 
 
+@allure.testcase("DSPTV-T424")
 def test_keda_webhook_rejects_duplicate_scaledobject(scaled_workload):
     # Names the ScaledObject or, once KEDA has created it, its HPA.
     with pytest.raises(kr8s.ServerError, match="is already managed by the (ScaledObject|hpa) "):

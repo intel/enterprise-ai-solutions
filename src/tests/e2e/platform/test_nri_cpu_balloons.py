@@ -3,6 +3,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+import allure
 import kr8s
 import pytest
 
@@ -19,12 +20,14 @@ NAMESPACE = "kube-system"
 RELEASE = "nri-resource-policy-balloons"
 
 
+@allure.testcase("DSPTV-T430")
 def test_nri_policy_configmap_exists():
     configmaps = list(kr8s.get("configmaps", namespace=NAMESPACE,
                                field_selector={"metadata.name": f"{RELEASE}-config"}))
     assert configmaps, f"policy ConfigMap {RELEASE}-config is missing from {NAMESPACE}"
 
 
+@allure.testcase("DSPTV-T431")
 def test_nri_daemonset_ready():
     daemonsets = list(kr8s.get("daemonsets", namespace=NAMESPACE,
                                field_selector={"metadata.name": RELEASE}))

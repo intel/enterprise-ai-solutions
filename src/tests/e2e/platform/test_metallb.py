@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@allure.testcase("IEASG-T673")
+@allure.testcase("DSPTV-T402")
 def test_metallb_controller_ready():
     deploys = list(kr8s.get("deployments", namespace="metallb-system",
                             field_selector={"metadata.name": "metallb-controller"}))
@@ -24,7 +24,7 @@ def test_metallb_controller_ready():
     assert (deploys[0].status.readyReplicas or 0) >= 1
 
 
-@allure.testcase("IEASG-T674")
+@allure.testcase("DSPTV-T403")
 def test_metallb_ip_address_pool_exists():
     pools = list(kr8s.get("ipaddresspools.metallb.io", namespace="metallb-system"))
     assert len(pools) > 0, "No IPAddressPool found"

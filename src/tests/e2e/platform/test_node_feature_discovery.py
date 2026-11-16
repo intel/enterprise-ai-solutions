@@ -3,6 +3,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+import allure
 import kr8s
 import pytest
 
@@ -26,6 +27,7 @@ def nfd_worker():
     return daemonsets[0]
 
 
+@allure.testcase("DSPTV-T428")
 def test_nfd_deployed():
     if is_openshift():
         instances = list(kr8s.get("nodefeaturediscoveries.nfd.openshift.io", namespace=kr8s.ALL))
@@ -35,6 +37,7 @@ def test_nfd_deployed():
     assert worker.status.numberReady == worker.status.desiredNumberScheduled
 
 
+@allure.testcase("DSPTV-T429")
 def test_nodes_carry_cpu_feature_labels():
     targeted = nfd_worker().status.desiredNumberScheduled
     assert targeted > 0, f"DaemonSet {WORKER} is scheduled on no node, so nothing gets labelled"

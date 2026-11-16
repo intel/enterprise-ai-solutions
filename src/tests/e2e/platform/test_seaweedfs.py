@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@allure.testcase("IEASG-T682")
+@allure.testcase("DSPTV-T411")
 def test_seaweedfs_s3_ready():
     deploys = list(kr8s.get("deployments", namespace="monitoring",
                             field_selector={"metadata.name": "telemetry-seaweedfs-s3"}))

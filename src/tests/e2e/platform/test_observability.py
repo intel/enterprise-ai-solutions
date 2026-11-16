@@ -40,7 +40,7 @@ def assert_condition(kind, name, condition, namespace=NAMESPACE):
         f"{kind}/{name} is not {condition}: {conditions}"
 
 
-@allure.testcase("IEASG-T683")
+@allure.testcase("DSPTV-T412")
 def test_prometheus_operator_ready():
     if is_openshift():
         assert_condition("prometheuses.monitoring.coreos.com", "user-workload", "Available",
@@ -52,7 +52,7 @@ def test_prometheus_operator_ready():
     assert (deploys[0].status.readyReplicas or 0) >= 1
 
 
-@allure.testcase("IEASG-T684")
+@allure.testcase("DSPTV-T413")
 def test_grafana_ready():
     if is_openshift():
         assert_condition("deployments", f"{GRAFANA}-deployment", "Available")
@@ -66,7 +66,7 @@ def test_grafana_ready():
     assert (deploys[0].status.readyReplicas or 0) >= 1
 
 
-@allure.testcase("IEASG-T685")
+@allure.testcase("DSPTV-T414")
 def test_node_exporter_daemonset_ready():
     namespace, name = "monitoring", "kube-prometheus-stack-prometheus-node-exporter"
     if is_openshift():
@@ -76,7 +76,7 @@ def test_node_exporter_daemonset_ready():
     assert ds.status.numberReady == ds.status.desiredNumberScheduled
 
 
-@allure.testcase("IEASG-T686")
+@allure.testcase("DSPTV-T415")
 def test_loki_ready():
     if is_openshift():
         assert_condition("lokistacks.loki.grafana.com", "logging-loki", "Ready")
@@ -87,7 +87,7 @@ def test_loki_ready():
     assert (sts.status.readyReplicas or 0) >= 1
 
 
-@allure.testcase("IEASG-T687")
+@allure.testcase("DSPTV-T416")
 def test_tempo_ready():
     if is_openshift():
         assert_condition("tempomonolithics.tempo.grafana.com", "tempo", "Ready")
@@ -97,7 +97,7 @@ def test_tempo_ready():
     assert (sts.status.readyReplicas or 0) >= 1
 
 
-@allure.testcase("IEASG-T688")
+@allure.testcase("DSPTV-T417")
 def test_otel_collector_daemonset_ready():
     if is_openshift():
         assert_condition("deployments", "opentelemetry-collector", "Available")

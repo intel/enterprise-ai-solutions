@@ -11,7 +11,7 @@ from conftest import is_openshift
 ZTUNNEL_NAMESPACE = "ztunnel" if is_openshift() else "istio-system"
 
 
-@allure.testcase("IEASG-T671")
+@allure.testcase("DSPTV-T400")
 def test_istiod_available():
     deploys = list(kr8s.get("deployments", namespace="istio-system",
                             field_selector={"metadata.name": "istiod"}))
@@ -20,7 +20,7 @@ def test_istiod_available():
     assert any(c.type == "Available" and c.status == "True" for c in conditions)
 
 
-@allure.testcase("IEASG-T672")
+@allure.testcase("DSPTV-T401")
 def test_ztunnel_daemonset_ready():
     ds = list(kr8s.get("daemonsets", namespace=ZTUNNEL_NAMESPACE,
                        field_selector={"metadata.name": "ztunnel"}))[0]
