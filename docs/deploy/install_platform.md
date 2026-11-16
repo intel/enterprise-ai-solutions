@@ -12,8 +12,8 @@ The installer sets up these layers automatically, in dependency order:
 
 ```
 1. Infrastructure                — Kubernetes (via Kubespray), storage (local-path / NFS / Ceph)
-2. Platform                      — cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability
-3. Intel® Inference Toolkit     — NRI CPU Balloons + components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
+2. Platform                      — NRI CPU Balloons, cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability
+3. Intel® Inference Toolkit     — components from the ext inference repo (KServe, LiteLLM, vLLM, etc.)
 4. Intel® Chatbot Toolkit   — opt-in (vector DB, ingestion, chat, UI) — requires init erag + install erag
 ```
 
@@ -404,6 +404,12 @@ all:
 ```
 
 Most of the time you won't need this — only if there's a double-hop.
+
+**With a double hop, the bastion must still reach the API server** at `https://<control-plane-ip>:6443`: after Kubespray, the installer checks the cluster and applies the node labels from the bastion. If it reaches the nodes only through the extra jump host, Kubespray succeeds over SSH, that check times out, and a re-run sees a live cluster and skips the post-install phase. Forward the API port through the jump host, point `env/local/kubeconfig.yaml` at the forwarded port, and run the post-install phase on its own:
+
+```bash
+./es_auto_installer.sh install --env local kubernetes --only -- -e _kubespray_skip_cluster_yml=true
+```
 
 #### C.3 — Install
 
