@@ -518,3 +518,12 @@
     - cluster_distribution | default('kubernetes') == 'openshift'
     - component_action | default('install') in ['install', 'validate']
     - openshift_prereq_check | default(true) | bool
+
+- name: "Preflight - Agent Toolkit node readiness"
+  ansible.builtin.include_tasks: agent_toolkit_preflight.yaml
+  when:
+    - (component_action | default('install')) == 'install'
+    - "'agent-toolkit' in (_env_layers | default('') | split(','))"
+    - not (_kubespray_skip_cluster_yml | default(false) | bool)
+    - _include_deps | default(true) | bool
+    - node_preflight_enabled | default(true) | bool
