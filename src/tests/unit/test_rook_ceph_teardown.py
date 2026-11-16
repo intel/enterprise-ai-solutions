@@ -14,7 +14,6 @@ import yaml
 from ansible_render import render
 
 _ROLE = pathlib.Path(__file__).resolve().parents[3] / "roles" / "rook_ceph_storage"
-_DEFAULTS = yaml.safe_load((_ROLE / "defaults" / "main.yaml").read_text())
 _TEARDOWN = yaml.safe_load((_ROLE / "tasks" / "teardown.yaml").read_text())
 DEVICES = {"store1": ["/dev/nvme1n1"] * 5, "store2": ["/dev/nvme1n1"]}
 
@@ -28,11 +27,11 @@ def listed(value):
     return value if isinstance(value, list) else yaml.safe_load(value)
 
 
-def retries(node, wipe=True, devices=DEVICES, **overrides):
+def retries(node, wipe=True, devices=DEVICES):
     """Polls of 5 s the teardown gives the cleanup pod on node."""
     verify = task("Verify cleanup completed on every node")
-    variables = dict(_DEFAULTS, rook_ceph_teardown_wipe_devices=wipe, rook_ceph_devices=devices,
-                     item={"metadata": {"name": "rook-ceph-cleanup-x"}, "spec": {"nodeName": node}}, **overrides)
+    variables = dict(rook_ceph_teardown_wipe_devices=wipe, rook_ceph_devices=devices,
+                     item={"metadata": {"name": "rook-ceph-cleanup-x"}, "spec": {"nodeName": node}})
     variables["_rook_node_devices"] = render(verify["vars"]["_rook_node_devices"], variables)
     return int(render(verify["retries"], variables))
 
@@ -46,10 +45,6 @@ def retries(node, wipe=True, devices=DEVICES, **overrides):
 ])
 def test_each_pod_waits_for_the_disks_of_its_node(node, wipe, devices, expected):
     assert retries(node, wipe, devices) == expected
-
-
-def test_the_wait_per_device_can_be_set():
-    assert retries("store1", rook_ceph_teardown_wipe_seconds_per_device=600) == 612
 
 
 def test_the_nodes_without_cleaned_are_the_failures():

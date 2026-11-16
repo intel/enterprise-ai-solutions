@@ -69,9 +69,6 @@ failed rack-scale install.
   VRF. Anything else usually means another netplan file or NetworkManager
   profile configures the NIC too, for example a cloud-init entry that gives it
   its own address; the step stops and names the NIC and the difference.
-  `rack_scale_netplan_allow_extra_addresses: true` turns extra addresses into
-  a warning, for example a VIP that kube-vip or keepalived puts on a fabric NIC;
-  a missing NIC or address, another MTU, or a bond, bridge or VRF still stops.
   A NIC without carrier is left to `fabric_validate`. Routes are not compared.
 - **Storage disks:** the disks listed for Ceph must be empty, not mounted, and
   not the OS disk. NVMe device names can change across reboots, so check
@@ -627,5 +624,4 @@ kubernetes → storage
 | `rack_scale_enabled` | `false` | `global_config.yaml` | Master gate for all fabric components |
 | `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale.** Free management-subnet addresses for LoadBalancer VIPs (e.g. `172.18.168.240-172.18.168.250`). Not a fabric address: auto-detection picks fabric IPs, which are unreachable from outside the rack, and install stops if the range overlaps a fabric subnet. Not a node's own IP: with more than one control-plane node, MetalLB can announce it from another node, which then answers ARP for that node's address. |
 | `storage_backend` | `local-path` | `global_config.yaml` | Set to `ceph` for fabric-attached storage |
-| `rack_scale_netplan_allow_extra_addresses` | `false` | `global_config.yaml` | `true`: an address on a fabric NIC that the fabric file does not set is a warning, not a stop (see Node readiness) |
 | `rack-profile.yaml` | (none) | `env/<env>/` | Hardware profile — see above |

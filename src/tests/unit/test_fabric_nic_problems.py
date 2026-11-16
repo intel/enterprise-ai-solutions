@@ -5,7 +5,6 @@ import importlib.util
 import json
 import pathlib
 
-import pytest
 import yaml
 from ansible.plugins.loader import filter_loader
 from ansible_render import render, trust_as_template
@@ -126,7 +125,7 @@ def test_a_node_without_fabric_nics():
 
 # The role's tasks, rendered as Ansible does.
 _TASKS = yaml.safe_load((_ROOT / "roles/fabric_netplan/tasks/check_nics.yaml").read_text())
-_BLOCK = next(t for t in _TASKS if t["name"] == "fabric_netplan | Compare the fabric NICs with the fabric file")
+_CHECK = next(t for t in _TASKS if t["name"] == "fabric_netplan | Fail if a fabric NIC is not as the fabric file sets it")
 filter_loader.add_directory(str(_ROOT / "filter_plugins"))
 
 
@@ -134,39 +133,15 @@ def role_tasks(action):
     return yaml.safe_load((_ROOT / "roles/fabric_netplan/tasks" / (action + ".yaml")).read_text())
 
 
-def test_the_block_compares_the_node_output_with_its_fabric_file(tmp_path):
+def test_the_check_compares_the_node_output_with_its_fabric_file(tmp_path):
     (tmp_path / "gnr1.yaml").write_text(yaml.safe_dump({"network": {"version": 2, "ethernets": FABRIC}}))
     stdout = json.dumps([LO, MGMT, link("ens6f0", addr("10.201.1.2", 16), addr("192.168.0.5", 24))])
-    variables = {name: trust_as_template(v) for name, v in _BLOCK["vars"].items()}
+    variables = {name: trust_as_template(v) for name, v in _CHECK["vars"].items()}
     variables.update(item={"item": "n1", "stdout": stdout}, hostvars={"n1": {"node_hostname": "gnr1"}},
                      rack_scale_netplan_dir=str(tmp_path))
     assert render("{{ _problems }}", variables) == {"extra": ["ens6f0: has 192.168.0.5/24"], "wrong": []}
     assert render("{{ _nic_diff }}", variables) == (
         "On n1 the fabric NICs are not as %s/gnr1.yaml sets them: ens6f0: has 192.168.0.5/24." % tmp_path)
-
-
-@pytest.mark.parametrize("flag", [False, "false", True, "true"])
-def test_the_flag_turns_only_extra_addresses_into_a_warning(flag):
-    fail, warn = _BLOCK["block"]
-    allowed = str(flag).lower() == "true"
-
-    def runs(task, extra, wrong):
-        variables = {"rack_scale_netplan_allow_extra_addresses": flag, "_problems": {"extra": extra, "wrong": wrong}}
-        return render("{{ %s }}" % task["when"], variables)
-    has, missing = ["ens6f0: has 192.168.0.5/24"], ["ens6f0: 10.201.1.2/16 is missing"]
-    assert (runs(fail, has, []), runs(warn, has, [])) == (not allowed, allowed)
-    assert (runs(fail, has, missing), runs(warn, has, missing)) == (True, False)
-    assert (runs(fail, [], missing), runs(warn, [], missing)) == (True, False)
-    assert (runs(fail, [], []), runs(warn, [], [])) == (False, False)
-
-
-def test_the_stop_offers_the_flag_only_for_extra_addresses():
-    fail = _BLOCK["block"][0]
-
-    def msg(wrong):
-        return render(fail["ansible.builtin.fail"]["msg"], {"_nic_diff": "On n1 ...", "_problems": {"extra": [], "wrong": wrong}})
-    assert msg([]).endswith("Or set rack_scale_netplan_allow_extra_addresses: true to continue with a warning.")
-    assert msg(["ens6f0: no such NIC"]).endswith("see max_mtu in ip -d link.")
 
 
 def test_the_node_address_check_reads_the_same_output():
