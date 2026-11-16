@@ -53,20 +53,16 @@ http_proxy: "{{ http_proxy }}"
 https_proxy: "{{ https_proxy }}"
 no_proxy: "{{ no_proxy }}"
 {% endif %}
-{% if _resolved_storage_backend | default('local-path') == 'local-path' %}
+{% set _local_path_default = (_resolved_storage_backend | default('local-path')) == 'local-path' %}
+{% if _local_path_default or _resolved_storage_backend == 'nfs' %}
+# On NFS a node-local class besides the default, for scratch volumes NFS makes slow (OpenShell sandbox workspaces)
 local_path_provisioner_enabled: true
 local_path_provisioner_storage_class: "local-path"
-local_path_provisioner_is_default_storageclass: "true"
-local_path_provisioner_claim_root: /opt/local-path-provisioner/
-{% elif _resolved_storage_backend == 'nfs' %}
-# Node-local class, not the default, for scratch volumes that NFS makes slow (OpenShell sandbox workspaces)
-local_path_provisioner_enabled: true
-local_path_provisioner_storage_class: "local-path"
-local_path_provisioner_is_default_storageclass: "false"
+local_path_provisioner_is_default_storageclass: "{{ _local_path_default | lower }}"
 local_path_provisioner_claim_root: /opt/local-path-provisioner/
 {% endif %}
 override_system_hostname: false
-# The precheck raises these on this host only; Kubespray sets them on every node
+# The precheck raises these on this host only; Kubespray sets them on every node (env/<env>/kubespray_extra.yml overrides)
 additional_sysctl:
   - { name: fs.inotify.max_user_instances, value: 8192 }
   - { name: fs.inotify.max_user_watches, value: 1048576 }

@@ -1,23 +1,23 @@
 ---
-# =============================================================================
-# Agent Toolkit node readiness — runs the toolkit's playbooks/preflight-check.yml
-# =============================================================================
-# Report only: a failed check or run never stops the install; the run is capped at
-# node_preflight_timeout seconds (default 300).
-# Off: node_preflight_enabled: false in env/<env>/config.agent-toolkit.yaml
-# =============================================================================
+# Report only: neither a failed check nor a failed run stops the install.
 
 - name: "Preflight - Toolkit nodes: locate the checks"
   ansible.builtin.stat:
-    path: "{{ agent_toolkit_preflight_playbook | default(playbook_dir ~ '/../ext/enterprise.agent-toolkit/playbooks/preflight-check.yml') }}"
+    path: "{{ playbook_dir }}/../ext/enterprise.agent-toolkit/playbooks/preflight-check.yml"
   register: _tk_preflight_pb
 
 - name: "Preflight - Toolkit nodes"
   when: _tk_preflight_pb.stat.exists | default(false)
+  vars:
+    _tk_preflight_cmd:
+      - "{{ ansible_playbook_python | dirname }}/ansible-playbook"
+      - "-i"
+      - "{{ kubespray_custom_inventory | default(ansible_inventory_sources | first, true) }}"
+      - "{{ _tk_preflight_pb.stat.path }}"
   block:
     - name: "Preflight - Toolkit nodes: check for an existing cluster"
       ansible.builtin.stat:
-        path: "{{ kubernetes_kubeconfig | default((env_dir | default(playbook_dir ~ '/../env/local')) ~ '/kubeconfig.yaml') }}"
+        path: "{{ kubernetes_kubeconfig }}"
       register: _tk_preflight_kcfg
 
     # Before the first cluster build the inventory is rendered from nodes.yaml later in this run
@@ -31,17 +31,8 @@
 
     - name: "Preflight - Toolkit nodes: run the checks on every host (report only)"
       ansible.builtin.command:
-        argv:
-          - timeout
-          - "-k"
-          - "10"
-          - "{{ node_preflight_timeout | default(300) }}"
-          - "{{ ansible_playbook_python | dirname }}/ansible-playbook"
-          - "-i"
-          - "{{ kubespray_custom_inventory | default(ansible_inventory_sources | first, true) }}"
-          - "{{ _tk_preflight_pb.stat.path }}"
-          - "-e"
-          - "preflight_report_dir={{ log_dir }}"
+        argv: "{{ ['timeout', '-k', '10', node_preflight_timeout | default(300) | string] + _tk_preflight_cmd
+                  + ['-e', 'preflight_report_dir=' ~ log_dir] }}"
         chdir: "{{ playbook_dir }}/.."
       environment:
         ANSIBLE_FORCE_COLOR: "false"
@@ -59,14 +50,13 @@
       ansible.builtin.debug:
         msg: "{{ (lookup('ansible.builtin.file', log_dir ~ '/health-report-latest.txt', errors='ignore') | default('', true)).splitlines()
                 + ['Report: ' ~ log_dir ~ '/health-report-latest.html'] }}"
-      when: _tk_preflight_run.rc == 0
+      when: _tk_preflight_run.rc not in [124, 137]
 
     - name: "Preflight - Toolkit nodes: run did not complete, the install continues"
       ansible.builtin.debug:
         msg: "{{ (['Stopped after ' ~ (node_preflight_timeout | default(300)) ~ ' s'] if _tk_preflight_run.rc in [124, 137] else [])
                 + (_tk_preflight_run.stdout_lines | default([]))[-15:] + ['Output: ' ~ log_dir ~ '/preflight-check.log',
-                'Re-run: .venv/bin/ansible-playbook -i env/<env>/inventory/hosts.yaml'
-                ~ ' ext/enterprise.agent-toolkit/playbooks/preflight-check.yml --ask-become-pass'] }}"
+                'Re-run: ' ~ (_tk_preflight_cmd | join(' ')) ~ ' --ask-become-pass'] }}"
       when: _tk_preflight_run.rc != 0
 
   rescue:

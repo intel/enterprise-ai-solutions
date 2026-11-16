@@ -497,7 +497,6 @@
       Target: {{ target }}
       Components: {{ _active_components | map(attribute='name') | list | join(', ') }}
 
-# ── Agent Toolkit node readiness (envs inited for agent-toolkit only) ────────
 - name: "Preflight - Agent Toolkit node readiness"
   ansible.builtin.include_tasks: agent_toolkit_preflight.yaml
   when:
