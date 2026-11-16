@@ -44,7 +44,7 @@ To stay on the tested versions, subscribe to the channel in the table with `inst
 | 4 | Gateway API | built in (Ingress Operator) | — | | [Gateway API](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ingress_and_load_balancing/configuring-gateway-api) | **Yes** (nothing to install) |
 | 5 | CloudNativePG | `cloudnative-pg` (certified-operators) | `stable-v1` → 1.30.1 | | [CloudNativePG](https://cloudnative-pg.io/documentation/current/installation_upgrade/) (certified, not a Red Hat product) | **Yes** |
 | 6 | Red Hat build of Keycloak | `rhbk-operator` (redhat-operators) | `stable-v26.6` → 26.6.7-opr.1 | | [RHBK Operator installation](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.6/html/operator_guide/installation-) | When `keycloak_enabled: true` (the default) |
-| 7 | Custom Metrics Autoscaler | `openshift-custom-metrics-autoscaler-operator` (redhat-operators) | not installed in the test | `stable` → 2.19.0-4 | [Custom Metrics Autoscaler](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/nodes/automatically-scaling-pods-with-the-custom-metrics-autoscaler-operator) | For autoscaling _(planned)_ |
+| 7 | Custom Metrics Autoscaler | `openshift-custom-metrics-autoscaler-operator` (redhat-operators) | `stable` → 2.19.0-4 | | [Custom Metrics Autoscaler](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/nodes/automatically-scaling-pods-with-the-custom-metrics-autoscaler-operator) | When `keda_enabled: true` (default `false`) |
 | 8 | Node Feature Discovery | `nfd` (redhat-operators) | `stable` → 4.22.0 | | [NFD Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/specialized_hardware_and_driver_enablement/psap-node-feature-discovery-operator) | **Yes** |
 | 9 | LeaderWorkerSet | `leader-worker-set` (redhat-operators) | `stable-v1.0` → 1.0.1 | | [LeaderWorkerSet Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ai_workloads/leader-worker-set-operator) | **Yes** (llm-d serving) |
 | 10 | Red Hat Connectivity Link | `rhcl-operator` (redhat-operators) | `stable` → 1.4.3 | | [Install Connectivity Link](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.4/html/install_connectivity_link/rhcl-install-on-ocp) | **Yes** (OpenShift AI `LLMInferenceService`) |
@@ -102,7 +102,7 @@ The operator watches only its own namespace, so install it **into `keycloak`**, 
 
 ### 7. Custom Metrics Autoscaler
 
-Model autoscaling uses KEDA instead of the Prometheus Adapter that the installer deploys on vanilla Kubernetes; on OpenShift the `custom.metrics.k8s.io` API must not be taken over. Create the `KedaController` named `keda` in `openshift-keda`, as the guide describes.
+Autoscaling uses KEDA instead of the Prometheus Adapter that the installer deploys on vanilla Kubernetes; on OpenShift the `custom.metrics.k8s.io` API must not be taken over. With `keda_enabled: true`, install the operator from the marketplace **into `openshift-keda`** (all namespaces): the installer does not install KEDA on OpenShift, and preflight fails without it. The operator creates the `KedaController` named `keda` in `openshift-keda`; if it does not, create it as the guide describes. Its status must reach `Installation Succeeded`.
 
 ### 8. Node Feature Discovery
 
@@ -330,7 +330,7 @@ Preflight prints one line per requirement, then stops with every requirement tha
 
 With `installPlanApproval: Manual`, OLM waits for you to approve the first install and every upgrade. When a Subscription waits on an InstallPlan, the message names the plan and the command that approves it. The installer never approves it for you.
 
-A version newer than the tested one, the optional Custom Metrics Autoscaler, and anything the installer identity is not allowed to read are warnings; the run continues. Set `openshift_prereq_strict: true` to fail on untested newer versions too.
+A version newer than the tested one and anything the installer identity is not allowed to read are warnings; the run continues. Set `openshift_prereq_strict: true` to fail on untested newer versions too.
 
 The check only reads. It never installs or changes an operator. There is one exception: if the identity cannot list StorageClasses, preflight creates a 1Mi PVC with no `storageClassName` in a temporary `ai-solutions-preflight` namespace.
 

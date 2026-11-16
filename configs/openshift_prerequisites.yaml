@@ -99,13 +99,15 @@ openshift_prerequisites:
   - name: autoscaler
     title: Custom Metrics Autoscaler
     doc: "#7-custom-metrics-autoscaler"
-    layers: [inference]
-    required: false
+    layers: [platform]
+    when: "{{ keda_enabled | default(false) | bool }}"
     package: openshift-custom-metrics-autoscaler-operator
     channel: stable
+    version: "2.19.0-4"
+    namespace: openshift-keda
     apis: [keda.sh/v1alpha1]
     instances:
-      - {api_version: keda.sh/v1alpha1, kind: KedaController, name: keda, namespace: openshift-keda}
+      - {api_version: keda.sh/v1alpha1, kind: KedaController, name: keda, namespace: openshift-keda, fields: {status.phase: Installation Succeeded}}
 
   - name: nfd
     title: Node Feature Discovery
