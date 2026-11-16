@@ -15,6 +15,15 @@ pytestmark = pytest.mark.skipif(
 
 NAMESPACE = cfg.get("nfd_namespace", "node-feature-discovery")
 CPU_VENDOR_LABEL = "feature.node.kubernetes.io/cpu-model.vendor_id"
+WORKER_NAMESPACE, WORKER = ("openshift-nfd", "nfd-worker") if is_openshift() \
+    else (NAMESPACE, "node-feature-discovery-worker")
+
+
+def nfd_worker():
+    daemonsets = list(kr8s.get("daemonsets", namespace=WORKER_NAMESPACE,
+                               field_selector={"metadata.name": WORKER}))
+    assert daemonsets, f"DaemonSet {WORKER} not found in {WORKER_NAMESPACE}"
+    return daemonsets[0]
 
 
 def test_nfd_deployed():
@@ -22,13 +31,14 @@ def test_nfd_deployed():
         instances = list(kr8s.get("nodefeaturediscoveries.nfd.openshift.io", namespace=kr8s.ALL))
         assert instances, "no NodeFeatureDiscovery instance found, so the operator has nothing to run"
         return
-    daemonsets = list(kr8s.get("daemonsets", namespace=NAMESPACE,
-                               field_selector={"metadata.name": "node-feature-discovery-worker"}))
-    assert daemonsets, f"node-feature-discovery-worker not found in {NAMESPACE}"
-    worker = daemonsets[0]
+    worker = nfd_worker()
     assert worker.status.numberReady == worker.status.desiredNumberScheduled
 
 
 def test_nodes_carry_cpu_feature_labels():
-    nodes = list(kr8s.get("nodes", label_selector=CPU_VENDOR_LABEL))
-    assert nodes, f"no node carries {CPU_VENDOR_LABEL}, so model scheduling has nothing to match on"
+    targeted = nfd_worker().status.desiredNumberScheduled
+    assert targeted > 0, f"DaemonSet {WORKER} is scheduled on no node, so nothing gets labelled"
+    labelled = list(kr8s.get("nodes", label_selector=CPU_VENDOR_LABEL))
+    assert len(labelled) == targeted, \
+        f"{len(labelled)} of the {targeted} nodes NFD runs on carry {CPU_VENDOR_LABEL}; " \
+        "model scheduling matches on those labels"
