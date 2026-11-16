@@ -42,6 +42,15 @@ function safeHttpsURL(value: unknown): string | null {
   }
 }
 
+// Card order on the overview; MODELS_CARD marks where the in-app Models card goes. Unlisted keys follow by title.
+export const MODELS_CARD = 'models';
+export const PORTAL_ORDER = ['keycloak', MODELS_CARD, 'grafana', 'litellm-ui', 'langfuse'];
+
+function rank(key: string): number {
+  const i = PORTAL_ORDER.indexOf(key);
+  return i < 0 ? PORTAL_ORDER.length : i;
+}
+
 export function portalEntries(data: Record<string, string> | undefined): PortalEntry[] {
   return Object.entries(data ?? {})
     .map(([key, raw]) => {
@@ -56,7 +65,13 @@ export function portalEntries(data: Record<string, string> | undefined): PortalE
       };
     })
     .filter((e): e is PortalEntry => e !== null)
-    .sort((a, b) => a.title.localeCompare(b.title));
+    .sort((a, b) => rank(a.key) - rank(b.key) || a.title.localeCompare(b.title));
+}
+
+// Splits the ordered entries around the Models card.
+export function aroundModels(entries: PortalEntry[]): [PortalEntry[], PortalEntry[]] {
+  const at = rank(MODELS_CARD);
+  return [entries.filter(e => rank(e.key) < at), entries.filter(e => rank(e.key) > at)];
 }
 
 export function catalogModels(data: Record<string, string> | undefined): CatalogModel[] {

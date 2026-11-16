@@ -7,7 +7,7 @@ import { Box, Button, GlobalStyles, Paper, Stack, Typography } from '@mui/materi
 import { Link as RouterLink } from 'react-router-dom';
 import { ABOUT } from './about';
 import { BRAND } from './Branding';
-import { CATALOG, catalogModels, PORTAL, portalEntries } from './data';
+import { aroundModels, CATALOG, catalogModels, PORTAL, portalEntries } from './data';
 import { LLMInferenceService, readyCondition } from './resources';
 import { CardGrid, PlatformCard, ServiceCards } from './ServicesList';
 
@@ -86,6 +86,7 @@ function ModelsCard() {
 function PlatformRow() {
   const [portal, error] = K8s.ResourceClasses.ConfigMap.useGet(PORTAL.name, PORTAL.namespace);
   const entries = portalEntries(portal?.data);
+  const [before, after] = aroundModels(entries);
   return (
     <Box {...{ [ROW]: '' }}>
       <GlobalStyles styles={fullWidthCell} />
@@ -98,8 +99,9 @@ function PlatformRow() {
         </Typography>
       )}
       <CardGrid>
-        <ServiceCards entries={entries} />
+        <ServiceCards entries={before} />
         <ModelsCard />
+        <ServiceCards entries={after} />
       </CardGrid>
     </Box>
   );

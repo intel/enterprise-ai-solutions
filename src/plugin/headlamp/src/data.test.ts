@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   accessExample,
+  aroundModels,
   buildJob,
   catalogAccess,
   catalogModels,
@@ -27,13 +28,25 @@ describe('portalEntries', () => {
     expect(portalEntries({})).toEqual([]);
   });
 
-  it('keeps valid entries, sorted by title', () => {
+  it('keeps valid entries in the overview order, unlisted ones last by title', () => {
+    const svc = (title: string) => entry({ title, url: 'https://x.example.com' });
     const got = portalEntries({
-      keycloak: entry({ title: 'Keycloak', description: 'IAM', url: 'https://kc.example.com/' }),
+      zeta: svc('Zeta'),
+      langfuse: svc('Langfuse'),
+      'litellm-ui': svc('LiteLLM'),
+      alpha: svc('Alpha'),
       grafana: entry({ title: 'Grafana', url: 'https://grafana.example.com' }),
+      keycloak: entry({ title: 'Keycloak', description: 'IAM', url: 'https://kc.example.com/' }),
     });
-    expect(got.map(e => e.key)).toEqual(['grafana', 'keycloak']);
-    expect(got[0]).toEqual({
+    expect(got.map(e => e.key)).toEqual([
+      'keycloak',
+      'grafana',
+      'litellm-ui',
+      'langfuse',
+      'alpha',
+      'zeta',
+    ]);
+    expect(got[1]).toEqual({
       key: 'grafana',
       title: 'Grafana',
       description: '',
@@ -57,6 +70,30 @@ describe('portalEntries', () => {
       ok: entry({ title: 'Ok', url: 'https://ok.example.com' }),
     });
     expect(got.map(e => e.key)).toEqual(['ok']);
+  });
+});
+
+describe('aroundModels', () => {
+  it('puts Keycloak before the Models card and the rest after it', () => {
+    const svc = (title: string) => entry({ title, url: 'https://x.example.com' });
+    const [before, after] = aroundModels(
+      portalEntries({
+        langfuse: svc('Langfuse'),
+        grafana: svc('Grafana'),
+        keycloak: svc('Keycloak'),
+        x: svc('X'),
+      })
+    );
+    expect(before.map(e => e.key)).toEqual(['keycloak']);
+    expect(after.map(e => e.key)).toEqual(['grafana', 'langfuse', 'x']);
+  });
+
+  it('shows Models first when Keycloak is not published', () => {
+    const [before, after] = aroundModels(
+      portalEntries({ grafana: entry({ title: 'Grafana', url: 'https://g.example.com' }) })
+    );
+    expect(before).toEqual([]);
+    expect(after.map(e => e.key)).toEqual(['grafana']);
   });
 });
 
