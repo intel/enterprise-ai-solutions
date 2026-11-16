@@ -15,6 +15,10 @@
 #
 #   BYO cluster:            Set existing_kubernetes: /path/to/kubeconfig
 #                           in global_config.yaml. Skips provisioning entirely.
+#
+# To grow or shrink an already-provisioned cluster, edit the node lists below
+# and run './es_auto_installer.sh add-node' or 'remove-node' — see
+# docs/customize/node_scaling.md.
 # =============================================================================
 
 

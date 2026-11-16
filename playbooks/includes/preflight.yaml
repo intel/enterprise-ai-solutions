@@ -120,6 +120,19 @@
   loop_control:
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
 
+# ── Rack scale: no node scaling ──────────────────────────────────────────────
+# Same refusal as es_auto_installer.sh, for a run that sets rack_scale_enabled
+# with -e. Before the fabric roles load: they have no add-node/remove-node.
+
+- name: "Preflight - Rack scale: refuse add-node/remove-node"
+  ansible.builtin.fail:
+    msg: >-
+      {{ component_action }} is not supported in rack-scale mode
+      (rack_scale_enabled: true). See docs/customize/node_scaling.md.
+  when:
+    - rack_scale_enabled | default(false) | bool
+    - component_action | default('install') in ['add-node', 'remove-node']
+
 # ── Rack scale: profile facts (every action) ─────────────────────────────────
 # The GPU and fabric_validate roles gate on these facts in validate and
 # teardown as well, and a --only run never reaches fabric_inventory.
@@ -363,11 +376,13 @@
     _inference_affinity: {}
   when: not (node_topology_enabled | default(true) | bool)
 
-# Resolve storage_backend to a specific role or configuration.
+# Resolve storage_backend to a specific role or configuration. Not for
+# add-node/remove-node: they run only the kubernetes component.
 - name: "Preflight - Storage: resolve backend"
   ansible.builtin.include_role:
     name: storage
     tasks_from: resolve.yaml
+  when: component_action | default('install') not in ['add-node', 'remove-node']
 
 - name: "Preflight - Verify required CLI tools"
   ansible.builtin.command:
@@ -503,3 +518,12 @@
     - cluster_distribution | default('kubernetes') == 'openshift'
     - component_action | default('install') in ['install', 'validate']
     - openshift_prereq_check | default(true) | bool
+
+- name: "Preflight - Agent Toolkit node readiness"
+  ansible.builtin.include_tasks: agent_toolkit_preflight.yaml
+  when:
+    - (component_action | default('install')) == 'install'
+    - "'agent-toolkit' in (_env_layers | default('') | split(','))"
+    - not (_kubespray_skip_cluster_yml | default(false) | bool)
+    - _include_deps | default(true) | bool
+    - node_preflight_enabled | default(true) | bool

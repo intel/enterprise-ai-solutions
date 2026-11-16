@@ -1,0 +1,43 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# add-node and remove-node (roles/kubernetes): the node.<NAME> BalloonsPolicy
+# of each added node (_nri_scope_nodes), or the deletion of each removed one's
+# (_nri_removed_nodes), when nri_cpu_balloons is installed. A policy left
+# behind would be picked up by a later node of the same name, so it is deleted
+# only once the Node is gone from the cluster.
+
+- name: "nri_cpu_balloons | nodes | Check for the BalloonsPolicy CRD"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: balloonspolicies.config.nri
+  register: _nri_crd
+
+- name: "nri_cpu_balloons | nodes | Policies of the added node(s)"
+  ansible.builtin.include_tasks: install_advanced.yaml
+  when:
+    - _nri_crd.resources | length > 0
+    - _nri_scope_nodes | default([]) | length > 0
+
+- name: "nri_cpu_balloons | nodes | Removed node(s)"
+  when:
+    - _nri_crd.resources | length > 0
+    - _nri_removed_nodes | default([]) | length > 0
+  block:
+    - name: "nri_cpu_balloons | nodes | List the nodes left"
+      kubernetes.core.k8s_info:
+        kind: Node
+      register: _nri_nodes_left
+
+    - name: "nri_cpu_balloons | nodes | Delete the removed node(s)' policies"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: config.nri/v1alpha1
+        kind: BalloonsPolicy
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+        name: "node.{{ item }}"
+      loop: "{{ _nri_removed_nodes | reject('in', _nri_nodes_left.resources | map(attribute='metadata.name') | list) | list }}"
+      loop_control:
+        label: "node.{{ item }}"

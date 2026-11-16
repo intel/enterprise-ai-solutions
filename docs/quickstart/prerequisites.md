@@ -14,6 +14,8 @@ Everything needed before running the Toolkit Manager installer, whether you're d
 | Ubuntu 24.04 | ✅ Supported |
 | RHEL 8 / Rocky Linux 8 (x86_64) | ✅ Supported |
 
+**No Docker on cluster nodes.** Kubespray uses containerd and, while installing it, deletes Docker and all its data (`/var/lib/docker`) on any node where Docker is installed. The installer refuses to install onto a node with a `docker.service` unit (for a single-node install, the installer host itself). Back up and uninstall Docker first, or use a different node. See [Node Scaling](../customize/node_scaling.md#built-into-add-nodes-pre-flight).
+
 ---
 
 ## Hardware minimums
@@ -35,6 +37,7 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 | Passwordless sudo on installer host | Required | Required |
 | Passwordless SSH from installer host to all nodes | — | Required |
 | Passwordless sudo on all target nodes | — | Required |
+| Installer host reaches the API server at `https://<control-plane-ip>:6443` (not only SSH to the nodes); see [Bastion (Jump Host)](../deploy/install_platform.md#option-c-bastion-jump-host) | — | Required |
 
 ---
 
