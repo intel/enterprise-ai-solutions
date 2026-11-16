@@ -8,7 +8,7 @@ Grow or shrink an already-provisioned cluster without a full teardown/reinstall,
 
 ## Overview
 
-Two CLI actions, both driven entirely from `env/<name>/nodes.yaml` — neither takes a node name on the command line:
+Two CLI actions, both driven entirely from `env/<name>/nodes.yaml` (on a rack-scale env, `rack-profile.yaml`: see [Rack-scale](#rack-scale)) — neither takes a node name on the command line:
 
 | Action | Kubespray playbook | Scope |
 |---|---|---|
@@ -48,9 +48,10 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 | Removing control-plane/etcd node(s) via `remove-node` | Refused: see [Control-plane nodes are not removed](#control-plane-nodes-are-not-removed) |
 | Cluster with ERAG deployed | Both actions only ever touch the `kubernetes` component — ERAG's own Helm/pipeline config is never re-applied, so any node-specific placement it relies on isn't accounted for. Both refuse when any ERAG-only namespace (`rag-ui`, `chat-history`, `edp`, `fingerprint`, `vdb`, `erag-gateway`, `auth-apisix`) exists |
 | Hand-edited inventory (`env/<name>/inventory/hosts.yaml`, no `nodes.yaml`) | Both actions find their target node(s), SSH details and control-plane membership from `nodes.yaml`; without it they stop before doing anything. Convert the inventory to `nodes.yaml` first |
-| Rack-scale (`rack_scale_enabled: true`) | The inventory comes from `rack-profile.yaml`, not `nodes.yaml`, and neither action runs the fabric roles (netplan, sysctl, BGP). Both refuse a rack-scale env before doing anything |
+| Star racks (`topology: star`) | The spokes reach each other through the hub, so a spoke added or removed changes the hub's fabric and every spoke's routes. Both refuse a star rack before doing anything |
+| On a rack: control-plane, etcd or storage nodes, and an edit that changes the nodes that stay | See [Rack-scale](#rack-scale) |
 | `add-node` with `storage_backend: local-path`, or `custom` with `storage_custom_rwx: false` | Both serve a single node: the storage check refuses them on more than one, so every later install, validate and teardown would stop. `add-node` refuses them up front; move the env to NFS or Ceph first |
-| Per-node setup of other components on a new node | `add-node` runs only the kubernetes component (plus NFS exports and NRI balloons). A new node is not made a Ceph OSD node, does not get NetApp Trident's NFS client packages, and is not marked eligible for Kata. Re-run `install` for `rook_ceph_storage`, `netapp_trident_csi` or `kata_containers` if the new node needs them |
+| Per-node setup of other components on a new node | `add-node` runs only the kubernetes component (plus NFS exports and NRI balloons; on a rack also the node's fabric, BGP peers, labels and GPU stack, see [Rack-scale](#rack-scale)). A new node is not made a Ceph OSD node, does not get NetApp Trident's NFS client packages, and is not marked eligible for Kata. Re-run `install` for `rook_ceph_storage`, `netapp_trident_csi` or `kata_containers` if the new node needs them |
 
 
 ## Adding worker nodes
@@ -88,6 +89,16 @@ Kubernetes does not move running pods onto a new node. Models already deployed s
 
 - Deploy new models, or undeploy and redeploy an existing one (`./model-manager undeploy <model>` then `deploy <model> --wait`).
 - `model-manager deploy --node <name>` is a *preference*, not a requirement — if the node doesn't qualify, the pod lands elsewhere. Check where it went with `kubectl get pods -n llm-inference -o wide`.
+
+## Rack-scale
+
+On a rack-scale env (`rack_scale_enabled: true`) the nodes come from `env/<name>/rack-profile.yaml`; `nodes.yaml` stays empty. Add the worker under its rack in `rack-profile.yaml`, or delete it from there, then run `add-node` or `remove-node` as above. Clos, L2 and `none` racks are supported, star racks are not. The node's key under `racks` is its Kubernetes node name.
+
+- **Workers only.** A new or removed node with the `kube_control_plane`, `etcd` or `storage` role is refused, an etcd-only node included: these actions change neither the etcd members nor Ceph's nodes, OSDs and mons. Adding or removing such a node needs a reinstall.
+- **The nodes that stay must not change.** The installer parses the edited profile and compares what it generates for the nodes already in the inventory (their inventory entry and groups, netplan and BGP peer files) and for the whole rack (Calico and Ceph settings) with what is on disk. Any difference, such as a new leaf, a different MTU or a changed role, is refused: `add-node` and `remove-node` bring up or take down the changed node's fabric only. Apply such an edit to every node with `install infrastructure` instead.
+- **`add-node`**, before `scale.yml`: runs the checks above, then writes the inventory and the fabric files from `rack-profile.yaml` and applies the fabric netplan and sysctls, so a refused node is neither in the inventory nor has its network changed (the nodes already in the cluster get the files they already have, so nothing changes there). The API server check goes to the control plane's fabric address when the control plane is on the fabric. After the join: the BGP peers and the silicon/GPU labels from `rack-profile.yaml`, then the steps above. On a BGP rack the leaf must accept the new node's BGP session, or calico-node stays not Ready and the node keeps its pending taint.
+- **A new NVIDIA GPU node** gets the GPU stack after the pending taint is lifted, since the operator's DaemonSets do not tolerate it. The operator takes a new GPU node by itself; the rack's first GPU node installs it (and the GPU dashboards and alerts, when observability is installed). `add-node` then waits, up to 30 minutes per node, until the node's GPUs are allocatable (`nvidia.com/gpu`). Without the platform layer there is no GPU stack yet: `install platform` brings it.
+- **`remove-node`**, after `remove-node.yml`: removes the node's fabric netplan (not with `--node-lost`) and deletes its BGPPeers, then regenerates the inventory from `rack-profile.yaml`. The fabric sysctl file (`/etc/sysctl.d/99-fabric-ecmp.conf`) stays on the removed node. On a BGP rack, delete the node's neighbor on the leaf yourself.
 
 ## Removing nodes
 
@@ -136,7 +147,7 @@ This skips the PodDisruptionBudget check, gives the drain up after 60 seconds in
 
 Before `scale.yml` ever runs, against just the new node(s):
 
-1. **SSH reachability** — the installer connects with the credentials in `nodes.yaml` before the confirm prompt (and before `--dry-run` exits).
+1. **SSH reachability** — the installer connects with the credentials in `nodes.yaml` (rack-scale: `rack-profile.yaml`) before the confirm prompt (and before `--dry-run` exits).
 2. **Not already joined to a cluster** — fails if `/etc/kubernetes/kubelet.conf` already exists on the node, rather than letting a stale or foreign join corrupt either cluster.
 3. **No Docker installed** — fails if the node has a `docker.service` unit, running or not. Kubespray removes any container runtime other than containerd: it kills and deletes every Docker container, uninstalls Docker and deletes `/var/lib/docker` and `/etc/docker`, so all images, volumes and container data are lost. This installer never lets that happen. Back up and uninstall Docker yourself, or use a different node. `install kubernetes` runs the same check against every node (and the controller itself in single-node localhost mode) when it provisions a new cluster; on a running cluster Kubespray does not run, so it skips the check.
 4. **Duplicate hostname/IP within `nodes.yaml`** — checked even earlier, as part of inventory generation (applies to `install`/`remove-node` too, not just `add-node`): fails if two different entries across `nodes_control_plane`/`nodes_workers` share an `ip` or `hostname`. An identical entry under both lists is allowed: that node is a control plane and a worker.
@@ -163,7 +174,7 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 
 - **`--dry-run`** prints the computed node diff and the exact Kubespray invocation, and changes nothing.
 - A `confirm()` gate (y/N or `--force`) — separate from Kubespray's own `skip_confirmation`, which we pass through specifically so Kubespray's prompt doesn't block a non-interactive run; ours is the one that actually gates the destructive action.
-- **No diff, no action** — if `nodes.yaml` already matches the live cluster, both actions report "nothing to do" and exit, never invoking Kubespray. A `remove-node` whose post phase failed (the node is gone from the cluster and from `nodes.yaml`, but still in the inventory) runs the post phase again instead.
+- **No diff, no action** — if `nodes.yaml` (`rack-profile.yaml` on a rack) already matches the live cluster, both actions report "nothing to do" and exit, never invoking Kubespray. A `remove-node` whose post phase failed (the node is gone from the cluster and from `nodes.yaml`, but still in the inventory) runs the post phase again instead.
 - **`nodes.yaml`, the inventory and the cluster must agree.** `add-node` refuses while a joined node is missing from `nodes.yaml` (its prep pass would drop that node from the inventory). `remove-node` refuses a node that is no longer in the inventory (Kubespray could not reach it), and a `nodes.yaml` that also lists nodes not yet joined (its post pass would put them in the inventory and the NFS exports).
 - **Health after `remove-node`** is judged against the findings from before the removal: only new problems fail the command, and pods the drain evicted get a minute to be scheduled.
 - **Fails closed when the cluster can't be read.** If `kubectl` can't list the cluster's nodes or namespaces, both actions stop with the error rather than diffing `nodes.yaml` against an empty list. `remove-node` does the same for PodDisruptionBudgets and the preflight simulation: a check that didn't run refuses the removal, it never passes it.

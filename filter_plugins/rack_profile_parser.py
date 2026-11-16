@@ -1012,6 +1012,10 @@ def _gen_hosts_yaml(ctx):
     spr_nodes = with_family("cpu-spr")
     gpu_nodes = [n for n, cfg in all_nodes.items() if cfg.get("accelerator")]
 
+    # As hosts.yaml.j2 does for nodes.yaml: a delegated async task (Kubespray's
+    # drain in remove-node.yml) is polled with the inventory host's discovered
+    # interpreter, which a 24.04 control plane lacks when the node is 22.04.
+    lines += ["  vars:", "    ansible_python_interpreter: /usr/bin/python3"]
     lines += ["  children:", "    kube_control_plane:", "      hosts:"]
     for n in cp:
         lines.append(f"        {n}:")

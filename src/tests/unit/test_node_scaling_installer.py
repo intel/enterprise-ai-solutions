@@ -9,13 +9,17 @@
 #
 #   python3 -m pytest src/tests/unit
 
+import copy
 import json
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 import yaml
+
+from plugin_loader import CLOS_PROFILE as CLOS, EXAMPLE_PROFILE, write_rack_inventory
 
 INSTALLER = pathlib.Path(__file__).resolve().parents[3] / "es_auto_installer.sh"
 
@@ -67,6 +71,8 @@ def cluster(tmp_path):
             ssh = tmp_path / "bin" / "ssh"
             ssh.write_text("#!/bin/bash\nexit 0\n")
             ssh.chmod(0o755)
+            (tmp_path / "venv" / "bin").mkdir(parents=True)
+            (tmp_path / "venv" / "bin" / "python3").symlink_to(sys.executable)
             self.config(storage_backend="nfs")
             self.inventory(["cp1"], ["w1"])
             self.live([])
@@ -92,6 +98,12 @@ def cluster(tmp_path):
         def config(self, **values):
             (self.env / "global_config.yaml").write_text(yaml.safe_dump(values))
 
+        def rack(self, installed, edited):
+            """A rack-scale env installed from one profile, then edited to another."""
+            self.config(storage_backend="ceph", rack_scale_enabled=True)
+            write_rack_inventory(copy.deepcopy(installed), self.env / "inventory")
+            (self.env / "rack-profile.yaml").write_text(yaml.safe_dump(edited))
+
         def live(self, nodes):
             """Nodes by name ("cp*" carry the control-plane taint), or as built by node()."""
             (tmp_path / "nodes.json").write_text(json.dumps({"items": [
@@ -111,7 +123,8 @@ def cluster(tmp_path):
         def run(self, call, action="add-node", dry_run=True, node_lost=False, kubectl_fail=False):
             script = (f'source "{INSTALLER}"\n'
                       f'ENV_NAME=t ENV_DIR="{self.env}" GLOBAL_CONFIG="{self.env}/global_config.yaml" '
-                      f'INVENTORY="{self.env}/inventory/hosts.yaml" ACTION={action} '
+                      f'ENV_INVENTORY_DIR="{self.env}/inventory" INVENTORY="{self.env}/inventory/hosts.yaml" '
+                      f'VENV="{tmp_path / "venv"}" ACTION={action} '
                       f'DRY_RUN={str(dry_run).lower()} NODE_LOST={str(node_lost).lower()} EXTRA_VARS=()\n'
                       f'sleep() {{ :; }}\n'
                       f'{call}\n')
@@ -391,6 +404,188 @@ def test_pdbs_that_cannot_be_listed_fail_the_check(cluster):
     result = cluster.run("_pdb_blocked_pods w1", kubectl_fail=True)
     assert result.returncode == 1
     assert "connection refused" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Rack-scale: the nodes come from rack-profile.yaml
+# ---------------------------------------------------------------------------
+
+def rack_node(name, ip, *roles, **extra):
+    return name, {"mgmt_ip": "172.16.0.%d" % ip, "roles": list(roles),
+                  "fabric_nics": [{"nic": "ens1", "fabric_ip": "10.201.1.%d" % ip, "leaf": "leaf1"}], **extra}
+
+
+def edited(profile, add=(), remove=(), **network):
+    out = copy.deepcopy(profile)
+    nodes = out["racks"]["r1"]["nodes"]
+    nodes.update(dict(add))
+    for name in remove:
+        del nodes[name]
+    out["network"].update(network)
+    return out
+
+
+def test_rack_add_node_takes_the_new_worker_from_the_profile(cluster):
+    cluster.rack(CLOS, edited(CLOS, add=[rack_node("w2", 3, "kube_node")]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 0, result.stderr
+    assert "would run: scale.yml --limit=w2,kube_control_plane" in result.stdout
+
+
+def test_rack_add_node_refuses_an_edit_to_the_nodes_that_stay(cluster):
+    cluster.rack(CLOS, edited(CLOS, add=[rack_node("w2", 3, "kube_node")], mtu=1500))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "also changes the nodes that stay" in result.stderr
+    assert "w1: netplan or BGP peer files" in result.stderr
+
+
+def test_rack_add_node_refuses_a_new_etcd_node(cluster):
+    cluster.rack(CLOS, edited(CLOS, add=[rack_node("w2", 3, "kube_node", "etcd")]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "New etcd or storage node(s): w2" in result.stderr
+
+
+def test_rack_add_node_refuses_new_etcd_only_nodes(cluster):
+    cluster.rack(CLOS, edited(CLOS, add=[rack_node("e1", 6, "etcd"), rack_node("e2", 7, "etcd")]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "New etcd or storage node(s): e1, e2" in result.stderr
+
+
+def test_rack_add_node_refuses_an_upper_case_node_name(cluster):
+    cluster.rack(CLOS, edited(CLOS, add=[rack_node("W2", 3, "kube_node")]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "rack-profile.yaml with upper-case letters: W2" in result.stderr
+
+
+@pytest.mark.parametrize("action", ["add-node", "remove-node"])
+def test_rack_refuses_a_deleted_etcd_only_node(cluster, action):
+    etcd = edited(CLOS, add=[rack_node("e1", 6, "etcd"), rack_node("e2", 7, "etcd")])
+    cluster.rack(etcd, edited(etcd, remove=["e1"]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_" + action.replace("-", "_"), action=action)
+    assert result.returncode == 1
+    assert "e1 is an etcd or storage node" in result.stderr
+
+
+def with_storage_worker(profile):
+    out = edited(profile, add=[rack_node("s2", 8, "kube_node", "storage")])
+    out["storage"]["nodes"].append({"name": "s2", "devices": ["nvme1n1"]})
+    return out
+
+
+def test_rack_add_node_refuses_a_new_storage_node_as_such(cluster):
+    cluster.rack(CLOS, with_storage_worker(CLOS))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "New etcd or storage node(s): s2" in result.stderr
+
+
+def test_rack_remove_node_refuses_a_storage_node(cluster):
+    cluster.rack(with_storage_worker(CLOS), CLOS)
+    cluster.live(["cp1", "w1", "s2"])
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 1
+    assert "s2 is an etcd or storage node" in result.stderr
+
+
+def test_rack_remove_node_refuses_a_control_plane_node(cluster):
+    three = edited(CLOS, add=[rack_node("cp2", 4, "kube_control_plane", "etcd"),
+                              rack_node("cp3", 5, "kube_control_plane", "etcd")])
+    cluster.rack(three, edited(three, remove=["cp3"]))
+    cluster.live(["cp1", "cp2", "cp3", "w1"])
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 1
+    assert "cp3 is a control-plane node" in result.stderr
+
+
+def test_rack_refuses_a_control_plane_node_gone_from_the_cluster_and_the_profile(cluster):
+    three = edited(CLOS, add=[rack_node("cp2", 4, "kube_control_plane", "etcd"),
+                              rack_node("cp3", 5, "kube_control_plane", "etcd")])
+    cluster.rack(three, edited(three, remove=["cp3"]))
+    cluster.live(["cp1", "cp2", "w1"])
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 1
+    assert "cp3 is a control-plane node" in result.stderr
+
+
+def test_rack_remove_node_targets_the_worker_deleted_from_the_profile(cluster):
+    cluster.rack(CLOS, edited(CLOS, remove=["w1"]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_remove_node", action="remove-node", node_lost=True)
+    assert result.returncode == 1
+    assert "still Ready, not lost: w1" in result.stderr
+
+
+def test_rack_remove_node_leaves_etcd_only_nodes_alone(cluster):
+    etcd = edited(CLOS, add=[rack_node("e1", 6, "etcd"), rack_node("e2", 7, "etcd")])
+    cluster.rack(etcd, etcd)
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 0, result.stderr
+    assert "nothing to do" in result.stdout
+
+
+def test_add_node_refuses_while_a_removal_is_unfinished(cluster):
+    cluster.declare(["cp1"], ["w1", "w3"])
+    cluster.inventory(["cp1"], ["w1", "w2"])
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "neither in env/t/nodes.yaml nor in the cluster: w2" in result.stderr
+
+
+def test_rack_add_node_refuses_while_a_removal_is_unfinished(cluster):
+    two = edited(CLOS, add=[rack_node("w2", 3, "kube_node")])
+    cluster.rack(two, edited(two, remove=["w2"], add=[rack_node("w3", 4, "kube_node")]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "neither in env/t/rack-profile.yaml nor in the cluster: w2" in result.stderr
+
+
+def test_rack_remove_node_finishes_an_unfinished_post_phase(cluster):
+    two = edited(CLOS, add=[rack_node("w2", 3, "kube_node")])
+    cluster.rack(two, edited(two, remove=["w2"]))
+    cluster.live(["cp1", "w1"])
+    result = cluster.run("do_remove_node", action="remove-node")
+    assert result.returncode == 0, result.stderr
+    assert "finishing the post phase for: w2" in result.stdout
+    assert "removed with --node-lost, re-run with --node-lost" in result.stdout
+
+
+def test_rack_refuses_a_star_rack(cluster):
+    cluster.rack(EXAMPLE_PROFILE, EXAMPLE_PROFILE)
+    cluster.live(["master1", "master2", "worker1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "not supported on a star rack" in result.stderr
+
+
+def test_rack_refuses_nodes_in_nodes_yaml(cluster):
+    cluster.rack(CLOS, CLOS)
+    cluster.declare(["cp1"], ["w1"])
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "takes them from rack-profile.yaml" in result.stderr
+
+
+def test_rack_refuses_a_profile_that_does_not_parse(cluster):
+    cluster.rack(CLOS, CLOS)
+    (cluster.env / "rack-profile.yaml").write_text("racks: [1]\n")
+    result = cluster.run("do_add_node")
+    assert result.returncode == 1
+    assert "cannot read env/t/rack-profile.yaml or its inventory (env/t/inventory)" in result.stderr
+    assert "'racks' must be a mapping" in result.stderr
 
 
 # ---------------------------------------------------------------------------
