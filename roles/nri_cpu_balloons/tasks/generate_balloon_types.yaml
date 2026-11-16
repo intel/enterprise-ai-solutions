@@ -2,7 +2,7 @@
 # =============================================================================
 # NRI CPU Balloons — Advanced: generate per-TP balloon types
 # =============================================================================
-# Discovers each node's NUMA/HT topology and generates vLLM per-TP balloon
+# Discovers each node's NUMA/HT topology and generates per-TP model balloon
 # types (model-balloon-tp{1,2,4,8}, auto-capped by NUMA count).
 #
 # SECURITY / FOOTPRINT (revised approach, replaces the old ubuntu:22.04 +
@@ -480,7 +480,7 @@
           nri.intel.com/max-tp: "{{ item.value.max_tp | string }}"
           nri.intel.com/numa-nodes: "{{ item.value.numa | string }}"
           nri.intel.com/physical-cpus: "{{ item.value.physical_cpus | string }}"
-        # Per-NUMA CPU lists from sysfs: model-manager's placement.
+        # Read by model-manager (intel/enterprise-inference): keep {"<numa id>": "<cpulist>"}.
         annotations:
           nri.intel.com/numa-cpus: "{{ item.value.node_cpus | to_json(sort_keys=True) }}"
   loop: "{{ _nri_per_node_topology | dict2items }}"

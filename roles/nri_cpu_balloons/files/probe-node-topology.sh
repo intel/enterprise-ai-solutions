@@ -22,7 +22,7 @@
 
 set -eu
 
-SYSFS=${NRI_PROBE_SYSFS:-/sys}  # a fake tree, for tests
+SYSFS=${NRI_PROBE_SYSFS:-/sys}  # src/tests/unit/test_nri_probe.py runs it on fake trees
 SYS_NODE=$SYSFS/devices/system/node
 SYS_CPU=$SYSFS/devices/system/cpu
 
@@ -34,10 +34,6 @@ count_cpus() {
 # Online CPUs only: offline ones cannot be pinned.
 online=$(cat "$SYS_CPU/online")
 logical=$(count_cpus "$online")
-
-# threads per core = number of entries in cpu0's thread_siblings_list
-tpc=$(awk -F, '{print NF}' "$SYS_CPU"/cpu0/topology/thread_siblings_list 2>/dev/null || echo 1)
-[ "$tpc" -ge 1 ] 2>/dev/null || tpc=1
 
 # Per-NUMA cpulist + package id of each NUMA node's first CPU. Memory-only
 # NUMA nodes (CXL, HBM) have no CPUs to pin and are left out.
@@ -66,6 +62,8 @@ for c in "$SYS_CPU"/cpu[0-9]*; do
     if [ "$cid" != "$low" ]; then sib="$sib $cid"; nsib=$((nsib + 1)); fi
 done
 phys=$(( logical - nsib ))
+# Threads per core from the same counts, rounded up (mixed SMT, offline siblings).
+tpc=$(( phys > 0 ? (logical + phys - 1) / phys : 1 ))
 
 echo "NRI_NUMA=$numa"
 echo "NRI_LOGICAL=$logical"

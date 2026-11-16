@@ -3,7 +3,7 @@
 # NRI CPU Balloons Role Defaults
 # =============================================================================
 # Installs the NRI "balloons" resource policy (containers/nri-plugins) so that
-# vLLM model pods can be pinned to CPU sets that respect NUMA topology and
+# Model pods (any engine) can be pinned to CPU sets that respect NUMA topology and
 # expose only physical cores (hyperthreads filtered).
 #
 # This role is CPU-only. It is a no-op when kubernetes_accelerator != "cpu".
@@ -29,7 +29,7 @@ nri_cpu_balloons:
 # Sized from a deployment profile fed to
 # `files/compute_reserved_cpus_advanced.sh`:
 #   siblings      =  ALL sibling (HT) vCPUs — physical cores
-#                    reserved exclusively for vLLM balloons  [default]
+#                    reserved exclusively for model balloons  [default]
 #   minimal       =  8 logical CPUs (core services only)
 #   standard      = 12 logical CPUs (core + auth)
 #   observability = 16 logical CPUs (standard + monitoring)
@@ -37,8 +37,8 @@ nri_cpu_balloons:
 #
 # The 'siblings' profile reserves all hyperthreaded sibling cores and
 # excludes them from the balloon pool. This leaves physical cores
-# exclusively for vLLM models, while sibling cores handle infrastructure
-# and non-vLLM workloads. Falls back to 'standard' if SMT is disabled.
+# exclusively for models, while sibling cores handle infrastructure
+# and every other workload. Falls back to 'standard' if SMT is disabled.
 #
 # Operators can override sizing by setting `nri_reserved_cpu_list` to a
 # Linux cpuset string (e.g. "0-3" or "0,1,32,33"). That value is applied

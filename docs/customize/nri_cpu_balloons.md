@@ -22,7 +22,8 @@ The NRI (Node Resource Interface) balloons policy works in two stages:
    that node's own NUMA topology — plus one elastic `reserved` pool.
 2. **Pin at runtime.** When a container starts, the plugin assigns it to a
    matching balloon and pins its processes to that balloon's cpuset, so
-   vLLM gets stable, predictable, NUMA-local CPU.
+   every model engine (vLLM, OpenVINO Model Server) gets stable, predictable,
+   NUMA-local CPU.
 
 A model pod's CPU **request must fit inside one of the model balloon types**,
 otherwise the pod will not be scheduled onto a balloon. All non-model pods
