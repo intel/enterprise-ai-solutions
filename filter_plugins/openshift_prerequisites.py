@@ -18,8 +18,8 @@ failed carries `msg` instead of `resources`. A read the identity is not allowed 
 make makes the check UNVERIFIED (a warning), never OK: the installer must not claim
 a requirement it could not see.
 
-Each report row: {name, title, doc, level: ok|warn|fail, status, required,
-details: [every line], problems: [only the lines behind a warn/fail]}.
+Each report row: {name, title, doc, level: ok|warn|fail, status, details: [every line],
+problems: [only the lines behind a warn/fail]}.
 """
 
 import re
@@ -79,11 +79,8 @@ class _Row(object):
         self.status = "OK"
         self.details = []
         self.problems = []
-        self.required = _truthy(req.get("required", True))
 
     def add(self, level, status, detail):
-        if level == FAIL and not self.required:
-            level = WARN
         if _RANK[level] > _RANK[self.level]:
             self.level, self.status = level, status
         self.details.append(detail)
@@ -101,7 +98,7 @@ class _Row(object):
     def result(self):
         return {"name": self.req.get("name"), "title": self.req.get("title", self.req.get("name")),
                 "doc": self.req.get("doc", ""), "level": self.level, "status": self.status,
-                "required": self.required, "details": self.details, "problems": self.problems}
+                "details": self.details, "problems": self.problems}
 
 
 def _check_version(row, what, installed, tested, strict):

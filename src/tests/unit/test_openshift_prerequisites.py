@@ -83,11 +83,6 @@ def test_apis_not_listed_is_unverified(apis):
     assert (row["level"], row["status"]) == (op.WARN, "UNVERIFIED")
 
 
-def test_apis_not_required_row_downgrades_fail():
-    row = report({"apis": ["a.io/v1"], "required": False}, apis=["b.io/v1"])
-    assert (row["level"], row["status"]) == (op.WARN, "MISSING")
-
-
 def test_package_without_subscription_is_missing():
     row = report({"package": "pkg", "channel": "stable"}, subscriptions={"resources": []})
     assert (row["level"], row["status"]) == (op.FAIL, "MISSING")

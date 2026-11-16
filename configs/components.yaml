@@ -198,7 +198,7 @@ components:
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 
   # Event-driven autoscaling (external.metrics.k8s.io); triggers query the platform
-  # Prometheus. On OpenShift the role checks the Custom Metrics Autoscaler instead.
+  # Prometheus. On OpenShift it uses the Custom Metrics Autoscaler, which preflight checks.
   - name: keda
     layer: platform
     enabled: "{{ keda_enabled | default(false) | bool }}"

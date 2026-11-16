@@ -44,7 +44,7 @@ To stay on the tested versions, subscribe to the channel in the table with `inst
 | 4 | Gateway API | built in (Ingress Operator) | — | | [Gateway API](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ingress_and_load_balancing/configuring-gateway-api) | **Yes** (nothing to install) |
 | 5 | CloudNativePG | `cloudnative-pg` (certified-operators) | `stable-v1` → 1.30.1 | | [CloudNativePG](https://cloudnative-pg.io/documentation/current/installation_upgrade/) (certified, not a Red Hat product) | **Yes** |
 | 6 | Red Hat build of Keycloak | `rhbk-operator` (redhat-operators) | `stable-v26.6` → 26.6.7-opr.1 | | [RHBK Operator installation](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.6/html/operator_guide/installation-) | When `keycloak_enabled: true` (the default) |
-| 7 | Custom Metrics Autoscaler | `openshift-custom-metrics-autoscaler-operator` (redhat-operators) | not installed in the test | `stable` → 2.19.0-4 | [Custom Metrics Autoscaler](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/nodes/automatically-scaling-pods-with-the-custom-metrics-autoscaler-operator) | For autoscaling _(planned)_ |
+| 7 | Custom Metrics Autoscaler | `openshift-custom-metrics-autoscaler-operator` (redhat-operators) | `stable` → 2.19.0-4 | | [Custom Metrics Autoscaler](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/nodes/automatically-scaling-pods-with-the-custom-metrics-autoscaler-operator) | When `keda_enabled: true` (default `false`) |
 | 8 | Node Feature Discovery | `nfd` (redhat-operators) | `stable` → 4.22.0 | | [NFD Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/specialized_hardware_and_driver_enablement/psap-node-feature-discovery-operator) | **Yes** |
 | 9 | LeaderWorkerSet | `leader-worker-set` (redhat-operators) | `stable-v1.0` → 1.0.1 | | [LeaderWorkerSet Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ai_workloads/leader-worker-set-operator) | **Yes** (llm-d serving) |
 | 10 | Red Hat Connectivity Link | `rhcl-operator` (redhat-operators) | `stable` → 1.4.3 | | [Install Connectivity Link](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.4/html/install_connectivity_link/rhcl-install-on-ocp) | **Yes** (OpenShift AI `LLMInferenceService`) |
@@ -102,7 +102,7 @@ The operator watches only its own namespace, so install it **into `keycloak`**, 
 
 ### 7. Custom Metrics Autoscaler
 
-Model autoscaling uses KEDA instead of the Prometheus Adapter that the installer deploys on vanilla Kubernetes; on OpenShift the `custom.metrics.k8s.io` API must not be taken over. Create the `KedaController` named `keda` in `openshift-keda`, as the guide describes.
+Autoscaling uses KEDA instead of the Prometheus Adapter that the installer deploys on vanilla Kubernetes; on OpenShift the `custom.metrics.k8s.io` API must not be taken over. With `keda_enabled: true`, install the operator from the marketplace **into `openshift-keda`** (all namespaces): the installer does not install KEDA on OpenShift, and preflight fails without it. The operator creates the `KedaController` named `keda` in `openshift-keda`; if it does not, create it as the guide describes. Its status must reach `Installation Succeeded`.
 
 ### 8. Node Feature Discovery
 
@@ -266,7 +266,7 @@ What changes on OpenShift without any setting:
 | `postgresql` | CNPG operator from Helm, then the `Cluster` | checks the marketplace CNPG operator (step 5), then creates only the `Cluster` |
 | `keycloak` | upstream operator, then the instance | checks the Red Hat build of Keycloak operator (step 6), then creates only the instance and realm |
 | `gateway` (Envoy) | Envoy as a DaemonSet on the control plane, behind a `LoadBalancer` | Envoy as a Deployment behind a `ClusterIP` Service; the OpenShift router forwards each hostname the Gateway serves (the apex host, and each service's host as it publishes) to it through a TLS passthrough `Route`, so Envoy still terminates TLS. Add hosts published outside the installer with `gateway_openshift_extra_route_hosts`. Its namespace's service accounts get the `nonroot-v2` SCC for the chart's fixed UID. Only the Envoy Gateway CRDs are applied: the Gateway API CRDs belong to the Ingress Operator, which rejects changes to them. The Ingress Operator's CRDs have no `ListenerSet` (OCP 4.22: v1.4.1), so services share the wildcard listener (`shared` attach mode) |
-| `nri_cpu_balloons` | NRI balloons | NRI balloons, with `openshift.grant-scc: true`; pods of OpenShift AI's `LLMInferenceService` land in `vllm-balloon-tp1` by their `kserve.io/component: workload` label |
+| `nri_cpu_balloons` | NRI balloons | NRI balloons, with `openshift.grant-scc: true`; pods of OpenShift AI's `LLMInferenceService` land in `model-balloon-tp1` by their `kserve.io/component: workload` label |
 
 The defaults in `configs/defaults/global_config.yaml` are for Kubernetes. In `env/ocp/global_config.yaml` set `istio_enabled: false` (see [Platform detection](#platform-detection)). With `istio_enabled: true`, `istio` is still skipped, but roles label their namespaces for ambient mode, so preflight warns about it. An env seeded with `observability_enabled` as an expression on `cluster_distribution` skips observability on OpenShift; set it to `true`.
 
@@ -330,7 +330,7 @@ Preflight prints one line per requirement, then stops with every requirement tha
 
 With `installPlanApproval: Manual`, OLM waits for you to approve the first install and every upgrade. When a Subscription waits on an InstallPlan, the message names the plan and the command that approves it. The installer never approves it for you.
 
-A version newer than the tested one, the optional Custom Metrics Autoscaler, and anything the installer identity is not allowed to read are warnings; the run continues. Set `openshift_prereq_strict: true` to fail on untested newer versions too.
+A version newer than the tested one and anything the installer identity is not allowed to read are warnings; the run continues. Set `openshift_prereq_strict: true` to fail on untested newer versions too.
 
 The check only reads. It never installs or changes an operator. There is one exception: if the identity cannot list StorageClasses, preflight creates a 1Mi PVC with no `storageClassName` in a temporary `ai-solutions-preflight` namespace.
 
@@ -353,5 +353,5 @@ The installer does not support all of the flow above yet. The blocking items sto
 | **Teardown safety** | Teardown roles delete CRDs by API group or regex (`kserve`, `envoy_gateway`, `observability`, `cert_manager`, `istio`, `metallb`, `keycloak`) and whole namespaces | An ownership label on everything the installer creates; teardown deletes only labelled objects and never CRDs it did not create | **Yes**: do not run teardown |
 | **SCC** | Charts set fixed `runAsUser`/`fsGroup`; namespaces get only Pod Security labels, which do not grant an SCC on OpenShift | Leave UID/GID unset on OpenShift so `restricted-v2` assigns them; grant a dedicated SCC only where a component really needs one | **Yes** |
 | **Autoscaling** | `app_hpa` (Prometheus Adapter) and the eRAG HPAs are skipped on OpenShift | HPAs on the Custom Metrics Autoscaler (KEDA) and user-workload monitoring | No |
-| **CPU pinning (NRI balloons) and tensor parallelism** | OpenShift AI cannot annotate the pods of an `LLMInferenceService`, so every model pod (`kserve.io/component=workload`) lands in the `vllm-balloon-tp1` balloon and gets the CPUs of one NUMA node. Only TP=1 models are supported | Pick the balloon by the model's TP size | No (TP>1 models run with too few CPUs) |
+| **CPU pinning (NRI balloons) and tensor parallelism** | OpenShift AI cannot annotate the pods of an `LLMInferenceService`, so every model pod (`kserve.io/component=workload`) lands in the `model-balloon-tp1` balloon and gets the CPUs of one NUMA node. Only TP=1 models are supported | Pick the balloon by the model's TP size | No (TP>1 models run with too few CPUs) |
 | **NRI plugin sync** | If a CRI-O sync with the NRI plugin fails (`failed to synchronize plugin` in the CRI-O journal), the plugin gets no container events and new pods run unpinned. The installer restarts the plugin after it applies the node policy, which is when this happens; after a policy change of your own, restart it by hand: `oc delete pod -n kube-system -l app.kubernetes.io/name=nri-resource-policy-balloons` | Detect a failed sync and restart the plugin | No |
