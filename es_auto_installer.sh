@@ -76,11 +76,10 @@ readonly -a ERAG_NAMESPACES=(rag-ui chat-history edp fingerprint vdb erag-gatewa
 #   ensure_sudo       _NEED_BECOME_PASS
 #   _discover_layers  LAYERS
 #   main              LOG
-#   _set_declared_in  DECLARED_IN
 #   _resolve_kubeconfig  KUBE_CFG IS_BYO
 #   ensure_repos      ANSIBLE_ROLES_PATH (exported)
 #   _kubespray_args   KS_PB KS_ARGS KS_EXTRA
-#   _require_rack_profile_nodes  RACK_NODES
+#   _require_declared_nodes  RACK_NODES DECLARED_IN
 # init sets ENV_DIR itself: it runs before any env exists, so ensure_env_dir cannot.
 
 # =============================================================================
@@ -1312,7 +1311,6 @@ run_kubespray() {
 
     info "Kubespray $(basename "$KS_PB") — live output"
     _ks_playbook "$inv" "$KS_PB" "${KS_ARGS[@]+"${KS_ARGS[@]}"}" || err "Kubespray failed. Log: $LOG"
-    [[ "$action" != "teardown" ]] || rm -f "$(_pending_removal_file)"
 
     # Kubespray writes admin.conf to artifacts_dir (=ENV_DIR) via kubeconfig_localhost.
     # Rename to kubeconfig.yaml so the rest of the installer finds it.
@@ -1365,40 +1363,28 @@ _refuse_upper_case_hostnames() {
 # answer from it, or from nodes.yaml when it is empty.
 RACK_NODES=""
 DECLARED_IN="nodes.yaml"
-_set_declared_in() { _rack_scale_enabled && DECLARED_IN="rack-profile.yaml"; return 0; }
 
-# _rack_report <kind> — the second field of the node report's <kind> lines.
-_rack_report() { awk -F'\t' -v k="$1" '$1 == k {print $2}' <<< "$RACK_NODES"; }
-
-# _require_declared_nodes <live nodes> — nodes.yaml declares the nodes or, on a
-# rack-scale env, rack-profile.yaml.
-_require_declared_nodes() {
-    if _rack_scale_enabled; then _require_rack_profile_nodes "$1"; else _require_nodes_yaml_defined; fi
-    _refuse_upper_case_hostnames
-}
-
-# _require_rack_profile_nodes <live nodes> — RACK_NODES from the edited
-# rack-profile.yaml, or err(). The edit must leave the nodes that stay as they
-# are: add-node and remove-node bring up or take down the fabric of the changed
+# _require_declared_nodes — nodes.yaml declares the nodes or, on a rack-scale
+# env, rack-profile.yaml. Its edit must leave the nodes that stay as they are:
+# add-node and remove-node bring up or take down the fabric of the changed
 # node(s) only.
-_require_rack_profile_nodes() {
+_require_declared_nodes() {
+    _rack_scale_enabled || { _require_nodes_yaml_defined; _refuse_upper_case_hostnames; return; }
+    DECLARED_IN="rack-profile.yaml"
     [[ -z "$(_nodes_yaml_hostnames)" ]] \
         || err "${ACTION}: env/${ENV_NAME}/nodes.yaml declares nodes, but a rack-scale env takes them from rack-profile.yaml. Leave nodes.yaml empty."
-    local reasons cluster
-    mapfile -t cluster <<< "$1"
+    local reasons
     _capture RACK_NODES reasons "${VENV}/bin/python3" "${SCRIPT_DIR}/roles/fabric_inventory/files/rack_scale_nodes.py" \
-        "${ENV_DIR}/rack-profile.yaml" "$ENV_INVENTORY_DIR" "${cluster[@]}" \
+        "${ENV_DIR}/rack-profile.yaml" "$ENV_INVENTORY_DIR" \
         || err "${ACTION}: cannot read env/${ENV_NAME}/rack-profile.yaml or its inventory (env/${ENV_NAME}/inventory):
 $(sed 's/^/  /' <<< "$reasons")"
-    [[ "$(_rack_report rack)" != "star" ]] \
+    [[ "$(awk -F'\t' '$1 == "rack" {print $2}' <<< "$RACK_NODES")" != "star" ]] \
         || err "${ACTION} is not supported on a star rack: the spokes reach each other through the hub, so adding or removing one changes the hub's fabric and every spoke's routes."
     # By inventory, not by the live cluster: an etcd-only node is no Kubernetes
     # node, and a node whose Node object is gone still has its fabric.
-    local any_role inventory new gone gone_cp gone_infra new_infra
-    any_role=$(_declared_hostnames any_role)
-    inventory=$(_inventory_hosts)
-    new=$(_only_in "$any_role" "$inventory")
-    gone=$(_only_in "$inventory" "$any_role")
+    local new gone gone_cp gone_infra new_infra
+    new=$(_only_in "$(_declared_hostnames any_role)" "$(_inventory_hosts)")
+    gone=$(_only_in "$(_inventory_hosts)" "$(_declared_hostnames any_role)")
     gone_cp=$(_in_both "$gone" "$(_inventory_group kube_control_plane)")
     [[ -z "$gone_cp" ]] \
         || err "${ACTION} only adds and removes worker nodes: ${gone_cp//$'\n'/, } is a control-plane node.
@@ -1412,49 +1398,48 @@ $(sed 's/^/  /' <<< "$reasons")"
     [[ -z "$new_infra" ]] \
         || err "${ACTION} only adds and removes worker nodes. New etcd or storage node(s): ${new_infra//$'\n'/, }
   It sets up neither etcd members nor Ceph disks."
-    # netplan apply leaves an address whose definition is gone: the fabric of an
-    # add-node that did not finish comes down with remove-node.
-    local unfinished; unfinished=$(_rack_report unfinished | sed 's/^/  /')
-    [[ -z "$unfinished" ]] \
-        || err "${ACTION}: the rack-profile.yaml edit changes an add-node that did not finish (in the inventory, not in the cluster):
-${unfinished}
-  Its fabric is up as it was declared. Take the node out of rack-profile.yaml and run remove-node, which takes it
-  out with its fabric, then add it back as it should be and run add-node."
-    local changed; changed=$(_rack_report changed | sed 's/^/  /')
+    local changed; changed=$(awk -F'\t' '$1 == "changed" {print "  " $2}' <<< "$RACK_NODES")
     [[ -z "$changed" ]] \
         || err "${ACTION}: the rack-profile.yaml edit also changes the nodes that stay:
 ${changed}
   ${ACTION} applies the fabric to the added or removed node(s) only. Undo those edits, or apply them
   to every node with: ./$(basename "$0") install --env ${ENV_NAME} infrastructure
   (an installer upgrade that changes the generated files shows here too, with the same fix)"
+    _refuse_upper_case_hostnames
 }
 
 # _declared_hostnames [control_plane|any_role] — the declared nodes' hostnames, one per line:
 # the Kubernetes nodes; with any_role, also a rack's etcd-only nodes.
 _declared_hostnames() {
-    if [[ -z "$RACK_NODES" ]]; then
-        case "${1:-}" in
-            control_plane) _nodes_yaml_hostnames control_plane ;;
-            *)             _nodes_yaml_hostnames ;;
-        esac
-        return
-    fi
+    [[ -n "$RACK_NODES" ]] || { _nodes_yaml_hostnames "$@"; return; }
     case "${1:-}" in
         control_plane) _declared_group kube_control_plane ;;
-        any_role)      _rack_report node ;;
+        any_role)      awk -F'\t' '$1 == "node" {print $2}' <<< "$RACK_NODES" ;;
         *)             _declared_group kube_control_plane; _declared_group kube_node ;;
     esac
 }
 
 # _declared_group <group> — a rack's declared nodes in that inventory group, one per line.
 _declared_group() {
-    awk -F'\t' -v g="$1" '$1 == "node" && index("," $3 ",", "," g ",") {print $2}' <<< "$RACK_NODES"
+    awk -F'\t' -v g="$1" '$1 == "node" && ("," $3 ",") ~ ("," g ",") {print $2}' <<< "$RACK_NODES"
 }
 
 # _declared_ssh_target <hostname> — its ip, ssh user and ssh key, one per line.
 _declared_ssh_target() {
     [[ -n "$RACK_NODES" ]] || { _nodes_yaml_ssh_target "$1"; return; }
     awk -F'\t' -v n="$1" '$1 == "node" && $2 == n {print $4; print $5; print $6; exit}' <<< "$RACK_NODES"
+}
+
+# _node_scaling_vars <array> — append the add-node/remove-node run's vars: the
+# kubernetes role, and the rack_scale_enabled read here, which preflight checks
+# against the run's. On a rack-scale env the role runs the fabric roles itself,
+# each at the step add-node or remove-node needs it.
+_node_scaling_vars() {
+    local -n _node_scaling_out=$1
+    local rack=false
+    _rack_scale_enabled && rack=true
+    _node_scaling_out+=(-e "target=kubernetes" -e "_node_scaling_rack=${rack}")
+    [[ "$rack" == false ]] || _node_scaling_out+=(-e "_include_deps=false")
 }
 
 # _rack_scale_enabled — whether global_config.yaml sets rack_scale_enabled to true.
@@ -1480,6 +1465,7 @@ _in_both() { comm -12 <(sort -u <<< "$1") <(sort -u <<< "$2") | grep -v '^$' || 
 
 # _capture <out var> <err var> <command...> — the command's stdout and stderr
 # into the two variables, kept apart so a warning never reaches what is parsed.
+# Returns the command's exit status.
 _capture() {
     local -n _capture_out=$1 _capture_err=$2
     shift 2
@@ -1489,94 +1475,6 @@ _capture() {
     _capture_err=$(<"$_capture_file")
     rm -f "$_capture_file"
     return "$_capture_rc"
-}
-
-# The removal in progress, env/<env>/remove-node.pending: written before
-# remove-node.yml, deleted once the post phase has cleaned up. One line per
-# node: <name> <whether --node-lost was given>.
-_pending_removal_file() { echo "${ENV_DIR}/remove-node.pending"; }
-_pending_record() {
-    local file; file=$(_pending_removal_file)
-    [[ ! -e "$file" ]] || cat "$file" || err "${ACTION}: cannot read env/${ENV_NAME}/remove-node.pending."
-}
-_pending_removals() { _pending_record | awk '{print $1}'; }
-_pending_lost_removals() { _pending_record | awk '$2 == "true" {print $1}'; }
-
-# _pending_removals_without <nodes> — the record's lines for its other nodes.
-_pending_removals_without() {
-    _pending_record | awk 'NR == FNR {drop[$1]; next} !($1 in drop)' <(printf '%s\n' "$1") -
-}
-
-# _record_removal <nodes> — add the node(s) this run removes to the record, with
-# its --node-lost. With --node-lost every recorded node is marked lost: the post
-# phase leaves a lost node's fabric alone.
-_record_removal() {
-    local lines n nodes="$1"
-    [[ "$NODE_LOST" == "true" ]] && nodes=$(_pending_removals; printf '%s\n' "$1")
-    nodes=$(sort -u <<< "$nodes" | grep -v '^$' || true)
-    [[ -n "$nodes" ]] || return 0
-    lines=$(_pending_removals_without "$nodes"; for n in ${nodes//$'\n'/ }; do echo "$n $NODE_LOST"; done)
-    printf '%s\n' "$lines" > "$(_pending_removal_file)"
-}
-
-# _call_off_removal <nodes> — drop the node(s) from the record; no record when none is left.
-_call_off_removal() {
-    local lines; lines=$(_pending_removals_without "$1")
-    if [[ -n "$lines" ]]; then printf '%s\n' "$lines" > "$(_pending_removal_file)"; else rm -f "$(_pending_removal_file)"; fi
-}
-
-# _refuse_pending_removal [hint] [nodes] — err() while a removal has not finished
-# (the record's nodes, or these): rewriting the inventory now would drop its
-# node(s) before their cleanup.
-_refuse_pending_removal() {
-    local pending; pending=${2:-$(_pending_removals)}
-    [[ -z "$pending" ]] \
-        || err "${ACTION}: the removal of ${pending//$'\n'/, } did not finish (env/${ENV_NAME}/remove-node.pending).
-  ${1:-Run remove-node to finish it, then ${ACTION}. To keep a node that is still in the cluster instead, put it back in ${DECLARED_IN} and run remove-node.}
-  If the cluster is gone, delete that file."
-}
-
-# _fabric_note <nodes> — what taking the node(s) out of the inventory does to their
-# fabric: taken down, except on a node removed with --node-lost (now or recorded).
-_fabric_note() {
-    _rack_scale_enabled || return 0
-    local lost=$1
-    [[ "$NODE_LOST" == "true" ]] || lost=$(_in_both "$1" "$(_pending_lost_removals)")
-    if [[ -z "$lost" ]]; then echo " with its fabric"
-    elif [[ -z "$(_only_in "$1" "$lost")" ]]; then echo " (--node-lost: its fabric is left as it is)"
-    else echo " with its fabric, except on ${lost//$'\n'/, } (--node-lost)"; fi
-}
-
-# _abandoned_adds <live nodes> — nodes only in the inventory, without a removal
-# record: an add-node wrote their entry (and on a rack their fabric) after its
-# refusals, did not finish, and they then left the declared nodes.
-_abandoned_adds() {
-    _only_in "$(_inventory_hosts)" "$(_declared_hostnames any_role)"$'\n'"$1"
-}
-
-# _install_guard — err() for an install that renders the inventory (a run with
-# kubernetes, or fabric_inventory on its own) while a removal has not finished.
-_install_guard() {
-    [[ "$ACTION" == "install" ]] || return 0
-    _needs_kubespray || [[ "$TARGET" == "fabric_inventory" ]] || return 0
-    _refuse_pending_removal
-}
-
-# _node_scaling_vars <array> — append the add-node/remove-node run's vars: the
-# kubernetes role, and the rack_scale_enabled read here, which preflight checks
-# against the run's (a vars file can set it too). On a rack-scale env the role
-# runs the fabric roles itself, each at the step add-node or remove-node needs it.
-_node_scaling_vars() {
-    local arg name='(^|[^[:alnum:]_])rack_scale_enabled([^[:alnum:]_.]|$)'
-    for arg in "${EXTRA_VARS[@]}"; do
-        [[ ! "$arg" =~ $name ]] \
-            || err "${ACTION} reads rack_scale_enabled from env/${ENV_NAME}/global_config.yaml: set it there, not after --."
-    done
-    local -n _node_scaling_out=$1
-    local rack=false
-    _rack_scale_enabled && rack=true
-    _node_scaling_out+=(-e "target=kubernetes" -e "_node_scaling_rack=${rack}")
-    [[ "$rack" == false ]] || _node_scaling_out+=(-e "_include_deps=false")
 }
 
 # _require_live_nodes — the live cluster's node names, sorted, or err() if the
@@ -1740,35 +1638,30 @@ _nodes_yaml_ssh_target() {
     ' "$ENV_DIR/nodes.yaml" 2>/dev/null
 }
 
-# _ssh_node <hostname> <command...> — run the command on the node with the
-# credentials declared for it; its output (or the ssh error) and its status, 255
-# when it cannot be reached.
-_ssh_node() {
+# _ssh_preflight_check <hostname> — empty output and rc 0 if the node accepts
+# the credentials declared for it, else the ssh error: in a second,
+# before the confirm prompt, rather than after Ansible starts.
+_ssh_preflight_check() {
     local hostname="$1" ip user key target
-    shift
     { read -r ip; read -r user; read -r key; } < <(_declared_ssh_target "$hostname") || true
-    [[ -n "$ip" ]] || { echo "no ip found for ${hostname} in ${DECLARED_IN}"; return 255; }
+    [[ -n "$ip" ]] || { echo "no ip found for ${hostname} in ${DECLARED_IN}"; return 1; }
     target="$ip"
     [[ -n "$user" ]] && target="${user}@${ip}"
+    # -n: ssh leaves the installer's stdin alone.
     local -a ssh_opts=(-n -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
     [[ -n "$key" ]] && ssh_opts+=(-i "${key/#\~/$HOME}")
-    ssh "${ssh_opts[@]}" "$target" "$@" 2>&1
+    ssh "${ssh_opts[@]}" "$target" true 2>&1
 }
 
 # do_add_node — scale worker node(s) into an existing cluster (Kubespray scale.yml).
 do_add_node() {
-    local declared live added stray pending
-    live=$(_require_live_nodes)
-    _require_declared_nodes "$live"
-    _refuse_pending_removal
+    _require_declared_nodes
 
+    local declared live added stray pending
     declared=$(_declared_hostnames | sort -u)
+    live=$(_require_live_nodes)
     added=$(_only_in "$declared" "$live")
 
-    local abandoned; abandoned=$(_abandoned_adds "$live")
-    [[ -z "$abandoned" ]] \
-        || err "add-node: ${abandoned//$'\n'/, } is in the inventory but neither in env/${ENV_NAME}/${DECLARED_IN} nor in the cluster: an add-node that did not finish.
-  Put it back in ${DECLARED_IN} and run add-node to finish it, or run remove-node to take it out."
     # The prep pass renders the inventory from nodes.yaml or rack-profile.yaml: a
     # joined node missing from it would drop out, and a later remove-node could
     # no longer reach it.
@@ -1798,7 +1691,7 @@ do_add_node() {
     [[ "${backend,,}" == "custom" && "${rwx,,}" =~ ^(false|no|off|0)$ ]] \
         && err "add-node: storage_backend is custom with storage_custom_rwx false, which serves a single node. Use a storage class with ReadWriteMany first."
 
-    if [[ -n "$added" ]] && ! _rack_scale_enabled; then
+    if [[ -n "$added" ]]; then
         # hosts.yaml.j2 runs a loopback control plane locally: a new node cannot reach it there.
         local loopback_cp
         loopback_cp=$(yq -r '(.nodes_control_plane // [])[] | select(.hostname == "localhost" or ((.ip | tostring) | test("^(127[.]|::1$|localhost$)"))) | .hostname' "$ENV_DIR/nodes.yaml" 2>/dev/null || true)
@@ -1815,8 +1708,7 @@ do_add_node() {
         [[ -z "$worker_cp" ]] \
             || err "add-node: the control plane (${worker_cp//$'\n'/, }) has no NoSchedule taint, so it is this cluster's worker, and
   adding one under nodes_workers would end that. To keep it a worker, list it under nodes_workers too (an identical entry)."
-    fi
-    if [[ -n "$added" ]]; then
+
         local added_cp; added_cp=$(_in_both "$(_declared_hostnames control_plane)" "$added")
         [[ -z "$added_cp" ]] \
             || err "add-node only scales worker nodes. New control-plane node(s) detected: ${added_cp//$'\n'/, }
@@ -1830,8 +1722,7 @@ do_add_node() {
 
     local ssh_hits="" n ssh_err
     for n in $nodes; do
-        # In a second, before the confirm prompt, rather than after Ansible starts.
-        ssh_err=$(_ssh_node "$n" true) || ssh_hits+="  ${n}: ${ssh_err}"$'\n'
+        ssh_err=$(_ssh_preflight_check "$n") || ssh_hits+="  ${n}: ${ssh_err}"$'\n'
     done
     [[ -z "$ssh_hits" ]] \
         || err "add-node: cannot SSH to the node(s) below:
@@ -1862,28 +1753,13 @@ ${ssh_hits}  Authorize this host's key on the target(s) (e.g. ssh-copy-id), or f
     run site "${vars[@]}" -e "_scale_phase=post" -e "_added_nodes=${nodes_csv}" "${EXTRA_VARS[@]}"
 }
 
-# _require_not_reset <nodes> — err() unless each recorded node declared again
-# still has its kubelet: remove-node.yml resets a node (stops kubelet, deletes
-# kubelet.conf) before it deletes the Node object, which can read Ready for a while after.
-_require_not_reset() {
-    local n rc out
-    for n in ${1//$'\n'/ }; do
-        rc=0; out=$(_ssh_node "$n" 'test -f /etc/kubernetes/kubelet.conf && systemctl is-active --quiet kubelet') || rc=$?
-        (( rc != 255 )) \
-            || err "remove-node: ${n} is in ${DECLARED_IN} again, but cannot be reached to check that Kubespray has not reset it: ${out}"
-        (( rc == 0 )) \
-            || err "remove-node: ${n} is in ${DECLARED_IN} again, but has no /etc/kubernetes/kubelet.conf or no running kubelet: remove-node.yml may have reset it.
-  If it did, take it out of ${DECLARED_IN} again and run remove-node to finish the removal, then add it back with add-node."
-    done
-}
-
 # do_remove_node — remove node(s) from an existing cluster (Kubespray remove-node.yml).
 do_remove_node() {
-    local declared live removed
-    live=$(_require_live_nodes)
-    _require_declared_nodes "$live"
+    _require_declared_nodes
 
+    local declared live removed
     declared=$(_declared_hostnames | sort -u)
+    live=$(_require_live_nodes)
     removed=$(_only_in "$live" "$declared")
 
     # The post pass renders the inventory from nodes.yaml or rack-profile.yaml.
@@ -1893,51 +1769,30 @@ do_remove_node() {
   The removal would put them in the inventory and the NFS exports. Take them out of ${DECLARED_IN} and run remove-node;
   add them in a separate step with add-node (one kind of change per edit)."
 
-    # A recorded node declared again is live: one not in the cluster was refused above.
-    local pending kept
-    pending=$(_pending_removals)
-    kept=$(_in_both "$pending" "$declared")
-    if [[ -n "$kept" ]]; then
-        _require_not_reset "$kept"
-        local verb="is"; [[ "$DRY_RUN" == "true" ]] && verb="would be"
-        info "remove-node: ${kept//$'\n'/, } is in ${DECLARED_IN} again: its removal ${verb} called off (uncordon it if the drain left it cordoned)."
-        pending=$(_only_in "$pending" "$kept")
-        [[ "$DRY_RUN" == "true" ]] || _call_off_removal "$kept"
-    fi
-    # Only a rack's post phase reaches the node (its fabric), and --node-lost
-    # applies to the whole run.
-    local lost_hint=""
-    _rack_scale_enabled && [[ "$NODE_LOST" != "true" && -z "$removed" ]] && lost_hint="add --node-lost if it cannot be reached"
-    local abandoned; abandoned=$(_only_in "$(_abandoned_adds "$live")" "$pending")
-    [[ -z "$abandoned" ]] \
-        || info "remove-node: ${abandoned//$'\n'/, } is in the inventory but neither in ${DECLARED_IN} nor in the cluster: an add-node that did not finish, taken out too (${lost_hint:+$lost_hint; }run kubeadm reset -f on it if its join got that far)."
-    if [[ -n "$pending" ]]; then
-        local extra; extra=$(_only_in "$removed" "$pending")
-        [[ -z "$extra" ]] \
-            || _refuse_pending_removal "Put ${extra//$'\n'/, } back in ${DECLARED_IN}, run remove-node to finish it, then remove ${extra//$'\n'/, }." "$pending"
-    fi
-
     if [[ -z "$removed" ]]; then
-        if [[ -z "$pending" && -z "$abandoned" ]]; then
+        # remove-node.yml ran but the post phase did not finish: the node is
+        # gone from the cluster and from ${DECLARED_IN}, yet still in the inventory.
+        local unfinished
+        unfinished=$(_only_in "$(_inventory_hosts)" "$(_declared_hostnames any_role)"$'\n'"$live")
+        if [[ -z "$unfinished" ]]; then
             ok "remove-node: nothing to do — ${DECLARED_IN} matches the live cluster."
             exit 0
         fi
-        [[ -z "$pending" ]] || info "remove-node: finishing the removal of: ${pending//$'\n'/, }${lost_hint:+ ($lost_hint)}"
+        info "remove-node: finishing the post phase for: ${unfinished//$'\n'/, }"
+        if [[ -n "$RACK_NODES" && "$NODE_LOST" != "true" ]]; then
+            info "  It takes down their fabric over SSH: for node(s) removed with --node-lost, re-run with --node-lost."
+        fi
         if [[ "$DRY_RUN" == "true" ]]; then
             info "  would run: remove-node post phase only (no remove-node.yml)"
             exit 0
         fi
-        if [[ -n "$abandoned" ]]; then
-            _advanced_op_banner
-            confirm "About to take ${abandoned//$'\n'/, } out of the inventory$(_fabric_note "$abandoned")"
-        fi
-        _record_removal "$abandoned"
-        _remove_node_post "$(_cluster_health_findings)"
+        _remove_node_post "${unfinished//$'\n'/,}" "$(_cluster_health_findings)"
         return
     fi
 
     # Kubespray takes a control-plane node out of etcd but does not update the
-    # nodes that stay (kube-apiserver --etcd-servers, every nginx-proxy).
+    # nodes that stay (kube-apiserver --etcd-servers, every nginx-proxy). On a
+    # rack, _require_declared_nodes has refused this already.
     local removed_cp; removed_cp=$(_in_both "$(_inventory_group kube_control_plane)" "$removed")
     [[ -z "$removed_cp" ]] \
         || err "remove-node only removes worker nodes: ${removed_cp//$'\n'/, } is a control-plane node.
@@ -1950,7 +1805,7 @@ do_remove_node() {
     unreachable=$(_only_in "$removed" "$(_inventory_hosts)")
     [[ -z "$unreachable" ]] \
         || err "remove-node: ${unreachable//$'\n'/, } is in the cluster but no longer in ${INVENTORY}, so remove-node.yml cannot reach it.
-  Put its entry back in that inventory (as ${DECLARED_IN} had it), then re-run remove-node."
+  Put its entry back in that inventory (as nodes.yaml had it), then re-run remove-node."
 
     local removed_csv="${removed//$'\n'/,}"
     info "remove-node: node(s) to remove: ${removed_csv//,/, }"
@@ -2043,48 +1898,39 @@ $(sed 's/^/  /' <<< "$sim_findings")
     if [[ "$NODE_LOST" == "true" ]]; then
         _confirm_msg="About to run Kubespray remove-node.yml for: ${removed_csv//,/, } — --node-lost: the drain is given up after 60 s and the OS is not reset (node assumed unreachable)"
     fi
-    local _also; _also=$(_only_in "$pending"$'\n'"$abandoned" "$removed")
-    [[ -z "$_also" ]] || _confirm_msg+=", then take ${_also//$'\n'/, } out of the inventory$(_fabric_note "$_also")"
 
     if [[ "$DRY_RUN" == "true" ]]; then
         _kubespray_args remove "$removed_csv"
         info "  would run: $(basename "$KS_PB") ${KS_ARGS[*]}"
-        [[ -z "$_also" ]] || info "  then the post phase for these too: ${_also//$'\n'/, }"
         exit 0
     fi
 
     _advanced_op_banner
     confirm "$_confirm_msg"
     local health_before; health_before=$(_cluster_health_findings)
-    _record_removal "$removed"$'\n'"$abandoned"
     # The inventory is not regenerated before remove-node.yml: it reaches the
     # node(s) through it (see roles/kubernetes/tasks/remove-node.yaml).
     run site "${vars[@]}" -e "_scale_phase=prep" "${EXTRA_VARS[@]}"
     run_kubespray remove "$removed_csv"
-    _remove_node_post "$health_before"
+    _remove_node_post "$removed_csv" "$health_before"
 }
 
-# _remove_node_post <health baseline> — after remove-node.yml, for the node(s) in
-# the removal record: take down their fabric and BGP peers, delete their
-# BalloonsPolicy CRs, regenerate the inventory without them, delete their
-# host_vars and the record, then fail on any health finding the removal
-# introduced. The nodes are gone by then, so a failure means running add-node
-# again, not a revert.
+# _remove_node_post <csv> <health baseline> — after remove-node.yml: on a rack
+# take down the node(s)' fabric and BGP peers, delete their BalloonsPolicy CRs,
+# regenerate the inventory without them, delete their host_vars, then fail on
+# any health finding the removal introduced. The node is gone by then, so a
+# failure means running add-node again, not a revert.
 _remove_node_post() {
-    local nodes lost
-    nodes=$(_pending_removals)
-    lost=$(_pending_lost_removals)
-    run site "${vars[@]}" -e "_scale_phase=post" -e "_removed_nodes=${nodes//$'\n'/,}" -e "_lost_nodes=${lost//$'\n'/,}" "${EXTRA_VARS[@]}"
+    run site "${vars[@]}" -e "_scale_phase=post" -e "_removed_nodes=${1}" -e "_node_lost=${NODE_LOST}" "${EXTRA_VARS[@]}"
     local n
-    for n in ${nodes//$'\n'/ }; do
+    for n in ${1//,/ }; do
         rm -f "${ENV_INVENTORY_DIR}/host_vars/${n}.yml"
     done
-    rm -f "$(_pending_removal_file)"
     local regressions
-    regressions=$(_health_regressions "$1") \
-        || err "remove-node: the cluster has new problems after removing ${nodes//$'\n'/, }:
+    regressions=$(_health_regressions "$2") \
+        || err "remove-node: the cluster has new problems after removing ${1//,/, }:
 $(sed 's/^/  /' <<< "$regressions")"
-    ok "remove-node: ${nodes//$'\n'/, } removed; no new health findings."
+    ok "remove-node: ${1//,/, } removed; no new health findings."
 }
 
 # _opt_value <flag> <value> — a flag's value must exist and not be another flag,
@@ -2276,7 +2122,6 @@ main() {
         err "env/${ENV_NAME} was not provisioned for layer '${TARGET}'. Run:  ./$(basename "$0") init ${TARGET} --env ${ENV_NAME}"
     fi
     ensure_deps
-    _set_declared_in   # reads global_config.yaml with yq, which ensure_deps installs
     ensure_sudo
     resolve_inventory
 
@@ -2360,7 +2205,6 @@ main() {
 
     local _includes_k8s=false
     _needs_kubespray && _includes_k8s=true
-    _install_guard
 
     if [[ "$ACTION" == "teardown" ]]; then
         local _what="'${TARGET}' and everything above it, in env/${ENV_NAME}"

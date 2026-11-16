@@ -128,9 +128,8 @@
 - name: "Preflight - Node scaling: refuse a rack_scale_enabled the installer did not read"
   ansible.builtin.fail:
     msg: >-
-      {{ component_action }} on a rack-scale env runs through es_auto_installer.sh, which reads
-      rack_scale_enabled from global_config.yaml{{ (' (it read ' ~ _node_scaling_rack ~ ')') if _node_scaling_rack is defined else '' }};
-      this run has {{ rack_scale_enabled | default(false) | bool | lower }}. Set it in global_config.yaml only.
+      {{ component_action }} takes rack_scale_enabled from global_config.yaml, as es_auto_installer.sh
+      reads it: run it through the installer, and do not override rack_scale_enabled with -e or a vars file.
   when:
     - component_action | default('install') in ['add-node', 'remove-node']
     - (rack_scale_enabled | default(false) | bool) != (_node_scaling_rack | default(false) | bool)
