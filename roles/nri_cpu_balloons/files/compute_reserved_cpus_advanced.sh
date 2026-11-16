@@ -337,7 +337,7 @@ select_reserved_cpus() {
     case $NUMA_STRATEGY in
         balanced)
             # Distribute evenly across all NUMA nodes
-            select_balanced_cpus "$cpus_per_numa" "$total_numa" "$ht_enabled"
+            select_balanced_cpus "$cpus_per_numa" "$ht_enabled"
             ;;
         concentrated)
             # Concentrate on fewer NUMA nodes
@@ -421,8 +421,7 @@ select_sibling_cpus() {
 # Balanced NUMA selection
 select_balanced_cpus() {
     local cpus_per_numa=$1
-    local total_numa=$2
-    local ht_enabled=$3
+    local ht_enabled=$2
 
     local out=""
 

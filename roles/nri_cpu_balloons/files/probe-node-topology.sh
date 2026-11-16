@@ -7,17 +7,19 @@
 # (busybox/alpine) unprivileged pod via `k8s_exec`, or standalone on a host.
 #
 # Emits KEY=VALUE lines consumed by the nri_cpu_balloons role:
-#   NRI_NUMA=<n>                 NUMA node count
-#   NRI_LOGICAL=<n>              logical CPU count
-#   NRI_TPC=<n>                  threads per core
-#   NRI_PHYSICAL=<n>             physical core count (logical / tpc)
+#   NRI_NUMA=<n>                 NUMA nodes with CPUs (memory-only nodes are
+#                                left out, so the ids can have gaps)
+#   NRI_LOGICAL=<n>              online CPU count
+#   NRI_TPC=<n>                  threads per core, logical / physical rounded up
+#   NRI_PHYSICAL=<n>             physical core count (logical - siblings)
 #   NRI_PKGNODE={p:[n,...],...}  package->NUMA-node map (PKG_NODE literal for
 #                                gen-balloon-types.py)
-#   NRI_NODECPUS_<i>=<cpulist>   per-NUMA cpulist (e.g. "0-63,128-191")
+#   NRI_NODECPUS_<i>=<cpulist>   per-NUMA cpulist (e.g. "0-63,128-191"), keyed by
+#                                the NUMA node id
 #   NRI_SIBLINGS=<csv>           all hyperthread-sibling CPU IDs (the non-lowest
 #                                thread of each physical core), sorted
 #
-# Intentionally uses only: ls, wc, cat, cut, awk, tr, sort, paste — all present
+# Intentionally uses only: cat, cut, awk, tr, sort, paste — all present
 # in busybox.
 
 set -eu
