@@ -17,7 +17,7 @@ envoy_gateway_releases:
     gateway_api: "1.6.1"
     envoy_proxy: "docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994"
 envoy_gateway_upgrade: false
-# How long a started SSO login may take; Keycloak keeps its login page for 30m.
+# How long a started SSO login may take; matches the realm's accessCodeLifespanLogin (Keycloak default 30m), change both together.
 envoy_gateway_oidc_login_ttl: "1800s"
 _eg_line: "{{ envoy_gateway_releases['latest' if envoy_gateway_upgrade | bool else 'baseline'] }}"
 envoy_gateway_version: "{{ _eg_line.version }}"

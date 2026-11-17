@@ -97,6 +97,10 @@
       {{ (((_det_cfg.resources | default([]) | first | default({})).data | default({}))
           .get('envoy-gateway.yaml', '{}')) | from_yaml | default({}, true) }}
     _managed: "{{ _det_ctrl is none or _det_ctrl.ours }}"
+    # Our Helm values turn it on at install/upgrade; a kept controller has what it has.
+    _patch_policy: >-
+      {{ (_managed | bool and _action != 'keep' and _envoy_gateway_oidc_login_patches | bool)
+         or (_cfg.extensionApis | default({})).enableEnvoyPatchPolicy | default(false) | bool }}
     _cur: "{{ _det_ctrl.version if _det_ctrl is not none else '' }}"
     _latest: "{{ envoy_gateway_releases.latest.version }}"
     _older: "{{ _det_ctrl is not none and _det_ctrl.ours and (not _cur or _cur is version(envoy_gateway_version, '<')) }}"
@@ -209,6 +213,10 @@
         msg: >-
           The Envoy Gateway namespace {{ _ctrl_ns }} is not in the Istio mesh, so its proxies cannot reach
           meshed services (503). Set envoy_gateway_configure_existing: true, or label it istio.io/dataplane-mode=ambient.
+      - show: "{{ _envoy_gateway_oidc_login_patches | bool and _managed | bool and not _patch_policy | bool }}"
+        msg: >-
+          EnvoyPatchPolicy is off on this Envoy Gateway {{ _cur }}, so SSO logins still expire after 10 minutes at
+          the PKCE check; envoy_gateway_upgrade: true (or a reinstall) turns it on.
       - show: "{{ _class == 'enterprise-ai' and not _gw }}"
         msg: "GatewayClass eg belongs to another controller or platform; the platform Gateway uses enterprise-ai."
     _notices: "{{ _notice_rules | selectattr('show') | map(attribute='msg') | map('trim') | list }}"
@@ -219,6 +227,7 @@
       facts:
         envoy_gateway_namespace: "{{ _ctrl_ns }}"
       controller_managed: "{{ _managed | bool }}"
+      patch_policy_enabled: "{{ _patch_policy | bool }}"
       controller_action: "{{ _action }}"
       controller_namespace: "{{ _ctrl_ns }}"
       controller_name: "{{ _ctrl_name }}"

@@ -78,10 +78,10 @@
           # every Backend-backed HTTPRoute at ResolvedRefs=False.
           config:
             envoyGateway:
-              extensionApis:
-                enableBackend: true
-                # For the SSO login-cookie patch (route_sso.yaml); only the gateway namespace can target the Gateway.
-                enableEnvoyPatchPolicy: true
+              # enableEnvoyPatchPolicy: the SSO login-cookie patch (route_sso.yaml); never written as false.
+              extensionApis: >-
+                {{ {'enableBackend': true}
+                   | combine({'enableEnvoyPatchPolicy': true} if _envoy_gateway_oidc_login_patches | bool else {}) }}
       register: helm_install_result
       until: helm_install_result is succeeded
       retries: "{{ helm_retries }}"
@@ -230,7 +230,8 @@
     # JSONPatch onto the release's own bootstrap (Replace would drop its defaults); {} leaves it untouched.
     _eg_bootstrap: >-
       {{ {'bootstrap': {'type': 'JSONPatch', 'jsonPatches': _eg_runtime_patches}}
-         if gateway_platform.controller_managed | bool and gateway_platform.version | default('', true)
+         if _envoy_gateway_oidc_login_patches | bool and gateway_platform.controller_managed | bool
+            and gateway_platform.version | default('', true)
             and gateway_platform.version is version('1.8.0', '<') else {} }}
     _eg_provider:
       type: Kubernetes
