@@ -314,7 +314,8 @@ secret (`v1`) is new, or one of its release secrets is already labelled for the 
 the release secrets, all objects of the release's manifest and hooks, all objects Helm
 annotates with the release (`meta.helm.sh/release-name`) and the chart's new CRDs (`crds/`)
 are labelled. A subchart's `crds/` is not kept in the release, so its CRDs need an
-`ownership_declared` entry (kube-prometheus-stack's are declared for `observability`). A release that was there before keeps its release secrets unlabelled too, so
+`ownership_declared` entry (kube-prometheus-stack's are declared for `observability` in
+`configs/components.yaml`). A release that was there before keeps its release secrets unlabelled too, so
 teardown never deletes part of a release's history and leaves the release broken.
 
 Labels a component adds to a Namespace or Node that was there before (a customer's
@@ -362,9 +363,17 @@ What this means for a role:
   command with `-o name` or `--quiet` prints nothing the callback can read.
 - **Declare what a Job creates.** An object created by a Job, a script in a pod or a
   controller the component starts is not in any task result. In a namespace the component
-  created that is fine: it goes with the namespace. Elsewhere, add it to
-  `ownership_declared` under the component (`kind`, `namespace`, `name`, `labels`, any of
-  them); it is labelled only if it appeared while the component ran.
+  created that is fine: it goes with the namespace. Elsewhere, list it in
+  `ownership_declared` on the component's entry in your `components.yaml` (`kind`,
+  `namespace`, `name`, `labels`, any of them); it is labelled only if it appeared while the
+  component ran:
+
+  ```yaml
+  - name: app_keycloak_config
+    layer: erag
+    ownership_declared:
+      - {kind: Secret, name: erag-credentials}   # the configurator Job's kubectl apply
+  ```
 
 ---
 

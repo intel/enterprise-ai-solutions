@@ -12,7 +12,9 @@
 # `teardown: both` runs it after the labelled objects are gone: for components that
 # also change hosts. `teardown_tasks` names the role's tasks file that takes back what
 # the component changed in other components' objects (the gateway's portal and routes),
-# run before the labelled objects go. `used_by` names the components a component exists for: it is
+# run before the labelled objects go. `ownership_declared` lists objects the component
+# creates that no task result names (a Job's, a subchart's CRDs), matched by any of kind,
+# namespace, name and labels. `used_by` names the components a component exists for: it is
 # installed only while one of them is enabled, and torn down with them.
 #
 # Adding a component here: add an entry and create roles/<name>/.
@@ -204,6 +206,19 @@ components:
     layer: platform
     teardown_tasks: grafana_route_remove.yaml
     enabled: "{{ observability_enabled | default(true) | bool }}"
+    # kube-prometheus-stack's CRDs come from its `crds` subchart, which the Helm release
+    # does not keep (only the top-level chart's crds/ can be read back). Its 85.3.3 set:
+    ownership_declared:
+      - {kind: CustomResourceDefinition, name: alertmanagerconfigs.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: alertmanagers.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: podmonitors.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: probes.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: prometheusagents.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: prometheuses.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: prometheusrules.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: scrapeconfigs.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: servicemonitors.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: thanosrulers.monitoring.coreos.com}
     # keycloak: Grafana sign-in (observability_grafana_sso).
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 

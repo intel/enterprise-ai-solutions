@@ -16,7 +16,7 @@
     action: snapshot
     state_file: "{{ ownership_state_file }}"
     label_prefix: "{{ ownership_label_prefix }}"
-    declared: "{{ ownership_declared }}"
+    declared: "{{ _ownership_declared }}"
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
     teardown: "{{ component_action == 'teardown' }}"
@@ -70,7 +70,7 @@
     env: "{{ env_name | default('local') }}"
     layer: "{{ component.layer | default('unknown') }}"
     component: "{{ component.name }}"
-    declared: "{{ ownership_declared }}"
+    declared: "{{ _ownership_declared }}"
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
     component_failed: "{{ _ownership_failed | default(false) }}"
