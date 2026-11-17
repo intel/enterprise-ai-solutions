@@ -71,8 +71,11 @@ def test_node_exporter_daemonset_ready():
     namespace, name = "monitoring", "kube-prometheus-stack-prometheus-node-exporter"
     if is_openshift():
         namespace, name = CLUSTER_MONITORING_NAMESPACE, "node-exporter"
-    ds = list(kr8s.get("daemonsets", namespace=namespace,
-              field_selector={"metadata.name": name}))[0]
+    daemonsets = list(kr8s.get("daemonsets", namespace=namespace,
+                               field_selector={"metadata.name": name}))
+    assert daemonsets, f"daemonsets/{name} not found in {namespace}"
+    ds = daemonsets[0]
+    assert ds.status.numberReady > 0, f"daemonsets/{name} has no ready pod"
     assert ds.status.numberReady == ds.status.desiredNumberScheduled
 
 
