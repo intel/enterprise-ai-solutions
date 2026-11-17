@@ -5,7 +5,7 @@
 # Global Configuration — Default Template
 # =============================================================================
 # Copy to the repo root and edit before deploying. Deployment targets → nodes.yaml
-# Override any value: ./es_auto_installer.sh install -e key=value
+# Override any value: ./toolkit_manager.sh install -e key=value
 # =============================================================================
 
 # --- Kubernetes ---

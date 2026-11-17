@@ -21,7 +21,7 @@
 
       Install it (platform layer, opt-in):
         set velero_enabled: true in env/<env>/global_config.yaml
-        ./es_auto_installer.sh install velero --env <env> --only
+        ./toolkit_manager.sh install velero --env <env> --only
 
       It requires CSI-snapshot-capable storage (storage_backend: nfs or ceph).
   when: _bk_ns.resources | length == 0
@@ -50,7 +50,7 @@
 
       They are created by the Velero chart, so this means the install is
       incomplete. Check:  kubectl get crd | grep velero
-      Then re-run:  ./es_auto_installer.sh install velero --env <env> --only
+      Then re-run:  ./toolkit_manager.sh install velero --env <env> --only
   when: _bk_missing_crds | length > 0
 
 - name: "backup | preflight | Wait for the Velero server"
@@ -148,7 +148,7 @@
       metadata only.
 
       The label is applied by the velero component, so re-running it is the fix:
-        ./es_auto_installer.sh install velero --env <env> --only
+        ./toolkit_manager.sh install velero --env <env> --only
 
       If that leaves the label absent, the cluster has no snapshot support at
       all — the CRDs and the controller come with the storage component:

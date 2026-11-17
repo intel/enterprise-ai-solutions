@@ -5,7 +5,7 @@
 # =============================================================================
 # Fabric Netplan — Teardown
 # =============================================================================
-# Runs after the kubespray reset (es_auto_installer.sh): the node IPs live on
+# Runs after the kubespray reset (toolkit_manager.sh): the node IPs live on
 # the fabric, and the reset needs them.
 
 - name: "fabric_netplan | teardown | Cluster node list"

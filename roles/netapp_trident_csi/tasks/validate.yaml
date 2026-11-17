@@ -42,7 +42,7 @@
           release: ' ~ (_trident_val_release.msg | default('')) ~ ' - check
           KUBECONFIG first.'
          if (_trident_val_release.msg is defined)
-         else 'Run ./es_auto_installer.sh install storage.' }}
+         else 'Run ./toolkit_manager.sh install storage.' }}
     success_msg: >-
       trident-operator present
       (chart {{ (_trident_val_release.status | default({})).get('chart', 'unknown') }}).
@@ -162,7 +162,7 @@
       volumeBindingMode={{ _trident_val_sc.volumeBindingMode | default('n/a') }}
       (expected {{ trident_volume_binding_mode }}). A StorageClass is immutable in
       these fields, so changing the knobs requires deleting and recreating it:
-      ./es_auto_installer.sh teardown storage && ./es_auto_installer.sh install storage
+      ./toolkit_manager.sh teardown storage && ./toolkit_manager.sh install storage
     success_msg: >-
       StorageClass {{ trident_storage_class }} OK
       (reclaim={{ trident_reclaim_policy }}, binding={{ trident_volume_binding_mode }},

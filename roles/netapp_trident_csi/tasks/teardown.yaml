@@ -103,7 +103,7 @@
       (its failure is suppressed so this message can be printed).
       Check that KUBECONFIG points at the right cluster and that the apiserver is
       up (kubectl get ns), then re-run. Tear down the whole stack with
-      "./es_auto_installer.sh teardown infrastructure" if the cluster is already gone.
+      "./toolkit_manager.sh teardown infrastructure" if the cluster is already gone.
     success_msg: "Cluster API reachable."
   # On a whole-stack teardown the cluster may legitimately be gone or going away,
   # and the kubernetes component that follows does not need it.
@@ -250,8 +250,8 @@
           them first:
             kubectl delete pvc -n <namespace> <name>
           or re-run accepting the data loss:
-            ./es_auto_installer.sh teardown storage -- -e ontap_teardown_delete_pvcs=true
-          A whole-stack "./es_auto_installer.sh teardown infrastructure" does not
+            ./toolkit_manager.sh teardown storage -- -e ontap_teardown_delete_pvcs=true
+          A whole-stack "./toolkit_manager.sh teardown infrastructure" does not
           need that flag: the cluster is removed in the same run, so consent is implied.
           reclaimPolicy on these classes is {{ trident_reclaim_policy }}, so
           {{ 'the ONTAP FlexVols survive and must be removed on the array' if trident_reclaim_policy == 'Retain' else 'deleting the PVCs also destroys the ONTAP FlexVols' }}.
@@ -551,7 +551,7 @@
         msg: >-
           The cluster now has no default StorageClass. Every PVC that omits
           storageClassName will stay Pending, including the inference model store.
-          Install a storage backend: ./es_auto_installer.sh install storage
+          Install a storage backend: ./toolkit_manager.sh install storage
       when: _trident_td_default_after | length == 0
 
     - name: "netapp_trident_csi | teardown | Delete the ONTAP credentials Secret"

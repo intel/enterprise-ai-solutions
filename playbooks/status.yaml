@@ -2,7 +2,7 @@
 # =============================================================================
 # Status Playbook — Show what is currently installed
 # =============================================================================
-# Usage:  ./es_auto_installer.sh status [--env <name>]
+# Usage:  ./toolkit_manager.sh status [--env <name>]
 # =============================================================================
 
 - name: "Deployment Status"

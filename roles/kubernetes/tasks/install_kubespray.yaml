@@ -3,7 +3,7 @@
 # Kubespray Prep — Ensure stack, inventory, kubespray_extra_auto.yml
 # =============================================================================
 # Prepares kubespray for execution. The actual cluster.yml run is handled
-# by es_auto_installer.sh (direct execution → live output).
+# by toolkit_manager.sh (direct execution → live output).
 # =============================================================================
 
 # ─── Clone, venv, collections ───────────────────────────────────────────────

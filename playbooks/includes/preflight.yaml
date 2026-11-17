@@ -121,7 +121,7 @@
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
 
 # ── Rack scale: no node scaling ──────────────────────────────────────────────
-# Same refusal as es_auto_installer.sh, for a run that sets rack_scale_enabled
+# Same refusal as toolkit_manager.sh, for a run that sets rack_scale_enabled
 # with -e. Before the fabric roles load: they have no add-node/remove-node.
 
 - name: "Preflight - Rack scale: refuse add-node/remove-node"
@@ -245,7 +245,7 @@
       Fix your env/{{ env_name | default('<name>') }}/global_config.yaml:
         - Replace `object_store_backend: "minio"` with `object_store_backend: "seaweedfs"`.
         - Rename `minio_storage_size` → `seaweedfs_volume_storage_size`.
-      Or regenerate the env from scratch: ./es_auto_installer.sh init <layer> --env {{ env_name | default('<new-env>') }}.
+      Or regenerate the env from scratch: ./toolkit_manager.sh init <layer> --env {{ env_name | default('<new-env>') }}.
     quiet: true
 
 - name: "Preflight - Object store: validate backend value"
@@ -449,7 +449,7 @@
                                           include_deps=_include_deps | default(true) | bool,
                                           skip=_skip_components | default('')) }}
 
-# Teardown around the kubespray reset (es_auto_installer.sh). What kubernetes
+# Teardown around the kubespray reset (toolkit_manager.sh). What kubernetes
 # depends on (on rack-scale, the fabric that carries the node IPs) has to outlive
 # the reset: the pass before it leaves those components out, the pass after it
 # runs only them.
@@ -480,7 +480,7 @@
       env/{{ env_name | default('?') }} was not provisioned for layer(s): {{ _unprovisioned | join(', ') }}
       The plan for target '{{ target }}' reaches them because they are declared by a repo in
       ext/, but env/{{ env_name | default('?') }}/.solutions.yaml does not list them.
-      Either provision them   ./es_auto_installer.sh init {{ _unprovisioned | first }} --env {{ env_name | default('local') }}
+      Either provision them   ./toolkit_manager.sh init {{ _unprovisioned | first }} --env {{ env_name | default('local') }}
       or take them off disk    mv ext/<repo> elsewhere, so no plan can reach them.
   when: _unprovisioned | length > 0
 
