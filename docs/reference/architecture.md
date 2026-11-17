@@ -59,10 +59,10 @@ infrastructure  →  platform   →  inference  →  erag (opt-in)
 
 ## Execution Flow
 
-A single `es_auto_installer.sh install` invocation is how Toolkit Manager resolves components and dispatches Ansible for every layer:
+A single `toolkit_manager.sh install` invocation is how Toolkit Manager resolves components and dispatches Ansible for every layer:
 
 ```
-./es_auto_installer.sh install inference --env local
+./toolkit_manager.sh install inference --env local
 │
 ├─ 1. Load environment: env/<name>/global_config.yaml + config.<solution>.yaml
 ├─ 2. Resolve components: load components.yaml from this repo + ext repos → build active component list
@@ -130,7 +130,7 @@ Toolkit Manager spans this repository plus external solution repositories that p
 
 ```
 enterprise-ai-solutions/
-├── es_auto_installer.sh                        # CLI: configure, show, init, install, teardown, validate, status
+├── toolkit_manager.sh                          # CLI: configure, show, init, install, teardown, validate, status
 ├── ansible.cfg                                 # Ansible settings + dynamic roles_path
 ├── .kubespray/                                 # Kubespray clone
 ├── ext/                                        # External repos cloned here
@@ -365,14 +365,14 @@ Each environment is fully isolated under `env/<name>/`:
 
 ```bash
 # Initialize new environment (seeds config + inventory template)
-./es_auto_installer.sh init inference --env prod
+./toolkit_manager.sh init inference --env prod
 
 # Edit config and inventory
 vim env/prod/global_config.yaml
 vim env/prod/inventory/hosts.yaml
 
 # Deploy to that environment
-./es_auto_installer.sh install inference --env prod
+./toolkit_manager.sh install inference --env prod
 ```
 
 **Environment state**:
@@ -399,7 +399,7 @@ The `kubernetes` role uses **Kubespray** (kubernetes-sigs/kubespray) to install 
 | `kubernetes_container_manager` | `containerd` | Container runtime |
 | `existing_kubernetes` | `""` | Set to absolute path of a BYO kubeconfig to skip Kubespray entirely |
 
-**Which cluster the installer acts on**: `es_auto_installer.sh` doesn't support `KUBECONFIG` (or `~/.kube/config`) for selecting the cluster. It uses only:
+**Which cluster the installer acts on**: `toolkit_manager.sh` doesn't support `KUBECONFIG` (or `~/.kube/config`) for selecting the cluster. It uses only:
 - `existing_kubernetes: /path/to/kubeconfig` in `global_config.yaml`, for a cluster you bring (Kubespray is skipped)
 - `env/<name>/kubeconfig.yaml`, for the managed cluster. If `kubectl cluster-info` succeeds with it, provisioning is skipped. To reprovision, tear down `kubernetes` and install again.
 
@@ -435,7 +435,7 @@ all:
 ```
 
 ```bash
-./es_auto_installer.sh install inference --env local
+./toolkit_manager.sh install inference --env local
 ```
 
 #### 2. Remote Installation (SSH-based)
@@ -469,7 +469,7 @@ all:
 ```
 
 ```bash
-./es_auto_installer.sh install inference --env prod
+./toolkit_manager.sh install inference --env prod
 ```
 
 #### 3. Existing Kubernetes Cluster (skip Kubespray)
@@ -521,7 +521,7 @@ A file-level map of this repository and the external inference repo it composes 
 
 | File | Purpose |
 |------|---------|
-| `es_auto_installer.sh` | CLI wrapper. Actions: `configure`, `show`, `init <layer>`, `install`, `teardown`, `validate`, `status`. Flags: `--env <name>`, `--flavour <name>` (init only), `--upgrade` (init only), `--only` (skip dep auto-inclusion), `--skip <names>` (comma-separated layers/components to exclude), `--force` (skip confirmation), `--` (pass remaining args to ansible-playbook). |
+| `toolkit_manager.sh` | CLI wrapper. Actions: `configure`, `show`, `init <layer>`, `install`, `teardown`, `validate`, `status`. Flags: `--env <name>`, `--flavour <name>` (init only), `--upgrade` (init only), `--only` (skip dep auto-inclusion), `--skip <names>` (comma-separated layers/components to exclude), `--force` (skip confirmation), `--` (pass remaining args to ansible-playbook). |
 | `ansible.cfg` | Ansible configuration. `roles_path` is overridden at runtime by composed `ANSIBLE_ROLES_PATH`. Uses default stdout callback with yaml result format, `timer` + `profile_tasks` callbacks. |
 | `env/<name>/global_config.yaml` | Main config for environment: component versions, TLS settings, proxy, auth. Overrides ext repo and role defaults. Single place to change versions per environment. |
 | `env/<name>/inventory/hosts.yaml` | Kubespray-compatible inventory. Defines control-plane, workers, etcd groups. Copied from `inventory/hosts.yaml` by `init`. |
@@ -636,57 +636,57 @@ All Toolkit Manager commands run from the repository root:
 
 ```bash
 # One-time machine setup (installs Python 3.11+, yq)
-./es_auto_installer.sh configure
+./toolkit_manager.sh configure
 
 # Create a new environment
-./es_auto_installer.sh init inference
+./toolkit_manager.sh init inference
 
 # Create environment with the Intel® Chatbot Toolkit solution
-./es_auto_installer.sh init erag --env myenv
+./toolkit_manager.sh init erag --env myenv
 
 # Create environment with a specific Intel® Chatbot Toolkit pipeline flavour
-./es_auto_installer.sh init erag --flavour docsum
+./toolkit_manager.sh init erag --flavour docsum
 
 # Show available layers and components
-./es_auto_installer.sh show
+./toolkit_manager.sh show
 
 # Install infrastructure + platform + inference (via dependency auto-pull)
-./es_auto_installer.sh install inference --env local
+./toolkit_manager.sh install inference --env local
 
 # Install specific component (auto-pulls dependencies)
-./es_auto_installer.sh install kserve --env local
+./toolkit_manager.sh install kserve --env local
 
 # Install without dependencies
-./es_auto_installer.sh install metallb --only --env local
+./toolkit_manager.sh install metallb --only --env local
 
 # Install a layer
-./es_auto_installer.sh install platform --env local
+./toolkit_manager.sh install platform --env local
 
 # Install opt-in Intel® Chatbot Toolkit
-./es_auto_installer.sh install erag --env myenv
+./toolkit_manager.sh install erag --env myenv
 
 # Teardown everything (cluster included)
-./es_auto_installer.sh teardown infrastructure --env local
+./toolkit_manager.sh teardown infrastructure --env local
 
 # Teardown specific component
-./es_auto_installer.sh teardown keycloak --env local
+./toolkit_manager.sh teardown keycloak --env local
 
 # Validate health
-./es_auto_installer.sh validate inference --env local
+./toolkit_manager.sh validate inference --env local
 
 # Override a variable at runtime (pass ansible args after --)
-./es_auto_installer.sh install kserve --env local -- -e kserve_version=0.15.0
+./toolkit_manager.sh install kserve --env local -- -e kserve_version=0.15.0
 
 # Single component without dependency auto-inclusion
-./es_auto_installer.sh install metallb --only --env local
+./toolkit_manager.sh install metallb --only --env local
 
 # Pass additional ansible-playbook flags (verbose mode)
-./es_auto_installer.sh install inference --env local -- -vvv
+./toolkit_manager.sh install inference --env local -- -vvv
 
 # Work with multiple environments
-./es_auto_installer.sh install inference --env dev
-./es_auto_installer.sh install inference --env staging
-./es_auto_installer.sh install inference --env prod
+./toolkit_manager.sh install inference --env dev
+./toolkit_manager.sh install inference --env staging
+./toolkit_manager.sh install inference --env prod
 ```
 
 ---
@@ -702,12 +702,12 @@ Every Toolkit Manager component version is pinned in config, not hardcoded — t
 
 2. Re-run:
    ```bash
-   ./es_auto_installer.sh install envoy_gateway --only --env <name>
+   ./toolkit_manager.sh install envoy_gateway --only --env <name>
    ```
 
 Alternatively, override at runtime without editing files:
 ```bash
-./es_auto_installer.sh install envoy_gateway --only --env <name> -- -e envoy_gateway_version=1.4.0
+./toolkit_manager.sh install envoy_gateway --only --env <name> -- -e envoy_gateway_version=1.4.0
 ```
 
 ---
@@ -749,7 +749,7 @@ See [Adding a Solution](adding_solutions.md) for the complete reference on creat
 
 1. Create `configs/repos/repos.<layer>.yaml` in ai-solutions with the repo entries.
 2. In your repo, create `components.yaml`, `config.yaml`, and `roles/<component>/` directories.
-3. Run `./es_auto_installer.sh init <layer>` to clone and seed configs.
+3. Run `./toolkit_manager.sh init <layer>` to clone and seed configs.
 
 The installer auto-composes `ANSIBLE_ROLES_PATH` at runtime to include all ext repo roles.
 
@@ -775,7 +775,7 @@ ext/enterprise.ai-inference/roles/llm_services/files/runtimes/my-runtime.yaml
 
 ### Adding a New Action
 
-1. Add CLI support in `es_auto_installer.sh` to accept the new action (e.g., `upgrade`)
+1. Add CLI support in `toolkit_manager.sh` to accept the new action (e.g., `upgrade`)
 2. Pass `component_action: upgrade` as an extra-var to `playbooks/site.yaml`
 3. Add `tasks/upgrade.yaml` to each role that needs it
 

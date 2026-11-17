@@ -16,7 +16,7 @@ headlamp_enabled: true
 Then install it on its own, or with the rest of the platform:
 
 ```bash
-./es_auto_installer.sh install headlamp --env <name>
+./toolkit_manager.sh install headlamp --env <name>
 ```
 
 Headlamp is at `https://headlamp.<base_domain_name>/` (subdomain mode) or
@@ -109,7 +109,7 @@ stops early, before creating anything, until you choose one:
    CA when the certificate is not publicly trusted.
 5. Set `headlamp_byo_apiserver_trusted: true` in `global_config.yaml` and
    install Headlamp again.
-6. Check: `./es_auto_installer.sh validate platform --env <name>` confirms the
+6. Check: `./toolkit_manager.sh validate platform --env <name>` confirms the
    API server accepts a realm token.
 
 On a managed cluster (EKS, AKS, GKE and others), use the provider's OIDC

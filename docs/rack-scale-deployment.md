@@ -91,10 +91,10 @@ failed rack-scale install.
 git clone https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
 
-./es_auto_installer.sh configure
+./toolkit_manager.sh configure
 
 # Create environment and enable rack-scale
-./es_auto_installer.sh init inference --env rack
+./toolkit_manager.sh init inference --env rack
 vim env/rack/global_config.yaml           # set rack_scale_enabled: true, metallb_ip_range, proxy
 
 # Write your hardware profile
@@ -102,10 +102,10 @@ cp configs/defaults/rack-profile.yaml.example env/rack/rack-profile.yaml
 vim env/rack/rack-profile.yaml            # edit for your hardware — see below
 
 # Deploy
-./es_auto_installer.sh install inference --env rack
+./toolkit_manager.sh install inference --env rack
 
 # Validate
-./es_auto_installer.sh validate inference --env rack
+./toolkit_manager.sh validate inference --env rack
 ```
 
 > [!Note]
@@ -460,7 +460,7 @@ The topology of an installed cluster can't be changed in place. Re-running
 never changes. Tear the cluster down and install it again. Teardown removes
 Ceph too, so back up what you need first.
 
-1. Tear down: `./es_auto_installer.sh teardown infrastructure --env <env>`
+1. Tear down: `./toolkit_manager.sh teardown infrastructure --env <env>`
 2. Install the ToR leaf switches and cable the nodes to them
 3. Edit `rack-profile.yaml`:
    - Change `topology: star` → `topology: clos`
@@ -469,7 +469,7 @@ Ceph too, so back up what you need first.
    - Remove `fabric_router: true` and `peer:` from nodes
    - Add `leafs:` definitions and `leaf:` on each fabric NIC
    - Add `bgp: cluster_asn:`
-4. Install: `./es_auto_installer.sh install inference --env <env>`
+4. Install: `./toolkit_manager.sh install inference --env <env>`
 
 ---
 
@@ -516,7 +516,7 @@ to install.
 ## Validation
 
 ```bash
-./es_auto_installer.sh validate inference --env rack
+./toolkit_manager.sh validate inference --env rack
 ```
 
 The `fabric_validate` role checks:

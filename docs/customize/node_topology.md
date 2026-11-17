@@ -207,8 +207,8 @@ kubectl label nodes worker1 worker2 worker3 workload-class=inference
 
 Then redeploy components for affinity to take effect:
 ```bash
-./es_auto_installer.sh teardown platform --env <name>
-./es_auto_installer.sh install platform --env <name>
+./toolkit_manager.sh teardown platform --env <name>
+./toolkit_manager.sh install platform --env <name>
 ```
 
 ### Disable Topology (Emergency Override)
@@ -220,8 +220,8 @@ If soft affinity causes issues:
 vim env/<name>/global_config.yaml  # set node_topology_enabled: false
 
 # Redeploy affected layers
-./es_auto_installer.sh teardown infrastructure --env <name>
-./es_auto_installer.sh install inference --env <name>
+./toolkit_manager.sh teardown infrastructure --env <name>
+./toolkit_manager.sh install inference --env <name>
 ```
 
 Or remove labels manually:

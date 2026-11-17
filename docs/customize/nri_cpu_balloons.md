@@ -91,7 +91,7 @@ run for another reason. With models deployed, see
 Install / re-apply the role only (no full cluster re-run):
 
 ```bash
-./es_auto_installer.sh install nri_cpu_balloons
+./toolkit_manager.sh install nri_cpu_balloons
 ```
 
 Verify:
@@ -174,7 +174,7 @@ spec:
       # OR widen the reserved pool itself:
       # availableResources is set globally via nri_reserved_cpu_list /
       # nri_deployment_profile — bump the profile (e.g. standard → full)
-      # and re-run `./es_auto_installer.sh install nri_cpu_balloons` to
+      # and re-run `./toolkit_manager.sh install nri_cpu_balloons` to
       # rebuild the CRs.
 ```
 
@@ -188,7 +188,7 @@ kubectl -n kube-system get balloonspolicy node.<NODE> -o yaml \
 To **fully disable** NRI (uninstall the plugin):
 
 ```bash
-./es_auto_installer.sh teardown nri_cpu_balloons
+./toolkit_manager.sh teardown nri_cpu_balloons
 # then in global_config.yaml:
 #   nri_cpu_balloons_enabled: false
 ```
@@ -327,7 +327,7 @@ design; a few are roadmap items.
   and size the reservation accordingly.
 - **Component changes need a manual update.** If you add or remove
   infrastructure components, you must change `nri_deployment_profile` (or the
-  cpuset) and **re-run** `./es_auto_installer.sh install nri_cpu_balloons` to
+  cpuset) and **re-run** `./toolkit_manager.sh install nri_cpu_balloons` to
   rebuild the CRs. The per-component breakdown in
   `roles/nri_cpu_balloons/vars/reserved_cpu_config.yml` is **informational**
   — it documents the assumed footprint of each profile, it is not measured
@@ -368,7 +368,7 @@ design; a few are roadmap items.
   for m in $(./model-manager list -o name); do ./model-manager undeploy "$m"; done
 
   # 2. reinstall with the new profile (set nri_deployment_profile first)
-  ./es_auto_installer.sh install nri_cpu_balloons
+  ./toolkit_manager.sh install nri_cpu_balloons
 
   # 3. redeploy the models
   ./model-manager deploy <model> --wait

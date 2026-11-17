@@ -10,7 +10,7 @@ Short answers with links to the full detail. New here? Start with [Meet Toolkit 
 
 ### What does Toolkit Manager actually install?
 
-A complete, self-hosted AI platform: Kubernetes, storage, service mesh, ingress, identity, observability, model serving, and an AI gateway that exposes OpenAI-compatible endpoints. Optionally, the retrieval-augmented generation application on top. One script, `es_auto_installer.sh`, drives all of it.
+A complete, self-hosted AI platform: Kubernetes, storage, service mesh, ingress, identity, observability, model serving, and an AI gateway that exposes OpenAI-compatible endpoints. Optionally, the retrieval-augmented generation application on top. One script, `toolkit_manager.sh`, drives all of it.
 
 ### What do I need before running it?
 
@@ -58,11 +58,11 @@ The override surface is flat. Solution config files are passed with `-e @file`, 
 
 ### Can I override one value without editing a file?
 
-Yes: `./es_auto_installer.sh install <target> -- -e key=value`. Everything after `--` goes to `ansible-playbook`, which also lets you pass `--check` for a dry run or `-vvv` for verbose output.
+Yes: `./toolkit_manager.sh install <target> -- -e key=value`. Everything after `--` goes to `ansible-playbook`, which also lets you pass `--check` for a dry run or `-vvv` for verbose output.
 
 ### How do I see what would change before it runs?
 
-`./es_auto_installer.sh install <target> -- --check` performs an Ansible dry run. `show` lists layers and components, and `status` shows what is currently deployed.
+`./toolkit_manager.sh install <target> -- --check` performs an Ansible dry run. `show` lists layers and components, and `status` shows what is currently deployed.
 
 ---
 
@@ -134,11 +134,11 @@ Written to `env/<name>/logs/` at install time, along with the generated CA certi
 
 ### How do I check the deployment is healthy?
 
-`./es_auto_installer.sh status --env <name>` for namespaces, pods, and endpoints, and `validate <target>` to run the health checks for a layer or component.
+`./toolkit_manager.sh status --env <name>` for namespaces, pods, and endpoints, and `validate <target>` to run the health checks for a layer or component.
 
 ### Where are the logs?
 
-Under `env/<name>/logs/`, one file per run. Set `ES_LOG_LEVEL=debug` for verbose output, or `trace` to also enable bash tracing. Cluster-side logs are in Loki and browsable from Grafana.
+Under `env/<name>/logs/`, one file per run. Set `TKM_LOG_LEVEL=debug` for verbose output, or `trace` to also enable bash tracing. Cluster-side logs are in Loki and browsable from Grafana.
 
 ### An install failed halfway. Is it safe to re-run?
 
