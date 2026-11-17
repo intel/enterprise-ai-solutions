@@ -22,7 +22,7 @@ def _run_cli(request, *args):
     build_config_dir = request.config.getoption("--build-config-dir")
     root = _installer_root(build_config_dir)
     env = _env_name(build_config_dir)
-    cmd = ["./es_auto_installer.sh", *args, "--env", env]
+    cmd = ["./toolkit_manager.sh", *args, "--env", env]
     return subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=300)
 
 

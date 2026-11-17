@@ -26,7 +26,7 @@ kubespray_dir: "{{ playbook_dir }}/../.kubespray"
 # Directory kubespray installs its own binaries into (kubelet/kubeadm/kubectl/helm).
 # In localhost mode the node IS the bastion, so we steer kubespray off the shared
 # /usr/local/bin — otherwise its `reset.yml` would delete the operator's kubectl/helm
-# (installed by './es_auto_installer.sh configure'). Kept in the repo-local kubespray
+# (installed by './toolkit_manager.sh configure'). Kept in the repo-local kubespray
 # tree, consistent with kubespray_dir. On remote nodes /usr/local/bin is
 # kubespray-owned and left as-is.
 kubespray_bin_dir_local: "{{ kubespray_dir }}/bin"

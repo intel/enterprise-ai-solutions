@@ -2,9 +2,9 @@
 # =============================================================================
 # Kubernetes — Teardown via Kubespray reset.yml
 # =============================================================================
-# Flow (driven by es_auto_installer.sh):
+# Flow (driven by toolkit_manager.sh):
 #   Phase 1: _kubespray_prep_only=true → ensure kubespray stack → meta: end_role
-#   Phase 2: es_auto_installer.sh runs reset.yml directly (live output)
+#   Phase 2: toolkit_manager.sh runs reset.yml directly (live output)
 #   Phase 3: normal run → node labels + Kata leftovers on the nodes + restore kubectl/helm
 # Idempotent: cleanup tasks are no-ops when cluster is already down.
 # BYO mode: removes only labels we added — never destroys the cluster.
@@ -50,7 +50,7 @@
 
 # ─── Check if cluster is still running ──────────────────────────────────
 # Avoids re-running reset.yml when cluster was already torn down
-# (e.g. es_auto_installer.sh ran reset.yml directly, then re-invokes for cleanup)
+# (e.g. toolkit_manager.sh ran reset.yml directly, then re-invokes for cleanup)
 
 - name: "kubernetes | teardown | Check if cluster is still running"
   ansible.builtin.command:
@@ -98,14 +98,14 @@
 
 # ─── Ensure kubespray stack is present (clone + venv) ─────────────────────
 # Allows teardown to work even when install was never run. Only needed in the
-# prep pass, before es_auto_installer.sh runs reset.yml; the post-reset pass
+# prep pass, before toolkit_manager.sh runs reset.yml; the post-reset pass
 # has no use for it.
 
 - name: "kubernetes | teardown | Ensure kubespray stack"
   ansible.builtin.include_tasks: kubespray_ensure.yaml
   when: _kubespray_prep_only | default(false) | bool
 
-# ─── End role after prep (es_auto_installer.sh runs reset.yml from bash) ────
+# ─── End role after prep (toolkit_manager.sh runs reset.yml from bash) ────
 
 - name: "kubernetes | teardown | End role (prep complete — reset.yml runs from caller)"
   when: _kubespray_prep_only | default(false) | bool
@@ -253,7 +253,7 @@
 # host tooling here — teardown must not mutate the host beyond removing the
 # cluster. kubectl/helm are operator prerequisites (see docs), not something
 # the installer restores. The local kubeconfig ({{ kubernetes_kubeconfig }})
-# is removed by es_auto_installer.sh after this pass. .kubespray is shared
+# is removed by toolkit_manager.sh after this pass. .kubespray is shared
 # across environments — never remove it during teardown.
 
 - name: "kubernetes | teardown | Kubernetes removed"

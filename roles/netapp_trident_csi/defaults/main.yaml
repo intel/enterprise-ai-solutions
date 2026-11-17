@@ -79,7 +79,7 @@ trident_supported_drivers:
 # --- Preflight ---
 # Master gate for everything that needs to talk to the array. Set false for a
 # complete config + template + topology validation run on a machine with no
-# ONTAP access:  ./es_auto_installer.sh validate storage -- -e ontap_preflight_online=false
+# ONTAP access:  ./toolkit_manager.sh validate storage -- -e ontap_preflight_online=false
 ontap_preflight_online: true
 ontap_probe_timeout_seconds: 10
 ontap_mgmt_port: 443

@@ -4,7 +4,7 @@
 # =============================================================================
 # Kubernetes — add-node (Kubespray scale.yml, worker nodes only)
 # =============================================================================
-# es_auto_installer.sh (do_add_node) finds the new node(s) (_added_nodes) and runs:
+# toolkit_manager.sh (do_add_node) finds the new node(s) (_added_nodes) and runs:
 #   prep (_scale_phase=prep): the inventory from nodes.yaml, pre-flight on the
 #        new node(s), their kubelet CPU reservation;
 #   Kubespray scale.yml for the new node(s) and the control plane;
@@ -218,7 +218,7 @@
   ansible.builtin.debug:
     msg: >-
       Inventory regenerated at {{ kubespray_custom_inventory }}.
-      es_auto_installer.sh now runs Kubespray scale.yml for the new worker node(s).
+      toolkit_manager.sh now runs Kubespray scale.yml for the new worker node(s).
 
 - name: "kubernetes | add-node | End role (prep complete — scale.yml runs from caller)"
   ansible.builtin.meta: end_role

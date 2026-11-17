@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # remove-node preflight: capacity / spread / local-data / last-capable-node.
-# es_auto_installer.sh runs it on the controller, against the API server; it
+# toolkit_manager.sh runs it on the controller, against the API server; it
 # is not copied to a node.
 #
 # A heuristic, not the kube-scheduler: it models node selectors, required node

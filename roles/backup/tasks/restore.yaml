@@ -321,5 +321,5 @@
 
       Velero recreates objects, not readiness. Confirm the solution came back
       before trusting the restore:
-        ./es_auto_installer.sh status --env {{ env_name | default('local') }}
+        ./toolkit_manager.sh status --env {{ env_name | default('local') }}
       and compare the record counts against what they were before.
