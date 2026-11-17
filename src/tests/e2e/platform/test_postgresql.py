@@ -7,7 +7,7 @@ import allure
 import kr8s
 
 
-@allure.testcase("IEASG-T679")
+@allure.testcase("DSPTV-T408")
 def test_postgresql_cluster_ready():
     clusters = list(kr8s.get("clusters.postgresql.cnpg.io", namespace="postgresql"))
     assert len(clusters) > 0, "CNPG Cluster not found"
