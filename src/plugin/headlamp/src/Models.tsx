@@ -19,7 +19,7 @@ import {
   CatalogModel,
   catalogModels,
   categories,
-  clusterHasGpu,
+  clusterGpuResources,
   DeployOptions,
   filterRows,
   LatestJob,
@@ -100,7 +100,7 @@ export function Models() {
   const byName = new Map(services.map(s => [s.metadata.name, s]));
   const known = offeredModels(
     catalogModels(catalog?.data),
-    clusterHasGpu(nodes?.map(n => n.jsonData)),
+    clusterGpuResources(nodes?.map(n => n.jsonData)),
     new Set(byName.keys())
   );
   // Absent before the inference release that publishes it: no "Access details" then.

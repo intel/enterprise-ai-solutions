@@ -22,39 +22,56 @@ export interface CatalogModel {
   memory?: string;
   device?: string;
   gpus?: number | string;
+  accelerator_resource?: string;
 }
 
-// GPU engines of the inference catalogue (vllm-cuda); an explicit device or gpus wins.
-const GPU_ENGINE = /-(cuda|rocm|xpu)$/;
+// GPU resources a device plugin advertises per vendor, so only once the GPU stack runs
+// (NFD PCI labels alone would count a BMC VGA chip).
+const GPU_RESOURCES = {
+  cuda: ['nvidia.com/gpu'],
+  rocm: ['amd.com/gpu'],
+  xpu: ['gpu.intel.com/xe', 'gpu.intel.com/i915'],
+};
+const ALL_GPU_RESOURCES = Object.values(GPU_RESOURCES).flat();
+
+// Resources a GPU model can run on; [] for a CPU model. An explicit accelerator_resource
+// wins, then the engine's vendor suffix (vllm-cuda); device: gpu or a gpus count without
+// a known vendor accepts any GPU.
+export function modelAccelerators(m: CatalogModel): string[] {
+  if (m.device === 'cpu') return [];
+  if (m.accelerator_resource) return [m.accelerator_resource];
+  const vendor = /-(cuda|rocm|xpu)$/.exec(m.default_server ?? m.runtime ?? '')?.[1];
+  if (vendor) return GPU_RESOURCES[vendor as keyof typeof GPU_RESOURCES];
+  return m.device === 'gpu' || Number(m.gpus) > 0 ? ALL_GPU_RESOURCES : [];
+}
 
 export function modelDevice(m: CatalogModel): 'cpu' | 'gpu' {
-  if (m.device === 'gpu' || m.device === 'cpu') return m.device;
-  if (Number(m.gpus) > 0) return 'gpu';
-  return GPU_ENGINE.test(m.default_server ?? m.runtime ?? '') ? 'gpu' : 'cpu';
+  return modelAccelerators(m).length > 0 ? 'gpu' : 'cpu';
 }
-
-// Advertised by a GPU device plugin, so only once the GPU stack runs (NFD labels alone may be a BMC VGA).
-const GPU_RESOURCE = /^(nvidia\.com\/gpu|amd\.com\/gpu|gpu\.intel\.com\/(i915|xe))$/;
 
 export interface NodeLike {
   status?: { allocatable?: Record<string, string> };
 }
 
-export function clusterHasGpu(nodes: NodeLike[] | null | undefined): boolean {
-  return (nodes ?? []).some(n =>
-    Object.entries(n.status?.allocatable ?? {}).some(
-      ([k, v]) => GPU_RESOURCE.test(k) && parseInt(v, 10) > 0
-    )
-  );
+// Extended resources (vendor/name) at least one node advertises above zero.
+export function clusterGpuResources(nodes: NodeLike[] | null | undefined): Set<string> {
+  const found = new Set<string>();
+  for (const n of nodes ?? [])
+    for (const [k, v] of Object.entries(n.status?.allocatable ?? {}))
+      if (k.includes('/') && parseInt(v, 10) > 0) found.add(k);
+  return found;
 }
 
-// GPU models are offered only where a GPU is usable; deployed ones stay visible.
+// A GPU model is offered only where a node has its vendor's GPU; deployed ones stay visible.
 export function offeredModels(
   models: CatalogModel[],
-  hasGpu: boolean,
+  gpus: ReadonlySet<string>,
   deployed: ReadonlySet<string>
 ): CatalogModel[] {
-  return models.filter(m => hasGpu || modelDevice(m) === 'cpu' || deployed.has(m.name));
+  return models.filter(m => {
+    const want = modelAccelerators(m);
+    return want.length === 0 || want.some(r => gpus.has(r)) || deployed.has(m.name);
+  });
 }
 
 function parseJSON(raw: string | undefined): unknown {

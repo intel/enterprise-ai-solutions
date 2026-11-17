@@ -11,7 +11,7 @@ import {
   aroundModels,
   CATALOG,
   catalogModels,
-  clusterHasGpu,
+  clusterGpuResources,
   offeredModels,
   PORTAL,
   portalEntries,
@@ -70,7 +70,7 @@ function ModelsCard() {
   const deployed = services ?? [];
   const offered = offeredModels(
     catalogModels(catalog?.data),
-    clusterHasGpu(nodes?.map(n => n.jsonData)),
+    clusterGpuResources(nodes?.map(n => n.jsonData)),
     new Set(deployed.map(s => s.metadata.name))
   );
   const ready = deployed.filter(s => readyCondition(s)?.status === 'True').length;

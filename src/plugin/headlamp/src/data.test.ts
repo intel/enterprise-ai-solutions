@@ -9,11 +9,12 @@ import {
   catalogAccess,
   catalogModels,
   categories,
-  clusterHasGpu,
+  clusterGpuResources,
   filterRows,
   jobArgs,
   latestJobs,
   liveFacts,
+  modelAccelerators,
   modelDevice,
   modelPods,
   offeredModels,
@@ -100,63 +101,84 @@ describe('aroundModels', () => {
   });
 });
 
-describe('modelDevice', () => {
-  it('reads an explicit device or GPU count first', () => {
-    expect(modelDevice({ name: 'a', device: 'gpu', runtime: 'vllm' })).toBe('gpu');
-    expect(modelDevice({ name: 'b', device: 'cpu', runtime: 'vllm-cuda' })).toBe('cpu');
-    expect(modelDevice({ name: 'c', gpus: 8 })).toBe('gpu');
-    expect(modelDevice({ name: 'd', gpus: '0' })).toBe('cpu');
+describe('modelAccelerators', () => {
+  it('maps the engine vendor to its GPU resource', () => {
+    expect(modelAccelerators({ name: 'a', runtime: 'vllm-cuda' })).toEqual(['nvidia.com/gpu']);
+    expect(modelAccelerators({ name: 'b', default_server: 'vllm-xpu', runtime: 'vllm' })).toEqual([
+      'gpu.intel.com/xe',
+      'gpu.intel.com/i915',
+    ]);
+    expect(modelAccelerators({ name: 'c', runtime: 'vllm-rocm' })).toEqual(['amd.com/gpu']);
   });
 
-  it('otherwise goes by the engine', () => {
-    expect(modelDevice({ name: 'a', runtime: 'vllm-cuda' })).toBe('gpu');
-    expect(modelDevice({ name: 'b', default_server: 'vllm-cuda', runtime: 'vllm' })).toBe('gpu');
+  it('prefers an explicit accelerator, and device: cpu means none', () => {
+    expect(
+      modelAccelerators({
+        name: 'a',
+        runtime: 'vllm-cuda',
+        accelerator_resource: 'nvidia.com/mig-1g.10gb',
+      })
+    ).toEqual(['nvidia.com/mig-1g.10gb']);
+    expect(modelAccelerators({ name: 'b', device: 'cpu', runtime: 'vllm-cuda' })).toEqual([]);
+  });
+
+  it('accepts any GPU for device: gpu or a gpus count without a vendor', () => {
+    expect(modelAccelerators({ name: 'a', device: 'gpu' })).toContain('gpu.intel.com/xe');
+    expect(modelAccelerators({ name: 'b', gpus: 2 })).toContain('nvidia.com/gpu');
+  });
+
+  it('is empty for CPU engines', () => {
+    expect(modelAccelerators({ name: 'a', runtime: 'vllm' })).toEqual([]);
+    expect(modelAccelerators({ name: 'b', runtime: 'openvino' })).toEqual([]);
     expect(modelDevice({ name: 'c', runtime: 'vllm' })).toBe('cpu');
-    expect(modelDevice({ name: 'd', runtime: 'openvino' })).toBe('cpu');
-    expect(modelDevice({ name: 'e' })).toBe('cpu');
+    expect(modelDevice({ name: 'd', runtime: 'vllm-cuda' })).toBe('gpu');
   });
 });
 
-describe('clusterHasGpu', () => {
+describe('clusterGpuResources', () => {
   const node = (allocatable: Record<string, string>) => ({ status: { allocatable } });
 
-  it('is true only for an advertised GPU resource above zero', () => {
-    expect(clusterHasGpu([node({ cpu: '172' }), node({ 'nvidia.com/gpu': '8' })])).toBe(true);
-    expect(clusterHasGpu([node({ 'gpu.intel.com/xe': '4' })])).toBe(true);
-    expect(clusterHasGpu([node({ 'amd.com/gpu': '1' })])).toBe(true);
-    expect(clusterHasGpu([node({ 'nvidia.com/gpu': '0' })])).toBe(false);
-    expect(clusterHasGpu([node({ cpu: '172', 'intel.com/qat': '2' })])).toBe(false);
+  it('collects extended resources above zero, from every node', () => {
+    const got = clusterGpuResources([
+      node({ cpu: '172', memory: '503Gi', 'intel.com/qat': '2' }),
+      node({ 'nvidia.com/gpu': '8', 'gpu.intel.com/xe': '0' }),
+    ]);
+    expect([...got].sort()).toEqual(['intel.com/qat', 'nvidia.com/gpu']);
   });
 
-  it('is false without nodes, while loading or without access', () => {
-    expect(clusterHasGpu([])).toBe(false);
-    expect(clusterHasGpu(undefined)).toBe(false);
-    expect(clusterHasGpu(null)).toBe(false);
+  it('is empty without nodes, while loading or without access', () => {
+    expect(clusterGpuResources([]).size).toBe(0);
+    expect(clusterGpuResources(undefined).size).toBe(0);
+    expect(clusterGpuResources(null).size).toBe(0);
   });
 });
 
 describe('offeredModels', () => {
   const models = [
     { name: 'cpu-model', runtime: 'vllm' },
-    { name: 'gpu-model', runtime: 'vllm-cuda' },
+    { name: 'nvidia-model', runtime: 'vllm-cuda' },
+    { name: 'intel-model', runtime: 'vllm-xpu' },
   ];
+  const names = (gpus: string[], deployed: string[] = []) =>
+    offeredModels(models, new Set(gpus), new Set(deployed)).map(m => m.name);
 
   it('hides GPU models on a cluster without a GPU', () => {
-    expect(offeredModels(models, false, new Set()).map(m => m.name)).toEqual(['cpu-model']);
+    expect(names([])).toEqual(['cpu-model']);
+    expect(names(['intel.com/qat'])).toEqual(['cpu-model']);
   });
 
-  it('shows GPU models when a GPU is usable', () => {
-    expect(offeredModels(models, true, new Set()).map(m => m.name)).toEqual([
+  it("offers a GPU model only where its vendor's GPU is", () => {
+    expect(names(['nvidia.com/gpu'])).toEqual(['cpu-model', 'nvidia-model']);
+    expect(names(['gpu.intel.com/i915'])).toEqual(['cpu-model', 'intel-model']);
+    expect(names(['nvidia.com/gpu', 'gpu.intel.com/xe'])).toEqual([
       'cpu-model',
-      'gpu-model',
+      'nvidia-model',
+      'intel-model',
     ]);
   });
 
   it('keeps a deployed GPU model visible, so it can still be undeployed', () => {
-    expect(offeredModels(models, false, new Set(['gpu-model'])).map(m => m.name)).toEqual([
-      'cpu-model',
-      'gpu-model',
-    ]);
+    expect(names([], ['nvidia-model'])).toEqual(['cpu-model', 'nvidia-model']);
   });
 });
 
