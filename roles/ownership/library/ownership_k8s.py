@@ -30,7 +30,9 @@ A Helm release is the component's when one of its tasks installed it and its
 first release secret (v1) is new, or one release secret already carries the
 component's labels. Then all of it is labelled: the objects of its manifest and
 hooks, the objects annotated with it (meta.helm.sh/release-name and -namespace),
-its release secrets, and the CRDs of the chart's crds/ that are new.
+its release secrets, and the CRDs of the chart's crds/ that are new. When a task
+upgrades a release another component of the env labelled, what the upgrade created
+(its release secret, the hooks it recreated) gets that component's labels.
 
 A component that failed, or a run that was killed inside it, may have created
 objects no result reports. The new objects nobody claimed are carried for that
@@ -363,11 +365,14 @@ def _manifest_refs(text, namespace):
 
 
 def _helm_claims(api, objects, index, new, reported, p):
-    """(claimed, crds): UIDs of the component's Helm releases: release secrets, the objects
-    of their manifest and hooks, the objects annotated with them; and the CRDs of their
-    charts' crds/, which are only the component's when new."""
+    """(claimed, crds, foreign): UIDs of the component's Helm releases: release secrets, the
+    objects of their manifest and hooks, the objects annotated with them; the CRDs of their
+    charts' crds/, which are only the component's when new; and uid -> labels of the new
+    objects of a reported release another component of this env labelled (an upgrade's
+    release secret, the hooks it recreated), which stay that component's."""
     prefix = p["label_prefix"]
-    releases, first, latest = {}, {}, {}
+    keys = [prefix + "/env", prefix + "/layer", prefix + "/component"]
+    releases, first, latest, owners = {}, {}, {}, {}
     for uid, (res, meta) in objects.items():
         labels = meta.get("labels") or {}
         if res["group"] == "" and res["resource"] == "secrets" and labels.get("owner") == "helm" and labels.get("name"):
@@ -380,12 +385,15 @@ def _helm_claims(api, objects, index, new, reported, p):
                 first[release] = uid
             if version >= latest.get(release, (0, None))[0]:
                 latest[release] = (version, meta)
+            if labels.get(keys[0]) == p["env"] and labels.get(keys[2]):
+                owners.setdefault(release, {k: labels[k] for k in keys if k in labels})
     ours = {release for release, uids in releases.items()
             if (release in first and new(first[release])) or any(
-                (objects[u][1].get("labels") or {}).get(prefix + "/env") == p["env"]
-                and (objects[u][1].get("labels") or {}).get(prefix + "/component") == p["component"] for u in uids)}
-    claimed, crds = {u for release in ours for u in releases[release]}, set()
-    for release in ours:
+                (objects[u][1].get("labels") or {}).get(keys[0]) == p["env"]
+                and (objects[u][1].get("labels") or {}).get(keys[2]) == p["component"] for u in uids)}
+    others = {release: owners[release] for release in owners if release not in ours}
+    members, crds = {release: set(releases[release]) for release in releases}, set()
+    for release in ours | set(others):
         try:
             rel = _helm_release(api, latest[release][1])
         except (ApiException, ValueError, TypeError, OSError):
@@ -394,7 +402,9 @@ def _helm_claims(api, objects, index, new, reported, p):
         for hook in rel.get("hooks") or []:
             refs += _manifest_refs(hook.get("manifest"), release[0])
         for ref in refs:
-            claimed |= index(*ref)
+            members[release] |= index(*ref)
+        if release not in ours:
+            continue  # an upgrade leaves the CRDs of crds/ as they are
         for f in (rel.get("chart") or {}).get("files") or []:
             if (f.get("name") or "").startswith("crds/"):
                 try:
@@ -405,9 +415,12 @@ def _helm_claims(api, objects, index, new, reported, p):
                     crds |= index(*ref)
     for uid, (res, meta) in objects.items():
         annotations = meta.get("annotations") or {}
-        if (annotations.get("meta.helm.sh/release-namespace"), annotations.get("meta.helm.sh/release-name")) in ours:
-            claimed.add(uid)
-    return claimed, crds
+        release = (annotations.get("meta.helm.sh/release-namespace"), annotations.get("meta.helm.sh/release-name"))
+        if release in members:
+            members[release].add(uid)
+    claimed = {u for release in ours for u in members[release]}
+    foreign = {u: labels for release, labels in others.items() for u in members[release] if new(u)}
+    return claimed, crds, foreign
 
 
 def _index(objects):
@@ -480,14 +493,16 @@ def label(api, p, module, stopped=False):
                 reported |= find(r["resource"], r.get("namespace"), r["name"], "")
             elif r["type"] == "release":
                 releases.add((r["namespace"], r["name"]))
-        helm, crds = _helm_claims(api, objects, find, new, releases, p)
+        helm, crds, foreign = _helm_claims(api, objects, find, new, releases, p)
         declared = _declared(objects, (p["declared"] or {}).get(p["component"]))
         claimed = helm | {u for u in reported | crds | declared if new(u)}
+        owner = dict(foreign, **{u: labels for u in claimed})
+        claimed |= set(foreign)
         for uid in sorted(claimed, key=lambda u: _ref(*objects[u])):
             res, meta = objects[uid]
             if meta.get("ownerReferences") or key in (meta.get("labels") or {}):
                 continue
-            if module.check_mode or _patch(api, res, meta, {"labels": labels}):
+            if module.check_mode or _patch(api, res, meta, {"labels": owner[uid]}):
                 labelled.append(_ref(res, meta))
         recorded = _record_added(api, objects, known, before, reported, p, module)
         # Carry what appeared and nobody claimed when the component failed or the run

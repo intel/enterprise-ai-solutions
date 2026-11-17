@@ -305,6 +305,34 @@ def test_helm_manifest_ref_matches_its_api_group(tmp_path):
     assert COMPONENT not in api.labels(knative)
 
 
+def test_upgrade_of_another_components_release_keeps_its_owner(tmp_path):
+    # kserve upgrades the gateway's envoy-gateway release; its pre-upgrade hook is recreated.
+    api, p = FakeApi(), params(tmp_path, component="kserve", layer="inference")
+    gateway = {f"{PREFIX}/env": "local", f"{PREFIX}/layer": "platform", COMPONENT: "gateway"}
+    hook_doc = doc("Secret", "certgen", "eg")
+    v1 = helm_secret(api, "envoy-gateway", "eg", 1, hooks=[hook_doc])
+    api.labels(v1).update(gateway)
+    kept = api.add("ConfigMap", "eg-config", "eg", labels=gateway)
+    own.snapshot(api, p, Module())
+
+    v2 = helm_secret(api, "envoy-gateway", "eg", 2, manifest=doc("ConfigMap", "eg-config", "eg"), hooks=[hook_doc],
+                     crds=[doc("CustomResourceDefinition", "routes.example.com", api_version="apiextensions.k8s.io/v1")])
+    hook = api.add("Secret", "certgen", "eg")
+    crd = api.add("CustomResourceDefinition", "routes.example.com")
+    mine = api.add("ConfigMap", "kserve-cm", "kserve")
+    record(p, type="release", name="envoy-gateway", namespace="eg")
+    record(p, type="object", uid=mine, kind="ConfigMap", name="kserve-cm", namespace="kserve")
+
+    own.label(api, p, Module())
+
+    for uid in (v2, hook):
+        assert api.labels(uid)[COMPONENT] == "gateway", api.get(uid)["metadata"]["name"]
+        assert api.labels(uid)[f"{PREFIX}/layer"] == "platform"
+    assert api.labels(mine)[COMPONENT] == "kserve"
+    assert api.labels(kept) == gateway
+    assert COMPONENT not in api.labels(crd)
+
+
 def test_cli_record_without_a_group_is_the_core_group(tmp_path):
     api, p = FakeApi(), params(tmp_path)
     own.snapshot(api, p, Module())
