@@ -283,6 +283,7 @@ rook_ceph_devices:
   node-1: [/dev/nvme1n1]
   node-2: [/dev/nvme1n1]
 # rook_ceph_teardown_wipe_devices: false   # set true to auto-wipe on teardown
+# rook_ceph_teardown_wipe_seconds_per_device: 300   # how long teardown waits for each device's wipe
 ```
 
 On rack-scale (`rack_scale_enabled: true`), leave `rook_ceph_devices` out: the devices come only from `storage.nodes` in `rack-profile.yaml`, and install and teardown stop if `rook_ceph_devices` here lists different ones (see [Rack-scale deployment](../rack-scale-deployment.md)).
