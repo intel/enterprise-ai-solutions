@@ -32,6 +32,21 @@ def _enabled(entry):
     return str(val).strip().lower() in ("true", "yes", "on", "1")
 
 
+def _users(components):
+    """{name: [its `used_by` components that are declared]} for each `used_by` component."""
+    names = {c["name"] for c in components}
+    return {c["name"]: [u for u in c["used_by"] if u in names]
+            for c in components if c.get("used_by")}
+
+
+def _shared(by_name, users, planned):
+    """For each enabled `used_by` component outside the plan whose users are in it:
+    the enabled users that stay. Teardown takes it along when none does."""
+    return {n: [u for u in us if u not in planned and _enabled(by_name[u])]
+            for n, us in users.items()
+            if n not in planned and _enabled(by_name[n]) and any(u in planned for u in us)}
+
+
 def _detect_cycles(graph):
     """Return list of cycles found in the adjacency graph, or [] if acyclic."""
     visited = set()
@@ -183,11 +198,21 @@ def resolve_components(components, layers, target, action="install",
 
     # Targets, skips and depends_on may use a component's alias.
     alias = _aliases(components)
-    components = [dict(c, depends_on=[alias.get(d, d) for d in (c.get("depends_on") or [])])
+    components = [dict(c, depends_on=[alias.get(d, d) for d in (c.get("depends_on") or [])],
+                       used_by=[alias.get(u, u) for u in (c.get("used_by") or [])])
                   for c in components]
 
     layer_names = {layer["name"] for layer in layers}
     by_name = {c["name"]: c for c in components}
+    users = _users(components)
+
+    # A component that exists only for others (`used_by`) is installed only while
+    # one of them is enabled. Teardown keeps its own `enabled`, so an env installed
+    # before still gets it removed.
+    if action != "teardown":
+        components = [dict(c, enabled=False)
+                      if c["name"] in users and not any(_enabled(by_name[u]) for u in users[c["name"]])
+                      else c for c in components]
 
     # Classify target: each part is either a known layer or a component name.
     parts = [alias.get(t.strip(), t.strip()) for t in target.split(",") if t.strip()]
@@ -243,6 +268,19 @@ def resolve_components(components, layers, target, action="install",
                     if targeted_layers else ())
         pool = [c for c in pool if c["name"] in wanted or c.get("layer") in whole]
 
+    # Teardown: a `used_by` component goes with its users, unless one that stays is
+    # enabled (kept_components names it). It may sit in a layer the plan does not reach.
+    if action == "teardown":
+        names = {c["name"] for c in pool}
+        extra = [n for n, staying in _shared(by_name, users, names).items() if not staying]
+        if extra:
+            resolved_layers = list(resolved_layers) + [
+                by_name[n].get("layer") for n in extra if by_name[n].get("layer") not in resolved_layers]
+            names |= set(extra)
+            pool = [c for layer_name in _layer_order(layers, resolved_layers)
+                    for c in _component_order([c for c in components if c.get("layer") == layer_name])
+                    if c["name"] in names]
+
     # Skip filter
     # A skip entry may name a component or a whole layer: "skip erag" is the useful
     # request, and expanding it to erag's component list is the caller's job otherwise.
@@ -269,6 +307,14 @@ def disabled_components(components, layers, target, action="install",
     return [c["name"] for c in candidates if c["name"] not in kept]
 
 
+def kept_components(components, active):
+    """{name: [users that stay]} for the `used_by` components a teardown keeps."""
+    by_name = {c["name"]: c for c in components}
+    planned = {c["name"] for c in active}
+    return {n: staying for n, staying in _shared(by_name, _users(components), planned).items()
+            if staying}
+
+
 def component_deps(components, name):
     """Names of every component `name` depends on, directly or through others."""
     alias = _aliases(components)
@@ -289,5 +335,6 @@ class FilterModule(object):
         return {
             "resolve_components": resolve_components,
             "disabled_components": disabled_components,
+            "kept_components": kept_components,
             "component_deps": component_deps,
         }

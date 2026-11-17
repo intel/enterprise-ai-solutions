@@ -93,7 +93,7 @@ def test_disabled_components_and_component_deps():
 
 def test_filters_are_registered():
     assert set(_mod.FilterModule().filters()) == {
-        "resolve_components", "disabled_components", "component_deps"}
+        "resolve_components", "disabled_components", "kept_components", "component_deps"}
 
 
 # The real registry. enabled: is a Jinja expression there, so every component counts as enabled.
