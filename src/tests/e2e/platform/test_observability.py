@@ -9,7 +9,7 @@ import pytest
 
 from conftest import cfg
 from k8s_helper import (assert_condition, assert_daemonset_ready, assert_deployment_ready,
-                        get_one, has_condition, is_openshift)
+                        assert_statefulset_ready, has_condition, is_openshift)
 
 pytestmark = pytest.mark.skipif(
     not cfg.get("observability_enabled", True),
@@ -64,8 +64,7 @@ def test_loki_ready():
         assert_condition("clusterlogforwarders.observability.openshift.io", "platform-logs",
                          "Ready", namespace=NAMESPACE)
         return
-    sts = get_one("statefulsets", "loki", namespace=NAMESPACE)
-    assert (sts.status.readyReplicas or 0) >= 1
+    assert_statefulset_ready(NAMESPACE, "loki")
 
 
 @allure.testcase("DSPTV-T416")
@@ -73,8 +72,7 @@ def test_tempo_ready():
     if is_openshift():
         assert_condition("tempomonolithics.tempo.grafana.com", "tempo", "Ready", namespace=NAMESPACE)
         return
-    sts = get_one("statefulsets", "tempo", namespace=NAMESPACE)
-    assert (sts.status.readyReplicas or 0) >= 1
+    assert_statefulset_ready(NAMESPACE, "tempo")
 
 
 @allure.testcase("DSPTV-T417")

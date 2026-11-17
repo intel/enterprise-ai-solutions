@@ -5,7 +5,7 @@
 
 import allure
 
-from k8s_helper import assert_deployment_ready, get_one, is_openshift
+from k8s_helper import assert_deployment_ready, assert_statefulset_ready, is_openshift
 
 
 def keycloak_operator():
@@ -19,5 +19,4 @@ def test_keycloak_operator_ready():
 
 @allure.testcase("DSPTV-T410")
 def test_keycloak_statefulset_ready():
-    sts = get_one("statefulsets", "keycloak", namespace="keycloak")
-    assert (sts.status.readyReplicas or 0) >= 1
+    assert_statefulset_ready("keycloak", "keycloak")

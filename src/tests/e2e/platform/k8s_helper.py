@@ -69,3 +69,23 @@ def assert_deployment_ready(namespace, name, replicas=1):
     ready = deployment.status.readyReplicas or 0
     assert ready >= replicas, \
         f"deployments/{name} in {namespace} has {ready} ready replica(s), expected {replicas}"
+
+
+def assert_statefulset_ready(namespace, name, replicas=1):
+    statefulset = get_one("statefulsets", name, namespace)
+    ready = statefulset.status.readyReplicas or 0
+    assert ready >= replicas, \
+        f"statefulsets/{name} in {namespace} has {ready} ready replica(s), expected {replicas}"
+
+
+def skip_unless_installed(condition, reason):
+    """A module-wide skip whose condition is a string, evaluated at setup.
+
+    A condition that asks the cluster — anything calling is_openshift() — must
+    not run at import time: an unreachable cluster would then fail collection,
+    and the module's checks would report nothing at all instead of failing with
+    their Zephyr case attached. pytest evaluates a string condition at setup,
+    against the namespace of the module under test, so whatever it names has to
+    be imported there and will look unused to a linter.
+    """
+    return pytest.mark.skipif(condition, reason=reason)

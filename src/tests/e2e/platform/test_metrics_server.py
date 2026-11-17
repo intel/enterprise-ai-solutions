@@ -8,13 +8,9 @@ import kr8s
 import pytest
 
 from conftest import cfg
-from k8s_helper import assert_condition, assert_deployment_ready, get_one, is_openshift
+from k8s_helper import assert_condition, assert_deployment_ready, get_one, is_openshift, skip_unless_installed
 
-# Condition as a string so an unreachable cluster fails the tests rather than
-# their collection, which would leave their Zephyr cases without a result. It is
-# evaluated at setup, in this module's namespace: is_openshift is read only from
-# here, so a linter calling that import unused is wrong.
-pytestmark = pytest.mark.skipif(
+pytestmark = skip_unless_installed(
     "not cfg.get('metrics_server_enabled', True) or is_openshift()",
     reason="the platform does not install metrics-server (metrics_server_enabled is false, or "
            "OpenShift, which serves metrics.k8s.io from its own monitoring)"
