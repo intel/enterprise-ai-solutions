@@ -12,8 +12,9 @@ import pytest
 import mesh_kube
 
 
-class Done(Exception):
-    """exit_json / fail_json end the module, as in Ansible."""
+class Done(BaseException):
+    """exit_json / fail_json end the module, as in Ansible (SystemExit): an except Exception
+    in the module must not catch it."""
 
 
 class Module:
@@ -56,6 +57,7 @@ def run(call):
 def test_result_and_no_proxy(kube):
     module = run(lambda api: {"changed": True, "no_proxy": api.no_proxy})
     assert module.result == {"changed": True, "no_proxy": ".cluster.local"}
+    assert module.failed is None
 
 
 def test_api_error_message_from_body(kube):
