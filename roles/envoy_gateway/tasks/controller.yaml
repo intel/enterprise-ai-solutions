@@ -78,8 +78,10 @@
           # every Backend-backed HTTPRoute at ResolvedRefs=False.
           config:
             envoyGateway:
-              extensionApis:
-                enableBackend: true
+              # enableEnvoyPatchPolicy: the SSO login-cookie patch (route_sso.yaml); never written as false.
+              extensionApis: >-
+                {{ {'enableBackend': true}
+                   | combine({'enableEnvoyPatchPolicy': true} if _envoy_gateway_oidc_login_patches | bool else {}) }}
       register: helm_install_result
       until: helm_install_result is succeeded
       retries: "{{ helm_retries }}"
@@ -216,6 +218,24 @@
         envoyService:
           type: ClusterIP
     _eg_workload: "{{ 'envoyDaemonSet' if _envoy_gateway_proxy_shape == 'controlplane_daemonset' else 'envoyDeployment' }}"
+    # CVE-2026-47775: AES-GCM OAuth2 cookies, no CBC; 1.8+ set these by default, 1.7 does not.
+    _eg_runtime_patches:
+      - op: add
+        path: /layered_runtime/layers/0/static_layer/envoy.reloadable_features.oauth2_use_gcm_encryption
+        value: true
+      - op: add
+        path: /layered_runtime/layers/0/static_layer/envoy.reloadable_features.oauth2_legacy_cbc_decrypt_compat
+        value: false
+    # Only on a 1.7 we installed (1.8+ has them by default; one upgraded from 1.7 keeps the same values).
+    # JSONPatch onto the release's own bootstrap (Replace would drop its defaults); {} leaves it untouched.
+    _eg_bootstrap: >-
+      {{ {'bootstrap': {'type': 'JSONPatch', 'jsonPatches': _eg_runtime_patches}}
+         if _envoy_gateway_oidc_login_patches | bool and gateway_platform.controller_managed | bool
+            and _eg_version
+            and _eg_version is version('1.8.0', '<') else {} }}
+    _eg_provider:
+      type: Kubernetes
+      kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"
     _eg_image: >-
       {{ {_eg_workload: {'container': {'image': gateway_platform.envoy_proxy_image}}}
          if gateway_platform.envoy_proxy_image | default('') | length > 0 else {} }}
@@ -227,10 +247,7 @@
       metadata:
         name: eg-proxy-config
         namespace: "{{ _eg_proxy_config_namespace }}"
-      spec:
-        provider:
-          type: Kubernetes
-          kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"
+      spec: "{{ {'provider': _eg_provider} | combine(_eg_bootstrap) }}"
 
 - name: "envoy_gateway | Create GatewayClass"
   kubernetes.core.k8s:

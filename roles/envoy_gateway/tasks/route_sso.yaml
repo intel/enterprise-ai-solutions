@@ -8,6 +8,10 @@
     _oidc: "{{ (_s.issuer_internal | default('')) ~ '/protocol/openid-connect' }}"
     _id_cookie: "{{ gateway_route_name }}-id"
     _groups: "{{ _s.allowed_groups | default([]) | select | list }}"
+    # Login nonce lifetime; the field exists from Envoy Gateway 1.7.
+    _csrf_ttl: >-
+      {{ {'oidc': {'csrfTokenTTL': envoy_gateway_oidc_login_ttl}}
+         if _envoy_gateway_oidc_login_patches | bool and _eg_version and _eg_version is version('1.7.0', '>=') else {} }}
     _spec:
       targetRefs:
         - group: gateway.networking.k8s.io
@@ -68,7 +72,106 @@
       metadata:
         name: "{{ gateway_route_policy_name | default(gateway_route_name ~ '-sso', true) }}"
         namespace: "{{ gateway_route_namespace }}"
-      spec: "{{ _spec | combine({'authorization': _authz} if _groups | length > 0 else {}) }}"
+      spec: "{{ _spec | combine(_csrf_ttl, recursive=true) | combine({'authorization': _authz} if _groups | length > 0 else {}) }}"
   register: _eg_sso
   # Removing tolerates a cluster without the Envoy Gateway API.
   failed_when: _eg_sso is failed and gateway_route_state | default('present') == 'present'
+
+# PKCE code-verifier cookie: no SecurityPolicy field sets its lifetime before
+# Envoy Gateway 1.10 (default 10m), so a slower login fails at the callback.
+# 1.8+ keeps a route's OAuth2 settings in each parent listener's route config, 1.7 in a per-policy listener filter.
+- name: "envoy_gateway | sso | Login cookie patch for {{ gateway_route_namespace }}/{{ gateway_route_name }}"
+  vars:
+    _pol: "{{ gateway_route_policy_name | default(gateway_route_name ~ '-sso', true) }}"
+    _ns: "{{ gateway_route_namespace }}"
+    _gp: "{{ gateway_platform | default({}) }}"
+    # Only on our controller, with EnvoyPatchPolicy on, and our Gateway.
+    _wanted: >-
+      {{ gateway_route_state | default('present') == 'present' and _envoy_gateway_oidc_login_patches | bool
+         and _gp.controller_managed | default(true) | bool and _gp.patch_policy_enabled | default(false) | bool
+         and gateway_create | default(true) | bool }}
+    _login_name: "{{ (_ns ~ '-' ~ _pol ~ '-login')[:253] }}"
+    _cur: "{{ _eg_login_cur.resources | default([]) | first | default(none) }}"
+    _cur_ours: "{{ _cur is not none and (_cur.metadata.labels | default({})).get('app.kubernetes.io/managed-by') == 'ai-solutions' }}"
+  block:
+    - name: "envoy_gateway | sso | Login cookie patch in place"
+      kubernetes.core.k8s_info:
+        api_version: gateway.envoyproxy.io/v1alpha1
+        kind: EnvoyPatchPolicy
+        name: "{{ _login_name }}"
+        namespace: "{{ gateway_namespace }}"
+      register: _eg_login_cur
+      # No EnvoyPatchPolicy API: nothing of ours either.
+      failed_when: false
+
+    - name: "envoy_gateway | sso | Read the route's parents"
+      kubernetes.core.k8s_info:
+        api_version: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        name: "{{ gateway_route_name }}"
+        namespace: "{{ _ns }}"
+      register: _eg_sso_route
+      when: _wanted | bool
+
+    - name: "envoy_gateway | sso | Login cookie lifetime"
+      vars:
+        _per_route: "{{ not _eg_version or _eg_version is version('1.8.0', '>=') }}"
+        _parents: "{{ ((_eg_sso_route.resources | default([]) | first | default({})).spec | default({})).parentRefs | default([]) }}"
+        # This Gateway's parents: its own listeners, or a ListenerSet's.
+        _route_cfgs: >-
+          {%- set n = [] -%}
+          {%- for p in _parents if p.sectionName | default('') -%}
+          {%- if p.kind | default('Gateway') == 'ListenerSet' -%}
+          {%- set _ = n.append([gateway_namespace, gateway_name, p.namespace | default(_ns), p.name, p.sectionName] | join('/')) -%}
+          {%- elif p.name == gateway_name and p.namespace | default(_ns) == gateway_namespace -%}
+          {%- set _ = n.append([gateway_namespace, gateway_name, p.sectionName] | join('/')) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ n | unique }}
+        _route_re: "{{ ('httproute/' ~ _ns ~ '/' ~ gateway_route_name ~ '/') | replace('.', '[.]') }}"
+        _rc_path: "..routes[?match(@.name, '{{ _route_re }}.*')].typed_per_filter_config['envoy.filters.http.oauth2'].config"
+        _ls_path: "..http_filters[?(@.name == 'envoy.filters.http.oauth2/securitypolicy/{{ _ns }}/{{ _pol }}')].typed_config.config"
+        _op: {op: add, path: code_verifier_token_expires_in, value: "{{ envoy_gateway_oidc_login_ttl }}"}
+        _patches: >-
+          {%- set out = [] -%}
+          {%- if _per_route | bool -%}
+          {%- for n in _route_cfgs -%}
+          {%- set _ = out.append({'type': 'type.googleapis.com/envoy.config.route.v3.RouteConfiguration', 'name': n,
+                                  'operation': _op | combine({'jsonPath': _rc_path})}) -%}
+          {%- endfor -%}
+          {#- 1.7 has no ListenerSets: shared mode, so the wildcard https is the first :443 listener and names the merged one. -#}
+          {%- elif _route_cfgs | length > 0 -%}
+          {%- set _ = out.append({'type': 'type.googleapis.com/envoy.config.listener.v3.Listener',
+                                  'name': gateway_namespace ~ '/' ~ gateway_name ~ '/https',
+                                  'operation': _op | combine({'jsonPath': _ls_path})}) -%}
+          {%- endif -%}
+          {{ out }}
+        _state: "{{ 'present' if _wanted | bool and _patches | length > 0 else 'absent' }}"
+      kubernetes.core.k8s:
+        state: "{{ _state }}"
+        definition:
+          apiVersion: gateway.envoyproxy.io/v1alpha1
+          kind: EnvoyPatchPolicy
+          metadata:
+            name: "{{ _login_name }}"
+            namespace: "{{ gateway_namespace }}"
+            labels:
+              app.kubernetes.io/managed-by: ai-solutions
+          spec:
+            targetRef:
+              group: gateway.networking.k8s.io
+              kind: Gateway
+              name: "{{ gateway_name }}"
+            type: JSONPatch
+            jsonPatches: "{{ _patches }}"
+      register: _eg_sso_login
+      # Create when none is there; update or delete only ours.
+      when: (_cur is none and _state == 'present') or _cur_ours | bool
+      failed_when: _eg_sso_login is failed and _state == 'present'
+
+    - name: "envoy_gateway | sso | Login cookie patch not ours"
+      ansible.builtin.debug:
+        msg: >-
+          EnvoyPatchPolicy {{ gateway_namespace }}/{{ _login_name }} exists without
+          app.kubernetes.io/managed-by=ai-solutions; left unchanged.
+      when: _cur is not none and not _cur_ours | bool
