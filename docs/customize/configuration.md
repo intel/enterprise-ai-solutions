@@ -19,9 +19,9 @@ scratch — `init` generates both for you with working defaults.
 ### How it fits together
 
 ```
-./es_auto_installer.sh init inference  # 1. creates env/local/global_config.yaml with defaults
+./toolkit_manager.sh init inference    # 1. creates env/local/global_config.yaml with defaults
 vi env/local/global_config.yaml        # 2. (optional) change what you need
-./es_auto_installer.sh install inference # 3. reads the file and deploys
+./toolkit_manager.sh install inference # 3. reads the file and deploys
 ```
 
 Step 2 is optional. The defaults deploy a complete, working stack on a single
@@ -92,7 +92,7 @@ storage_backend: "nfs"
 **Or** override at install time without editing anything:
 
 ```bash
-./es_auto_installer.sh install inference --env local -- -e auth_type=litellm_vkey
+./toolkit_manager.sh install inference --env local -- -e auth_type=litellm_vkey
 ```
 
 Anything after the bare `--` is passed straight to Ansible, so any variable in
@@ -393,7 +393,7 @@ observability_grafana_admin_password: "your-password"
 or as install-time overrides:
 
 ```bash
-./es_auto_installer.sh install inference -- \
+./toolkit_manager.sh install inference -- \
   -e keycloak_admin_password=your-password \
   -e observability_grafana_admin_password=your-password
 ```
@@ -446,7 +446,7 @@ module entry stay on the nodes.
 Component versions are set in `global_config.yaml` and can be overridden at runtime:
 
 ```bash
-./es_auto_installer.sh install envoy_gateway --env local \
+./toolkit_manager.sh install envoy_gateway --env local \
   -- -e envoy_gateway_version=1.4.0
 ```
 

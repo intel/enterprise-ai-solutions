@@ -162,7 +162,7 @@ Examples:
 
 ```text
 feat(kubernetes): restore kubelet-static as a selectable CPU policy
-fix(installer): narrow teardown component scope and fix ordering in es_auto_installer.sh
+fix(installer): narrow teardown component scope and fix ordering in toolkit_manager.sh
 docs: update default models in docs
 ci: add linter configuration files for yamllint and Hadolint
 feat(ai-inference/model-manager): add --label flag to model-manager
@@ -173,7 +173,7 @@ feat(ai-erag/orchestration): add flavors to configuration
 
 Add one short scope to the title when it helps identify the part of the project affected. Choose the closest area; omit the scope if none fits. For this repository, use names such as:
 
-- `installer` — `es_auto_installer.sh`, environment setup, and preflight
+- `installer` — `toolkit_manager.sh`, environment setup, and preflight
 - `orchestration` — `playbooks/`, `configs/components.yaml`, and layer or dependency ordering
 - `kubernetes` — `roles/kubernetes`, Kubespray, and inventory
 - `storage` — `roles/storage`, NFS, Ceph, NetApp ONTAP, and object storage

@@ -33,7 +33,7 @@ Teams also need Kubernetes, networking, storage, TLS, identity, model routing, o
 Toolkit Manager deploys them through one environment-based workflow:
 
 ```bash
-./es_auto_installer.sh install inference --env <name>
+./toolkit_manager.sh install inference --env <name>
 ```
 
 The installer deploys enabled layers in dependency order:
@@ -54,7 +54,7 @@ Applications  (RAG pipelines, vector DBs, chat UI — opt-in)
 
 ### One entry point
 
-`es_auto_installer.sh` manages environment initialization, installation, validation, status, and teardown. There is no separate toolchain to learn for each layer.
+`toolkit_manager.sh` manages environment initialization, installation, validation, status, and teardown. There is no separate toolchain to learn for each layer.
 
 ### OpenAI-compatible API
 
@@ -95,7 +95,7 @@ This one. Several repositories make up the portfolio, but you only ever clone an
 ```
 github.com/intel/enterprise-ai-solutions      <- start here; run all commands from this root
   |
-  |-- es_auto_installer.sh      the single entry point (configure / init / install / teardown)
+  |-- toolkit_manager.sh      the single entry point (configure / init / install / teardown)
   |-- env/<name>/               your configuration, kubeconfig, credentials, and logs
   `-- ext/                      cloned automatically by `init`
         |-- enterprise.ai-inference    Intel® Inference Toolkit: KServe, vLLM, OpenVINO Model Server

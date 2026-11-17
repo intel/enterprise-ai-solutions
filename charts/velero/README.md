@@ -13,8 +13,8 @@ the store's credentials and applies the CRDs, and the component is driven from
 the installer:
 
 ```bash
-./es_auto_installer.sh install velero --env <env> --only
-./es_auto_installer.sh validate velero --env <env>
+./toolkit_manager.sh install velero --env <env> --only
+./toolkit_manager.sh validate velero --env <env>
 ```
 
 Every variable the component takes is declared in `roles/velero/defaults/main.yaml`.

@@ -21,14 +21,14 @@ Both flows assume the array side already exists. The installer creates nothing o
    and the installer venv:
 
    ```bash
-   ./es_auto_installer.sh configure
+   ./toolkit_manager.sh configure
    ```
 
 2. Create the environment. `init` takes the **layer** you intend to deploy; `--env` names
    the environment directory under `env/` and defaults to `local`:
 
    ```bash
-   ./es_auto_installer.sh init inference --env prod
+   ./toolkit_manager.sh init inference --env prod
    ```
 
    Choose the layer by what you want running. `inference` gives you the model-serving
@@ -54,7 +54,7 @@ Both flows assume the array side already exists. The installer creates nothing o
    provisions Kubernetes, the storage backend, the platform and the serving stack:
 
    ```bash
-   ./es_auto_installer.sh install inference --env prod
+   ./toolkit_manager.sh install inference --env prod
    ```
 
    Storage preflight runs before the Trident chart is installed: it probes both LIFs from
@@ -66,7 +66,7 @@ Both flows assume the array side already exists. The installer creates nothing o
 1. Same host preparation:
 
    ```bash
-   ./es_auto_installer.sh configure
+   ./toolkit_manager.sh configure
    ```
 
 2. Initialize the `erag` layer. This clones the inference and RAG repositories at their
@@ -74,7 +74,7 @@ Both flows assume the array side already exists. The installer creates nothing o
    and `env/prod/config.erag.yaml` from the default `chatqna` pipeline preset:
 
    ```bash
-   ./es_auto_installer.sh init erag --env prod
+   ./toolkit_manager.sh init erag --env prod
    ```
 
 3. In `env/prod/global_config.yaml`, the five Flow A values and `storage_backend`, plus
@@ -107,7 +107,7 @@ Both flows assume the array side already exists. The installer creates nothing o
    `infrastructure`, `platform` and `inference` first, in that order:
 
    ```bash
-   ./es_auto_installer.sh install erag --env prod
+   ./toolkit_manager.sh install erag --env prod
    ```
 
 ## What the integration provides
@@ -165,7 +165,7 @@ volume.
 ## What you have to configure
 
 The array topology goes in `env/<name>/global_config.yaml`, created by
-`./es_auto_installer.sh init <layer> --env <name>`. The "NetApp ONTAP" block in
+`./toolkit_manager.sh init <layer> --env <name>`. The "NetApp ONTAP" block in
 `configs/defaults/global_config.yaml` is the same list, commented out, with inline notes.
 
 Settings that belong to a solution layer rather than to the array live in that layer's
@@ -260,7 +260,7 @@ component comes with it. This section covers what happens afterwards.
 Validate at the layer you deployed:
 
 ```bash
-./es_auto_installer.sh validate inference --env prod   # or: validate platform / validate erag
+./toolkit_manager.sh validate inference --env prod   # or: validate platform / validate erag
 ```
 
 A layer validation includes the storage checks, because `storage` is part of the
@@ -268,7 +268,7 @@ A layer validation includes the storage checks, because `storage` is part of the
 while working through a failure, target the component:
 
 ```bash
-./es_auto_installer.sh validate storage --env prod
+./toolkit_manager.sh validate storage --env prod
 ```
 
 Teardown is also a layer operation, and it resolves **upward**: the target plus every
@@ -279,6 +279,6 @@ Tearing down a single layer, for example `teardown erag`, leaves everything belo
 running.
 
 ```bash
-./es_auto_installer.sh teardown erag --env prod             # just Intel® Chatbot Toolkit
-./es_auto_installer.sh teardown infrastructure --env prod   # everything, cluster included
+./toolkit_manager.sh teardown erag --env prod             # just Intel® Chatbot Toolkit
+./toolkit_manager.sh teardown infrastructure --env prod   # everything, cluster included
 ```

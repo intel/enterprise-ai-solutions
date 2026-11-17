@@ -9,7 +9,7 @@ On OpenShift the installer does not provision cluster-wide services. You install
 > [!WARNING]
 > **Preview: OpenShift support is not yet complete.** This guide describes the target flow. Several installer behaviours it relies on are **planned, not yet implemented**. They are marked _(planned)_ below and summarised in [Known gaps](#known-gaps). Today the installer [detects the platform](#platform-detection) and [checks the prerequisites](#prerequisite-check); the components start using the result in follow-up changes.
 >
-> Until the OpenShift-safe teardown lands, **never run `./es_auto_installer.sh teardown infrastructure` or `teardown platform` against an OpenShift cluster.** The current teardown roles delete CRDs by API group (for example all `gateway.networking.k8s.io`, `monitoring.coreos.com`, and `*kserve*` CRDs). On OpenShift those CRDs are owned by the cluster and by OpenShift AI.
+> Until the OpenShift-safe teardown lands, **never run `./toolkit_manager.sh teardown infrastructure` or `teardown platform` against an OpenShift cluster.** The current teardown roles delete CRDs by API group (for example all `gateway.networking.k8s.io`, `monitoring.coreos.com`, and `*kserve*` CRDs). On OpenShift those CRDs are owned by the cluster and by OpenShift AI.
 
 ---
 
@@ -18,7 +18,7 @@ On OpenShift the installer does not provision cluster-wide services. You install
 | Owner | Installs | Examples |
 |---|---|---|
 | **Cluster admin (you), from the marketplace** | Operators, plus the cluster-scoped singleton each one needs | LVMS + `LVMCluster`, cert-manager, Service Mesh 3 + `Istio`/`IstioCNI`/`ZTunnel`, CloudNativePG, Red Hat build of Keycloak, NFD + `NodeFeatureDiscovery`, LWS, Custom Metrics Autoscaler + `KedaController`, OpenShift AI + `DataScienceCluster`, Loki, Logging, Tempo, OpenTelemetry and Grafana operators, user-workload monitoring |
-| **Installer (`es_auto_installer.sh`)** | Resources scoped to the application, in namespaces it creates and labels | CNPG `Cluster`, `Keycloak` instance and realm, `ServiceMonitor`/`PodMonitor`, `LokiStack`, `ClusterLogForwarder`, `TempoMonolithic`, `OpenTelemetryCollector`, `Grafana`, LiteLLM, Langfuse, inference models, eRAG applications |
+| **Installer (`toolkit_manager.sh`)** | Resources scoped to the application, in namespaces it creates and labels | CNPG `Cluster`, `Keycloak` instance and realm, `ServiceMonitor`/`PodMonitor`, `LokiStack`, `ClusterLogForwarder`, `TempoMonolithic`, `OpenTelemetryCollector`, `Grafana`, LiteLLM, Langfuse, inference models, eRAG applications |
 
 The rule: **the installer never installs, upgrades, or deletes an operator, a CRD, or a cluster singleton that it did not create, and never changes the cluster's configuration** (for example `cluster-monitoring-config`). Anything the installer creates carries an ownership label, and teardown removes only labelled objects _(planned)_.
 
@@ -233,7 +233,7 @@ To skip detection, set `cluster_distribution` in `global_config.yaml` to `opensh
 Create an environment and point it at the cluster. Use a kubeconfig whose context has `cluster-admin`.
 
 ```bash
-./es_auto_installer.sh init platform --env ocp     # init inference / init erag for the layers above
+./toolkit_manager.sh init platform --env ocp     # init inference / init erag for the layers above
 ```
 
 There is no OpenShift-specific configuration: the same `global_config.yaml` works on Kubernetes and OpenShift. In `env/ocp/global_config.yaml`, set only what describes this cluster:
@@ -274,7 +274,7 @@ Then:
 
 ```bash
 oc whoami && oc get dsc                       # sanity check: right cluster, OpenShift AI ready
-./es_auto_installer.sh install platform --env ocp
+./toolkit_manager.sh install platform --env ocp
 ```
 
 The inference layer (`install inference`) is described in the [inference layer on OpenShift](../../ext/enterprise.ai-inference/docs/deploy/openshift.md).

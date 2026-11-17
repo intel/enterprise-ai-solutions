@@ -60,7 +60,7 @@ Look up exact commands, architecture decisions, and cluster-level details.
 
 | Guide | What it covers |
 |-------|----------------|
-| [CLI Reference](customize/cli.md) | `es_auto_installer.sh` and `model-manager` commands and flags |
+| [CLI Reference](customize/cli.md) | `toolkit_manager.sh` and `model-manager` commands and flags |
 | [Architecture & Design](reference/architecture.md) | How the modular deployment framework is structured |
 | [Namespace Security Labels](reference/labels.md) | Pod Security Admission and Istio labels applied per namespace |
 | [Adding Solution Layers](reference/adding_solutions.md) | How to create and plug in your own solution layer |

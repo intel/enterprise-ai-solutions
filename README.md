@@ -19,7 +19,7 @@ A production AI stack needs more than a model endpoint. Teams need to connect LL
 
 Toolkit Manager wires these pieces together in a pre-integrated, customizable Kubernetes stack optimized for Intel® Xeon® processors.
 
-A single installer script, `es_auto_installer.sh`, takes bare-metal nodes through Kubernetes provisioning, platform services (networking, security, observability), model serving, and AI gateway setup — delivering a production-ready AI platform with OpenAI-compatible endpoints in one run.
+A single installer script, `toolkit_manager.sh`, takes bare-metal nodes through Kubernetes provisioning, platform services (networking, security, observability), model serving, and AI gateway setup — delivering a production-ready AI platform with OpenAI-compatible endpoints in one run.
 
 The end result: teams get a secured, load-balanced stack where they can immediately serve LLM models, run RAG pipelines, and monitor everything through a unified gateway. Start with defaults, then configure or extend as needed.
 
@@ -69,9 +69,9 @@ One node, defaults, and roughly 20 minutes from bare metal to a working stack. E
 git clone https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
 
-./es_auto_installer.sh configure          # one-time machine prep (Python 3.11+, yq, kubectl, helm)
-./es_auto_installer.sh init inference     # swap in your target from Step 1
-./es_auto_installer.sh install inference  # deploys the target plus everything it depends on (~15-20 min)
+./toolkit_manager.sh configure          # one-time machine prep (Python 3.11+, yq, kubectl, helm)
+./toolkit_manager.sh init inference     # swap in your target from Step 1
+./toolkit_manager.sh install inference  # deploys the target plus everything it depends on (~15-20 min)
 ```
 
 Point `kubectl` at the new cluster:
@@ -84,7 +84,7 @@ kubectl get nodes   # should show Ready
 Settings live in `env/local/global_config.yaml` and, for the inference layer (including `auth_type`), `env/local/config.inference.yaml`, both created by `init`. Defaults are a single local node with Keycloak OIDC auth. See [Configuration Reference](docs/customize/configuration.md) for every option, and [Deployment Guide](docs/deploy/install_platform.md) for multi-node, bastion, bring-your-own-cluster, and the alternative `litellm_vkey` (LiteLLM virtual key) auth type.
 
 > [!TIP]
-> `--env` defaults to `local`. Install and teardown are environment-scoped: what you installed with `--env prod` must be torn down with `--env prod`. Remove everything (config preserved) with `./es_auto_installer.sh teardown infrastructure`.
+> `--env` defaults to `local`. Install and teardown are environment-scoped: what you installed with `--env prod` must be torn down with `--env prod`. Remove everything (config preserved) with `./toolkit_manager.sh teardown infrastructure`.
 
 ### Step 3 - Serve a model and call it
 

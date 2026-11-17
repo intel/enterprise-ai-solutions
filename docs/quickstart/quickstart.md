@@ -21,7 +21,7 @@ Check [Prerequisites](prerequisites.md). At minimum you need:
 git clone https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
 
-./es_auto_installer.sh configure    # one-time machine prep — installs Python 3.11+, yq, kubectl, helm
+./toolkit_manager.sh configure    # one-time machine prep — installs Python 3.11+, yq, kubectl, helm
 ```
 
 ---
@@ -31,7 +31,7 @@ cd enterprise-ai-solutions
 Every deployment lives in a named environment under `env/<name>/`. The name is arbitrary — use `local` for a single-node dev setup, `prod` for production, or anything you like.
 
 ```bash
-./es_auto_installer.sh init inference
+./toolkit_manager.sh init inference
 ```
 
 This creates `env/local/` with:
@@ -69,7 +69,7 @@ Everything runs on the machine you're sitting on. No SSH configuration needed.
 The default inventory created by `init` already targets localhost, so just install:
 
 ```bash
-./es_auto_installer.sh install inference --env local
+./toolkit_manager.sh install inference --env local
 ```
 
 Takes 15–20 minutes. When it finishes:
@@ -96,7 +96,7 @@ Quick overview:
 1. Set up passwordless SSH from the installer host to every node.
 2. Edit `env/local/inventory/hosts.yaml` with your node IPs.
 3. Set `storage_backend: nfs` (or `ceph`) in `global_config.yaml` — `local-path` only works for single-node.
-4. Run `./es_auto_installer.sh install inference --env local`.
+4. Run `./toolkit_manager.sh install inference --env local`.
 
 ---
 
@@ -121,7 +121,7 @@ istio_enabled: false            # bring your own service mesh
 Then install:
 
 ```bash
-./es_auto_installer.sh install inference --env local
+./toolkit_manager.sh install inference --env local
 ```
 
 ---
@@ -135,7 +135,7 @@ kubectl get nodes                  # all nodes Ready
 kubectl get pods -A                # all pods Running or Completed
 
 # Or use the built-in health check:
-./es_auto_installer.sh validate inference --env local
+./toolkit_manager.sh validate inference --env local
 ```
 
 ---
@@ -190,13 +190,13 @@ cat env/local/logs/ai-solutions-ca.crt
 You can manage multiple isolated environments from one machine:
 
 ```bash
-./es_auto_installer.sh init inference --env dev
-./es_auto_installer.sh init inference --env staging
-./es_auto_installer.sh init inference --env prod
+./toolkit_manager.sh init inference --env dev
+./toolkit_manager.sh init inference --env staging
+./toolkit_manager.sh init inference --env prod
 
 # Each has its own config, inventory, kubeconfig
-./es_auto_installer.sh install inference --env dev
-./es_auto_installer.sh install inference --env prod
+./toolkit_manager.sh install inference --env dev
+./toolkit_manager.sh install inference --env prod
 
 # Use the matching kubeconfig per environment
 export KUBECONFIG=$(pwd)/env/prod/kubeconfig.yaml
