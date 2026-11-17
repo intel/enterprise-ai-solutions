@@ -8,6 +8,11 @@
     _oidc: "{{ (_s.issuer_internal | default('')) ~ '/protocol/openid-connect' }}"
     _id_cookie: "{{ gateway_route_name }}-id"
     _groups: "{{ _s.allowed_groups | default([]) | select | list }}"
+    _ver: "{{ (gateway_platform | default({})).version | default('', true) }}"
+    # Login nonce lifetime; the field exists from Envoy Gateway 1.7.
+    _csrf_ttl: >-
+      {{ {'oidc': {'csrfTokenTTL': envoy_gateway_oidc_login_ttl}}
+         if _ver and _ver is version('1.7.0', '>=') else {} }}
     _spec:
       targetRefs:
         - group: gateway.networking.k8s.io
@@ -26,7 +31,6 @@
         # Next to the callback, so it stays on the route under a path.
         logoutPath: "{{ (_s.redirect_url | default('') | urlsplit('path')) | regex_replace('/callback$', '/logout') }}"
         refreshToken: true
-        csrfTokenTTL: "{{ envoy_gateway_oidc_login_ttl }}"
         cookieNames:
           idToken: "{{ _id_cookie }}"
           accessToken: "{{ gateway_route_name }}-at"
@@ -69,7 +73,7 @@
       metadata:
         name: "{{ gateway_route_policy_name | default(gateway_route_name ~ '-sso', true) }}"
         namespace: "{{ gateway_route_namespace }}"
-      spec: "{{ _spec | combine({'authorization': _authz} if _groups | length > 0 else {}) }}"
+      spec: "{{ _spec | combine(_csrf_ttl, recursive=true) | combine({'authorization': _authz} if _groups | length > 0 else {}) }}"
   register: _eg_sso
   # Removing tolerates a cluster without the Envoy Gateway API.
   failed_when: _eg_sso is failed and gateway_route_state | default('present') == 'present'
@@ -85,7 +89,9 @@
     name: "{{ gateway_route_name }}"
     namespace: "{{ gateway_route_namespace }}"
   register: _eg_sso_route
-  when: gateway_route_state | default('present') == 'present'
+  when:
+    - gateway_route_state | default('present') == 'present'
+    - (gateway_platform | default({})).controller_managed | default(true) | bool
 
 - name: "envoy_gateway | sso | Login cookie lifetime for {{ gateway_route_namespace }}/{{ gateway_route_name }}"
   vars:
@@ -124,9 +130,7 @@
       {%- endif -%}
       {{ out }}
   kubernetes.core.k8s:
-    state: >-
-      {{ 'present' if gateway_route_state | default('present') == 'present' and _patches | length > 0
-                     and (gateway_platform | default({})).controller_managed | default(true) | bool else 'absent' }}
+    state: "{{ 'present' if gateway_route_state | default('present') == 'present' and _patches | length > 0 else 'absent' }}"
     definition:
       apiVersion: gateway.envoyproxy.io/v1alpha1
       kind: EnvoyPatchPolicy
@@ -142,3 +146,5 @@
         jsonPatches: "{{ _patches }}"
   register: _eg_sso_login
   failed_when: _eg_sso_login is failed and gateway_route_state | default('present') == 'present'
+  # An existing controller is not ours to patch (EnvoyPatchPolicy may be off there).
+  when: (gateway_platform | default({})).controller_managed | default(true) | bool

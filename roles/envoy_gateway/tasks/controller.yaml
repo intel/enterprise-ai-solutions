@@ -226,6 +226,15 @@
       - op: add
         path: /layered_runtime/layers/0/static_layer/envoy.reloadable_features.oauth2_legacy_cbc_decrypt_compat
         value: false
+    # Only on a 1.7 we installed: 1.8+ has them by default, and an existing controller is not ours to patch.
+    # JSONPatch onto the release's own bootstrap (Replace would drop its defaults); {} leaves it untouched.
+    _eg_bootstrap: >-
+      {{ {'bootstrap': {'type': 'JSONPatch', 'jsonPatches': _eg_runtime_patches}}
+         if gateway_platform.controller_managed | bool and gateway_platform.version | default('', true)
+            and gateway_platform.version is version('1.8.0', '<') else {} }}
+    _eg_provider:
+      type: Kubernetes
+      kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"
     _eg_image: >-
       {{ {_eg_workload: {'container': {'image': gateway_platform.envoy_proxy_image}}}
          if gateway_platform.envoy_proxy_image | default('') | length > 0 else {} }}
@@ -237,14 +246,7 @@
       metadata:
         name: eg-proxy-config
         namespace: "{{ _eg_proxy_config_namespace }}"
-      spec:
-        provider:
-          type: Kubernetes
-          kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"
-        # Patched onto the release's own bootstrap (Replace would drop its defaults).
-        bootstrap:
-          type: JSONPatch
-          jsonPatches: "{{ _eg_runtime_patches }}"
+      spec: "{{ {'provider': _eg_provider} | combine(_eg_bootstrap) }}"
 
 - name: "envoy_gateway | Create GatewayClass"
   kubernetes.core.k8s:
