@@ -45,7 +45,7 @@
   register: _mesh_edge
 
 - name: "mesh | Gateway hostnames changed"
-  when: _mesh_edge.changed | default(false)
+  when: _mesh_edge.changes | default([]) | length > 0
   ansible.builtin.debug:
     msg: "{{ _mesh_edge.changes }}"
 

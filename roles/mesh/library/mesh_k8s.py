@@ -9,12 +9,6 @@ in the mesh gets PeerAuthentication `default` (STRICT) unless it has a namespace
 one, and the ports its ServiceMonitors and PodMonitors scrape open to plaintext on the
 pods they select. Istio applies one workload PeerAuthentication per pod (the oldest),
 so the ports go into the one that already selects those pods, if any.
-
-state=snapshot before a component and `before` after it find the namespaces that
-joined the mesh with it; each gets the annotation <prefix>/mesh.<env>. With `enroll`,
-the component's workloads whose pods have no sidecar yet are restarted once, when the
-env created the namespace and no operator runs them; the rest are reported.
-state=absent deletes the component's policies and takes its namespaces out of the mesh.
 """
 
 import datetime

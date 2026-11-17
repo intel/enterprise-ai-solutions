@@ -1,7 +1,4 @@
 ---
-# The component's PeerAuthentications, also in namespaces it does not delete (the
-# admin's keycloak), and the records main.yaml wrote for it. It runs with
-# istio_enabled false too: then the gateway hostnames go as well.
 - name: "mesh | Load {{ cluster_distribution }} values"
   ansible.builtin.include_tasks: vars.yaml
 
@@ -17,7 +14,7 @@
   register: _mesh_removed
 
 - name: "mesh | Removed"
-  when: _mesh_removed.changed | default(false)
+  when: (_mesh_removed.policies | default([]) + _mesh_removed.namespaces | default([])) | length > 0
   ansible.builtin.debug:
     msg: "{{ {'policies': _mesh_removed.policies, 'records': _mesh_removed.namespaces} }}"
 
@@ -34,7 +31,7 @@
   register: _mesh_edge
 
 - name: "mesh | Gateway hostnames changed"
-  when: _mesh_edge.changed | default(false)
+  when: _mesh_edge.changes | default([]) | length > 0
   ansible.builtin.debug:
     msg: "{{ _mesh_edge.changes }}"
 

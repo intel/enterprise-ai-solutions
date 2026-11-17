@@ -1,6 +1,4 @@
 ---
-# The namespaces before the component runs, and which are in the mesh: one that
-# joins in between is the component's (main.yaml records it).
 - name: "mesh | Load {{ cluster_distribution }} values"
   ansible.builtin.include_tasks: vars.yaml
 

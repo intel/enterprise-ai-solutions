@@ -7,12 +7,6 @@ With sidecars Envoy Gateway sends each request to the backend Service with the
 client's Host header (keycloak.<domain>). The gateway's sidecar only routes the mesh's
 hosts: an external one goes out in plaintext and a STRICT backend resets it (503). A
 VirtualService alone does not add a host the mesh does not know.
-
-So each hostname the gateway's HTTPRoutes serve gets a ServiceEntry and a
-VirtualService edge-<host> to the backend Services, in the gateway's namespace only
-(exportTo "."), labelled <prefix>/env and <prefix>/mesh-edge=<gateway>. Every call
-reconciles them all: ours for a hostname no route serves any more are deleted, one of
-the same name without the labels is reported and left alone. state=absent deletes ours.
 """
 
 import hashlib
