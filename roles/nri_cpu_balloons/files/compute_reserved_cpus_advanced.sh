@@ -86,7 +86,7 @@ Options:
                             - observability: 16 vCPUs (standard + monitoring)
                             - full: 20 vCPUs (all components)
                             - siblings: ALL sibling (HT) vCPUs — physical cores
-                                        reserved exclusively for vLLM balloons
+                                        reserved exclusively for model balloons
 
     --total <number>       Manually specify total reserved CPUs (legacy mode)
 
@@ -117,7 +117,7 @@ Examples:
     # Use full deployment profile (20 vCPUs)
     $0 --profile full
 
-    # Reserve ALL sibling (HT) cores — physical cores for vLLM only
+    # Reserve ALL sibling (HT) cores — physical cores for models only
     $0 --profile siblings
 
     # Legacy mode with manual total
@@ -183,6 +183,16 @@ parse_args() {
 # -----------------------------------------------------------------------------
 _topology_injected() {
     [[ -n "${NRI_TOPO_NUMA:-}" ]]
+}
+
+# The NUMA node ids that have CPUs, one per line, in order. Ids can have gaps
+# (a memory-only CXL/HBM node between CPU nodes), so never count 0..N-1.
+_numa_ids() {
+    if _topology_injected; then
+        tr ';' '\n' <<< "${NRI_TOPO_NODECPUS:-}" | awk -F: '$2 != "" {print $1}' | sort -n
+    else
+        lscpu | awk -F: '/^NUMA node[0-9]+ CPU/ && $2 ~ /[0-9]/ {sub(/^NUMA node/, "", $1); sub(/ CPU.*/, "", $1); print $1}' | sort -n
+    fi
 }
 
 # Return the CPU list for NUMA node $1 from injected env or lscpu.
@@ -251,7 +261,7 @@ determine_total_reserved() {
         log_info "Using manually specified reservation: ${reserved_cpus} vCPUs"
     elif [[ "$RESERVATION_PROFILE" == "siblings" ]]; then
         # Siblings mode: reserve ALL sibling (HT) CPUs.
-        # Physical cores stay available for vLLM balloons.
+        # Physical cores stay available for model balloons.
         local logical_cpus
         if _topology_injected; then
             logical_cpus="${NRI_TOPO_LOGICAL}"
@@ -266,7 +276,7 @@ determine_total_reserved() {
         else
             reserved_cpus=$((logical_cpus - physical_cpus))
             log_info "Using 'siblings' profile: reserving ALL ${reserved_cpus} sibling vCPUs"
-            log_info "Physical cores (${physical_cpus}) remain available for vLLM balloons"
+            log_info "Physical cores (${physical_cpus}) remain available for model balloons"
         fi
     elif [[ -n "${PROFILE_CPUS[$RESERVATION_PROFILE]:-}" ]]; then
         # Use profile
@@ -327,7 +337,7 @@ select_reserved_cpus() {
     case $NUMA_STRATEGY in
         balanced)
             # Distribute evenly across all NUMA nodes
-            select_balanced_cpus "$cpus_per_numa" "$total_numa" "$ht_enabled"
+            select_balanced_cpus "$cpus_per_numa" "$ht_enabled"
             ;;
         concentrated)
             # Concentrate on fewer NUMA nodes
@@ -411,12 +421,11 @@ select_sibling_cpus() {
 # Balanced NUMA selection
 select_balanced_cpus() {
     local cpus_per_numa=$1
-    local total_numa=$2
-    local ht_enabled=$3
+    local ht_enabled=$2
 
     local out=""
 
-    for i in $(seq 0 $((total_numa - 1))); do
+    for i in $(_numa_ids); do
         local line
         line=$(_numa_cpulist "$i")
         if [[ -z "$line" ]]; then
@@ -520,7 +529,7 @@ select_concentrated_cpus() {
 
     local out=""
 
-    for i in $(seq 0 $((numa_to_use - 1))); do
+    for i in $(_numa_ids | head -n "$numa_to_use"); do
         local line
         line=$(_numa_cpulist "$i")
         if [[ -z "$line" ]]; then
