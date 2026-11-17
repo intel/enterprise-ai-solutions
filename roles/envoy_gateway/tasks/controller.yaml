@@ -226,13 +226,13 @@
       - op: add
         path: /layered_runtime/layers/0/static_layer/envoy.reloadable_features.oauth2_legacy_cbc_decrypt_compat
         value: false
-    # Only on a 1.7 we installed: 1.8+ has them by default, and an existing controller is not ours to patch.
+    # Only on a 1.7 we installed (1.8+ has them by default; one upgraded from 1.7 keeps the same values).
     # JSONPatch onto the release's own bootstrap (Replace would drop its defaults); {} leaves it untouched.
     _eg_bootstrap: >-
       {{ {'bootstrap': {'type': 'JSONPatch', 'jsonPatches': _eg_runtime_patches}}
          if _envoy_gateway_oidc_login_patches | bool and gateway_platform.controller_managed | bool
-            and gateway_platform.version | default('', true)
-            and gateway_platform.version is version('1.8.0', '<') else {} }}
+            and _eg_version
+            and _eg_version is version('1.8.0', '<') else {} }}
     _eg_provider:
       type: Kubernetes
       kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"

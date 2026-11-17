@@ -19,6 +19,8 @@ envoy_gateway_releases:
 envoy_gateway_upgrade: false
 # How long a started SSO login may take; matches the realm's accessCodeLifespanLogin (Keycloak default 30m), change both together.
 envoy_gateway_oidc_login_ttl: "1800s"
+# Controller version detect recorded; empty when unknown.
+_eg_version: "{{ (gateway_platform | default({})).version | default('', true) }}"
 _eg_line: "{{ envoy_gateway_releases['latest' if envoy_gateway_upgrade | bool else 'baseline'] }}"
 envoy_gateway_version: "{{ _eg_line.version }}"
 envoy_gateway_namespace: "envoy-gateway-system"

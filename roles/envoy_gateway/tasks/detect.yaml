@@ -216,7 +216,11 @@
       - show: "{{ _envoy_gateway_oidc_login_patches | bool and _managed | bool and not _patch_policy | bool }}"
         msg: >-
           EnvoyPatchPolicy is off on this Envoy Gateway {{ _cur }}, so SSO logins still expire after 10 minutes at
-          the PKCE check; envoy_gateway_upgrade: true (or a reinstall) turns it on.
+          the PKCE check. {{ ('envoy_gateway_upgrade: true upgrades it to ' ~ _latest ~ ' with it on.')
+          if _cur and _cur is version(_latest, '<') else
+          ('install inference turns it on, or: helm upgrade ' ~ (_det_ctrl.release if _det_ctrl is not none
+           else envoy_gateway_release_name) ~ ' -n ' ~ _ctrl_ns
+           ~ ' --reuse-values --set config.envoyGateway.extensionApis.enableEnvoyPatchPolicy=true') }}
       - show: "{{ _class == 'enterprise-ai' and not _gw }}"
         msg: "GatewayClass eg belongs to another controller or platform; the platform Gateway uses enterprise-ai."
     _notices: "{{ _notice_rules | selectattr('show') | map(attribute='msg') | map('trim') | list }}"
