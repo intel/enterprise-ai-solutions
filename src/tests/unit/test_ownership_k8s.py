@@ -153,7 +153,7 @@ def params(tmp_path, component="app", **extra):
     return dict({"state_file": str(tmp_path / "ownership-uids.json"), "env": "local", "layer": "platform",
                  "component": component, "declared": {}, "skip_resources": [], "label_prefix": PREFIX,
                  "restore_resources": ["namespaces", "nodes"], "timeout": 1, "component_failed": False,
-                 "teardown": False}, **extra)
+                 "teardown": False, "predates_labels": False}, **extra)
 
 
 def record(p, **r):
@@ -370,6 +370,32 @@ def test_teardown_snapshot_without_a_baseline_writes_nothing(tmp_path):
     # An install takes the baseline; a teardown then deletes by label.
     own.snapshot(api, params(tmp_path), Module())
     assert own.snapshot(api, p, Module())["baseline"] is True
+
+
+def test_env_installed_before_the_labels_keeps_its_roles_teardowns(tmp_path):
+    api, p = FakeApi(), params(tmp_path, predates_labels=True)
+    old = api.add("ConfigMap", "settings", "app")
+    assert own.snapshot(api, p, Module())["predates"] is True
+    own.begin(p, Module())
+    cm = api.add("ConfigMap", "new-cm", "app")
+    record(p, type="object", uid=cm, kind="ConfigMap", name="new-cm", namespace="app")
+    record(p, type="object", uid=old, kind="ConfigMap", name="settings", namespace="app", method="update")
+    own.label(api, p, Module())
+    assert api.labels(cm)[COMPONENT] == "app"
+    assert COMPONENT not in api.labels(old)
+    # Later runs keep the mark, whatever the logs say; teardown reports no baseline.
+    assert own.snapshot(api, params(tmp_path), Module())["predates"] is True
+    result = own.snapshot(api, params(tmp_path, teardown=True), Module())
+    assert (result["baseline"], result["predates"]) == (False, True)
+
+
+def test_env_with_a_state_file_or_no_earlier_install_is_labelled(tmp_path):
+    api = FakeApi()
+    # No earlier install logs: a fresh env.
+    assert own.snapshot(api, params(tmp_path), Module())["predates"] is False
+    # A state file already there: earlier installs were labelled.
+    assert own.snapshot(api, params(tmp_path, predates_labels=True), Module())["predates"] is False
+    assert own.snapshot(api, params(tmp_path, teardown=True), Module())["baseline"] is True
 
 
 def test_group_the_snapshot_could_not_discover_counts_nothing_as_new(tmp_path):

@@ -27,6 +27,10 @@ _ownership_declared: >-
           | zip(components | default([]) | selectattr('ownership_declared', 'defined')
                 | map(attribute='ownership_declared'))) }}
 
+# Install logs of the env: an env with earlier installs and no state file was installed
+# before the labels, and keeps its roles' own teardowns.
+ownership_log_dir: "{{ log_dir | default(playbook_dir ~ '/../env/local/logs') }}"
+
 # Never listed: high-churn objects that always have an owner, and APIs that are
 # slow or unsafe to list.
 ownership_skip_resources:

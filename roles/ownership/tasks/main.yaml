@@ -10,6 +10,16 @@
 #   teardown  instead of (or before) a component's own teardown: delete by label
 # =============================================================================
 
+# The current run's log is one of them: more than one means the env was installed before.
+- name: "ownership | Find earlier installs of this env"
+  when:
+    - ownership_action == 'snapshot'
+    - component_action == 'install'
+  ansible.builtin.find:
+    paths: "{{ ownership_log_dir }}"
+    patterns: "install-*.log"
+  register: _ownership_install_logs
+
 - name: "ownership | Record the objects already on the cluster"
   when: ownership_action == 'snapshot'
   ownership_k8s:
@@ -20,13 +30,14 @@
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
     teardown: "{{ component_action == 'teardown' }}"
+    predates_labels: "{{ (_ownership_install_logs.matched | default(0) | int) > 1 }}"
   register: _ownership_snapshot
 
 # An env installed before the labels has none: teardown by label would delete nothing.
 - name: "ownership | No install labelled this env: each component's own teardown runs"
   when:
     - ownership_action == 'snapshot'
-    - not (_ownership_snapshot.baseline | default(true))
+    - not (_ownership_snapshot.baseline | default(true)) or _ownership_snapshot.predates | default(false)
   ansible.builtin.set_fact:
     _ownership_unlabelled: true
 

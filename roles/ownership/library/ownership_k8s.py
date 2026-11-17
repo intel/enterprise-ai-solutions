@@ -7,7 +7,10 @@ Ansible module — label what a component created, and delete by those labels.
             run was killed while a component ran (see begin), first label what
             that component created. For a teardown (`teardown`), a cluster that
             does not answer is skipped, and an env with no baseline is reported
-            (baseline false): nothing in it is labelled
+            (baseline false): nothing in it is labelled. The first install of an env
+            that was installed before (predates_labels: earlier install logs, no state
+            file) marks it: its objects carry no labels, so it is reported the same way
+            (predates true) from then on
   begin     note in state_file which component runs now, and return the file the
             ownership_record callback records the component's task results into
   label     label what the component's tasks created, then record the cluster
@@ -206,22 +209,25 @@ def _read(path):
     """uids: None when there is no baseline yet; pending: the component a run was in
     when it stopped, or None; labels: uid -> labels of the objects in
     restore_resources; carry: component -> UIDs it may still claim (see label); unlisted:
-    the API groups the snapshot could not discover."""
+    the API groups the snapshot could not discover; predates: the env was installed before
+    the labels; exists: the file was there."""
+    exists = os.path.exists(path)
     try:
         with open(path) as f:
             state = json.load(f)
     except (OSError, ValueError):
         state = {}
     return {"uids": state.get("uids"), "pending": state.get("pending"), "labels": state.get("labels") or {},
-            "carry": state.get("carry") or {}, "unlisted": state.get("unlisted") or []}
+            "carry": state.get("carry") or {}, "unlisted": state.get("unlisted") or [],
+            "predates": bool(state.get("predates")), "exists": exists}
 
 
-def _write(path, uids, pending=None, labels=None, carry=None, unlisted=()):
+def _write(path, uids, pending=None, labels=None, carry=None, unlisted=(), predates=False):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"uids": sorted(uids) if uids is not None else None, "pending": pending,
                    "labels": labels or {}, "carry": {c: sorted(u) for c, u in (carry or {}).items() if u},
-                   "unlisted": sorted(unlisted)}, f)
+                   "unlisted": sorted(unlisted), "predates": predates}, f)
     os.replace(tmp, path)
 
 
@@ -321,31 +327,35 @@ def _restore(api, resources, p, module):
 
 def snapshot(api, p, module):
     state = _read(p["state_file"])
-    if p["teardown"] and state["uids"] is None:
+    if p["teardown"] and (state["uids"] is None or state["predates"]):
         # No install in this env labelled anything (it predates the labels, or never got
-        # that far): the roles' own teardowns run instead. Nothing is written, so a rerun
-        # finds the same.
-        return {"changed": False, "baseline": False, "labelled": [], "recorded": []}
+        # that far), or it was installed before the labels and its objects carry none:
+        # the roles' own teardowns run instead. Nothing is written, so a rerun finds the same.
+        return {"changed": False, "baseline": False, "predates": state["predates"], "labelled": [], "recorded": []}
+    # The first install of an env that was installed before: what is there now is the
+    # env's, and stays unlabelled.
+    predates = state["predates"] or (not p["teardown"] and not state["exists"] and p["predates_labels"])
     if state["pending"] and state["uids"] is not None:
         # The last run stopped inside a component, before it was labelled: label what
         # its tasks recorded, and carry what else appeared for its rerun.
         pending = state["pending"]
         result = label(api, dict(p, **pending), module, stopped=True)
-        return {"changed": result["changed"], "baseline": True, "recovered": pending,
+        return {"changed": result["changed"], "baseline": True, "predates": predates, "recovered": pending,
                 "labelled": result["labelled"], "recorded": result["recorded"]}
     if not module.check_mode:
         failed = set()
         objects = _all_objects(api, _discover(api, set(p["skip_resources"]), failed))
         carry = {c: set(u) & objects.keys() for c, u in state["carry"].items()}
-        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry, unlisted=failed)
-    return {"changed": False, "baseline": True, "labelled": [], "recorded": []}
+        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry, unlisted=failed,
+               predates=predates)
+    return {"changed": False, "baseline": True, "predates": predates, "labelled": [], "recorded": []}
 
 
 def begin(p, module):
     state = _read(p["state_file"])
     if not module.check_mode:
         _write(p["state_file"], state["uids"], {"env": p["env"], "layer": p["layer"], "component": p["component"]},
-               state["labels"], state["carry"], state["unlisted"])
+               state["labels"], state["carry"], state["unlisted"], state["predates"])
     return {"changed": False, "component": p["component"], "record_file": _record_file(p["state_file"])}
 
 
@@ -526,7 +536,7 @@ def label(api, p, module, stopped=False):
     if not module.check_mode:
         carry = {c: u & objects.keys() for c, u in carry.items()}
         _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry,
-               unlisted=undiscovered)
+               unlisted=undiscovered, predates=state["predates"])
     return {"changed": bool(labelled or recorded), "labelled": labelled, "recorded": recorded,
             "records": len(records)}
 
@@ -625,6 +635,7 @@ def main():
             "timeout": {"type": "int", "default": 600},
             "component_failed": {"type": "bool", "default": False},
             "teardown": {"type": "bool", "default": False},
+            "predates_labels": {"type": "bool", "default": False},
         },
         required_if=[("action", "snapshot", ["state_file"]), ("action", "begin", ["state_file", "env", "component"]),
                      ("action", "label", ["state_file", "env", "component"]),

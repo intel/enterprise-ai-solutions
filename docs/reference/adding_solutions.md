@@ -334,8 +334,12 @@ handled) or was killed and that nothing named are
 kept aside for it: when its next run reports one of them (as `unchanged` or an update), it
 is labelled as new.
 
-In an env no install labelled (installed before the labels), teardown runs each
-component's own `teardown.yaml`, as with `ownership_enabled: false`.
+In an env no install labelled, teardown runs each component's own `teardown.yaml`, as with
+`ownership_enabled: false`. So does an env installed before the labels and installed
+again since: its first install with labels finds earlier install logs in `env/<env>/logs`
+and no state file, and marks the env in the state file, because what it installed before
+carries no labels. An env installed from scratch (also with the infrastructure layer) has
+no earlier logs and is torn down by label.
 
 A discovery pass that cannot read an API group version (an aggregated API that is down, a
 transient error) leaves it out and notes the group in the state file: until a later pass
