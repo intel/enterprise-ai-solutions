@@ -4,21 +4,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import allure
-import kr8s
+
+from k8s_helper import assert_condition, assert_daemonset_ready, is_openshift
 
 
-@allure.testcase("IEASG-T671")
+def ztunnel_namespace():
+    return "ztunnel" if is_openshift() else "istio-system"
+
+
+@allure.testcase("DSPTV-T400")
 def test_istiod_available():
-    deploys = list(kr8s.get("deployments", namespace="istio-system",
-                            field_selector={"metadata.name": "istiod"}))
-    assert len(deploys) > 0, "istiod not found"
-    conditions = deploys[0].status.conditions
-    assert any(c.type == "Available" and c.status == "True" for c in conditions)
+    assert_condition("deployments", "istiod", "Available", namespace="istio-system")
 
 
-@allure.testcase("IEASG-T672")
+@allure.testcase("DSPTV-T401")
 def test_ztunnel_daemonset_ready():
-    ds = list(kr8s.get("daemonsets", namespace="istio-system",
-                       field_selector={"metadata.name": "ztunnel"}))[0]
-    assert ds.status.numberReady > 0
-    assert ds.status.numberReady == ds.status.desiredNumberScheduled
+    assert_daemonset_ready(ztunnel_namespace(), "ztunnel")

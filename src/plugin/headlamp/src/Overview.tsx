@@ -7,9 +7,10 @@ import { Box, Button, GlobalStyles, Paper, Stack, Typography } from '@mui/materi
 import { Link as RouterLink } from 'react-router-dom';
 import { ABOUT } from './about';
 import { BRAND } from './Branding';
-import { CATALOG, catalogModels, PORTAL, portalEntries } from './data';
+import { aroundModels, CATALOG, catalogModels, PORTAL, portalEntries } from './data';
 import { LLMInferenceService, readyCondition } from './resources';
 import { CardGrid, PlatformCard, ServiceCards } from './ServicesList';
+import { useOfferedModels } from './useOfferedModels';
 
 // Headlamp lays overview items out in one row of 300px cells. Ours take full-width
 // cells, so each sits on its own line: About first, the service cards after the tiles.
@@ -59,14 +60,20 @@ function ModelsCard() {
   const [catalog] = K8s.ResourceClasses.ConfigMap.useGet(CATALOG.name, CATALOG.namespace);
   const [services] = LLMInferenceService.useList({ namespace: CATALOG.namespace });
   const deployed = services ?? [];
+  const { offered } = useOfferedModels(
+    catalogModels(catalog?.data),
+    new Set(deployed.map(s => s.metadata.name))
+  );
   const ready = deployed.filter(s => readyCondition(s)?.status === 'True').length;
   const starting = deployed.length - ready;
   return (
     <PlatformCard
       title="Models"
-      description={`${ready} of ${catalogModels(catalog?.data).length} ready${
-        starting ? `, ${starting} starting` : ''
-      }`}
+      description={
+        offered && services
+          ? `${ready} of ${offered.length} ready${starting ? `, ${starting} starting` : ''}`
+          : 'Loading'
+      }
       action={
         // In-app page, so same tab, unlike the external services.
         <Button
@@ -86,6 +93,7 @@ function ModelsCard() {
 function PlatformRow() {
   const [portal, error] = K8s.ResourceClasses.ConfigMap.useGet(PORTAL.name, PORTAL.namespace);
   const entries = portalEntries(portal?.data);
+  const [before, after] = aroundModels(entries);
   return (
     <Box {...{ [ROW]: '' }}>
       <GlobalStyles styles={fullWidthCell} />
@@ -98,8 +106,9 @@ function PlatformRow() {
         </Typography>
       )}
       <CardGrid>
-        <ServiceCards entries={entries} />
+        <ServiceCards entries={before} />
         <ModelsCard />
+        <ServiceCards entries={after} />
       </CardGrid>
     </Box>
   );

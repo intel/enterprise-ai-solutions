@@ -245,7 +245,7 @@
           ~ lookup('ansible.builtin.file', 'plugins/' ~ __headlamp_plugin_name ~ '/package.json', rstrip=false)) | hash('sha256') }}
 
 # 'view' lacks KServe's LLMInferenceService and InferenceService (OpenVINO models),
-# which the Models page shows. Read on those two for whoever reads through Headlamp:
+# which the Models page shows, and nodes (GPU check). Read on those for whoever reads through Headlamp:
 # the shared account in gateway mode, the viewer group in apiserver mode (admins are
 # cluster-admin).
 - name: "headlamp | Models page read access"
@@ -259,6 +259,9 @@
       rules:
         - apiGroups: [serving.kserve.io]
           resources: [llminferenceservices, inferenceservices]
+          verbs: [get, list, watch]
+        - apiGroups: [""]
+          resources: [nodes]
           verbs: [get, list, watch]
     - apiVersion: rbac.authorization.k8s.io/v1
       kind: ClusterRoleBinding
