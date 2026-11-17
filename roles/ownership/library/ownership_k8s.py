@@ -143,8 +143,13 @@ def _list(api, res, selector=None):
             + ([("labelSelector", selector)] if selector else [])
         try:
             page = _get(api, "%s/%s" % (res["base"], res["resource"]), query, {"Accept": META_LIST})
-        except ApiException:
-            return items  # e.g. 403 on a resource we may not read
+        except ApiException as e:
+            # Forbidden, gone, or not listable: nothing of it to record or delete. Anything
+            # else (5xx, 429, a timeout) fails the run: a snapshot missing those UIDs would
+            # take what was already there for new.
+            if e.status not in (403, 404, 405):
+                raise
+            return items
         items += page.get("items") or []
         cont = page.get("metadata", {}).get("continue")
         if not cont:
@@ -331,16 +336,24 @@ def _helm_release(api, secret):
     return json.loads(gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw)
 
 
+def _group(api_version):
+    """The API group of an apiVersion (apps/v1 -> apps, v1 -> ""), None when unknown."""
+    if not api_version:
+        return None
+    return api_version.rpartition("/")[0]
+
+
 def _manifest_refs(text, namespace):
-    """(kind, namespace or None, name) of each object in a rendered manifest."""
+    """(kind, namespace or None, name, group) of each object in a rendered manifest."""
     refs = []
     for doc in yaml.safe_load_all(text or ""):
         if isinstance(doc, dict) and doc.get("kind") and (doc.get("metadata") or {}).get("name"):
-            refs.append((doc["kind"], doc["metadata"].get("namespace") or namespace, doc["metadata"]["name"]))
+            refs.append((doc["kind"], doc["metadata"].get("namespace") or namespace, doc["metadata"]["name"],
+                         _group(doc.get("apiVersion"))))
     return refs
 
 
-def _helm_claims(api, objects, index, known, new, reported, p):
+def _helm_claims(api, objects, index, new, reported, p):
     """(claimed, crds): UIDs of the component's Helm releases: release secrets, the objects
     of their manifest and hooks, the objects annotated with them; and the CRDs of their
     charts' crds/, which are only the component's when new."""
@@ -389,20 +402,22 @@ def _helm_claims(api, objects, index, known, new, reported, p):
 
 
 def _index(objects):
-    """find(kind, namespace, name) -> UIDs. kind is a Kind (Deployment) or, as kubectl
+    """find(kind, namespace, name, group) -> UIDs. kind is a Kind (Deployment) or, as kubectl
     prints it, a lowercase resource with its group (deployment.apps); namespace None
-    matches any namespace, and is ignored for cluster-scoped objects."""
+    matches any namespace, and is ignored for cluster-scoped objects; group None (not
+    known) matches any group, "" the core group only."""
     by_name = {}
     for uid, (res, meta) in objects.items():
         by_name.setdefault(meta["name"], []).append((uid, res, meta))
 
-    def find(kind, namespace, name):
-        kind, _, group = (kind or "").partition(".")
+    def find(kind, namespace, name, group=None):
+        kind, _, cli_group = (kind or "").partition(".")
+        group = cli_group or group
         found = set()
         for uid, res, meta in by_name.get(name, []):
             if kind.lower() != res["kind"].lower():
                 continue
-            if group and group != res["group"]:
+            if group is not None and group != res["group"]:
                 continue
             if res["namespaced"] and namespace and meta.get("namespace") != namespace:
                 continue
@@ -450,12 +465,13 @@ def label(api, p, module, stopped=False):
             if r["type"] == "object":
                 reported |= {r["uid"]} & objects.keys()
             elif r["type"] == "named":
-                reported |= find(r["kind"], r.get("namespace"), r["name"])
+                reported |= find(r["kind"], r.get("namespace"), r["name"], _group(r.get("api_version")))
             elif r["type"] == "cli":
-                reported |= find(r["resource"], r.get("namespace"), r["name"])
+                # kubectl prints the group of every resource outside the core group.
+                reported |= find(r["resource"], r.get("namespace"), r["name"], "")
             elif r["type"] == "release":
                 releases.add((r["namespace"], r["name"]))
-        helm, crds = _helm_claims(api, objects, find, known, new, releases, p)
+        helm, crds = _helm_claims(api, objects, find, new, releases, p)
         declared = _declared(objects, (p["declared"] or {}).get(p["component"]))
         claimed = helm | {u for u in reported | crds | declared if new(u)}
         for uid in sorted(claimed, key=lambda u: _ref(*objects[u])):
