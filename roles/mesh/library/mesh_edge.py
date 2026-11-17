@@ -3,52 +3,23 @@
 """
 Ansible module — the gateway's hostnames, for its sidecar.
 
-With sidecars Envoy Gateway sends each request to the backend Service
-(routingType: Service) with the client's Host header, like keycloak.<domain>. The
-gateway pod's sidecar picks the outbound route by that Host, and it only knows the
-mesh's hosts: an external one falls through to PassthroughCluster, in plaintext,
-which a STRICT backend resets (503). A VirtualService alone does not add a host the
-mesh does not know.
+With sidecars Envoy Gateway sends each request to the backend Service with the
+client's Host header (keycloak.<domain>). The gateway's sidecar only routes the mesh's
+hosts: an external one goes out in plaintext and a STRICT backend resets it (503). A
+VirtualService alone does not add a host the mesh does not know.
 
-So each hostname the HTTPRoutes attached to the gateway serve gets, in the gateway's
-namespace and visible there only (exportTo "."):
-
-  - ServiceEntry edge-<host>: the hostname, MESH_INTERNAL, resolution NONE, with
-    the routes' backend ports as HTTP
-  - VirtualService edge-<host>: per port, to the backend Service. Several hostnames
-    share the apex, each on its own port; where one hostname and port lead to
-    several Services, the route's path matches pick the Service (Exact, then the
-    longest prefix, then regular expressions).
-
-Both carry <prefix>/env and <prefix>/mesh-edge=<gateway>. Every call reconciles
-all of them: one for a hostname no route serves any more is deleted, so it runs
-after each component's install and teardown. One of the same name without those
-labels is someone else's: it is left alone and reported. state=absent deletes all
-of ours (teardown with the mesh turned off since). Backends other than Services (an
-InferencePool) are left to the gateway. Nothing happens when the gateway's namespace
-does not exist or is being deleted.
+So each hostname the gateway's HTTPRoutes serve gets a ServiceEntry and a
+VirtualService edge-<host> to the backend Services, in the gateway's namespace only
+(exportTo "."), labelled <prefix>/env and <prefix>/mesh-edge=<gateway>. Every call
+reconciles them all: ours for a hostname no route serves any more are deleted, one of
+the same name without the labels is reported and left alone. state=absent deletes ours.
 """
 
 import hashlib
-import json
-import os
 import re
 
 from ansible.module_utils.basic import AnsibleModule
-
-try:
-    from kubernetes import client, config
-    from kubernetes.client.rest import ApiException
-    from kubernetes.config import ConfigException
-    from urllib3.exceptions import HTTPError
-except ImportError:  # reported by main()
-    client = None
-    ConfigException = HTTPError = Exception
-
-    class ApiException(Exception):
-        def __init__(self, status=None):
-            super().__init__(status)
-            self.status = status
+from ansible.module_utils.mesh_kube import ApiException, client, run as run_module
 
 GATEWAY = ("gateway.networking.k8s.io", "v1", "gateways")
 HTTPROUTE = ("gateway.networking.k8s.io", "v1", "httproutes")
@@ -214,25 +185,8 @@ def main():
         },
         supports_check_mode=True,
     )
-    if client is None:
-        module.fail_json(msg="the kubernetes Python client is required")
-    kubeconfig = os.environ.get("K8S_AUTH_KUBECONFIG") or os.environ.get("KUBECONFIG") or "~/.kube/config"
-    try:
-        cfg = client.Configuration()
-        config.load_kube_config(config_file=kubeconfig, client_configuration=cfg)
-        # The client reads http(s)_proxy from the environment but not no_proxy.
-        cfg.no_proxy = os.environ.get("K8S_AUTH_NO_PROXY") or os.environ.get("no_proxy") or os.environ.get("NO_PROXY")
-        api = client.ApiClient(cfg)
-        module.exit_json(**run(client.CoreV1Api(api), client.CustomObjectsApi(api), module.params, module))
-    except ApiException as e:
-        try:
-            reason = json.loads(e.body).get("message", e.reason)
-        except (TypeError, ValueError):
-            reason = e.reason
-        module.fail_json(msg="mesh edge failed: %s %s" % (e.status, reason))
-    except (ConfigException, HTTPError) as e:  # no kubeconfig, API server unreachable
-        module.fail_json(msg="mesh edge failed: %s" % e)
-
+    run_module(module, "mesh edge", lambda api: run(
+        client.CoreV1Api(api), client.CustomObjectsApi(api), module.params, module))
 
 if __name__ == "__main__":
     main()

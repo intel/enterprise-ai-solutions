@@ -1,0 +1,25 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# One port of a workload in plaintext (port-level PERMISSIVE), the rest STRICT.
+#   istio_port_exception_namespace   namespace of the workloads
+#   istio_port_exception_workloads   [{name, selector, port}]: PeerAuthentication allow-<name>
+
+- name: "istio | port exception | Plaintext on one port (port-level mTLS)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: "allow-{{ item.name }}"
+        namespace: "{{ istio_port_exception_namespace }}"
+      spec:
+        selector:
+          matchLabels: "{{ item.selector }}"
+        mtls:
+          mode: STRICT
+        portLevelMtls: "{{ {item.port | string: {'mode': 'PERMISSIVE'}} }}"
+  loop: "{{ istio_port_exception_workloads }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.port }}"

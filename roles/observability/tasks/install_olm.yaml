@@ -56,22 +56,15 @@
 # Before the LokiStack, so it is the oldest policy on the gateway pods: Istio
 # applies that one, and the mesh role adds the ports Prometheus scrapes to it.
 - name: "observability | olm | Let the log collector reach the Loki gateway"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: security.istio.io/v1
-      kind: PeerAuthentication
-      metadata:
-        name: allow-log-collector
-        namespace: "{{ observability_namespace }}"
-      spec:
-        selector:
-          matchLabels:
-            app.kubernetes.io/component: lokistack-gateway
-            app.kubernetes.io/instance: logging-loki
-        mtls:
-          mode: STRICT
-        portLevelMtls: "{{ {'8080': {'mode': 'PERMISSIVE'}} }}"
+  ansible.builtin.include_role:
+    name: istio
+    tasks_from: port_exception.yaml
+  vars:
+    istio_port_exception_namespace: "{{ observability_namespace }}"
+    istio_port_exception_workloads:
+      - name: log-collector
+        selector: {app.kubernetes.io/component: lokistack-gateway, app.kubernetes.io/instance: logging-loki}
+        port: 8080
   when: istio_enabled | default(false) | bool
 
 - name: "observability | olm | LokiStack"
@@ -449,21 +442,13 @@
 # API on 3000 to add the datasources and dashboards; the rest of the pod stays
 # STRICT. Before the Grafana, so it is the oldest policy on its pod.
 - name: "observability | olm | Let grafana-operator reach Grafana"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: security.istio.io/v1
-      kind: PeerAuthentication
-      metadata:
-        name: allow-grafana-operator
-        namespace: "{{ observability_namespace }}"
-      spec:
-        selector:
-          matchLabels:
-            app: "{{ observability_openshift_grafana_name }}"
-        mtls:
-          mode: STRICT
-        portLevelMtls: "{{ {'3000': {'mode': 'PERMISSIVE'}} }}"
+  ansible.builtin.include_role:
+    name: istio
+    tasks_from: port_exception.yaml
+  vars:
+    istio_port_exception_namespace: "{{ observability_namespace }}"
+    istio_port_exception_workloads:
+      - {name: grafana-operator, selector: {app: "{{ observability_openshift_grafana_name }}"}, port: 3000}
   when: istio_enabled | default(false) | bool
 
 - name: "observability | olm | Grafana"

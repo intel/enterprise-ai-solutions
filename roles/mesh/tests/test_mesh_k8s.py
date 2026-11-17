@@ -102,7 +102,7 @@ class Module:
 
 def params(**kw):
     return dict({"env": "ocp", "layer": "platform", "component": "keycloak", "label_prefix": PREFIX,
-                 "mode": "STRICT", "monitors": True, "mesh_labels": AMBIENT, "mtls": True, "enroll": False,
+                 "mesh_labels": AMBIENT, "mtls": True, "enroll": False,
                  "before": None}, **kw)
 
 
@@ -299,11 +299,9 @@ def test_named_port_without_pods_is_reported():
     assert [c["metadata"]["name"] for c in custom.created] == ["default"]
 
 
-def test_monitor_crds_missing_and_monitors_off():
+def test_monitor_crds_missing():
     core = Core([ns("ours", AMBIENT, record())])
     out = mesh_k8s.run(core, Custom(crds=("peerauthentications",)), params(), Module())
-    assert out["policies"] == ["ours/default: STRICT"]
-    out = mesh_k8s.run(core, Custom(), params(monitors=False), Module())
     assert out["policies"] == ["ours/default: STRICT"]
 
 
@@ -337,8 +335,10 @@ def running(name, owner, containers=("app",), init=(), annotations=None, created
                       init_containers=[NS(name=c) for c in init], host_network=host_network))
 
 
-def workload(name, labels=None, owners=None, restarted=None):
-    annotations = {mesh_k8s.RESTARTED: restarted} if restarted else None
+def workload(name, labels=None, owners=None, restarted=None, ours=None):
+    annotations = {mesh_k8s.RESTARTED: restarted} if restarted else {}
+    if ours:
+        annotations[PREFIX + "/mesh-restart"] = ours
     return NS(metadata=NS(name=name, labels=labels or {}, owner_references=owners),
               spec=NS(template=NS(metadata=NS(annotations=annotations))))
 
@@ -401,7 +401,8 @@ def test_enroll_restarts_ours_and_reports_the_rest():
                        apps=apps, now="2026-11-02T00:00:00Z")
     assert out["restarted"] == ["ours/Deployment/api", "ours/StatefulSet/db"]
     assert [p[:3] for p in apps.patched] == [("Deployment", "ours", "api"), ("StatefulSet", "ours", "db")]
-    assert apps.patched[0][3]["spec"]["template"]["metadata"]["annotations"] == {mesh_k8s.RESTARTED: "2026-11-02T00:00:00Z"}
+    assert apps.patched[0][3]["spec"]["template"]["metadata"]["annotations"] == {
+        mesh_k8s.RESTARTED: "2026-11-02T00:00:00Z", PREFIX + "/mesh-restart": "2026-11-02T00:00:00Z"}
     assert out["not_enrolled"] == ["ours/StatefulSet/keycloak (not ours, pod kc-0)", "ours/job-x (owned by a Job)"]
     assert out["policies"] == [] and out["changed"] is True
 
@@ -469,6 +470,18 @@ def test_enroll_skips_terminating_host_network_and_rolling_pods():
     out = mesh_k8s.run(core, Custom(), params(mesh_labels=SIDECAR, mtls=False, enroll=True), Module(),
                        apps=apps, now="x")
     assert out["restarted"] == ["ours/Deployment/web"]
+
+
+def test_enroll_restarts_once():
+    """A pod started after our restart and still without a proxy is reported, not restarted again."""
+    started = datetime.datetime(2026, 11, 2, 0, 5, tzinfo=datetime.timezone.utc)
+    pods = [running("db-0", ref("StatefulSet", "db"), created=started)]
+    apps = Apps(statefulsets={"db": workload("db", restarted="2026-11-02T00:05:00Z", ours="2026-11-02T00:05:00Z")})
+    core = Core([ns("ours", SIDECAR, record())], pods={"ours": pods})
+    out = mesh_k8s.run(core, Custom(), params(mesh_labels=SIDECAR, mtls=False, enroll=True), Module(),
+                       apps=apps, now="x")
+    assert out["restarted"] == [] and apps.patched == []
+    assert out["not_enrolled"] == ["ours/StatefulSet/db (restarted, still no sidecar; pod db-0)"]
 
 
 def test_a_podmonitor_with_match_expressions_is_reported():

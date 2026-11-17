@@ -56,7 +56,7 @@ spec:
       value: "{{ keycloak_relative_path }}"
 {% endif %}
 {% set _keycloak_proxy = (http_proxy | default('') | length > 0) or (https_proxy | default('') | length > 0) %}
-{% set _keycloak_sidecar = istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'sidecar' %}
+{% set _keycloak_sidecar = istio_dataplane_mode | default('') == 'sidecar' %}
 {% if _platform_affinity | default({}) | length > 0 or _keycloak_proxy or _keycloak_sidecar %}
   unsupported:
     podTemplate:

@@ -52,22 +52,14 @@
 
 # The marketplace CNPG operator runs outside the mesh and polls each instance's
 # manager on its status port; the rest of the pod stays STRICT.
-- name: "postgresql | Allow the CNPG operator to reach the instances (port-level mTLS)"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: security.istio.io/v1
-      kind: PeerAuthentication
-      metadata:
-        name: allow-operator
-        namespace: "{{ postgresql_namespace }}"
-      spec:
-        selector:
-          matchLabels:
-            cnpg.io/cluster: "{{ postgresql_cluster_name }}"
-        mtls:
-          mode: STRICT
-        portLevelMtls: "{{ {(postgresql_cnpg_status_port | string): {'mode': 'PERMISSIVE'}} }}"
+- name: "postgresql | Allow the CNPG operator to reach the instances"
+  ansible.builtin.include_role:
+    name: istio
+    tasks_from: port_exception.yaml
+  vars:
+    istio_port_exception_namespace: "{{ postgresql_namespace }}"
+    istio_port_exception_workloads:
+      - {name: operator, selector: {cnpg.io/cluster: "{{ postgresql_cluster_name }}"}, port: "{{ postgresql_cnpg_status_port }}"}
   when:
     - istio_enabled | default(false) | bool
     - _postgresql_from_olm | bool

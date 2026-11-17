@@ -7,8 +7,6 @@
       ┃  Layer: {{ component.layer | default('unknown') }}{{ ' ' * (66 - (component.layer | default('unknown')) | length) }}┃
       ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-# The namespaces that join the mesh while the component installs are the ones it
-# put there (roles/mesh).
 - name: "Mesh before {{ component.name }}"
   ansible.builtin.include_role:
     name: mesh
@@ -21,8 +19,6 @@
   ansible.builtin.include_role:
     name: "{{ component.name }}"
 
-# The policies it adds carry the component's labels, so its teardown deletes them,
-# also when istio_enabled was turned off since.
 - name: "Mesh for what {{ component.name }} installed"
   ansible.builtin.include_role:
     name: mesh

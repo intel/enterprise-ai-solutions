@@ -56,7 +56,7 @@
     # it pass the stream through. The chart's port list, with that one addition.
     - name: "envoy_gateway | {{ gateway_platform.controller_action | capitalize }} Envoy Gateway via Helm (OCI)"
       vars:
-        _eg_controller_unmeshed: "{{ istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'sidecar' }}"
+        _eg_controller_unmeshed: "{{ istio_dataplane_mode | default('') == 'sidecar' }}"
         _eg_controller_outside_mesh:
           pod:
             annotations:
@@ -233,7 +233,7 @@
           replicas: "{{ gateway_envoy_replicas | int }}"
         envoyService:
           type: ClusterIP
-    _eg_sidecar: "{{ istio_enabled | default(false) | bool and istio_dataplane_mode | default('ambient') == 'sidecar' }}"
+    _eg_sidecar: "{{ istio_dataplane_mode | default('') == 'sidecar' }}"
     _eg_workload: "{{ 'envoyDaemonSet' if _envoy_gateway_proxy_shape == 'controlplane_daemonset' else 'envoyDeployment' }}"
     _eg_image: >-
       {{ {_eg_workload: {'container': {'image': gateway_platform.envoy_proxy_image}}}

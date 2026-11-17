@@ -1,35 +1,10 @@
 # Copyright (C) 2024-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 ---
-# =============================================================================
-# Preflight | Detect how namespaces join the mesh
-# =============================================================================
-# The mesh follows the platform, nothing to configure:
-#   kubernetes  the istio component runs an ambient mesh
-#   openshift   the cluster's Service Mesh 3. Its ambient mode needs a cluster-wide
-#               network change (routingViaHost) under OVN-Kubernetes, so pods join
-#               with sidecars, injected by the revision the cluster runs
-#
-# Published facts (repo-wide, no prefix), empty when istio_enabled is false:
-#   istio_dataplane_mode    ambient | sidecar
-#   istio_namespace_labels  labels that put a namespace in the mesh
-#   istio_pod_annotations   annotations for pods that need the network before their
-#                           containers run (Jobs, network-needing init containers):
-#                           the sidecar starts first and a Job ends with its pod
-#
-# Set istio_revision to pick one revision when the cluster runs several.
-# =============================================================================
-
-- name: "Preflight - Mesh: the mode is not a setting"
-  ansible.builtin.fail:
-    msg: >-
-      istio_dataplane_mode is {{ istio_dataplane_mode }} in the env, but on {{ cluster_distribution }}
-      the mesh mode is {{ _mesh_mode }}. Remove it from env/<env>/global_config.yaml.
-  vars:
-    _mesh_mode: "{{ 'sidecar' if cluster_distribution == 'openshift' else 'ambient' }}"
-  when:
-    - istio_dataplane_mode is defined
-    - istio_dataplane_mode != _mesh_mode
+# Kubernetes: the istio component's ambient mesh. OpenShift: the cluster's Service
+# Mesh 3 with sidecars; its ambient mode needs a cluster-wide network change
+# (routingViaHost) under OVN-Kubernetes. Set istio_revision to pick one revision
+# when the cluster runs several.
 
 - name: "Preflight - Mesh: ambient"
   ansible.builtin.set_fact:
@@ -85,6 +60,7 @@
 
 - name: "Preflight - Mesh: off"
   ansible.builtin.set_fact:
+    istio_dataplane_mode: ""
     istio_namespace_labels: {}
     istio_pod_annotations: {}
   when: not (istio_enabled | default(true) | bool)

@@ -12,24 +12,11 @@
     kind: Node
   register: _istio_ax_nodes
 
-- name: "istio | apiserver exception | Allow apiserver plaintext (port-level mTLS)"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: security.istio.io/v1
-      kind: PeerAuthentication
-      metadata:
-        name: "allow-{{ item.name }}"
-        namespace: "{{ istio_apiserver_exception_namespace }}"
-      spec:
-        selector:
-          matchLabels: "{{ item.selector }}"
-        mtls:
-          mode: STRICT
-        portLevelMtls: "{{ {item.port | string: {'mode': 'PERMISSIVE'}} }}"
-  loop: "{{ istio_apiserver_exception_workloads }}"
-  loop_control:
-    label: "{{ item.name }}:{{ item.port }}"
+- name: "istio | apiserver exception | Allow apiserver plaintext"
+  ansible.builtin.include_tasks: port_exception.yaml
+  vars:
+    istio_port_exception_namespace: "{{ istio_apiserver_exception_namespace }}"
+    istio_port_exception_workloads: "{{ istio_apiserver_exception_workloads }}"
 
 - name: "istio | apiserver exception | Restrict the port to the apiserver"
   kubernetes.core.k8s:

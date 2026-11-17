@@ -43,7 +43,7 @@
   when:
     - istio_enabled | default(false) | bool
     - seaweedfs_namespace != (observability_namespace | default('monitoring'))
-      or istio_dataplane_mode | default('ambient') == 'sidecar'
+      or istio_dataplane_mode | default('') == 'sidecar'
 
 - name: "seaweedfs | Bootstrap credentials"
   ansible.builtin.include_tasks: credentials.yaml

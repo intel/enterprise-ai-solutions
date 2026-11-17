@@ -1,76 +1,38 @@
 # Copyright (C) 2024-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 """
-Ansible module — mutual TLS for the namespaces an env put in a mesh it does not run.
+Ansible module — STRICT mutual TLS per namespace, for a mesh the env joins but does not run.
 
-Where the installer runs the mesh (the istio component), one PeerAuthentication in
-the root namespace makes the whole mesh STRICT, and Prometheus is in the mesh too.
-Where it joins someone else's mesh (OpenShift Service Mesh 3), a mesh-wide policy
-would change every namespace of that mesh, and the cluster's Prometheus is not in
-it. So, with `mtls`, each namespace the env enrolled gets:
+On OpenShift (Service Mesh 3) a mesh-wide policy would change every namespace of the
+admin's mesh, and the cluster's Prometheus is not in it. So each namespace the env put
+in the mesh gets PeerAuthentication `default` (STRICT) unless it has a namespace-wide
+one, and the ports its ServiceMonitors and PodMonitors scrape open to plaintext on the
+pods they select. Istio applies one workload PeerAuthentication per pod (the oldest),
+so the ports go into the one that already selects those pods, if any.
 
-  - PeerAuthentication `default`, mode STRICT, unless it already has a namespace-wide
-    one (no selector)
-  - with `monitors`, the ports each ServiceMonitor and PodMonitor in it scrapes, open
-    to plaintext (port-level PERMISSIVE) on the pods they select. Istio applies one
-    workload PeerAuthentication per pod (the oldest), so when one already selects
-    those pods the ports are added to it; otherwise allow-scrape-<monitor> is created
-    (with a suffix per Service when one ServiceMonitor selects several).
-
-A namespace is the env's when it carries `mesh_labels` (istio.io/dataplane-mode=ambient,
-or the sidecar injection label) and the annotation <prefix>/mesh.<env>. The module
-adds it: with state=snapshot it reports which namespaces exist and which are in the
-mesh; run before a component, that is `before` of the run after it, and each
-namespace that joined the mesh in between gets the annotation, with the component,
-whether the namespace is new and the labels it joined with. One already in the mesh is someone else's.
-
-In sidecar mode only pods created after the label get a proxy. With `enroll`, the
-Running pods in those namespaces that have no istio-proxy (container or native
-sidecar init container) and are not opted out (sidecar.istio.io/inject: "false")
-are traced to their Deployment, StatefulSet or DaemonSet. One in a namespace the
-component created, and that no operator runs (no owner reference), is restarted
-(kubectl.kubernetes.io/restartedAt); any other is only reported. On a fresh install
-there is none: roles label the namespace before they create pods.
-
-Policies it creates carry the labels <prefix>/env, layer and component of the
-component that runs. state=absent, after that component's teardown, deletes them,
-and takes the namespaces it recorded for that component out of the mesh (labels and
-annotation), so one teardown keeps, like the admin's keycloak, joins again later. A port it cannot resolve yet (no pod to read a
-named port from) is reported, and picked up after a later component.
+state=snapshot before a component and `before` after it find the namespaces that
+joined the mesh with it; each gets the annotation <prefix>/mesh.<env>. With `enroll`,
+the component's workloads whose pods have no sidecar yet are restarted once, when the
+env created the namespace and no operator runs them; the rest are reported.
+state=absent deletes the component's policies and takes its namespaces out of the mesh.
 """
 
 import datetime
 import hashlib
 import json
-import os
 import re
 
 from ansible.module_utils.basic import AnsibleModule
-
-try:
-    from kubernetes import client, config
-    from kubernetes.client.rest import ApiException
-    from kubernetes.config import ConfigException
-    from urllib3.exceptions import HTTPError
-except ImportError:  # reported by main()
-    client = None
-    ConfigException = HTTPError = Exception
-
-    class ApiException(Exception):
-        def __init__(self, status=None):
-            super().__init__(status)
-            self.status = status
+from ansible.module_utils.mesh_kube import ApiException, client, run as run_module
 
 DOCUMENTATION = r"""
 module: mesh_k8s
 short_description: Per-namespace STRICT mutual TLS, and plaintext for the ports Prometheus scrapes
 options:
   env: {type: str, required: true, description: Env name, the <prefix>/env label}
-  layer: {type: str, default: unknown, description: Layer, the <prefix>/layer label of created policies}
+  layer: {type: str, required: true, description: Layer, the <prefix>/layer label of created policies}
   component: {type: str, required: true, description: Component, the <prefix>/component label of created policies}
   label_prefix: {type: str, default: ai-solutions.intel.com}
-  mode: {type: str, default: STRICT, description: mTLS mode of the namespace policy}
-  monitors: {type: bool, default: true, description: Open the ports ServiceMonitors and PodMonitors scrape}
   mesh_labels: {type: dict, required: true, description: The labels that put a namespace in the mesh}
   mtls: {type: bool, default: true, description: Add the per-namespace PeerAuthentications}
   enroll: {type: bool, default: false, description: Restart our workloads whose pods have no sidecar yet}
@@ -105,6 +67,11 @@ def _key(p):
     return "%s/%s" % (p["label_prefix"], re.sub(r"[^A-Za-z0-9_.-]", "-", "mesh." + p["env"])[:63])
 
 
+def _restart_key(p):
+    """<prefix>/mesh-restart: when enroll restarted the workload, so it does it once."""
+    return "%s/mesh-restart" % p["label_prefix"]
+
+
 def _record(ns, p):
     """What the annotation says (component, created), None when the env did not enrol ns."""
     value = (ns.metadata.annotations or {}).get(_key(p))
@@ -122,9 +89,7 @@ def snapshot(core, p):
 
 
 def _ours(core, ns, p, module, before):
-    """The env's record for ns, writing it when ns joined the mesh since `before`."""
-    if not _meshed(ns, p):
-        return None
+    """The env's record for ns (in the mesh), writing it when ns joined since `before`."""
     record = _record(ns, p)
     name = ns.metadata.name
     if record is not None or before is None or before.get(name):
@@ -269,19 +234,14 @@ def _workload(apps, ns, pod):
     return ref.kind, None
 
 
-def _restarted_since(obj, pod):
-    """The workload was restarted after the pod started: its rollout replaces the pod."""
+def _template_time(obj, key):
+    """The time annotation key on the workload's pod template, None when unset or unreadable."""
     template = getattr(getattr(obj, "spec", None), "template", None)
-    meta = getattr(template, "metadata", None)
-    value = (getattr(meta, "annotations", None) or {}).get(RESTARTED)
-    created = getattr(pod.metadata, "creation_timestamp", None)
-    if not value or created is None:
-        return False
+    value = (getattr(getattr(template, "metadata", None), "annotations", None) or {}).get(key)
     try:
-        when = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
     except ValueError:
-        return False
-    return when > created
+        return None
 
 
 def enroll(core, apps, p, module, namespaces, now):
@@ -305,15 +265,23 @@ def enroll(core, apps, p, module, namespaces, now):
             if name in seen:
                 continue
             seen.add(name)
-            if _restarted_since(obj, pod):
+            created = getattr(pod.metadata, "creation_timestamp", None)
+            restart = _template_time(obj, RESTARTED)
+            if restart and created and restart > created:
                 continue  # a rollout under way (an earlier run's restart) replaces the pod
+            ours = _template_time(obj, _restart_key(p))
+            if ours and created and created >= ours:
+                # Started after our restart and still without a proxy: restarting again
+                # would not help (injection off for it, or the webhook skipped it).
+                reported.append("%s (restarted, still no sidecar; pod %s)" % (name, pod.metadata.name))
+                continue
             # In a namespace the env did not create, or run by an operator (owner reference),
             # it is not ours to roll.
             if not record.get("created") or obj.metadata.owner_references:
                 reported.append("%s (not ours, pod %s)" % (name, pod.metadata.name))
                 continue
             if not module.check_mode:
-                patch = {"spec": {"template": {"metadata": {"annotations": {RESTARTED: now}}}}}
+                patch = {"spec": {"template": {"metadata": {"annotations": {RESTARTED: now, _restart_key(p): now}}}}}
                 getattr(apps, "patch_namespaced_" + WORKLOADS[kind])(obj.metadata.name, ns, patch)
             restarted.append(name)
     return restarted, reported
@@ -387,10 +355,8 @@ def run(core, custom, p, module, apps=None, now=None):
         if not any(not (pa.get("spec") or {}).get("selector") for pa in pas):
             # `default` is the usual name; one that selects workloads may hold it already.
             pa_name = "namespace-mtls" if any(pa["metadata"]["name"] == "default" for pa in pas) else "default"
-            pas.append(create(name, pa_name, {"mtls": {"mode": p["mode"]}}))
-            changes.append("%s/%s: %s" % (name, pa_name, p["mode"]))
-        if not p["monitors"]:
-            continue
+            pas.append(create(name, pa_name, {"mtls": {"mode": "STRICT"}}))
+            changes.append("%s/%s: STRICT" % (name, pa_name))
         for monitor, match, ports, pods, missing in _targets(core, custom, name):
             unresolved += ["%s/%s %s" % (name, monitor, m) for m in missing]
             if not ports:
@@ -428,11 +394,9 @@ def main():
     module = AnsibleModule(
         argument_spec={
             "env": {"type": "str", "required": True},
-            "layer": {"type": "str", "default": "unknown"},
+            "layer": {"type": "str", "required": True},
             "component": {"type": "str", "required": True},
             "label_prefix": {"type": "str", "default": "ai-solutions.intel.com"},
-            "mode": {"type": "str", "default": "STRICT", "choices": ["STRICT", "PERMISSIVE"]},
-            "monitors": {"type": "bool", "default": True},
             "mesh_labels": {"type": "dict", "required": True},
             "mtls": {"type": "bool", "default": True},
             "enroll": {"type": "bool", "default": False},
@@ -441,31 +405,17 @@ def main():
         },
         supports_check_mode=True,
     )
-    if client is None:
-        module.fail_json(msg="the kubernetes Python client is required")
-    kubeconfig = os.environ.get("K8S_AUTH_KUBECONFIG") or os.environ.get("KUBECONFIG") or "~/.kube/config"
-    try:
-        cfg = client.Configuration()
-        config.load_kube_config(config_file=kubeconfig, client_configuration=cfg)
-        # The client reads http(s)_proxy from the environment but not no_proxy.
-        cfg.no_proxy = os.environ.get("K8S_AUTH_NO_PROXY") or os.environ.get("no_proxy") or os.environ.get("NO_PROXY")
-        api = client.ApiClient(cfg)
+
+    def call(api):
         core, custom, p = client.CoreV1Api(api), client.CustomObjectsApi(api), module.params
         if p["state"] == "snapshot":
-            module.exit_json(changed=False, namespaces=snapshot(core, p))
+            return {"changed": False, "namespaces": snapshot(core, p)}
         if p["state"] == "absent":
-            module.exit_json(**remove(core, custom, p, module))
+            return remove(core, custom, p, module)
         now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        module.exit_json(**run(core, custom, p, module, apps=client.AppsV1Api(api), now=now))
-    except ApiException as e:
-        try:
-            reason = json.loads(e.body).get("message", e.reason)
-        except (TypeError, ValueError):
-            reason = e.reason
-        module.fail_json(msg="mesh policies failed: %s %s" % (e.status, reason))
-    except (ConfigException, HTTPError) as e:  # no kubeconfig, API server unreachable
-        module.fail_json(msg="mesh policies failed: %s" % e)
+        return run(core, custom, p, module, apps=client.AppsV1Api(api), now=now)
 
+    run_module(module, "mesh policies", call)
 
 if __name__ == "__main__":
     main()
