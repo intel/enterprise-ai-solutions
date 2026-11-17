@@ -9,7 +9,8 @@
 
 # Teardown deletes what the ownership role labelled during install. A component
 # whose teardown also has to clean up hosts sets `teardown: both` (labels, then its
-# own role), or `teardown: role` (its own role only) in components.yaml.
+# own role), or `teardown: role` (its own role only) in components.yaml. In an env
+# no install labelled (_ownership_unlabelled), every component's own teardown runs.
 - name: "Delete what {{ component.name }} installed"
   ansible.builtin.include_role:
     name: ownership
@@ -18,6 +19,7 @@
   when:
     - component_action == 'teardown'
     - ownership_enabled | default(true) | bool
+    - not (_ownership_unlabelled | default(false))
     - component.teardown | default('labels') in ['labels', 'both']
 
 # `always`: a component that fails halfway still gets what it created labelled.
@@ -41,7 +43,18 @@
       when: >-
         component_action != 'teardown'
         or not (ownership_enabled | default(true) | bool)
+        or _ownership_unlabelled | default(false)
         or component.teardown | default('labels') in ['role', 'both']
+  # A failure a rescue inside the role handled is not the component's: only this one
+  # makes `label` carry the unclaimed new objects for the rerun.
+  rescue:
+    - name: "Note that {{ component.name }} failed"
+      ansible.builtin.set_fact:
+        _ownership_failed: true
+
+    - name: "{{ component.name }} failed"
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_task.name | default('') }}: {{ ansible_failed_result.msg | default('failed') }}"
   always:
     - name: "Label what {{ component.name }} installed"
       ansible.builtin.include_role:

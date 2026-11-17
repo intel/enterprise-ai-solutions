@@ -14,7 +14,6 @@ Kubernetes object is appended to that file as one JSON line:
   cli       command or shell: each object its output reports the way kubectl does
             (`kind.group/name created`), which covers kubectl, oc and model-manager;
             the release `helm install` / `upgrade` prints
-  failed    a task of the component failed (not ignored)
 
 `label` then labels what these name, so an object another user or controller
 creates while the installer runs is never taken for ours.
@@ -160,8 +159,6 @@ class CallbackModule(CallbackBase):
     def v2_runner_on_failed(self, result, ignore_errors=False):
         if not isinstance(result._result.get("results"), list):
             self._result(result, failed=True)
-        if not ignore_errors and self._file:
-            self._emit(type="failed", task=result._task.get_name())
 
     def v2_runner_item_on_failed(self, result):
         self._result(result, failed=True)

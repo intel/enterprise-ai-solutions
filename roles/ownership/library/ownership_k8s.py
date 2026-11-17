@@ -5,7 +5,9 @@ Ansible module — label what a component created, and delete by those labels.
 
   snapshot  record the UID of every object on the cluster in state_file. When a
             run was killed while a component ran (see begin), first label what
-            that component created
+            that component created. For a teardown (`teardown`), a cluster that
+            does not answer is skipped, and an env with no baseline is reported
+            (baseline false): nothing in it is labelled
   begin     note in state_file which component runs now, and return the file the
             ownership_record callback records the component's task results into
   label     label what the component's tasks created, then record the cluster
@@ -85,6 +87,8 @@ options:
   label_prefix: {type: str, description: Prefix of the component label}
   restore_resources: {type: list, elements: str, description: "resources whose added labels teardown restores"}
   timeout: {type: int, default: 600, description: Seconds to wait per delete phase}
+  component_failed: {type: bool, default: false, description: "label: the component failed (a failure no rescue handled)"}
+  teardown: {type: bool, default: false, description: "snapshot for a teardown: an API that does not answer is skipped"}
 """
 
 META_LIST = "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1,application/json"
@@ -307,18 +311,23 @@ def _restore(api, resources, p, module):
 
 def snapshot(api, p, module):
     state = _read(p["state_file"])
+    if p["teardown"] and state["uids"] is None:
+        # No install in this env labelled anything (it predates the labels, or never got
+        # that far): the roles' own teardowns run instead. Nothing is written, so a rerun
+        # finds the same.
+        return {"changed": False, "baseline": False, "labelled": [], "recorded": []}
     if state["pending"] and state["uids"] is not None:
         # The last run stopped inside a component, before it was labelled: label what
         # its tasks recorded, and carry what else appeared for its rerun.
         pending = state["pending"]
         result = label(api, dict(p, **pending), module, stopped=True)
-        return {"changed": result["changed"], "recovered": pending, "labelled": result["labelled"],
-                "recorded": result["recorded"]}
+        return {"changed": result["changed"], "baseline": True, "recovered": pending,
+                "labelled": result["labelled"], "recorded": result["recorded"]}
     if not module.check_mode:
         objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
         carry = {c: set(u) & objects.keys() for c, u in state["carry"].items()}
         _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry)
-    return {"changed": False, "labelled": [], "recorded": []}
+    return {"changed": False, "baseline": True, "labelled": [], "recorded": []}
 
 
 def begin(p, module):
@@ -483,7 +492,7 @@ def label(api, p, module, stopped=False):
         recorded = _record_added(api, objects, known, before, reported, p, module)
         # Carry what appeared and nobody claimed when the component failed or the run
         # stopped inside it: its rerun may report those objects, as updated.
-        failed = stopped or any(r["type"] == "failed" for r in records)
+        failed = stopped or p["component_failed"]
         unclaimed = {u for u in objects if new(u) and u not in claimed}
         carry[p["component"]] = (mine | unclaimed) - claimed if failed else set()
     if not module.check_mode:
@@ -585,6 +594,8 @@ def main():
             "label_prefix": {"type": "str", "default": "ai-solutions.intel.com"},
             "restore_resources": {"type": "list", "elements": "str", "default": ["namespaces", "nodes"]},
             "timeout": {"type": "int", "default": 600},
+            "component_failed": {"type": "bool", "default": False},
+            "teardown": {"type": "bool", "default": False},
         },
         required_if=[("action", "snapshot", ["state_file"]), ("action", "begin", ["state_file", "env", "component"]),
                      ("action", "label", ["state_file", "env", "component"]),
@@ -597,10 +608,14 @@ def main():
     if p["action"] == "begin":
         module.exit_json(**begin(p, module))
     kubeconfig = os.environ.get("K8S_AUTH_KUBECONFIG") or os.environ.get("KUBECONFIG") or "~/.kube/config"
+    # A teardown's snapshot after the Kubespray reset finds no cluster: the components
+    # left (the fabric) have their own teardown, and the state is the cluster's that went.
+    skip = p["action"] == "snapshot" and p["teardown"]
     if p["action"] != "delete" and not os.path.exists(os.path.expanduser(kubeconfig)):
         # Kubespray has not built the cluster yet: the next label call takes the baseline.
-        _write(p["state_file"], None)
-        module.exit_json(changed=False, reachable=False, labelled=[], recorded=[])
+        if not skip:
+            _write(p["state_file"], None)
+        module.exit_json(changed=False, reachable=False, baseline=True, labelled=[], recorded=[])
     try:
         cfg = client.Configuration()
         config.load_kube_config(config_file=kubeconfig, client_configuration=cfg)
@@ -610,6 +625,9 @@ def main():
         api = client.ApiClient(cfg)
         _get(api, "/version")
     except Exception as e:  # pylint: disable=broad-except
+        if skip:
+            module.exit_json(changed=False, reachable=False, baseline=True, labelled=[], recorded=[],
+                             msg="cluster at %s not reachable: %s" % (kubeconfig, e))
         module.fail_json(msg="cluster at %s not reachable: %s" % (kubeconfig, e))
     try:
         if p["action"] == "snapshot":

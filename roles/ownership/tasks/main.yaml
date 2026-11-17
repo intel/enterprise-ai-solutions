@@ -19,7 +19,24 @@
     declared: "{{ ownership_declared }}"
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
+    teardown: "{{ component_action == 'teardown' }}"
   register: _ownership_snapshot
+
+# An env installed before the labels has none: teardown by label would delete nothing.
+- name: "ownership | No install labelled this env: each component's own teardown runs"
+  when:
+    - ownership_action == 'snapshot'
+    - not (_ownership_snapshot.baseline | default(true))
+  ansible.builtin.set_fact:
+    _ownership_unlabelled: true
+
+- name: "ownership | Cluster not reachable, nothing recorded"
+  when:
+    - ownership_action == 'snapshot'
+    - not (_ownership_snapshot.reachable | default(true))
+    - component_action == 'teardown'
+  ansible.builtin.debug:
+    msg: "{{ _ownership_snapshot.msg | default('No kubeconfig') }}"
 
 - name: "ownership | Labelled {{ _ownership_snapshot.labelled | default([]) | length }} objects of {{ _ownership_snapshot.recovered.component | default('') }}, left by a run that stopped"
   when:
@@ -56,6 +73,7 @@
     declared: "{{ ownership_declared }}"
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
+    component_failed: "{{ _ownership_failed | default(false) }}"
   register: _ownership_labelled
 
 - name: "ownership | Labelled {{ _ownership_labelled.labelled | default([]) | length }} objects of {{ component.name | default('') }}"
@@ -111,5 +129,5 @@
     msg: >-
       No object carries {{ ownership_label_prefix }}/component={{ component.name }} in env
       {{ env_name | default('local') }}. Either it is not installed, or it was installed before
-      ownership labels existed; for the latter, set ownership_enabled: false to run the role's
-      own teardown.
+      ownership labels existed while later installs were labelled; for the latter, set
+      ownership_enabled: false to run the role's own teardown.

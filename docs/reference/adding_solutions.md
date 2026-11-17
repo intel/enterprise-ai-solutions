@@ -326,9 +326,13 @@ hold the value set, and drops the annotation. A key someone changed since is lef
 A run that is killed (Ctrl-C, a lost session) never gets to label the component it was in.
 The component is noted in the state file before it runs, and the next `install` or
 `teardown` labels what its records name, as that component, before it records the cluster.
-The objects that appeared while a component failed or was killed and that nothing named are
+The objects that appeared while a component failed (a failure no `rescue:` in the role
+handled) or was killed and that nothing named are
 kept aside for it: when its next run reports one of them (as `unchanged` or an update), it
 is labelled as new.
+
+In an env no install labelled (installed before the labels), teardown runs each
+component's own `teardown.yaml`, as with `ownership_enabled: false`.
 
 Teardown first restores the recorded labels, then deletes `env=<env>,component=<component>` in this order: custom resources
 first, while their operators still run; then webhooks and APIServices; namespaced objects
