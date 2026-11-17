@@ -45,7 +45,6 @@ def get_one(kind, name, namespace=None):
 
 
 def assert_exists(kind, name, namespace=None):
-    """Named so a check whose whole point is existence reads as one."""
     get_one(kind, name, namespace)
 
 
