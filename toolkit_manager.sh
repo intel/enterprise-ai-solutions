@@ -253,7 +253,7 @@ EOF
 
 # A leading underscore marks a helper used only inside its own section; anything
 # without one is called across sections or dispatched from main.
-# Print the merged components.yaml from ai-solutions + every ext repo
+# Print the merged components.yaml from Toolkit Manager + every ext repo
 _merged_components() {
     local files=("$COMPONENTS")
     [[ -d "$EXT_DIR" ]] && while IFS= read -r -d '' f; do files+=("$f"); done < \
@@ -264,8 +264,8 @@ _merged_components() {
         || warn "failed to merge components.yaml (malformed ext file? files: ${files[*]})"
 }
 
-# _discover_layers — populate LAYERS from the MERGED components (ai-solutions + ext), not
-# ai-solutions alone, so an ext-only layer still renders. Lazy: called after yq exists.
+# _discover_layers — populate LAYERS from the MERGED components (Toolkit Manager + ext), not
+# Toolkit Manager alone, so an ext-only layer still renders. Lazy: called after yq exists.
 LAYERS=()
 _discover_layers() {
     mapfile -t LAYERS < <(_merged_components | yq -r '.layers[].name' 2>/dev/null)
@@ -538,13 +538,13 @@ layer_manifest() {
     return 0   # empty output, not failure — callers test the string under set -e.
 }
 
-# _registry_layers — layers declared in the merged components.yaml (ai-solutions + cloned ext).
+# _registry_layers — layers declared in the merged components.yaml (Toolkit Manager + cloned ext).
 _registry_layers() {
     _merged_components | yq -r '.layers[].name' 2>/dev/null
 }
 
 # known_layers — every nameable layer, sorted. A layer is nameable when a manifest
-# declares the repos it needs OR the merged registry declares the layer itself: ai-solutions'
+# declares the repos it needs OR the merged registry declares the layer itself: Toolkit Manager's
 # layers ship every role in this repo, so they have no manifest and need none.
 known_layers() {
     local f base
@@ -569,7 +569,7 @@ _layer_exists() {
 }
 
 # require_layer <layer> — validate the layer and echo its manifest path, which is
-# empty for an ai-solutions layer that needs no external repos.
+# empty for a Toolkit Manager layer that needs no external repos.
 require_layer() {
     _layer_exists "$1" \
         || err "Unknown layer: '${1}'. Valid: $(known_layers | tr '\n' ' ')(a solution layer also needs a configs/repos/repos.<layer>.yaml)."

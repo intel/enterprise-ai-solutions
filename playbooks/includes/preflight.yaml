@@ -16,7 +16,7 @@
 
 # ── Load registry ─────────────────────────────────────────────────────────────
 
-- name: "Preflight - Load ai-solutions component registry"
+- name: "Preflight - Load the Toolkit Manager component registry"
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/../configs/components.yaml"
 
@@ -83,10 +83,10 @@
     - cluster_distribution == 'openshift'
     - istio_enabled | default(false) | bool
 
-# Captured before the ext merge. ai-solutions' own layers are always in scope; a
+# Captured before the ext merge. Toolkit Manager's own layers are always in scope; a
 # solution's layer is in scope only when this env was inited for it, which
 # env/<env>/.solutions.yaml records and the installer passes as _env_layers.
-- name: "Preflight - Note which layers ai-solutions declares itself"
+- name: "Preflight - Note which layers Toolkit Manager declares itself"
   ansible.builtin.set_fact:
     _core_layers: "{{ layers | default([]) | map(attribute='name') | list }}"
 
