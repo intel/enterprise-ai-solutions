@@ -11,6 +11,22 @@
 # whose teardown also has to clean up hosts sets `teardown: both` (labels, then its
 # own role), or `teardown: role` (its own role only) in components.yaml. In an env
 # no install labelled (_ownership_unlabelled), every component's own teardown runs.
+#
+# Labels cover what the component created, not what it changed in other components'
+# objects (a portal entry, a path on the gateway's route): `teardown_tasks` names the
+# role's tasks file that takes those back, run first.
+- name: "Take {{ component.name }} off other components' objects"
+  ansible.builtin.include_role:
+    name: "{{ component.name }}"
+    tasks_from: "{{ component.teardown_tasks }}"
+    vars_from: "{{ cluster_distribution }}.yaml"
+  when:
+    - component_action == 'teardown'
+    - ownership_enabled | default(true) | bool
+    - not (_ownership_unlabelled | default(false))
+    - component.teardown | default('labels') == 'labels'
+    - component.teardown_tasks is defined
+
 - name: "Delete what {{ component.name }} installed"
   ansible.builtin.include_role:
     name: ownership
@@ -26,6 +42,8 @@
 # Otherwise the next run would record those objects as already there, and
 # teardown would never remove them. A run that is killed never gets to `always`:
 # `begin` notes the component, and the next run's snapshot labels it first.
+# A `teardown: role` component is not recorded (nothing reads its labels); its
+# label pass only records the cluster again for the next component.
 - name: "Note that {{ component.name }} runs"
   ansible.builtin.include_role:
     name: ownership
@@ -34,6 +52,7 @@
   when:
     - component_action == 'install'
     - ownership_enabled | default(true) | bool
+    - component.teardown | default('labels') != 'role'
 
 - name: "Execute {{ component.name }}"
   block:

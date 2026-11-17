@@ -151,6 +151,7 @@ components:
 | `depends_on` | yes (may be `[]`) | Component names **in the same layer only**. |
 | `enabled` | no (default `true`) | `true`/`false`, or a Jinja expression rendering to one. |
 | `teardown` | no (default `labels`) | `labels`: delete what install labelled (see [Ownership labels](#ownership-labels)). `role`: run the role's `teardown.yaml` instead. `both`: delete by label, then run `teardown.yaml`, for components that also change hosts. |
+| `teardown_tasks` | no | With `teardown: labels`, a tasks file of the role that runs before the labelled objects are deleted, to take back what the component changed in other components' objects (its portal entry and path on the gateway). The role needs `vars/<cluster_distribution>.yaml`. |
 | `used_by` | no | Component names, any layer, for a component that exists only to serve them. It is installed only while one of them is enabled, and tearing them down takes it along, unless one outside that teardown is still enabled (preflight prints `Kept: …`). Names not in the registry are ignored. |
 
 ### Rules that actually bite
@@ -351,7 +352,8 @@ What this means for a role:
 - **Create, don't adopt.** An object that existed before the component ran (a namespace
   the customer made, a ConfigMap the role patches) is never labelled, so it is never
   deleted. Labels added to an existing Namespace or Node are put back for you; revert any
-  other change to it in `teardown.yaml` and set `teardown: both`.
+  other change to it in `teardown.yaml` and set `teardown: both`, or in a smaller tasks
+  file named by `teardown_tasks` (publishing on the gateway: `gateway/unpublish.yaml`).
 - **Don't recreate objects with `force: true`** (replace). The new object keeps its UID but
   loses the labels.
 - **Let the task report what it creates.** Use `kubernetes.core.k8s` or

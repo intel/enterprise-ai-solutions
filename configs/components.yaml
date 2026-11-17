@@ -10,7 +10,9 @@
 # Teardown deletes the objects the ownership role labelled during install
 # (roles/ownership). `teardown: role` runs the component's own teardown instead, and
 # `teardown: both` runs it after the labelled objects are gone: for components that
-# also change hosts. `used_by` names the components a component exists for: it is
+# also change hosts. `teardown_tasks` names the role's tasks file that takes back what
+# the component changed in other components' objects (the gateway's portal and routes),
+# run before the labelled objects go. `used_by` names the components a component exists for: it is
 # installed only while one of them is enabled, and torn down with them.
 #
 # Adding a component here: add an entry and create roles/<name>/.
@@ -77,9 +79,11 @@ components:
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [kubernetes, fabric_bgp]
 
+  # Rook keeps the CephCluster and its pools while Ceph volumes exist: its own
+  # teardown sets the cleanup policy first.
   - name: storage
     layer: infrastructure
-    teardown: both
+    teardown: role
     enabled: true
     depends_on: [kubernetes]
 
@@ -163,6 +167,7 @@ components:
 
   - name: keycloak
     layer: platform
+    teardown_tasks: expose_remove.yaml
     # Both auth modes: people sign in through Keycloak; the gateway trusts its JWTs.
     enabled: "{{ keycloak_enabled | default(true) | bool }}"
     depends_on: [cert_manager, gateway, postgresql]
@@ -170,8 +175,10 @@ components:
   # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on
   # OpenShift, whose console covers it.
   # Right after keycloak: its API server restart then hits few running components.
+  # Its teardown also resets the API server's OIDC settings and /etc/hosts.
   - name: headlamp
     layer: platform
+    teardown: both
     enabled: "{{ headlamp_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [cert_manager, gateway, keycloak]
 
@@ -193,6 +200,7 @@ components:
   # monitoring. See roles/observability/tasks/install_olm.yaml.
   - name: observability
     layer: platform
+    teardown_tasks: grafana_route_remove.yaml
     enabled: "{{ observability_enabled | default(true) | bool }}"
     # keycloak: Grafana sign-in (observability_grafana_sso).
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
@@ -212,7 +220,9 @@ components:
     enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [observability, nvidia_gpu_operator]
 
+  # Its teardown keeps the backups unless velero_teardown_delete_backup_data is set.
   - name: velero
     layer: platform
+    teardown: role
     enabled: "{{ velero_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: []
