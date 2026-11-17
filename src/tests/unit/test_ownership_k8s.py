@@ -110,13 +110,13 @@ class FakeApi:
             groups = sorted({r[0] for r in RESOURCES if r[0]})
             return Resp({"groups": [{"name": g, "preferredVersion": {"groupVersion": g + "/v1"},
                                      "versions": [{"groupVersion": g + "/v1"}]} for g in groups]})
+        if path in self.fail:
+            raise ApiException(self.fail[path])
         for base in {self._base(r) for r in RESOURCES}:
             if path == base:
                 return Resp({"resources": [{"name": r[2], "kind": r[3], "namespaced": r[4],
                                             "verbs": ["list", "patch", "delete", "get"]}
                                            for r in RESOURCES if self._base(r) == base]})
-        if path in self.fail:
-            raise ApiException(self.fail[path])
         res, namespace, name = self._match(path)
         found = [o for o in self.objects if o["res"] == res and (namespace is None
                  or o["metadata"].get("namespace") == namespace) and (name is None or o["metadata"]["name"] == name)]
@@ -370,6 +370,27 @@ def test_teardown_snapshot_without_a_baseline_writes_nothing(tmp_path):
     # An install takes the baseline; a teardown then deletes by label.
     own.snapshot(api, params(tmp_path), Module())
     assert own.snapshot(api, p, Module())["baseline"] is True
+
+
+def test_group_the_snapshot_could_not_discover_counts_nothing_as_new(tmp_path):
+    api, p = FakeApi(), params(tmp_path)
+    cert = api.add("Certificate", "tls", "app")
+    api.fail["/apis/cert-manager.io/v1"] = 503
+    own.snapshot(api, p, Module())
+    assert json.loads((tmp_path / "ownership-uids.json").read_text())["unlisted"] == ["cert-manager.io"]
+    del api.fail["/apis/cert-manager.io/v1"]
+    own.begin(p, Module())
+    new_cert = api.add("Certificate", "other", "app")
+    cm = api.add("ConfigMap", "app-cm", "app")
+    for uid, kind, name in ((cert, "Certificate", "tls"), (new_cert, "Certificate", "other"), (cm, "ConfigMap", "app-cm")):
+        record(p, type="object", uid=uid, kind=kind, name=name, namespace="app")
+    own.label(api, p, Module())
+    # The Certificate that was there is not taken for new; the one created meanwhile is
+    # left unlabelled too (a leak, never a wrong delete).
+    assert COMPONENT not in api.labels(cert)
+    assert COMPONENT not in api.labels(new_cert)
+    assert api.labels(cm)[COMPONENT] == "app"
+    assert json.loads((tmp_path / "ownership-uids.json").read_text())["unlisted"] == []
 
 
 def test_labels_added_to_an_existing_namespace_are_restored(tmp_path):

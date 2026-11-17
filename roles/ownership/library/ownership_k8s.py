@@ -52,6 +52,9 @@ which has no owner reference. It leaves PersistentVolumeClaims, those of a
 StatefulSet's volumeClaimTemplates included, to their chart and the StatefulSet's
 retention policy, so data outlives a reinstall.
 
+A group version whose discovery fails is left out of that pass, and noted in state_file:
+until a later pass lists it, label counts none of its objects as new.
+
 Lists use metadata-only responses (PartialObjectMetadataList), so a snapshot of a
 large cluster is a few MB, not the full objects.
 """
@@ -115,10 +118,11 @@ def _get(api, path, query=None, headers=None):
     return json.loads(resp.data)
 
 
-def _discover(api, skip):
+def _discover(api, skip, failed=None):
     """Every resource that can be listed, patched and deleted, once, at the first version that
     serves it: the group's preferred version, then the others. A resource can live in an
-    older version only (serving.kserve.io: InferenceService in v1beta1, ServingRuntime in v1alpha1)."""
+    older version only (serving.kserve.io: InferenceService in v1beta1, ServingRuntime in v1alpha1).
+    The groups of the versions that did not answer are added to `failed`."""
     versions = [("", "v1", "/api/v1")]
     for g in _get(api, "/apis").get("groups", []):
         preferred = g["preferredVersion"]["groupVersion"]
@@ -129,7 +133,9 @@ def _discover(api, skip):
         try:
             resources = _get(api, base).get("resources", [])
         except ApiException:
-            continue  # an unavailable aggregated API
+            if failed is not None:
+                failed.add(group)  # an unavailable aggregated API, or a transient error
+            continue
         for r in resources:
             name = r["name"]
             full = name + ("." + group if group else "")
@@ -199,21 +205,23 @@ def _phase(res):
 def _read(path):
     """uids: None when there is no baseline yet; pending: the component a run was in
     when it stopped, or None; labels: uid -> labels of the objects in
-    restore_resources; carry: component -> UIDs it may still claim (see label)."""
+    restore_resources; carry: component -> UIDs it may still claim (see label); unlisted:
+    the API groups the snapshot could not discover."""
     try:
         with open(path) as f:
             state = json.load(f)
     except (OSError, ValueError):
         state = {}
     return {"uids": state.get("uids"), "pending": state.get("pending"), "labels": state.get("labels") or {},
-            "carry": state.get("carry") or {}}
+            "carry": state.get("carry") or {}, "unlisted": state.get("unlisted") or []}
 
 
-def _write(path, uids, pending=None, labels=None, carry=None):
+def _write(path, uids, pending=None, labels=None, carry=None, unlisted=()):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"uids": sorted(uids) if uids is not None else None, "pending": pending,
-                   "labels": labels or {}, "carry": {c: sorted(u) for c, u in (carry or {}).items() if u}}, f)
+                   "labels": labels or {}, "carry": {c: sorted(u) for c, u in (carry or {}).items() if u},
+                   "unlisted": sorted(unlisted)}, f)
     os.replace(tmp, path)
 
 
@@ -326,9 +334,10 @@ def snapshot(api, p, module):
         return {"changed": result["changed"], "baseline": True, "recovered": pending,
                 "labelled": result["labelled"], "recorded": result["recorded"]}
     if not module.check_mode:
-        objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
+        failed = set()
+        objects = _all_objects(api, _discover(api, set(p["skip_resources"]), failed))
         carry = {c: set(u) & objects.keys() for c, u in state["carry"].items()}
-        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry)
+        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry, unlisted=failed)
     return {"changed": False, "baseline": True, "labelled": [], "recorded": []}
 
 
@@ -336,7 +345,7 @@ def begin(p, module):
     state = _read(p["state_file"])
     if not module.check_mode:
         _write(p["state_file"], state["uids"], {"env": p["env"], "layer": p["layer"], "component": p["component"]},
-               state["labels"], state["carry"])
+               state["labels"], state["carry"], state["unlisted"])
     return {"changed": False, "component": p["component"], "record_file": _record_file(p["state_file"])}
 
 
@@ -469,7 +478,8 @@ def _declared(objects, declared):
 def label(api, p, module, stopped=False):
     state = _read(p["state_file"])
     known, before, carry = state["uids"], state["labels"], {c: set(u) for c, u in state["carry"].items()}
-    objects = _all_objects(api, _discover(api, set(p["skip_resources"])))
+    undiscovered = set()
+    objects = _all_objects(api, _discover(api, set(p["skip_resources"]), undiscovered))
     records = _records(_record_file(p["state_file"]), p["component"], module)
     labelled, recorded = [], []
     if known is not None:  # no baseline (the cluster did not exist yet): label nothing
@@ -477,6 +487,9 @@ def label(api, p, module, stopped=False):
         labels = {prefix + "/env": p["env"], prefix + "/layer": p["layer"], prefix + "/component": p["component"]}
         known, key = set(known), prefix + "/component"
         mine = carry.get(p["component"], set())
+        # Objects of a group the last pass could not list may have been there already.
+        unlisted = set(state["unlisted"])
+        known |= {u for u, (res, _) in objects.items() if res["group"] in unlisted}
 
         def new(uid):
             return uid not in known or uid in mine
@@ -512,7 +525,8 @@ def label(api, p, module, stopped=False):
         carry[p["component"]] = (mine | unclaimed) - claimed if failed else set()
     if not module.check_mode:
         carry = {c: u & objects.keys() for c, u in carry.items()}
-        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry)
+        _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry,
+               unlisted=undiscovered)
     return {"changed": bool(labelled or recorded), "labelled": labelled, "recorded": recorded,
             "records": len(records)}
 

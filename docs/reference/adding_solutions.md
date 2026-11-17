@@ -337,6 +337,11 @@ is labelled as new.
 In an env no install labelled (installed before the labels), teardown runs each
 component's own `teardown.yaml`, as with `ownership_enabled: false`.
 
+A discovery pass that cannot read an API group version (an aggregated API that is down, a
+transient error) leaves it out and notes the group in the state file: until a later pass
+reads it, none of its objects count as new, so an existing object a task updates there is
+not labelled.
+
 Teardown first restores the recorded labels, then deletes `env=<env>,component=<component>` in this order: custom resources
 first, while their operators still run; then webhooks and APIServices; namespaced objects
 (Helm release secrets included); namespaces; cluster-scoped objects; CRDs last. It waits
