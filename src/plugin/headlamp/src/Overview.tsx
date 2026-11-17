@@ -70,7 +70,7 @@ function ModelsCard() {
     <PlatformCard
       title="Models"
       description={
-        offered
+        offered && services
           ? `${ready} of ${offered.length} ready${starting ? `, ${starting} starting` : ''}`
           : 'Loading'
       }
