@@ -26,6 +26,8 @@
         # Next to the callback, so it stays on the route under a path.
         logoutPath: "{{ (_s.redirect_url | default('') | urlsplit('path')) | regex_replace('/callback$', '/logout') }}"
         refreshToken: true
+        # Login-flow cookies; the code verifier gets the same lifetime below.
+        csrfTokenTTL: "{{ envoy_gateway_oidc_login_ttl }}"
         cookieNames:
           idToken: "{{ _id_cookie }}"
           accessToken: "{{ gateway_route_name }}-at"
@@ -72,3 +74,70 @@
   register: _eg_sso
   # Removing tolerates a cluster without the Envoy Gateway API.
   failed_when: _eg_sso is failed and gateway_route_state | default('present') == 'present'
+
+# PKCE code-verifier cookie: no SecurityPolicy field sets its lifetime before
+# Envoy Gateway 1.10 (default 10m), so a slower login fails at the callback.
+# Patched where the release keeps this route's OAuth2 settings: 1.8+ per route
+# in each parent listener's route config, 1.7 in a per-policy listener filter.
+- name: "envoy_gateway | sso | Read the route's parents"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: HTTPRoute
+    name: "{{ gateway_route_name }}"
+    namespace: "{{ gateway_route_namespace }}"
+  register: _eg_sso_route
+  when: gateway_route_state | default('present') == 'present'
+
+- name: "envoy_gateway | sso | Login cookie lifetime for {{ gateway_route_namespace }}/{{ gateway_route_name }}"
+  vars:
+    _pol: "{{ gateway_route_policy_name | default(gateway_route_name ~ '-sso', true) }}"
+    _ns: "{{ gateway_route_namespace }}"
+    _ver: "{{ (gateway_platform | default({})).version | default('', true) }}"
+    _per_route: "{{ not _ver or _ver is version('1.8.0', '>=') }}"
+    _parents: "{{ ((_eg_sso_route.resources | default([]) | first | default({})).spec | default({})).parentRefs | default([]) }}"
+    _route_cfgs: >-
+      {%- set n = [] -%}
+      {%- for p in _parents if p.sectionName | default('') -%}
+      {%- if p.kind | default('Gateway') == 'ListenerSet' -%}
+      {%- set _ = n.append([gateway_namespace, gateway_name, p.namespace | default(_ns), p.name, p.sectionName] | join('/')) -%}
+      {%- elif p.name == gateway_name and p.namespace | default(_ns) == gateway_namespace -%}
+      {%- set _ = n.append([gateway_namespace, gateway_name, p.sectionName] | join('/')) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ n | unique }}
+    _route_re: "{{ ('httproute/' ~ _ns ~ '/' ~ gateway_route_name ~ '/') | replace('.', '[.]') }}"
+    _rc_path: "..routes[?match(@.name, '{{ _route_re }}.*')].typed_per_filter_config['envoy.filters.http.oauth2'].config"
+    _ls_path: "..http_filters[?(@.name == 'envoy.filters.http.oauth2/securitypolicy/{{ _ns }}/{{ _pol }}')].typed_config.config"
+    _op: {op: add, path: code_verifier_token_expires_in, value: "{{ envoy_gateway_oidc_login_ttl }}"}
+    _patches: >-
+      {%- set out = [] -%}
+      {%- if _per_route | bool -%}
+      {%- for n in _route_cfgs -%}
+      {%- set _ = out.append({'type': 'type.googleapis.com/envoy.config.route.v3.RouteConfiguration', 'name': n,
+                              'operation': _op | combine({'jsonPath': _rc_path})}) -%}
+      {%- endfor -%}
+      {%- elif _parents | length > 0 -%}
+      {%- set _ = out.append({'type': 'type.googleapis.com/envoy.config.listener.v3.Listener',
+                              'name': gateway_namespace ~ '/' ~ gateway_name ~ '/https',
+                              'operation': _op | combine({'jsonPath': _ls_path})}) -%}
+      {%- endif -%}
+      {{ out }}
+  kubernetes.core.k8s:
+    state: >-
+      {{ 'present' if gateway_route_state | default('present') == 'present' and _patches | length > 0
+                     and (gateway_platform | default({})).controller_managed | default(true) | bool else 'absent' }}
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: EnvoyPatchPolicy
+      metadata:
+        name: "{{ (_ns ~ '-' ~ _pol ~ '-login')[:253] }}"
+        namespace: "{{ gateway_namespace }}"
+      spec:
+        targetRef:
+          group: gateway.networking.k8s.io
+          kind: Gateway
+          name: "{{ gateway_name }}"
+        type: JSONPatch
+        jsonPatches: "{{ _patches }}"
+  register: _eg_sso_login
+  failed_when: _eg_sso_login is failed and gateway_route_state | default('present') == 'present'

@@ -80,6 +80,8 @@
             envoyGateway:
               extensionApis:
                 enableBackend: true
+                # For the SSO login-cookie patch (route_sso.yaml); only the gateway namespace can target the Gateway.
+                enableEnvoyPatchPolicy: true
       register: helm_install_result
       until: helm_install_result is succeeded
       retries: "{{ helm_retries }}"
@@ -216,6 +218,14 @@
         envoyService:
           type: ClusterIP
     _eg_workload: "{{ 'envoyDaemonSet' if _envoy_gateway_proxy_shape == 'controlplane_daemonset' else 'envoyDeployment' }}"
+    # Into the bootstrap's own runtime layer (global_config), so its keys stay.
+    _eg_runtime_patches: >-
+      {%- set p = [] -%}
+      {%- for k, v in envoy_gateway_runtime_flags.items() -%}
+      {%- set _ = p.append({'op': 'add', 'value': v,
+            'path': '/layered_runtime/layers/0/static_layer/' ~ (k | replace('~', '~0') | replace('/', '~1'))}) -%}
+      {%- endfor -%}
+      {{ p }}
     _eg_image: >-
       {{ {_eg_workload: {'container': {'image': gateway_platform.envoy_proxy_image}}}
          if gateway_platform.envoy_proxy_image | default('') | length > 0 else {} }}
@@ -231,6 +241,10 @@
         provider:
           type: Kubernetes
           kubernetes: "{{ _eg_k8s_provider[_envoy_gateway_proxy_shape] | combine(_eg_image, recursive=true) }}"
+        # Patched onto the release's own bootstrap (Replace would drop its defaults).
+        bootstrap:
+          type: JSONPatch
+          jsonPatches: "{{ _eg_runtime_patches }}"
 
 - name: "envoy_gateway | Create GatewayClass"
   kubernetes.core.k8s:
