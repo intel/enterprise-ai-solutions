@@ -26,7 +26,6 @@
         # Next to the callback, so it stays on the route under a path.
         logoutPath: "{{ (_s.redirect_url | default('') | urlsplit('path')) | regex_replace('/callback$', '/logout') }}"
         refreshToken: true
-        # Login-flow cookies; the code verifier gets the same lifetime below.
         csrfTokenTTL: "{{ envoy_gateway_oidc_login_ttl }}"
         cookieNames:
           idToken: "{{ _id_cookie }}"
@@ -95,6 +94,7 @@
     _ver: "{{ (gateway_platform | default({})).version | default('', true) }}"
     _per_route: "{{ not _ver or _ver is version('1.8.0', '>=') }}"
     _parents: "{{ ((_eg_sso_route.resources | default([]) | first | default({})).spec | default({})).parentRefs | default([]) }}"
+    # This Gateway's parents: its own listeners, or a ListenerSet's.
     _route_cfgs: >-
       {%- set n = [] -%}
       {%- for p in _parents if p.sectionName | default('') -%}
@@ -116,7 +116,8 @@
       {%- set _ = out.append({'type': 'type.googleapis.com/envoy.config.route.v3.RouteConfiguration', 'name': n,
                               'operation': _op | combine({'jsonPath': _rc_path})}) -%}
       {%- endfor -%}
-      {%- elif _parents | length > 0 -%}
+      {#- 1.7 has no ListenerSets: shared mode, so the wildcard https is the first :443 listener and names the merged one. -#}
+      {%- elif _route_cfgs | length > 0 -%}
       {%- set _ = out.append({'type': 'type.googleapis.com/envoy.config.listener.v3.Listener',
                               'name': gateway_namespace ~ '/' ~ gateway_name ~ '/https',
                               'operation': _op | combine({'jsonPath': _ls_path})}) -%}

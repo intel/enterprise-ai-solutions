@@ -218,14 +218,14 @@
         envoyService:
           type: ClusterIP
     _eg_workload: "{{ 'envoyDaemonSet' if _envoy_gateway_proxy_shape == 'controlplane_daemonset' else 'envoyDeployment' }}"
-    # Into the bootstrap's own runtime layer (global_config), so its keys stay.
-    _eg_runtime_patches: >-
-      {%- set p = [] -%}
-      {%- for k, v in envoy_gateway_runtime_flags.items() -%}
-      {%- set _ = p.append({'op': 'add', 'value': v,
-            'path': '/layered_runtime/layers/0/static_layer/' ~ (k | replace('~', '~0') | replace('/', '~1'))}) -%}
-      {%- endfor -%}
-      {{ p }}
+    # CVE-2026-47775: AES-GCM OAuth2 cookies, no CBC; 1.8+ set these by default, 1.7 does not.
+    _eg_runtime_patches:
+      - op: add
+        path: /layered_runtime/layers/0/static_layer/envoy.reloadable_features.oauth2_use_gcm_encryption
+        value: true
+      - op: add
+        path: /layered_runtime/layers/0/static_layer/envoy.reloadable_features.oauth2_legacy_cbc_decrypt_compat
+        value: false
     _eg_image: >-
       {{ {_eg_workload: {'container': {'image': gateway_platform.envoy_proxy_image}}}
          if gateway_platform.envoy_proxy_image | default('') | length > 0 else {} }}
