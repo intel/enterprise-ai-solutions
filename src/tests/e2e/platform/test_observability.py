@@ -16,7 +16,6 @@ pytestmark = pytest.mark.skipif(
     reason="observability_enabled is false for this deployment"
 )
 
-# Names and readiness follow observability_openshift_instances in roles/observability.
 NAMESPACE = "monitoring"
 UWM_NAMESPACE = "openshift-user-workload-monitoring"
 CLUSTER_MONITORING_NAMESPACE = "openshift-monitoring"
