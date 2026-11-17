@@ -7,7 +7,7 @@ import allure
 import pytest
 
 from conftest import cfg
-from k8s_helper import assert_daemonset_ready, get_one
+from k8s_helper import assert_daemonset_ready, assert_exists
 
 pytestmark = pytest.mark.skipif(
     cfg.get("kubernetes_cpu_policy", "nri-balloons") != "nri-balloons"
@@ -22,7 +22,7 @@ RELEASE = "nri-resource-policy-balloons"
 
 @allure.testcase("DSPTV-T430")
 def test_nri_policy_configmap_exists():
-    get_one("configmaps", f"{RELEASE}-config", namespace=NAMESPACE)
+    assert_exists("configmaps", f"{RELEASE}-config", namespace=NAMESPACE)
 
 
 @allure.testcase("DSPTV-T431")

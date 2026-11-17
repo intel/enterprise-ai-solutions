@@ -44,6 +44,11 @@ def get_one(kind, name, namespace=None):
     return objs[0]
 
 
+def assert_exists(kind, name, namespace=None):
+    """Named so a check whose whole point is existence reads as one."""
+    get_one(kind, name, namespace)
+
+
 def has_condition(obj, condition):
     return any(c.type == condition and c.status == "True"
                for c in (obj.status.conditions or []))

@@ -6,7 +6,7 @@
 import allure
 import kr8s
 
-from k8s_helper import assert_deployment_ready, get_one, has_condition
+from k8s_helper import assert_deployment_ready, assert_exists, has_condition
 
 NAMESPACE = "envoy-gateway-system"
 
@@ -18,7 +18,7 @@ def test_envoy_gateway_ready():
 
 @allure.testcase("DSPTV-T405")
 def test_gateway_class_exists():
-    get_one("gatewayclasses.gateway.networking.k8s.io", "eg")
+    assert_exists("gatewayclasses.gateway.networking.k8s.io", "eg")
 
 
 @allure.testcase("DSPTV-T406")
@@ -31,4 +31,4 @@ def test_gateway_accepted():
 
 @allure.testcase("DSPTV-T407")
 def test_gateway_tls_secret_exists():
-    get_one("secrets", "gateway-tls", namespace=NAMESPACE)
+    assert_exists("secrets", "gateway-tls", namespace=NAMESPACE)
