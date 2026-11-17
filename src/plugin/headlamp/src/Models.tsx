@@ -33,6 +33,7 @@ import {
   Row,
   rowActions,
   RowFilter,
+  templateAccelerator,
 } from './data';
 import { DeployDialog, UndeployDialog } from './DeployDialog';
 import { ModelActionButton, ModelMoreMenu } from './ModelActionMenu';
@@ -101,7 +102,8 @@ export function Models() {
   const known = offeredModels(
     catalogModels(catalog?.data),
     clusterGpuResources(nodes?.map(n => n.jsonData)),
-    new Set(byName.keys())
+    new Set(byName.keys()),
+    templateAccelerator(template)
   );
   // Absent before the inference release that publishes it: no "Access details" then.
   const access = catalogAccess(catalog?.data);

@@ -22,6 +22,7 @@ import {
   portalEntries,
   Row,
   rowActions,
+  templateAccelerator,
 } from './data';
 
 const entry = (v: unknown) => JSON.stringify(v);
@@ -179,6 +180,37 @@ describe('offeredModels', () => {
 
   it('keeps a deployed GPU model visible, so it can still be undeployed', () => {
     expect(names([], ['nvidia-model'])).toEqual(['cpu-model', 'nvidia-model']);
+  });
+
+  const withAccel = (gpus: string[], accelerator: string) =>
+    offeredModels(models, new Set(gpus), new Set(), accelerator).map(m => m.name);
+
+  it("follows model-manager's MM_ACCEL_RESOURCE when the template sets it", () => {
+    const both = ['nvidia.com/gpu', 'gpu.intel.com/xe'];
+    expect(withAccel(both, 'nvidia.com/gpu')).toEqual(['cpu-model', 'nvidia-model']);
+    expect(withAccel(both, 'gpu.intel.com/xe')).toEqual(['cpu-model', 'intel-model']);
+  });
+
+  it('hides GPU models when GPU deploys are off or the resource is on no node', () => {
+    expect(withAccel(['nvidia.com/gpu'], '')).toEqual(['cpu-model']);
+    expect(withAccel([], 'nvidia.com/gpu')).toEqual(['cpu-model']);
+  });
+});
+
+describe('templateAccelerator', () => {
+  const tpl = (env?: unknown) => ({ spec: { template: { spec: { containers: [{ env }] } } } });
+
+  it('reads MM_ACCEL_RESOURCE from the Job template', () => {
+    expect(templateAccelerator(tpl([{ name: 'MM_ACCEL_RESOURCE', value: 'nvidia.com/gpu' }]))).toBe(
+      'nvidia.com/gpu'
+    );
+    expect(templateAccelerator(tpl([{ name: 'MM_ACCEL_RESOURCE', value: '' }]))).toBe('');
+  });
+
+  it('is undefined when the template has no such variable or no template', () => {
+    expect(templateAccelerator(tpl([{ name: 'MM_CONFIG', value: '/x' }]))).toBeUndefined();
+    expect(templateAccelerator(tpl())).toBeUndefined();
+    expect(templateAccelerator(null)).toBeUndefined();
   });
 });
 

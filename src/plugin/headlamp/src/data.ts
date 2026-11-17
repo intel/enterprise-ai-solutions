@@ -62,16 +62,36 @@ export function clusterGpuResources(nodes: NodeLike[] | null | undefined): Set<s
   return found;
 }
 
-// A GPU model is offered only where a node has its vendor's GPU; deployed ones stay visible.
+const vendorOf = (resource: string) => resource.split('/')[0];
+
+// A GPU model is offered only where model-manager can deploy it: a node has its vendor's
+// GPU and, when the Job template sets MM_ACCEL_RESOURCE, that is the same vendor's resource
+// (model-manager refuses GPU runtimes otherwise). Deployed models stay visible.
 export function offeredModels(
   models: CatalogModel[],
   gpus: ReadonlySet<string>,
-  deployed: ReadonlySet<string>
+  deployed: ReadonlySet<string>,
+  accelerator?: string
 ): CatalogModel[] {
   return models.filter(m => {
     const want = modelAccelerators(m);
-    return want.length === 0 || want.some(r => gpus.has(r)) || deployed.has(m.name);
+    if (want.length === 0 || deployed.has(m.name)) return true;
+    if (accelerator === undefined) return want.some(r => gpus.has(r));
+    return (
+      !!accelerator &&
+      gpus.has(accelerator) &&
+      want.some(r => vendorOf(r) === vendorOf(accelerator))
+    );
   });
+}
+
+// MM_ACCEL_RESOURCE of the published model-manager Job: undefined when the template has
+// no such variable (before GPU runtimes), '' when GPU deploys are off.
+export function templateAccelerator(template: Record<string, any> | null): string | undefined {
+  const env = template?.spec?.template?.spec?.containers?.[0]?.env;
+  if (!Array.isArray(env)) return undefined;
+  const e = env.find((x: { name?: string }) => x?.name === 'MM_ACCEL_RESOURCE');
+  return e ? String(e.value ?? '') : undefined;
 }
 
 function parseJSON(raw: string | undefined): unknown {

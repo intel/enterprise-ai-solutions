@@ -12,9 +12,12 @@ import {
   CATALOG,
   catalogModels,
   clusterGpuResources,
+  MODEL_MANAGER,
   offeredModels,
+  parseJobTemplate,
   PORTAL,
   portalEntries,
+  templateAccelerator,
 } from './data';
 import { LLMInferenceService, readyCondition } from './resources';
 import { CardGrid, PlatformCard, ServiceCards } from './ServicesList';
@@ -67,11 +70,16 @@ function ModelsCard() {
   const [catalog] = K8s.ResourceClasses.ConfigMap.useGet(CATALOG.name, CATALOG.namespace);
   const [services] = LLMInferenceService.useList({ namespace: CATALOG.namespace });
   const [nodes] = K8s.ResourceClasses.Node.useList();
+  const [templateMap] = K8s.ResourceClasses.ConfigMap.useGet(
+    MODEL_MANAGER.template,
+    MODEL_MANAGER.namespace
+  );
   const deployed = services ?? [];
   const offered = offeredModels(
     catalogModels(catalog?.data),
     clusterGpuResources(nodes?.map(n => n.jsonData)),
-    new Set(deployed.map(s => s.metadata.name))
+    new Set(deployed.map(s => s.metadata.name)),
+    templateAccelerator(parseJobTemplate(templateMap?.data))
   );
   const ready = deployed.filter(s => readyCondition(s)?.status === 'True').length;
   const starting = deployed.length - ready;
