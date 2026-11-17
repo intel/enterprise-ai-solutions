@@ -8,14 +8,14 @@ set -euo pipefail
 # Force a UTF-8 locale for the whole run.
 export LANG="${LANG:-C.UTF-8}" LC_ALL="${LC_ALL:-C.UTF-8}"
 
-# ES_LOG_LEVEL: info (default) = err/warn/info only; debug = + grey logs, tool
-# download progress, ansible -vvv; trace = + bash xtrace and ANSIBLE_DEBUG.
-ES_LOG_LEVEL="${ES_LOG_LEVEL:-info}"
-case "$ES_LOG_LEVEL" in
+# TKM_LOG_LEVEL (ES_LOG_LEVEL, its former name, still read): info = err/warn/info; debug = + grey
+# logs, tool download progress, ansible -vvv; trace = + bash xtrace and ANSIBLE_DEBUG.
+TKM_LOG_LEVEL="${TKM_LOG_LEVEL:-${ES_LOG_LEVEL:-info}}"
+case "$TKM_LOG_LEVEL" in
     info)  _LOG_LEVEL=0 ;;
     debug) _LOG_LEVEL=1 ;;
     trace) _LOG_LEVEL=2 ;;
-    *) echo "ES_LOG_LEVEL must be info, debug, or trace (got: $ES_LOG_LEVEL)" >&2; exit 1 ;;
+    *) echo "TKM_LOG_LEVEL (or ES_LOG_LEVEL) must be info, debug, or trace (got: $TKM_LOG_LEVEL)" >&2; exit 1 ;;
 esac
 
 if (( _LOG_LEVEL >= 2 )); then
@@ -132,7 +132,7 @@ _quiet() {
         local _rc=0; wait "$_pid" || _rc=$?
         printf '\n'
         (( _rc == 0 )) || { warn "failed (exit ${_rc}), last 15 lines:"; tail -15 "$_log" >&2
-                            info "  full output: re-run with ES_LOG_LEVEL=debug"; }
+                            info "  full output: re-run with TKM_LOG_LEVEL=debug"; }
         rm -f "$_log"
         return "$_rc"
     fi
@@ -215,8 +215,8 @@ usage() {
     -- <args...>           pass remaining args verbatim to ansible-playbook
 
   Environment:
-    ES_LOG_LEVEL           info (default) | debug (verbose logs + ansible -vvv)
-                           | trace (+ bash xtrace + ANSIBLE_DEBUG)
+    TKM_LOG_LEVEL          info (default) | debug (verbose logs + ansible -vvv)
+                           | trace (+ bash xtrace + ANSIBLE_DEBUG); ES_LOG_LEVEL still works
 
   Inventory:
     The env's inventory (env/<env>/inventory/hosts.yaml) is in kubespray-
@@ -454,7 +454,7 @@ _arch() {
 # _download <url> <dest> [--sudo] — fetch to dest via curl (fallback wget) with
 # bounded connect/transfer time + 3 retries, so a black-holed connection fails
 # fast instead of hanging. --sudo writes dest as root, forwarding the caller's
-# proxy vars (sudo scrubs env otherwise). Quiet unless ES_LOG_LEVEL>=debug.
+# proxy vars (sudo scrubs env otherwise). Quiet unless TKM_LOG_LEVEL>=debug.
 _download() {
     local url="$1" dest="$2" use_sudo="${3:-}"
     local -a pre=()
