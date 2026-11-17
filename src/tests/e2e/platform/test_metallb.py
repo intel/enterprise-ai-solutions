@@ -7,10 +7,15 @@ import allure
 import kr8s
 import pytest
 
-from conftest import cfg, is_openshift
+from conftest import cfg
+from k8s_helper import assert_deployment_ready, is_openshift
 
+# Condition as a string so an unreachable cluster fails the tests rather than
+# their collection, which would leave their Zephyr cases without a result. It is
+# evaluated at setup, in this module's namespace: cfg and is_openshift are read
+# only from here, so a linter calling those imports unused is wrong.
 pytestmark = pytest.mark.skipif(
-    not cfg.get("metallb_enabled", True) or is_openshift(),
+    "not cfg.get('metallb_enabled', True) or is_openshift()",
     reason="MetalLB not installed by the platform (metallb_enabled is false, or OpenShift, "
            "where the router provides it)"
 )
@@ -18,10 +23,7 @@ pytestmark = pytest.mark.skipif(
 
 @allure.testcase("DSPTV-T402")
 def test_metallb_controller_ready():
-    deploys = list(kr8s.get("deployments", namespace="metallb-system",
-                            field_selector={"metadata.name": "metallb-controller"}))
-    assert len(deploys) > 0, "metallb-controller not found"
-    assert (deploys[0].status.readyReplicas or 0) >= 1
+    assert_deployment_ready("metallb-system", "metallb-controller")
 
 
 @allure.testcase("DSPTV-T403")

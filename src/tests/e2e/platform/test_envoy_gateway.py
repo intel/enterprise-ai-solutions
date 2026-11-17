@@ -6,33 +6,29 @@
 import allure
 import kr8s
 
+from k8s_helper import assert_deployment_ready, get_one, has_condition
+
+NAMESPACE = "envoy-gateway-system"
+
 
 @allure.testcase("DSPTV-T404")
 def test_envoy_gateway_ready():
-    deploys = list(kr8s.get("deployments", namespace="envoy-gateway-system",
-                            field_selector={"metadata.name": "envoy-gateway"}))
-    assert len(deploys) > 0
-    assert (deploys[0].status.readyReplicas or 0) >= 1
+    assert_deployment_ready(NAMESPACE, "envoy-gateway")
 
 
 @allure.testcase("DSPTV-T405")
 def test_gateway_class_exists():
-    gcs = list(kr8s.get("gatewayclasses.gateway.networking.k8s.io",
-                        field_selector={"metadata.name": "eg"}))
-    assert len(gcs) > 0, "GatewayClass 'eg' not found"
+    get_one("gatewayclasses.gateway.networking.k8s.io", "eg")
 
 
 @allure.testcase("DSPTV-T406")
 def test_gateway_accepted():
-    gws = list(kr8s.get("gateways.gateway.networking.k8s.io",
-                        namespace="envoy-gateway-system"))
-    assert len(gws) > 0
-    conditions = gws[0].status.conditions
-    assert any(c.type == "Accepted" and c.status == "True" for c in conditions)
+    gateways = list(kr8s.get("gateways.gateway.networking.k8s.io", namespace=NAMESPACE))
+    assert gateways, f"no Gateway found in {NAMESPACE}"
+    assert has_condition(gateways[0], "Accepted"), \
+        f"gateways/{gateways[0].name} is not Accepted: {gateways[0].status.conditions}"
 
 
 @allure.testcase("DSPTV-T407")
 def test_gateway_tls_secret_exists():
-    secrets = list(kr8s.get("secrets", namespace="envoy-gateway-system",
-                            field_selector={"metadata.name": "gateway-tls"}))
-    assert len(secrets) > 0
+    get_one("secrets", "gateway-tls", namespace=NAMESPACE)

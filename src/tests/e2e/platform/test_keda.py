@@ -10,10 +10,15 @@ import kr8s
 import pytest
 from kr8s.objects import Deployment, HorizontalPodAutoscaler, Namespace, new_class
 
-from conftest import cfg, is_openshift
+from conftest import cfg
+from k8s_helper import is_openshift
 
+# Condition as a string so an unreachable cluster fails the tests rather than
+# their collection, which would leave their Zephyr cases without a result. It is
+# evaluated at setup, in this module's namespace: is_openshift is read only from
+# here, so a linter calling that import unused is wrong.
 pytestmark = pytest.mark.skipif(
-    not cfg.get("keda_enabled", False) or is_openshift(),
+    "not cfg.get('keda_enabled', False) or is_openshift()",
     reason="KEDA not installed by the platform (keda_enabled is false, or OpenShift's Custom Metrics Autoscaler)"
 )
 

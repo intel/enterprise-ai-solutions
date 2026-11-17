@@ -7,7 +7,9 @@ import allure
 import kr8s
 import pytest
 
-from conftest import cfg, is_openshift
+from conftest import cfg
+from k8s_helper import (assert_condition, assert_daemonset_ready, assert_deployment_ready,
+                        get_one, has_condition, is_openshift)
 
 pytestmark = pytest.mark.skipif(
     not cfg.get("observability_enabled", True),
@@ -24,20 +26,7 @@ GRAFANA_DATASOURCES = ["loki", "prometheus", "tempo"]
 
 def synced_datasources():
     objs = kr8s.get("grafanadatasources.grafana.integreatly.org", namespace=NAMESPACE)
-    return sorted(obj.name for obj in objs
-                  if any(c.type == "DatasourceSynchronized" and c.status == "True"
-                         for c in (obj.status.conditions or [])))
-
-
-def assert_condition(kind, name, condition, namespace=NAMESPACE):
-    try:
-        objs = list(kr8s.get(kind, namespace=namespace, field_selector={"metadata.name": name}))
-    except ValueError as unknown_kind:
-        pytest.fail(f"{kind} is not served by the cluster, so its operator is missing: {unknown_kind}")
-    assert objs, f"{kind}/{name} not found in {namespace}"
-    conditions = objs[0].status.conditions or []
-    assert any(c.type == condition and c.status == "True" for c in conditions), \
-        f"{kind}/{name} is not {condition}: {conditions}"
+    return sorted(obj.name for obj in objs if has_condition(obj, "DatasourceSynchronized"))
 
 
 @allure.testcase("DSPTV-T412")
@@ -46,65 +35,51 @@ def test_prometheus_operator_ready():
         assert_condition("prometheuses.monitoring.coreos.com", "user-workload", "Available",
                          namespace=UWM_NAMESPACE)
         return
-    deploys = list(kr8s.get("deployments", namespace="monitoring",
-                            field_selector={"metadata.name": "kube-prometheus-stack-operator"}))
-    assert len(deploys) > 0
-    assert (deploys[0].status.readyReplicas or 0) >= 1
+    assert_deployment_ready(NAMESPACE, "kube-prometheus-stack-operator")
 
 
 @allure.testcase("DSPTV-T413")
 def test_grafana_ready():
     if is_openshift():
-        assert_condition("deployments", f"{GRAFANA}-deployment", "Available")
+        assert_condition("deployments", f"{GRAFANA}-deployment", "Available", namespace=NAMESPACE)
         synced = synced_datasources()
         assert synced == GRAFANA_DATASOURCES, \
             f"datasources synced to Grafana: {synced or 'none'}; expected {GRAFANA_DATASOURCES}"
         return
-    deploys = list(kr8s.get("deployments", namespace="monitoring",
-                            field_selector={"metadata.name": "kube-prometheus-stack-grafana"}))
-    assert len(deploys) > 0
-    assert (deploys[0].status.readyReplicas or 0) >= 1
+    assert_deployment_ready(NAMESPACE, "kube-prometheus-stack-grafana")
 
 
 @allure.testcase("DSPTV-T414")
 def test_node_exporter_daemonset_ready():
-    namespace, name = "monitoring", "kube-prometheus-stack-prometheus-node-exporter"
     if is_openshift():
-        namespace, name = CLUSTER_MONITORING_NAMESPACE, "node-exporter"
-    daemonsets = list(kr8s.get("daemonsets", namespace=namespace,
-                               field_selector={"metadata.name": name}))
-    assert daemonsets, f"daemonsets/{name} not found in {namespace}"
-    ds = daemonsets[0]
-    assert ds.status.numberReady > 0, f"daemonsets/{name} has no ready pod"
-    assert ds.status.numberReady == ds.status.desiredNumberScheduled
+        assert_daemonset_ready(CLUSTER_MONITORING_NAMESPACE, "node-exporter")
+        return
+    assert_daemonset_ready(NAMESPACE, "kube-prometheus-stack-prometheus-node-exporter")
 
 
 @allure.testcase("DSPTV-T415")
 def test_loki_ready():
     if is_openshift():
-        assert_condition("lokistacks.loki.grafana.com", "logging-loki", "Ready")
-        assert_condition("clusterlogforwarders.observability.openshift.io", "platform-logs", "Ready")
+        assert_condition("lokistacks.loki.grafana.com", "logging-loki", "Ready", namespace=NAMESPACE)
+        assert_condition("clusterlogforwarders.observability.openshift.io", "platform-logs",
+                         "Ready", namespace=NAMESPACE)
         return
-    sts = list(kr8s.get("statefulsets", namespace="monitoring",
-                        field_selector={"metadata.name": "loki"}))[0]
+    sts = get_one("statefulsets", "loki", namespace=NAMESPACE)
     assert (sts.status.readyReplicas or 0) >= 1
 
 
 @allure.testcase("DSPTV-T416")
 def test_tempo_ready():
     if is_openshift():
-        assert_condition("tempomonolithics.tempo.grafana.com", "tempo", "Ready")
+        assert_condition("tempomonolithics.tempo.grafana.com", "tempo", "Ready", namespace=NAMESPACE)
         return
-    sts = list(kr8s.get("statefulsets", namespace="monitoring",
-                        field_selector={"metadata.name": "tempo"}))[0]
+    sts = get_one("statefulsets", "tempo", namespace=NAMESPACE)
     assert (sts.status.readyReplicas or 0) >= 1
 
 
 @allure.testcase("DSPTV-T417")
 def test_otel_collector_daemonset_ready():
     if is_openshift():
-        assert_condition("deployments", "opentelemetry-collector", "Available")
+        assert_condition("deployments", "opentelemetry-collector", "Available", namespace=NAMESPACE)
         return
-    ds = list(kr8s.get("daemonsets", namespace="monitoring",
-              field_selector={"metadata.name": "opentelemetry-collector-agent"}))[0]
-    assert ds.status.numberReady == ds.status.desiredNumberScheduled
+    assert_daemonset_ready(NAMESPACE, "opentelemetry-collector-agent")
