@@ -43,19 +43,19 @@
           {{ {'istio-injection': 'enabled'} if _revision == 'default' else {'istio.io/rev': _revision} }}
         istio_pod_annotations: {sidecar.istio.io/nativeSidecar: "true"}
         _mesh_revision: "{{ _revision }}"
-        _mesh_active: "{{ _active }}"
+        _mesh_running_revisions: "{{ _active }}"
 
     # Without a revision the labels would enrol nothing. The prerequisite check
     # reports a missing Service Mesh; this is the case of several revisions.
     - name: "Preflight - Mesh: one revision to join"
       ansible.builtin.fail:
         msg: >-
-          The cluster runs the Istio revisions {{ _mesh_active | join(', ') }} and none is the
+          The cluster runs the Istio revisions {{ _mesh_running_revisions | join(', ') }} and none is the
           default. Set istio_revision in env/<env>/global_config.yaml to the one to join,
           or istio_enabled: false to keep the namespaces out of the mesh.
       when:
         - _mesh_revision | length == 0
-        - _mesh_active | length > 1
+        - _mesh_running_revisions | length > 1
         - istio_enabled | default(true) | bool
 
 - name: "Preflight - Mesh: off"
