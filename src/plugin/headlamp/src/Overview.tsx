@@ -60,7 +60,7 @@ function ModelsCard() {
   const [catalog] = K8s.ResourceClasses.ConfigMap.useGet(CATALOG.name, CATALOG.namespace);
   const [services] = LLMInferenceService.useList({ namespace: CATALOG.namespace });
   const deployed = services ?? [];
-  const offered = useOfferedModels(
+  const { offered } = useOfferedModels(
     catalogModels(catalog?.data),
     new Set(deployed.map(s => s.metadata.name))
   );

@@ -20,9 +20,6 @@ export interface CatalogModel {
   runtime?: string;
   cpu?: number | string;
   memory?: string;
-  device?: string;
-  gpus?: number | string;
-  accelerator_resource?: string;
 }
 
 // GPU resources a device plugin advertises per vendor, so only once the GPU stack runs
@@ -32,15 +29,11 @@ const GPU_RESOURCES = {
   rocm: ['amd.com/gpu'],
   xpu: ['gpu.intel.com/xe', 'gpu.intel.com/i915'],
 };
-const ALL_GPU_RESOURCES = Object.values(GPU_RESOURCES).flat();
 
-// GPU resources a model can run on; [] for a CPU model.
+// The catalogue publishes no device field: a GPU engine is named by its vendor suffix.
 export function modelAccelerators(m: CatalogModel): string[] {
-  if (m.device === 'cpu') return [];
-  if (m.accelerator_resource) return [m.accelerator_resource];
   const vendor = /-(cuda|rocm|xpu)$/.exec(m.default_server ?? m.runtime ?? '')?.[1];
-  if (vendor) return GPU_RESOURCES[vendor as keyof typeof GPU_RESOURCES];
-  return m.device === 'gpu' || Number(m.gpus) > 0 ? ALL_GPU_RESOURCES : [];
+  return vendor ? GPU_RESOURCES[vendor as keyof typeof GPU_RESOURCES] : [];
 }
 
 interface NodeLike {

@@ -120,22 +120,6 @@ describe('modelAccelerators', () => {
     expect(modelAccelerators({ name: 'c', runtime: 'vllm-rocm' })).toEqual(['amd.com/gpu']);
   });
 
-  it('prefers an explicit accelerator, and device: cpu means none', () => {
-    expect(
-      modelAccelerators({
-        name: 'a',
-        runtime: 'vllm-cuda',
-        accelerator_resource: 'nvidia.com/mig-1g.10gb',
-      })
-    ).toEqual(['nvidia.com/mig-1g.10gb']);
-    expect(modelAccelerators({ name: 'b', device: 'cpu', runtime: 'vllm-cuda' })).toEqual([]);
-  });
-
-  it('accepts any GPU for device: gpu or a gpus count without a vendor', () => {
-    expect(modelAccelerators({ name: 'a', device: 'gpu' })).toContain('gpu.intel.com/xe');
-    expect(modelAccelerators({ name: 'b', gpus: 2 })).toContain('nvidia.com/gpu');
-  });
-
   it('is empty for CPU engines', () => {
     expect(modelAccelerators({ name: 'a', runtime: 'vllm' })).toEqual([]);
     expect(modelAccelerators({ name: 'b', runtime: 'openvino' })).toEqual([]);

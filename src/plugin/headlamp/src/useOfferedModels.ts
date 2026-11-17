@@ -11,21 +11,24 @@ import {
   templateAccelerator,
 } from './data';
 
-// null until nodes and the Job template are read; no access to either counts as read.
+// offered is null until nodes and the Job template are read; no access to either counts as read.
 export function useOfferedModels(
   models: CatalogModel[],
   deployed: ReadonlySet<string>
-): CatalogModel[] | null {
+): { offered: CatalogModel[] | null; template: Record<string, any> | null } {
   const [nodes, nodesError] = K8s.ResourceClasses.Node.useList();
   const [templateMap, templateError] = K8s.ResourceClasses.ConfigMap.useGet(
     MODEL_MANAGER.template,
     MODEL_MANAGER.namespace
   );
-  if ((!nodes && !nodesError) || (!templateMap && !templateError)) return null;
-  return offeredModels(
+  const template = parseJobTemplate(templateMap?.data);
+  if ((!nodes && !nodesError) || (!templateMap && !templateError))
+    return { offered: null, template };
+  const offered = offeredModels(
     models,
     clusterExtendedResources(nodes?.map(n => n.jsonData)),
     deployed,
-    templateAccelerator(parseJobTemplate(templateMap?.data))
+    templateAccelerator(template)
   );
+  return { offered, template };
 }
