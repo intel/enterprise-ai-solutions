@@ -10,16 +10,19 @@ if [[ ! -f "$MM_REAL" ]]; then
 fi
 
 # Point the model-manager at this environment's config + model catalog.
-# ES_ENV selects the env dir (env/<name>/), defaulting to "local" — matches the
+# TKM_ENV selects the env dir (env/<name>/), defaulting to "local" — matches the
 # installer's --env default. The real script reads MM_GLOBAL_CONFIG (inference
 # hostname / auth mode) and MM_CONFIG (model catalog); without these it would
 # fall back to its bundled defaults and fail to auto-discover this repo.
 export MM_REPO_ROOT="$SCRIPT_DIR"
 
+# TKM_ENV, or ES_ENV (its former name).
+TKM_ENV="${TKM_ENV:-${ES_ENV:-}}"
+
 # Resolve the target environment.
-# If the user explicitly set ES_ENV, honour it. Otherwise auto-select when only
+# If the user explicitly set TKM_ENV, honour it. Otherwise auto-select when only
 # one environment exists, or prompt when multiple are available.
-if [[ -z "${ES_ENV:-}" ]]; then
+if [[ -z "${TKM_ENV:-}" ]]; then
     mapfile -t available_envs < <(find "${SCRIPT_DIR}/env" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
 
     if [[ ${#available_envs[@]} -eq 0 ]]; then
@@ -27,12 +30,12 @@ if [[ -z "${ES_ENV:-}" ]]; then
         echo "        Run the installer first to create an environment." >&2
         exit 1
     elif [[ ${#available_envs[@]} -eq 1 ]]; then
-        ES_ENV="${available_envs[0]}"
-        echo "[INFO] Using environment: ${ES_ENV}" >&2
+        TKM_ENV="${available_envs[0]}"
+        echo "[INFO] Using environment: ${TKM_ENV}" >&2
     else
         if [[ ! -t 0 ]]; then
             echo "[ERROR] Multiple environments available but stdin is not a terminal." >&2
-            echo "        Set ES_ENV explicitly, e.g.: ES_ENV=${available_envs[0]} ./model-manager ..." >&2
+            echo "        Set TKM_ENV explicitly, e.g.: TKM_ENV=${available_envs[0]} ./model-manager ..." >&2
             exit 1
         fi
         echo "Multiple environments available:" >&2
@@ -42,7 +45,7 @@ if [[ -z "${ES_ENV:-}" ]]; then
         printf "Select environment [1-%d]: " "${#available_envs[@]}" >&2
         read -r choice || choice=""
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#available_envs[@]} )); then
-            ES_ENV="${available_envs[$((choice-1))]}"
+            TKM_ENV="${available_envs[$((choice-1))]}"
         else
             echo "[ERROR] Invalid selection." >&2
             exit 1
@@ -50,22 +53,23 @@ if [[ -z "${ES_ENV:-}" ]]; then
     fi
 fi
 
-# Reject path traversal attempts in ES_ENV.
-if [[ "$ES_ENV" == */* || "$ES_ENV" == .* ]]; then
-    echo "[ERROR] ES_ENV must be a simple directory name (no slashes or leading dots)." >&2
+# Reject path traversal attempts in TKM_ENV.
+if [[ "$TKM_ENV" == */* || "$TKM_ENV" == .* ]]; then
+    echo "[ERROR] TKM_ENV must be a simple directory name (no slashes or leading dots)." >&2
     exit 1
 fi
 
-export ES_ENV
-ENV_DIR="${SCRIPT_DIR}/env/${ES_ENV}"
+# ES_ENV too, for tools that still read the former name.
+export TKM_ENV ES_ENV="$TKM_ENV"
+ENV_DIR="${SCRIPT_DIR}/env/${TKM_ENV}"
 
 if [[ ! -d "$ENV_DIR" ]]; then
     mapfile -t available_envs < <(find "${SCRIPT_DIR}/env" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-    echo "[ERROR] Environment 'env/${ES_ENV}/' does not exist." >&2
+    echo "[ERROR] Environment 'env/${TKM_ENV}/' does not exist." >&2
     if [[ ${#available_envs[@]} -gt 0 ]]; then
         echo "        Available: ${available_envs[*]}" >&2
     fi
-    printf '        Set ES_ENV to a valid environment, e.g.: ES_ENV=%s ./model-manager' "${available_envs[0]:-prod}" >&2
+    printf '        Set TKM_ENV to a valid environment, e.g.: TKM_ENV=%s ./model-manager' "${available_envs[0]:-prod}" >&2
     printf ' %q' "$@" >&2
     printf '\n' >&2
     exit 1
@@ -100,8 +104,8 @@ if [[ -z "${MM_LITELLM_ENABLED:-}" ]]; then
 fi
 
 if [[ ! -f "${ENV_DIR}/config.inference.yaml" && -z "${MM_LITELLM_ENABLED:-}" ]]; then
-    echo "[WARNING] No config.inference.yaml in env/${ES_ENV}/ and no auth_type in its other configs — auth_type will default to jwt." >&2
-    echo "          If you intend to use litellm_vkey, run: ./toolkit_manager.sh init inference --env ${ES_ENV}" >&2
+    echo "[WARNING] No config.inference.yaml in env/${TKM_ENV}/ and no auth_type in its other configs — auth_type will default to jwt." >&2
+    echo "          If you intend to use litellm_vkey, run: ./toolkit_manager.sh init inference --env ${TKM_ENV}" >&2
 fi
 
 if [[ -f "${ENV_DIR}/kubeconfig.yaml" && -z "${KUBECONFIG:-}" ]]; then
