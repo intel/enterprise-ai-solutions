@@ -9,11 +9,14 @@ import {
   catalogAccess,
   catalogModels,
   categories,
+  clusterHasGpu,
   filterRows,
   jobArgs,
   latestJobs,
   liveFacts,
+  modelDevice,
   modelPods,
+  offeredModels,
   parseJobTemplate,
   portalEntries,
   Row,
@@ -94,6 +97,66 @@ describe('aroundModels', () => {
     );
     expect(before).toEqual([]);
     expect(after.map(e => e.key)).toEqual(['grafana']);
+  });
+});
+
+describe('modelDevice', () => {
+  it('reads an explicit device or GPU count first', () => {
+    expect(modelDevice({ name: 'a', device: 'gpu', runtime: 'vllm' })).toBe('gpu');
+    expect(modelDevice({ name: 'b', device: 'cpu', runtime: 'vllm-cuda' })).toBe('cpu');
+    expect(modelDevice({ name: 'c', gpus: 8 })).toBe('gpu');
+    expect(modelDevice({ name: 'd', gpus: '0' })).toBe('cpu');
+  });
+
+  it('otherwise goes by the engine', () => {
+    expect(modelDevice({ name: 'a', runtime: 'vllm-cuda' })).toBe('gpu');
+    expect(modelDevice({ name: 'b', default_server: 'vllm-cuda', runtime: 'vllm' })).toBe('gpu');
+    expect(modelDevice({ name: 'c', runtime: 'vllm' })).toBe('cpu');
+    expect(modelDevice({ name: 'd', runtime: 'openvino' })).toBe('cpu');
+    expect(modelDevice({ name: 'e' })).toBe('cpu');
+  });
+});
+
+describe('clusterHasGpu', () => {
+  const node = (allocatable: Record<string, string>) => ({ status: { allocatable } });
+
+  it('is true only for an advertised GPU resource above zero', () => {
+    expect(clusterHasGpu([node({ cpu: '172' }), node({ 'nvidia.com/gpu': '8' })])).toBe(true);
+    expect(clusterHasGpu([node({ 'gpu.intel.com/xe': '4' })])).toBe(true);
+    expect(clusterHasGpu([node({ 'amd.com/gpu': '1' })])).toBe(true);
+    expect(clusterHasGpu([node({ 'nvidia.com/gpu': '0' })])).toBe(false);
+    expect(clusterHasGpu([node({ cpu: '172', 'intel.com/qat': '2' })])).toBe(false);
+  });
+
+  it('is false without nodes, while loading or without access', () => {
+    expect(clusterHasGpu([])).toBe(false);
+    expect(clusterHasGpu(undefined)).toBe(false);
+    expect(clusterHasGpu(null)).toBe(false);
+  });
+});
+
+describe('offeredModels', () => {
+  const models = [
+    { name: 'cpu-model', runtime: 'vllm' },
+    { name: 'gpu-model', runtime: 'vllm-cuda' },
+  ];
+
+  it('hides GPU models on a cluster without a GPU', () => {
+    expect(offeredModels(models, false, new Set()).map(m => m.name)).toEqual(['cpu-model']);
+  });
+
+  it('shows GPU models when a GPU is usable', () => {
+    expect(offeredModels(models, true, new Set()).map(m => m.name)).toEqual([
+      'cpu-model',
+      'gpu-model',
+    ]);
+  });
+
+  it('keeps a deployed GPU model visible, so it can still be undeployed', () => {
+    expect(offeredModels(models, false, new Set(['gpu-model'])).map(m => m.name)).toEqual([
+      'cpu-model',
+      'gpu-model',
+    ]);
   });
 });
 

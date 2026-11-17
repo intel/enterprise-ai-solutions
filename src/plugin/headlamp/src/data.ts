@@ -20,6 +20,41 @@ export interface CatalogModel {
   runtime?: string;
   cpu?: number | string;
   memory?: string;
+  device?: string;
+  gpus?: number | string;
+}
+
+// GPU engines of the inference catalogue (vllm-cuda); an explicit device or gpus wins.
+const GPU_ENGINE = /-(cuda|rocm|xpu)$/;
+
+export function modelDevice(m: CatalogModel): 'cpu' | 'gpu' {
+  if (m.device === 'gpu' || m.device === 'cpu') return m.device;
+  if (Number(m.gpus) > 0) return 'gpu';
+  return GPU_ENGINE.test(m.default_server ?? m.runtime ?? '') ? 'gpu' : 'cpu';
+}
+
+// Advertised by a GPU device plugin, so only once the GPU stack runs (NFD labels alone may be a BMC VGA).
+const GPU_RESOURCE = /^(nvidia\.com\/gpu|amd\.com\/gpu|gpu\.intel\.com\/(i915|xe))$/;
+
+export interface NodeLike {
+  status?: { allocatable?: Record<string, string> };
+}
+
+export function clusterHasGpu(nodes: NodeLike[] | null | undefined): boolean {
+  return (nodes ?? []).some(n =>
+    Object.entries(n.status?.allocatable ?? {}).some(
+      ([k, v]) => GPU_RESOURCE.test(k) && parseInt(v, 10) > 0
+    )
+  );
+}
+
+// GPU models are offered only where a GPU is usable; deployed ones stay visible.
+export function offeredModels(
+  models: CatalogModel[],
+  hasGpu: boolean,
+  deployed: ReadonlySet<string>
+): CatalogModel[] {
+  return models.filter(m => hasGpu || modelDevice(m) === 'cpu' || deployed.has(m.name));
 }
 
 function parseJSON(raw: string | undefined): unknown {

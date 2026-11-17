@@ -7,7 +7,15 @@ import { Box, Button, GlobalStyles, Paper, Stack, Typography } from '@mui/materi
 import { Link as RouterLink } from 'react-router-dom';
 import { ABOUT } from './about';
 import { BRAND } from './Branding';
-import { aroundModels, CATALOG, catalogModels, PORTAL, portalEntries } from './data';
+import {
+  aroundModels,
+  CATALOG,
+  catalogModels,
+  clusterHasGpu,
+  offeredModels,
+  PORTAL,
+  portalEntries,
+} from './data';
 import { LLMInferenceService, readyCondition } from './resources';
 import { CardGrid, PlatformCard, ServiceCards } from './ServicesList';
 
@@ -58,15 +66,19 @@ export function About() {
 function ModelsCard() {
   const [catalog] = K8s.ResourceClasses.ConfigMap.useGet(CATALOG.name, CATALOG.namespace);
   const [services] = LLMInferenceService.useList({ namespace: CATALOG.namespace });
+  const [nodes] = K8s.ResourceClasses.Node.useList();
   const deployed = services ?? [];
+  const offered = offeredModels(
+    catalogModels(catalog?.data),
+    clusterHasGpu(nodes?.map(n => n.jsonData)),
+    new Set(deployed.map(s => s.metadata.name))
+  );
   const ready = deployed.filter(s => readyCondition(s)?.status === 'True').length;
   const starting = deployed.length - ready;
   return (
     <PlatformCard
       title="Models"
-      description={`${ready} of ${catalogModels(catalog?.data).length} ready${
-        starting ? `, ${starting} starting` : ''
-      }`}
+      description={`${ready} of ${offered.length} ready${starting ? `, ${starting} starting` : ''}`}
       action={
         // In-app page, so same tab, unlike the external services.
         <Button

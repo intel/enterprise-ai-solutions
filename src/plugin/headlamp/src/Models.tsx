@@ -19,6 +19,7 @@ import {
   CatalogModel,
   catalogModels,
   categories,
+  clusterHasGpu,
   DeployOptions,
   filterRows,
   LatestJob,
@@ -27,6 +28,7 @@ import {
   MANAGED_BY,
   MODEL_MANAGER,
   modelPods,
+  offeredModels,
   parseJobTemplate,
   Row,
   rowActions,
@@ -68,6 +70,8 @@ export function Models() {
     MODEL_MANAGER.namespace
   );
   const [pods] = K8s.ResourceClasses.Pod.useList({ namespace: CATALOG.namespace });
+  // No access or still loading counts as no GPU: GPU models stay hidden.
+  const [nodes] = K8s.ResourceClasses.Node.useList();
   const [jobs] = K8s.ResourceClasses.Job.useList({
     namespace: MODEL_MANAGER.namespace,
     labelSelector: 'app.kubernetes.io/name=model-manager',
@@ -94,7 +98,11 @@ export function Models() {
   const jobByModel = latestJobs((jobs ?? []).map(j => j.jsonData));
   const jobObject = new Map((jobs ?? []).map(j => [j.metadata.name, j]));
   const byName = new Map(services.map(s => [s.metadata.name, s]));
-  const known = catalogModels(catalog?.data);
+  const known = offeredModels(
+    catalogModels(catalog?.data),
+    clusterHasGpu(nodes?.map(n => n.jsonData)),
+    new Set(byName.keys())
+  );
   // Absent before the inference release that publishes it: no "Access details" then.
   const access = catalogAccess(catalog?.data);
   const row = (m: CatalogModel, inCatalogue: boolean): Row => {
