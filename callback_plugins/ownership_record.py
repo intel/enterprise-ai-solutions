@@ -9,7 +9,7 @@ Kubernetes object is appended to that file as one JSON line:
 
   object    kubernetes.core.k8s / k8s_json_patch: kind, namespace, name, uid, method
   named     the same task with no_log (its result is censored): kind, namespace and
-            name from the task's `definition`
+            name from the task's `definition` (with src or template: a warning, no record)
   release   kubernetes.core.helm: release name and namespace, also when it failed
   cli       command or shell: each object its output reports the way kubectl does
             (`kind.group/name created`), which covers kubectl, oc and model-manager;
@@ -80,6 +80,10 @@ class CallbackModule(CallbackBase):
     def _named(self, task, args):
         """no_log k8s task: the object it applies, from its (templated) definition."""
         definition = args.get("definition")
+        if definition is None and (args.get("src") or args.get("template")):
+            # Only the action plugin reads src and template: nothing here names the object.
+            self._display.warning("ownership_record: no_log task '%s' has no definition; what it applies is "
+                                  "not recorded, so teardown leaves it. Use definition." % task)
         if isinstance(definition, str):
             try:
                 docs = list(yaml.safe_load_all(definition))

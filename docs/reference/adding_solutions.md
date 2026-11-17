@@ -291,7 +291,8 @@ component runs, a callback (`callback_plugins/ownership_record.py`) records what
 tasks report:
 
 - objects a `kubernetes.core.k8s` or `k8s_json_patch` task returns; with `no_log`, the
-  object named in the task's `definition`,
+  object named in the task's `definition` (`src` and `template` are not read: the callback
+  warns),
 - releases a `kubernetes.core.helm` task installs or upgrades, also one that failed,
 - objects a `command` or `shell` task prints the way `kubectl` does
   (`deployment.apps/web created`, also `configured`, `unchanged`, `serverside-applied`,
