@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
            "OpenShift, which serves metrics.k8s.io from its own monitoring)"
 )
 
-NAMESPACE = "metrics-server"
+NAMESPACE = cfg.get("metrics_server_namespace", "metrics-server")
 REPLICAS = int(cfg.get("metrics_server_replicas", 1))
 METRICS_API = "v1beta1.metrics.k8s.io"
 

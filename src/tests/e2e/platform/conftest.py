@@ -22,10 +22,10 @@ OPENSHIFT_API_GROUPS = ("security.openshift.io", "project.openshift.io")
 def is_openshift():
     """True when the cluster under test is OpenShift.
 
-    Asked once per session, and from discovery only, which every authenticated
-    user may do — so a kubeconfig without cluster-scoped read access works too.
-    global_config.yaml cannot answer this: preflight resolves the platform at
-    run time and never writes cluster_distribution there.
+    Read from discovery only, which every authenticated user may do — so a
+    kubeconfig without cluster-scoped read access works too. global_config.yaml
+    cannot answer this: preflight resolves the platform at run time and never
+    writes cluster_distribution there.
     """
     groups = {api_version.split("/")[0] for api_version in kr8s.api().api_versions()}
     return not groups.isdisjoint(OPENSHIFT_API_GROUPS)

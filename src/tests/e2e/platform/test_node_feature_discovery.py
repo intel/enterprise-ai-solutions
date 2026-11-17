@@ -29,7 +29,6 @@ def nfd_worker():
 
 
 def worker_node_names():
-    """Nodes the worker DaemonSet actually has a pod on."""
     worker = nfd_worker()
     pods = kr8s.get("pods", namespace=WORKER_NAMESPACE,
                     label_selector=worker.spec["selector"]["matchLabels"])
