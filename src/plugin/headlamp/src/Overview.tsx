@@ -7,20 +7,10 @@ import { Box, Button, GlobalStyles, Paper, Stack, Typography } from '@mui/materi
 import { Link as RouterLink } from 'react-router-dom';
 import { ABOUT } from './about';
 import { BRAND } from './Branding';
-import {
-  aroundModels,
-  CATALOG,
-  catalogModels,
-  clusterGpuResources,
-  MODEL_MANAGER,
-  offeredModels,
-  parseJobTemplate,
-  PORTAL,
-  portalEntries,
-  templateAccelerator,
-} from './data';
+import { aroundModels, CATALOG, catalogModels, PORTAL, portalEntries } from './data';
 import { LLMInferenceService, readyCondition } from './resources';
 import { CardGrid, PlatformCard, ServiceCards } from './ServicesList';
+import { useOfferedModels } from './useOfferedModels';
 
 // Headlamp lays overview items out in one row of 300px cells. Ours take full-width
 // cells, so each sits on its own line: About first, the service cards after the tiles.
@@ -69,24 +59,21 @@ export function About() {
 function ModelsCard() {
   const [catalog] = K8s.ResourceClasses.ConfigMap.useGet(CATALOG.name, CATALOG.namespace);
   const [services] = LLMInferenceService.useList({ namespace: CATALOG.namespace });
-  const [nodes] = K8s.ResourceClasses.Node.useList();
-  const [templateMap] = K8s.ResourceClasses.ConfigMap.useGet(
-    MODEL_MANAGER.template,
-    MODEL_MANAGER.namespace
-  );
   const deployed = services ?? [];
-  const offered = offeredModels(
+  const offered = useOfferedModels(
     catalogModels(catalog?.data),
-    clusterGpuResources(nodes?.map(n => n.jsonData)),
-    new Set(deployed.map(s => s.metadata.name)),
-    templateAccelerator(parseJobTemplate(templateMap?.data))
+    new Set(deployed.map(s => s.metadata.name))
   );
   const ready = deployed.filter(s => readyCondition(s)?.status === 'True').length;
   const starting = deployed.length - ready;
   return (
     <PlatformCard
       title="Models"
-      description={`${ready} of ${offered.length} ready${starting ? `, ${starting} starting` : ''}`}
+      description={
+        offered
+          ? `${ready} of ${offered.length} ready${starting ? `, ${starting} starting` : ''}`
+          : 'Loading'
+      }
       action={
         // In-app page, so same tab, unlike the external services.
         <Button

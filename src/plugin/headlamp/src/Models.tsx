@@ -19,7 +19,6 @@ import {
   CatalogModel,
   catalogModels,
   categories,
-  clusterGpuResources,
   DeployOptions,
   filterRows,
   LatestJob,
@@ -28,18 +27,17 @@ import {
   MANAGED_BY,
   MODEL_MANAGER,
   modelPods,
-  offeredModels,
   parseJobTemplate,
   Row,
   rowActions,
   RowFilter,
-  templateAccelerator,
 } from './data';
 import { DeployDialog, UndeployDialog } from './DeployDialog';
 import { ModelActionButton, ModelMoreMenu } from './ModelActionMenu';
 import { ModelCards } from './ModelCards';
 import { ModelToolbar } from './ModelToolbar';
 import { InferenceService, LLMInferenceService, readyCondition, ServingObject } from './resources';
+import { useOfferedModels } from './useOfferedModels';
 
 function stateOf(svc: ServingObject | undefined, job: LatestJob | undefined) {
   if (job?.state === 'Running')
@@ -71,8 +69,6 @@ export function Models() {
     MODEL_MANAGER.namespace
   );
   const [pods] = K8s.ResourceClasses.Pod.useList({ namespace: CATALOG.namespace });
-  // No access or still loading counts as no GPU: GPU models stay hidden.
-  const [nodes] = K8s.ResourceClasses.Node.useList();
   const [jobs] = K8s.ResourceClasses.Job.useList({
     namespace: MODEL_MANAGER.namespace,
     labelSelector: 'app.kubernetes.io/name=model-manager',
@@ -85,10 +81,16 @@ export function Models() {
   const [accessing, setAccessing] = useState<Row | null>(null);
   const [error, setError] = useState('');
 
+  const offered = useOfferedModels(
+    catalogModels(catalog?.data),
+    new Set([...(llmServices ?? []), ...(inferenceServices ?? [])].map(s => s.metadata.name))
+  );
+
   if (
     (!catalog && !catalogError) ||
     (!llmServices && !servicesError) ||
-    (!inferenceServices && !isvcError)
+    (!inferenceServices && !isvcError) ||
+    !offered
   )
     return <Loader title="Loading models" />;
 
@@ -99,12 +101,6 @@ export function Models() {
   const jobByModel = latestJobs((jobs ?? []).map(j => j.jsonData));
   const jobObject = new Map((jobs ?? []).map(j => [j.metadata.name, j]));
   const byName = new Map(services.map(s => [s.metadata.name, s]));
-  const known = offeredModels(
-    catalogModels(catalog?.data),
-    clusterGpuResources(nodes?.map(n => n.jsonData)),
-    new Set(byName.keys()),
-    templateAccelerator(template)
-  );
   // Absent before the inference release that publishes it: no "Access details" then.
   const access = catalogAccess(catalog?.data);
   const row = (m: CatalogModel, inCatalogue: boolean): Row => {
@@ -118,10 +114,10 @@ export function Models() {
     };
   };
   const rows: Row[] = [
-    ...known.map(m => row(m, true)),
+    ...offered.map(m => row(m, true)),
     // Deployed outside the catalogue (model-manager deploy --as / --hfid): shown, not managed here.
     ...[...byName.entries()]
-      .filter(([n]) => !known.some(m => m.name === n))
+      .filter(([n]) => !offered.some(m => m.name === n))
       .map(([n, s]) => row({ name: n, ...liveFacts(s.jsonData) }, false)),
   ];
   const shown = filterRows(rows, filter);

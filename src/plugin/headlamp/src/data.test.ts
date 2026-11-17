@@ -9,13 +9,12 @@ import {
   catalogAccess,
   catalogModels,
   categories,
-  clusterGpuResources,
+  clusterExtendedResources,
   filterRows,
   jobArgs,
   latestJobs,
   liveFacts,
   modelAccelerators,
-  modelDevice,
   modelPods,
   offeredModels,
   parseJobTemplate,
@@ -93,6 +92,15 @@ describe('aroundModels', () => {
     expect(after.map(e => e.key)).toEqual(['grafana', 'langfuse', 'x']);
   });
 
+  it('keeps a published entry whose key is the Models marker, before the Models card', () => {
+    const svc = (title: string) => entry({ title, url: 'https://x.example.com' });
+    const [before, after] = aroundModels(
+      portalEntries({ models: svc('Other models'), grafana: svc('Grafana') })
+    );
+    expect(before.map(e => e.key)).toEqual(['models']);
+    expect(after.map(e => e.key)).toEqual(['grafana']);
+  });
+
   it('shows Models first when Keycloak is not published', () => {
     const [before, after] = aroundModels(
       portalEntries({ grafana: entry({ title: 'Grafana', url: 'https://g.example.com' }) })
@@ -131,16 +139,14 @@ describe('modelAccelerators', () => {
   it('is empty for CPU engines', () => {
     expect(modelAccelerators({ name: 'a', runtime: 'vllm' })).toEqual([]);
     expect(modelAccelerators({ name: 'b', runtime: 'openvino' })).toEqual([]);
-    expect(modelDevice({ name: 'c', runtime: 'vllm' })).toBe('cpu');
-    expect(modelDevice({ name: 'd', runtime: 'vllm-cuda' })).toBe('gpu');
   });
 });
 
-describe('clusterGpuResources', () => {
+describe('clusterExtendedResources', () => {
   const node = (allocatable: Record<string, string>) => ({ status: { allocatable } });
 
   it('collects extended resources above zero, from every node', () => {
-    const got = clusterGpuResources([
+    const got = clusterExtendedResources([
       node({ cpu: '172', memory: '503Gi', 'intel.com/qat': '2' }),
       node({ 'nvidia.com/gpu': '8', 'gpu.intel.com/xe': '0' }),
     ]);
@@ -148,9 +154,9 @@ describe('clusterGpuResources', () => {
   });
 
   it('is empty without nodes, while loading or without access', () => {
-    expect(clusterGpuResources([]).size).toBe(0);
-    expect(clusterGpuResources(undefined).size).toBe(0);
-    expect(clusterGpuResources(null).size).toBe(0);
+    expect(clusterExtendedResources([]).size).toBe(0);
+    expect(clusterExtendedResources(undefined).size).toBe(0);
+    expect(clusterExtendedResources(null).size).toBe(0);
   });
 });
 

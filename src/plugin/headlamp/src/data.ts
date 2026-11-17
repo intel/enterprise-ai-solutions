@@ -34,9 +34,7 @@ const GPU_RESOURCES = {
 };
 const ALL_GPU_RESOURCES = Object.values(GPU_RESOURCES).flat();
 
-// Resources a GPU model can run on; [] for a CPU model. An explicit accelerator_resource
-// wins, then the engine's vendor suffix (vllm-cuda); device: gpu or a gpus count without
-// a known vendor accepts any GPU.
+// GPU resources a model can run on; [] for a CPU model.
 export function modelAccelerators(m: CatalogModel): string[] {
   if (m.device === 'cpu') return [];
   if (m.accelerator_resource) return [m.accelerator_resource];
@@ -45,16 +43,11 @@ export function modelAccelerators(m: CatalogModel): string[] {
   return m.device === 'gpu' || Number(m.gpus) > 0 ? ALL_GPU_RESOURCES : [];
 }
 
-export function modelDevice(m: CatalogModel): 'cpu' | 'gpu' {
-  return modelAccelerators(m).length > 0 ? 'gpu' : 'cpu';
-}
-
-export interface NodeLike {
+interface NodeLike {
   status?: { allocatable?: Record<string, string> };
 }
 
-// Extended resources (vendor/name) at least one node advertises above zero.
-export function clusterGpuResources(nodes: NodeLike[] | null | undefined): Set<string> {
+export function clusterExtendedResources(nodes: NodeLike[] | null | undefined): Set<string> {
   const found = new Set<string>();
   for (const n of nodes ?? [])
     for (const [k, v] of Object.entries(n.status?.allocatable ?? {}))
@@ -64,22 +57,21 @@ export function clusterGpuResources(nodes: NodeLike[] | null | undefined): Set<s
 
 const vendorOf = (resource: string) => resource.split('/')[0];
 
-// A GPU model is offered only where model-manager can deploy it: a node has its vendor's
-// GPU and, when the Job template sets MM_ACCEL_RESOURCE, that is the same vendor's resource
-// (model-manager refuses GPU runtimes otherwise). Deployed models stay visible.
+// model-manager refuses a GPU runtime unless MM_ACCEL_RESOURCE (when the Job template
+// sets it) is of the runtime's vendor, and its pod requests that resource.
 export function offeredModels(
   models: CatalogModel[],
-  gpus: ReadonlySet<string>,
+  resources: ReadonlySet<string>,
   deployed: ReadonlySet<string>,
   accelerator?: string
 ): CatalogModel[] {
   return models.filter(m => {
     const want = modelAccelerators(m);
     if (want.length === 0 || deployed.has(m.name)) return true;
-    if (accelerator === undefined) return want.some(r => gpus.has(r));
+    if (accelerator === undefined) return want.some(r => resources.has(r));
     return (
       !!accelerator &&
-      gpus.has(accelerator) &&
+      resources.has(accelerator) &&
       want.some(r => vendorOf(r) === vendorOf(accelerator))
     );
   });
@@ -114,9 +106,9 @@ function safeHttpsURL(value: unknown): string | null {
   }
 }
 
-// Card order on the overview; MODELS_CARD marks where the in-app Models card goes. Unlisted keys follow by title.
-export const MODELS_CARD = 'models';
-export const PORTAL_ORDER = ['keycloak', MODELS_CARD, 'grafana', 'litellm-ui', 'langfuse'];
+// Card order on the overview; MODELS_CARD marks where the in-app Models card goes.
+const MODELS_CARD = 'models';
+const PORTAL_ORDER = ['keycloak', MODELS_CARD, 'grafana', 'litellm-ui', 'langfuse'];
 
 function rank(key: string): number {
   const i = PORTAL_ORDER.indexOf(key);
@@ -140,10 +132,9 @@ export function portalEntries(data: Record<string, string> | undefined): PortalE
     .sort((a, b) => rank(a.key) - rank(b.key) || a.title.localeCompare(b.title));
 }
 
-// Splits the ordered entries around the Models card.
 export function aroundModels(entries: PortalEntry[]): [PortalEntry[], PortalEntry[]] {
   const at = rank(MODELS_CARD);
-  return [entries.filter(e => rank(e.key) < at), entries.filter(e => rank(e.key) > at)];
+  return [entries.filter(e => rank(e.key) <= at), entries.filter(e => rank(e.key) > at)];
 }
 
 export function catalogModels(data: Record<string, string> | undefined): CatalogModel[] {

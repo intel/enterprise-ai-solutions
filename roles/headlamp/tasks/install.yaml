@@ -260,7 +260,6 @@
         - apiGroups: [serving.kserve.io]
           resources: [llminferenceservices, inferenceservices]
           verbs: [get, list, watch]
-        # GPU models are offered only where a node advertises a GPU.
         - apiGroups: [""]
           resources: [nodes]
           verbs: [get, list, watch]
