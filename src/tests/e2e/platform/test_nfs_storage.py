@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@allure.testcase("IEASG-T689")
+@allure.testcase("DSPTV-T418")
 def test_nfs_provisioner_running():
     pods = list(kr8s.get("pods", namespace="nfs-provisioner",
                          label_selector={"app": "nfs-subdir-external-provisioner"}))
@@ -23,7 +23,7 @@ def test_nfs_provisioner_running():
     assert pods[0].status.phase == "Running"
 
 
-@allure.testcase("IEASG-T690")
+@allure.testcase("DSPTV-T419")
 def test_nfs_storageclass_exists():
     scs = list(kr8s.get("storageclasses.storage.k8s.io"))
     nfs_sc = [sc for sc in scs if "nfs" in sc.name]

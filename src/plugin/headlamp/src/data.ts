@@ -22,6 +22,63 @@ export interface CatalogModel {
   memory?: string;
 }
 
+// GPU resources a device plugin advertises per vendor, so only once the GPU stack runs
+// (NFD PCI labels alone would count a BMC VGA chip).
+const GPU_RESOURCES = {
+  cuda: ['nvidia.com/gpu'],
+  rocm: ['amd.com/gpu'],
+  xpu: ['gpu.intel.com/xe', 'gpu.intel.com/i915'],
+};
+
+// The catalogue publishes no device field: a GPU engine is named by its vendor suffix.
+export function modelAccelerators(m: CatalogModel): string[] {
+  const vendor = /-(cuda|rocm|xpu)$/.exec(m.default_server ?? m.runtime ?? '')?.[1];
+  return vendor ? GPU_RESOURCES[vendor as keyof typeof GPU_RESOURCES] : [];
+}
+
+interface NodeLike {
+  status?: { allocatable?: Record<string, string> };
+}
+
+export function clusterExtendedResources(nodes: NodeLike[] | null | undefined): Set<string> {
+  const found = new Set<string>();
+  for (const n of nodes ?? [])
+    for (const [k, v] of Object.entries(n.status?.allocatable ?? {}))
+      if (k.includes('/') && parseInt(v, 10) > 0) found.add(k);
+  return found;
+}
+
+const vendorOf = (resource: string) => resource.split('/')[0];
+
+// model-manager refuses a GPU runtime unless MM_ACCEL_RESOURCE (when the Job template
+// sets it) is of the runtime's vendor, and its pod requests that resource.
+export function offeredModels(
+  models: CatalogModel[],
+  resources: ReadonlySet<string>,
+  deployed: ReadonlySet<string>,
+  accelerator?: string
+): CatalogModel[] {
+  return models.filter(m => {
+    const want = modelAccelerators(m);
+    if (want.length === 0 || deployed.has(m.name)) return true;
+    if (accelerator === undefined) return want.some(r => resources.has(r));
+    return (
+      !!accelerator &&
+      resources.has(accelerator) &&
+      want.some(r => vendorOf(r) === vendorOf(accelerator))
+    );
+  });
+}
+
+// MM_ACCEL_RESOURCE of the published model-manager Job: undefined when the template has
+// no such variable (before GPU runtimes), '' when GPU deploys are off.
+export function templateAccelerator(template: Record<string, any> | null): string | undefined {
+  const env = template?.spec?.template?.spec?.containers?.[0]?.env;
+  if (!Array.isArray(env)) return undefined;
+  const e = env.find((x: { name?: string }) => x?.name === 'MM_ACCEL_RESOURCE');
+  return e ? String(e.value ?? '') : undefined;
+}
+
 function parseJSON(raw: string | undefined): unknown {
   if (!raw) return undefined;
   try {
@@ -42,6 +99,15 @@ function safeHttpsURL(value: unknown): string | null {
   }
 }
 
+// Card order on the overview; MODELS_CARD marks where the in-app Models card goes.
+const MODELS_CARD = 'models';
+const PORTAL_ORDER = ['keycloak', MODELS_CARD, 'grafana', 'litellm-ui', 'langfuse'];
+
+function rank(key: string): number {
+  const i = PORTAL_ORDER.indexOf(key);
+  return i < 0 ? PORTAL_ORDER.length : i;
+}
+
 export function portalEntries(data: Record<string, string> | undefined): PortalEntry[] {
   return Object.entries(data ?? {})
     .map(([key, raw]) => {
@@ -56,7 +122,12 @@ export function portalEntries(data: Record<string, string> | undefined): PortalE
       };
     })
     .filter((e): e is PortalEntry => e !== null)
-    .sort((a, b) => a.title.localeCompare(b.title));
+    .sort((a, b) => rank(a.key) - rank(b.key) || a.title.localeCompare(b.title));
+}
+
+export function aroundModels(entries: PortalEntry[]): [PortalEntry[], PortalEntry[]] {
+  const at = rank(MODELS_CARD);
+  return [entries.filter(e => rank(e.key) <= at), entries.filter(e => rank(e.key) > at)];
 }
 
 export function catalogModels(data: Record<string, string> | undefined): CatalogModel[] {

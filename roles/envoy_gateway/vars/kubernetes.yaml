@@ -10,5 +10,7 @@ _envoy_gateway_grant_nonroot_scc: false
 _envoy_gateway_gateway_api_crds_platform_owned: false
 # The Gateway's LoadBalancer serves the hosts itself.
 _envoy_gateway_openshift_routes: false
+# SSO login-cookie lifetimes and the 1.7 OAuth2 cookie flags (route_sso.yaml, controller.yaml).
+_envoy_gateway_oidc_login_patches: true
 # Stamp the PSS labels when enforce_pss is set.
 _envoy_gateway_pss_labels: "{{ enforce_pss | default(false) | bool }}"

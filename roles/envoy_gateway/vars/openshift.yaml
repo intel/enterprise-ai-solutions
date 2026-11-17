@@ -13,5 +13,7 @@ _envoy_gateway_gateway_api_crds_platform_owned: true
 # Each host the Gateway serves needs a TLS passthrough Route from the router
 # (openshift_routes.yaml).
 _envoy_gateway_openshift_routes: true
+# No login-cookie patches or OAuth2 cookie flags: Envoy Gateway stays as installed on the 1.7 line.
+_envoy_gateway_oidc_login_patches: false
 # No PSS labels: OpenShift syncs them from the SCCs.
 _envoy_gateway_pss_labels: false

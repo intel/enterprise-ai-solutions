@@ -4,19 +4,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import allure
-import kr8s
+
+from k8s_helper import assert_deployment_ready, assert_statefulset_ready, is_openshift
 
 
-@allure.testcase("IEASG-T680")
+def keycloak_operator():
+    return "rhbk-operator" if is_openshift() else "keycloak-operator"
+
+
+@allure.testcase("DSPTV-T409")
 def test_keycloak_operator_ready():
-    deploys = list(kr8s.get("deployments", namespace="keycloak",
-                            field_selector={"metadata.name": "keycloak-operator"}))
-    assert len(deploys) > 0
-    assert (deploys[0].status.readyReplicas or 0) >= 1
+    assert_deployment_ready("keycloak", keycloak_operator())
 
 
-@allure.testcase("IEASG-T681")
+@allure.testcase("DSPTV-T410")
 def test_keycloak_statefulset_ready():
-    sts = list(kr8s.get("statefulsets", namespace="keycloak",
-                        field_selector={"metadata.name": "keycloak"}))[0]
-    assert (sts.status.readyReplicas or 0) >= 1
+    assert_statefulset_ready("keycloak", "keycloak")
