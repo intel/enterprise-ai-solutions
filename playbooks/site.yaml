@@ -8,7 +8,7 @@
 #   ansible-playbook playbooks/site.yaml -e key=value          # override vars
 # =============================================================================
 
-- name: "AI-solutions"
+- name: "Toolkit Manager"
   hosts: localhost
   connection: local
   gather_facts: true

@@ -1,7 +1,7 @@
 {
   "name": "enterprise-ai",
   "version": "0.1.0",
-  "description": "Enterprise AI pages for Headlamp: platform dashboards and the model catalogue",
+  "description": "Toolkit Manager pages for Headlamp: platform dashboards and the model catalogue",
   "scripts": {
     "start": "headlamp-plugin start",
     "build": "headlamp-plugin build",
