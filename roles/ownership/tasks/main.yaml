@@ -156,6 +156,8 @@
     - ownership_action == 'teardown'
     - _ownership_deleted.deleted | default([]) | length == 0
     - _ownership_deleted.restored | default([]) | length == 0
+    # With `both`, the role's own teardown runs next.
+    - _component_teardown | default('labels') == 'labels'
   ansible.builtin.debug:
     msg: >-
       No object carries {{ ownership_label_prefix }}/component={{ component.name }} in env
