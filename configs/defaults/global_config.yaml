@@ -82,9 +82,10 @@ seaweedfs_volume_storage_size: "10Gi"
 
 
 # ─── 6. Sign-in ──────────────────────────────────────────────────────────────
-# Keycloak signs people in. API auth (auth_type) and LiteLLM/Langfuse are set in config.inference.yaml.
+# Keycloak signs people in. LiteLLM and Langfuse are set in config.inference.yaml.
 # Keycloak and Grafana admin passwords are generated and kept in Secrets: docs/customize/configuration.md.
 
+# auth_type: "jwt"                               # API auth: jwt | litellm_vkey; overrides config.inference.yaml
 # keycloak_platform_bootstrap_admin_mfa: true    # platform-admin enrols OTP at first login
 # headlamp_byo_apiserver_trusted: true           # your own cluster's API server trusts the platform realm
 

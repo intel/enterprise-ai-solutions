@@ -119,7 +119,7 @@ lines are optional settings (remove the `# ` to use one). It has eight sections:
 | 3. Domain and access | `base_domain_name`, `routing_mode`, TLS (`gateway_tls_mode`, custom certificate files), `gateway_request_timeout` |
 | 4. Components | `istio_enabled`, `observability_enabled`, `metrics_server_enabled`, `headlamp_enabled`, `keda_enabled`, `velero_enabled`, `kata_containers_enabled` |
 | 5. Storage | `storage_backend` and its `custom` settings, `object_store_backend` |
-| 6. Sign-in | where API auth is set, platform-admin MFA |
+| 6. Sign-in | `auth_type` (API auth; overrides `config.inference.yaml`), platform-admin MFA |
 | 7. Advanced | `node_topology_enabled`, `enforce_pss`, CPU policy, `rack_scale_enabled`, `envoy_gateway_upgrade` |
 | 8. Hardware and platform specific | Ceph devices, NetApp ONTAP, OpenShift checks |
 
