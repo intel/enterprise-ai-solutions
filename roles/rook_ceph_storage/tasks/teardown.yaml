@@ -272,14 +272,15 @@
   delay: 5
 
 # Per pod, not label-aggregated: a single k8s_log call concatenates every pod's
-# output, so one node reporting CLEANED would mask another that failed.
+# output, so one node reporting CLEANED would mask another that failed. 300 s per
+# disk: blkdiscard takes about a minute on an 8 TB NVMe.
 - name: "rook_ceph | teardown | Verify cleanup completed on every node"
   kubernetes.core.k8s_log:
     namespace: rook-ceph-cleanup
     name: "{{ item.metadata.name }}"
   register: _rook_cleanup_log
   until: "'CLEANED' in (_rook_cleanup_log.log | default('')) or 'CLEANUP_FAILED' in (_rook_cleanup_log.log | default(''))"
-  retries: "{{ (60 + _rook_node_devices | int * rook_ceph_teardown_wipe_seconds_per_device | int) // 5 }}"
+  retries: "{{ (60 + _rook_node_devices | int * 300) // 5 }}"
   delay: 5
   vars:
     _rook_node_devices: >-
