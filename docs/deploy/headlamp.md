@@ -33,11 +33,9 @@ lands on it).
    the Keycloak session. Signing out of Grafana or Langfuse ends only its own
    session.
 
-Grafana is the exception to step 1: it opens on its own login form. Sign in
-there as its local `admin` (password in Secret `grafana-admin-credentials`,
-namespace `monitoring`), or click **Sign in with Keycloak** for the `platform`
-realm. `observability_grafana_allowed_groups` limits which Keycloak groups
-Grafana admits; empty admits every realm user.
+Grafana is the exception to step 1: it opens on its own login form, with the
+local admin and **Sign in with Keycloak**. See
+[Observability](observability.md#sign-in).
 
 The first administrator is `platform-admin` (group `platform-admins`). Its
 temporary password, which must be changed at first login, is in a Secret:

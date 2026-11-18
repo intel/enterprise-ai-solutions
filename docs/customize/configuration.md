@@ -370,7 +370,8 @@ Keycloak and Grafana admin passwords are **auto-generated** (24 random
 characters) on first install and stored in Kubernetes secrets. Re-running the
 install preserves the existing password rather than rotating it.
 
-Retrieve them after install — the username is `admin` in both cases:
+Retrieve them after install — the username is `admin` in both cases. Grafana's
+admin signs in on Grafana's login form; see [Observability](../deploy/observability.md#sign-in):
 
 ```bash
 # Grafana
