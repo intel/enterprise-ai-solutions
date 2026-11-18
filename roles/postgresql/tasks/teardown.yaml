@@ -21,9 +21,8 @@
       failed_when: false
 
     # helm does not delete CRDs on uninstall, and deleting them takes every
-    # Cluster in the group with them. CNPG owns its PVCs, so a database created
-    # against this operator by someone else would lose its data: the CRDs stay
-    # while any Cluster other than ours is registered.
+    # Cluster in the group with them. CNPG owns its PVCs, so a database someone
+    # else created against this operator would lose its data.
     - name: "postgresql | List CNPG Clusters in every namespace"
       kubernetes.core.k8s_info:
         api_version: postgresql.cnpg.io/v1
@@ -34,43 +33,47 @@
     - name: "postgresql | Note the CNPG Clusters that are not ours"
       ansible.builtin.set_fact:
         _cnpg_foreign: >-
-          {{ ((_cnpg_clusters.resources | default([])) | map(attribute='metadata')
-              | rejectattr('namespace', 'equalto', postgresql_namespace) | list)
-             + ((_cnpg_clusters.resources | default([])) | map(attribute='metadata')
-                | selectattr('namespace', 'equalto', postgresql_namespace)
-                | rejectattr('name', 'equalto', postgresql_cluster_name) | list) }}
+          {{ ((_cnpg_clusters.resources | default([])) | map(attribute='metadata.namespace') | list)
+             | zip((_cnpg_clusters.resources | default([])) | map(attribute='metadata.name') | list)
+             | map('join', '/')
+             | reject('equalto', postgresql_namespace ~ '/' ~ postgresql_cluster_name) | list }}
 
-    - name: "postgresql | Keep the CNPG CRDs, other databases still use them"
+    # failed_when above sets failed=False on the result too, so a failed lookup
+    # shows only as a missing resources key. Then there is no way to tell whose
+    # databases are out there, and the CRDs stay.
+    - name: "postgresql | Keep the CNPG CRDs"
       ansible.builtin.debug:
         msg: >-
-          Keeping the postgresql.cnpg.io CRDs: {{ _cnpg_foreign | length }} other
-          CNPG Cluster(s) still registered
-          ({{ _cnpg_foreign | map(attribute='name') | join(', ') }}).
-      when: _cnpg_foreign | length > 0
+          Keeping the postgresql.cnpg.io CRDs:
+          {{ 'the Cluster lookup failed' if _cnpg_clusters.resources is not defined
+             else _cnpg_foreign | join(', ') ~ ' still registered' }}.
+      when: _cnpg_clusters.resources is not defined or _cnpg_foreign | length > 0
 
-    - name: "postgresql | List the CNPG CRDs"
-      kubernetes.core.k8s_info:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-      register: _cnpg_crds
-      failed_when: false
-      when: _cnpg_foreign | length == 0
+    - name: "postgresql | Remove the CNPG CRDs"
+      when:
+        - _cnpg_clusters.resources is defined
+        - _cnpg_foreign | length == 0
+      block:
+        - name: "postgresql | List the CNPG CRDs"
+          kubernetes.core.k8s_info:
+            api_version: apiextensions.k8s.io/v1
+            kind: CustomResourceDefinition
+          register: _cnpg_crds
+          failed_when: false
 
-    - name: "postgresql | Delete the CNPG CRDs"
-      kubernetes.core.k8s:
-        api_version: apiextensions.k8s.io/v1
-        kind: CustomResourceDefinition
-        name: "{{ item.metadata.name }}"
-        state: absent
-      loop: >-
-        {{ (_cnpg_crds.resources | default([]))
-           | selectattr('spec.group', 'equalto', 'postgresql.cnpg.io') | list }}
-      loop_control:
-        label: "{{ item.metadata.name }}"
-      failed_when: false
-      when: _cnpg_foreign | length == 0
+        - name: "postgresql | Delete the CNPG CRDs"
+          kubernetes.core.k8s:
+            api_version: apiextensions.k8s.io/v1
+            kind: CustomResourceDefinition
+            name: "{{ item.metadata.name }}"
+            state: absent
+          loop: >-
+            {{ (_cnpg_crds.resources | default([]))
+               | selectattr('spec.group', 'equalto', 'postgresql.cnpg.io') | list }}
+          loop_control:
+            label: "{{ item.metadata.name }}"
+          failed_when: false
 
-    # The CNPG install creates cnpg_namespace (create_namespace), deleted here by name.
     - name: "postgresql | Delete CNPG operator namespace"
       kubernetes.core.k8s:
         kind: Namespace

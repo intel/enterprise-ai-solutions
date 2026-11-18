@@ -42,8 +42,9 @@ def listed(value):
 
 def cond(expression, variables):
     """A `when:` is bare Jinja, so it needs the braces a template has."""
-    rendered = render("{{ %s }}" % expression, variables)
-    return rendered if isinstance(rendered, bool) else yaml.safe_load(str(rendered))
+    conditions = expression if isinstance(expression, list) else [expression]
+    rendered = [render("{{ %s }}" % c, variables) for c in conditions]
+    return all(r if isinstance(r, bool) else yaml.safe_load(str(r)) for r in rendered)
 
 
 def crd(name, group):
@@ -57,7 +58,7 @@ def cluster(namespace, name):
 def foreign(*clusters):
     expression = task(_CNPG, "Note the CNPG Clusters that are not ours")["ansible.builtin.set_fact"]["_cnpg_foreign"]
     variables = dict(OURS, _cnpg_clusters={"resources": list(clusters)})
-    return [m["name"] for m in listed(render(expression, variables))]
+    return listed(render(expression, variables))
 
 
 def test_only_the_cnpg_group_is_deleted():
@@ -74,16 +75,26 @@ def test_only_the_cnpg_group_is_deleted():
 def test_a_cluster_of_someone_else_is_foreign():
     assert foreign(cluster("postgresql", "postgresql")) == []
     assert foreign() == []
-    assert foreign(cluster("tenant-a", "orders")) == ["orders"]
-    assert foreign(cluster("postgresql", "scratch")) == ["scratch"]
-    assert sorted(foreign(cluster("postgresql", "postgresql"),
-                          cluster("tenant-a", "orders"))) == ["orders"]
+    assert foreign(cluster("tenant-a", "orders")) == ["tenant-a/orders"]
+    assert foreign(cluster("postgresql", "scratch")) == ["postgresql/scratch"]
+    assert foreign(cluster("postgresql", "postgresql"),
+                   cluster("tenant-a", "orders")) == ["tenant-a/orders"]
+
+
+def gate(variables):
+    return cond(task(_CNPG, "Remove the CNPG CRDs")["when"], variables)
 
 
 def test_a_foreign_cluster_keeps_the_crds():
-    for name in ("List the CNPG CRDs", "Delete the CNPG CRDs"):
-        assert cond(task(_CNPG, name)["when"], {"_cnpg_foreign": [cluster("tenant-a", "orders")]}) is False
-        assert cond(task(_CNPG, name)["when"], {"_cnpg_foreign": []}) is True
+    assert gate({"_cnpg_clusters": {"resources": []}, "_cnpg_foreign": ["tenant-a/orders"]}) is False
+    assert gate({"_cnpg_clusters": {"resources": []}, "_cnpg_foreign": []}) is True
+
+
+def test_a_failed_cluster_lookup_keeps_the_crds():
+    """failed_when: false also zeroes result.failed, so only a missing key shows it."""
+    failed = {"failed": False, "msg": "Failed to list Cluster: forbidden"}
+    assert gate({"_cnpg_clusters": failed, "_cnpg_foreign": []}) is False
+    assert cond(task(_CNPG, "Keep the CNPG CRDs")["when"], {"_cnpg_clusters": failed, "_cnpg_foreign": []}) is True
 
 
 def test_the_marketplace_operator_keeps_everything():
