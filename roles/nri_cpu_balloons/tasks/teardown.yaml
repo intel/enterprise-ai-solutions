@@ -64,6 +64,27 @@
         state: absent
       failed_when: false
 
+# Helm leaves CRDs behind on uninstall, so the config.nri group has to go
+# explicitly — same as cert-manager, MetalLB and Istio do. Run outside the block
+# above so a half-removed install is cleaned up too.
+- name: "nri_cpu_balloons | Find NRI CRDs"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+  register: _nri_crds_teardown
+  failed_when: false
+
+- name: "nri_cpu_balloons | Delete NRI CRDs"
+  kubernetes.core.k8s:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item.metadata.name }}"
+    state: absent
+  loop: "{{ _nri_crds_teardown.resources | default([]) | selectattr('metadata.name', 'match', '.*config\\.nri') | list }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  failed_when: false
+
 # Strip NRI capability labels from every node, regardless of whether the
 # Helm release existed. Safe no-op when the labels aren't present.
 - name: "nri_cpu_balloons | List all nodes"

@@ -17,8 +17,29 @@
   # The marketplace operator belongs to the admin's Subscription and stays.
   when: not _postgresql_from_olm | bool
 
-# The CNPG install creates cnpg_namespace (create_namespace). Deleted by name until
-# namespaces and CRDs carry ownership labels; CRDs stay until then (label_crds.yaml).
+# Helm leaves CRDs behind on uninstall, so the postgresql.cnpg.io group has to go
+# explicitly — same as cert-manager, MetalLB and Istio do. Skipped for the
+# marketplace operator, whose CRDs belong to the admin's Subscription.
+- name: "postgresql | Find CNPG CRDs"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+  register: _cnpg_crds
+  when: not _postgresql_from_olm | bool
+
+- name: "postgresql | Delete CNPG CRDs"
+  kubernetes.core.k8s:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item.metadata.name }}"
+    state: absent
+  loop: "{{ _cnpg_crds.resources | default([]) | selectattr('metadata.name', 'match', '.*postgresql\\.cnpg\\.io') | list }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  failed_when: false
+  when: not _postgresql_from_olm | bool
+
+# The CNPG install creates cnpg_namespace (create_namespace), deleted here by name.
 # With the marketplace operator the installer never creates it: a namespace of that
 # name is the admin's, possibly the operator's own.
 - name: "postgresql | Delete CNPG operator namespace"
