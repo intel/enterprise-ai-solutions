@@ -8,11 +8,13 @@ Ansible module — label what a component created, and delete by those labels.
             that component created. For a teardown (`teardown`), a cluster that
             does not answer is skipped, and an env with no baseline is reported
             (baseline false): nothing in it is labelled. The first install of an env
-            that was installed before (predates_labels: earlier install logs, no state
-            file) marks it: its objects carry no labels, so it is reported the same way
-            (predates true) from then on
+            that was installed before (predates_labels: an earlier install ran a
+            component, no state file) marks it (predates true): the objects of its
+            components carry no labels until each one's own teardown ran once (cleared)
   begin     note in state_file which component runs now, and return the file the
             ownership_record callback records the component's task results into
+  clear     note that the component's own teardown ran in an env that predates the
+            labels: what it installs from now on is labelled
   label     label what the component's tasks created, then record the cluster
             again, so the next component starts from here
   delete    delete every object that matches selector, in dependency order
@@ -83,11 +85,11 @@ DOCUMENTATION = r"""
 module: ownership_k8s
 short_description: Label the objects a component created, and delete by label
 options:
-  action: {type: str, required: true, choices: [snapshot, begin, label, delete]}
+  action: {type: str, required: true, choices: [snapshot, begin, clear, label, delete]}
   state_file: {type: path, description: UIDs seen so far (snapshot, label)}
   env: {type: str, description: Env name, the <prefix>/env label (label, delete)}
   layer: {type: str, description: Layer, the <prefix>/layer label (label)}
-  component: {type: str, description: Component, the <prefix>/component label (label, delete)}
+  component: {type: str, description: Component, the <prefix>/component label (begin, clear, label, delete)}
   declared:
     type: dict
     description: "component -> objects it creates outside its tasks: [{kind, namespace, name, labels}], any subset"
@@ -97,6 +99,10 @@ options:
   timeout: {type: int, default: 600, description: Seconds to wait per delete phase}
   component_failed: {type: bool, default: false, description: "label: the component failed (a failure no rescue handled)"}
   teardown: {type: bool, default: false, description: "snapshot for a teardown: an API that does not answer is skipped"}
+  predates_labels:
+    type: bool
+    default: false
+    description: "snapshot for an install: an earlier install of the env ran a component (no state file: it predates the labels)"
 """
 
 META_LIST = "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1,application/json"
@@ -210,7 +216,8 @@ def _read(path):
     when it stopped, or None; labels: uid -> labels of the objects in
     restore_resources; carry: component -> UIDs it may still claim (see label); unlisted:
     the API groups the snapshot could not discover; predates: the env was installed before
-    the labels; exists: the file was there."""
+    the labels; cleared: its components whose own teardown has run since; exists: the file
+    was there."""
     exists = os.path.exists(path)
     try:
         with open(path) as f:
@@ -219,15 +226,15 @@ def _read(path):
         state = {}
     return {"uids": state.get("uids"), "pending": state.get("pending"), "labels": state.get("labels") or {},
             "carry": state.get("carry") or {}, "unlisted": state.get("unlisted") or [],
-            "predates": bool(state.get("predates")), "exists": exists}
+            "predates": bool(state.get("predates")), "cleared": state.get("cleared") or [], "exists": exists}
 
 
-def _write(path, uids, pending=None, labels=None, carry=None, unlisted=(), predates=False):
+def _write(path, uids, pending=None, labels=None, carry=None, unlisted=(), predates=False, cleared=()):
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"uids": sorted(uids) if uids is not None else None, "pending": pending,
                    "labels": labels or {}, "carry": {c: sorted(u) for c, u in (carry or {}).items() if u},
-                   "unlisted": sorted(unlisted), "predates": predates}, f)
+                   "unlisted": sorted(unlisted), "predates": predates, "cleared": sorted(cleared)}, f)
     os.replace(tmp, path)
 
 
@@ -327,36 +334,49 @@ def _restore(api, resources, p, module):
 
 def snapshot(api, p, module):
     state = _read(p["state_file"])
-    if p["teardown"] and (state["uids"] is None or state["predates"]):
+    if p["teardown"] and state["uids"] is None:
         # No install in this env labelled anything (it predates the labels, or never got
-        # that far), or it was installed before the labels and its objects carry none:
-        # the roles' own teardowns run instead. Nothing is written, so a rerun finds the same.
-        return {"changed": False, "baseline": False, "predates": state["predates"], "labelled": [], "recorded": []}
+        # that far): the roles' own teardowns run instead. Nothing is written, so a rerun
+        # finds the same.
+        return {"changed": False, "baseline": False, "predates": False, "cleared": [], "labelled": [], "recorded": []}
     # The first install of an env that was installed before: what is there now is the
-    # env's, and stays unlabelled.
+    # env's, and stays unlabelled. A component's teardown also runs its role's, until that
+    # has run once (clear).
     predates = state["predates"] or (not p["teardown"] and not state["exists"] and p["predates_labels"])
     if state["pending"] and state["uids"] is not None:
         # The last run stopped inside a component, before it was labelled: label what
         # its tasks recorded, and carry what else appeared for its rerun.
         pending = state["pending"]
         result = label(api, dict(p, **pending), module, stopped=True)
-        return {"changed": result["changed"], "baseline": True, "predates": predates, "recovered": pending,
-                "labelled": result["labelled"], "recorded": result["recorded"]}
+        return {"changed": result["changed"], "baseline": True, "predates": predates, "cleared": state["cleared"],
+                "recovered": pending, "labelled": result["labelled"], "recorded": result["recorded"]}
     if not module.check_mode:
         failed = set()
         objects = _all_objects(api, _discover(api, set(p["skip_resources"]), failed))
         carry = {c: set(u) & objects.keys() for c, u in state["carry"].items()}
         _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry, unlisted=failed,
-               predates=predates)
-    return {"changed": False, "baseline": True, "predates": predates, "labelled": [], "recorded": []}
+               predates=predates, cleared=state["cleared"])
+    return {"changed": False, "baseline": True, "predates": predates, "cleared": state["cleared"],
+            "labelled": [], "recorded": []}
 
 
 def begin(p, module):
     state = _read(p["state_file"])
     if not module.check_mode:
         _write(p["state_file"], state["uids"], {"env": p["env"], "layer": p["layer"], "component": p["component"]},
-               state["labels"], state["carry"], state["unlisted"], state["predates"])
+               state["labels"], state["carry"], state["unlisted"], state["predates"], state["cleared"])
     return {"changed": False, "component": p["component"], "record_file": _record_file(p["state_file"])}
+
+
+def clear(p, module):
+    state = _read(p["state_file"])
+    if not state["exists"] or p["component"] in state["cleared"]:
+        return {"changed": False, "cleared": state["cleared"]}
+    cleared = state["cleared"] + [p["component"]]
+    if not module.check_mode:
+        _write(p["state_file"], state["uids"], state["pending"], state["labels"], state["carry"], state["unlisted"],
+               state["predates"], cleared)
+    return {"changed": True, "cleared": cleared}
 
 
 def _helm_release(api, secret):
@@ -536,7 +556,7 @@ def label(api, p, module, stopped=False):
     if not module.check_mode:
         carry = {c: u & objects.keys() for c, u in carry.items()}
         _write(p["state_file"], objects.keys(), labels=_restorable(objects, p), carry=carry,
-               unlisted=undiscovered, predates=state["predates"])
+               unlisted=undiscovered, predates=state["predates"], cleared=state["cleared"])
     return {"changed": bool(labelled or recorded), "labelled": labelled, "recorded": recorded,
             "records": len(records)}
 
@@ -623,7 +643,7 @@ def delete(api, p, module):
 def main():
     module = AnsibleModule(
         argument_spec={
-            "action": {"type": "str", "required": True, "choices": ["snapshot", "begin", "label", "delete"]},
+            "action": {"type": "str", "required": True, "choices": ["snapshot", "begin", "clear", "label", "delete"]},
             "state_file": {"type": "path"},
             "env": {"type": "str"},
             "layer": {"type": "str", "default": "unknown"},
@@ -638,6 +658,7 @@ def main():
             "predates_labels": {"type": "bool", "default": False},
         },
         required_if=[("action", "snapshot", ["state_file"]), ("action", "begin", ["state_file", "env", "component"]),
+                     ("action", "clear", ["state_file", "component"]),
                      ("action", "label", ["state_file", "env", "component"]),
                      ("action", "delete", ["env", "component"])],
         supports_check_mode=True,
@@ -647,6 +668,8 @@ def main():
     p = module.params
     if p["action"] == "begin":
         module.exit_json(**begin(p, module))
+    if p["action"] == "clear":
+        module.exit_json(**clear(p, module))
     kubeconfig = os.environ.get("K8S_AUTH_KUBECONFIG") or os.environ.get("KUBECONFIG") or "~/.kube/config"
     # A teardown's snapshot after the Kubespray reset finds no cluster: the components
     # left (the fabric) have their own teardown, and the state is the cluster's that went.

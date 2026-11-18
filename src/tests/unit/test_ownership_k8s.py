@@ -383,10 +383,21 @@ def test_env_installed_before_the_labels_keeps_its_roles_teardowns(tmp_path):
     own.label(api, p, Module())
     assert api.labels(cm)[COMPONENT] == "app"
     assert COMPONENT not in api.labels(old)
-    # Later runs keep the mark, whatever the logs say; teardown reports no baseline.
+    # Later runs keep the mark, whatever the logs say, until the component's own teardown ran.
     assert own.snapshot(api, params(tmp_path), Module())["predates"] is True
     result = own.snapshot(api, params(tmp_path, teardown=True), Module())
-    assert (result["baseline"], result["predates"]) == (False, True)
+    assert (result["baseline"], result["predates"], result["cleared"]) == (True, True, [])
+    assert own.clear(p, Module()) == {"changed": True, "cleared": ["app"]}
+    assert own.clear(p, Module())["changed"] is False
+    own.begin(params(tmp_path, component="db"), Module())
+    own.label(api, params(tmp_path, component="db"), Module())
+    result = own.snapshot(api, params(tmp_path), Module())
+    assert (result["predates"], result["cleared"]) == (True, ["app"])
+
+
+def test_clear_without_a_state_file_writes_nothing(tmp_path):
+    assert own.clear(params(tmp_path), Module()) == {"changed": False, "cleared": []}
+    assert not (tmp_path / "ownership-uids.json").exists()
 
 
 def test_env_with_a_state_file_or_no_earlier_install_is_labelled(tmp_path):

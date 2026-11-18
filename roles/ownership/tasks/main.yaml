@@ -6,11 +6,13 @@
 #   snapshot  before the first component (install and teardown): record what is
 #             already on the cluster, after labelling what a killed run left
 #   begin     before each component: note that it runs, for snapshot to recover
+#   clear     after a component's own teardown in an env installed before the labels
 #   label     after each component: label what it created
 #   teardown  instead of (or before) a component's own teardown: delete by label
 # =============================================================================
 
-# The current run's log is one of them: more than one means the env was installed before.
+# Installs that got as far as a component; the current run's has not yet. One that
+# stopped in preflight installed nothing.
 - name: "ownership | Find earlier installs of this env"
   when:
     - ownership_action == 'snapshot'
@@ -18,6 +20,7 @@
   ansible.builtin.find:
     paths: "{{ ownership_log_dir }}"
     patterns: "install-*.log"
+    contains: '.*TASK \[Execute '
   register: _ownership_install_logs
 
 - name: "ownership | Record the objects already on the cluster"
@@ -30,16 +33,26 @@
     skip_resources: "{{ ownership_skip_resources }}"
     restore_resources: "{{ ownership_restore_resources }}"
     teardown: "{{ component_action == 'teardown' }}"
-    predates_labels: "{{ (_ownership_install_logs.matched | default(0) | int) > 1 }}"
+    predates_labels: "{{ (_ownership_install_logs.matched | default(0) | int) > 0 }}"
   register: _ownership_snapshot
 
-# An env installed before the labels has none: teardown by label would delete nothing.
+# No install labelled this env: teardown by label would delete nothing.
 - name: "ownership | No install labelled this env: each component's own teardown runs"
   when:
     - ownership_action == 'snapshot'
-    - not (_ownership_snapshot.baseline | default(true)) or _ownership_snapshot.predates | default(false)
+    - not (_ownership_snapshot.baseline | default(true))
   ansible.builtin.set_fact:
     _ownership_unlabelled: true
+
+# Installed before the labels: what a component installed then carries none, so its
+# teardown also runs its role's, until that ran once (run_component.yaml).
+- name: "ownership | This env was installed before the labels"
+  when:
+    - ownership_action == 'snapshot'
+    - _ownership_snapshot.predates | default(false)
+  ansible.builtin.set_fact:
+    _ownership_predates: true
+    _ownership_cleared: "{{ _ownership_snapshot.cleared | default([]) }}"
 
 - name: "ownership | Cluster not reachable, nothing recorded"
   when:
@@ -70,6 +83,13 @@
     state_file: "{{ ownership_state_file }}"
     env: "{{ env_name | default('local') }}"
     layer: "{{ component.layer | default('unknown') }}"
+    component: "{{ component.name }}"
+
+- name: "ownership | Label what {{ component.name | default('') }} installs from now on"
+  when: ownership_action == 'clear'
+  ownership_k8s:
+    action: clear
+    state_file: "{{ ownership_state_file }}"
     component: "{{ component.name }}"
 
 - name: "ownership | Label what {{ component.name | default('') }} created"
@@ -140,5 +160,5 @@
     msg: >-
       No object carries {{ ownership_label_prefix }}/component={{ component.name }} in env
       {{ env_name | default('local') }}. Either it is not installed, or it was installed before
-      ownership labels existed while later installs were labelled; for the latter, set
-      ownership_enabled: false to run the role's own teardown.
+      ownership labels existed and no earlier install log of this env shows it (logs removed);
+      for the latter, set ownership_enabled: false to run the role's own teardown.

@@ -98,7 +98,7 @@ Deploy components. Dependencies are resolved automatically.
 
 Remove components in reverse dependency order. Configuration files and environment state are preserved.
 
-Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `ai-solutions.intel.com/component`, and nothing else (see [Ownership labels](../reference/adding_solutions.md#ownership-labels)). The cluster itself and host changes (`kubernetes`, `storage`, rack-scale networking) are removed by their roles. An env installed before ownership labels existed has nothing labelled: set `ownership_enabled: false` in `global_config.yaml` to run each role's own teardown instead.
+Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `ai-solutions.intel.com/component`, and nothing else (see [Ownership labels](../reference/adding_solutions.md#ownership-labels)). The cluster itself and host changes (`kubernetes`, `storage`, rack-scale networking) are removed by their roles. In an env installed before ownership labels existed, each component's own teardown runs as well, until it has run once (see the link above). `ownership_enabled: false` in `global_config.yaml` runs only the roles' own teardowns.
 
 ```bash
 # Remove everything (cluster included)

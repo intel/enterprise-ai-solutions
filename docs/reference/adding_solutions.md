@@ -335,11 +335,14 @@ kept aside for it: when its next run reports one of them (as `unchanged` or an u
 is labelled as new.
 
 In an env no install labelled, teardown runs each component's own `teardown.yaml`, as with
-`ownership_enabled: false`. So does an env installed before the labels and installed
-again since: its first install with labels finds earlier install logs in `env/<env>/logs`
-and no state file, and marks the env in the state file, because what it installed before
-carries no labels. An env installed from scratch (also with the infrastructure layer) has
-no earlier logs and is torn down by label.
+`ownership_enabled: false`. An env installed before the labels and installed again since
+is marked in the state file: its first install with labels finds no state file, and an
+earlier install log in `env/<env>/logs` that ran a component (one that stopped in preflight
+installed nothing and doesn't count). What it installed before carries no labels, so in
+that env each component is torn down as `teardown: both`, by label and then by its role's
+`teardown.yaml`, until that has run once; from then on it is torn down as its entry says.
+An env installed from scratch (also with the infrastructure layer) has no earlier logs and
+is torn down by label.
 
 A discovery pass that cannot read an API group version (an aggregated API that is down, a
 transient error) leaves it out and notes the group in the state file: until a later pass
