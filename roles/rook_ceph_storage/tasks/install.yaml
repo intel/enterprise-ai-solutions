@@ -222,6 +222,11 @@
         values:
           tolerations:
             - operator: Exists
+          # The CSI node plugin must run wherever a pod with a Ceph volume can land,
+          # control-plane nodes included.
+          csi:
+            pluginTolerations:
+              - operator: Exists
       register: helm_install_result
       until: helm_install_result is succeeded
       retries: "{{ helm_retries }}"
