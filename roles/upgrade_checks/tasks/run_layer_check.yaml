@@ -1,0 +1,14 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Included by run.yaml once per layer check file: upgrade_check_layer, _layer_check_path.
+- name: "upgrade_checks | Note the verdicts before {{ _layer_check_path | basename }}"
+  ansible.builtin.set_fact:
+    _verdicts_before: "{{ _upgrade_verdicts }}"
+
+- name: "upgrade_checks | Run {{ upgrade_check_layer }}'s {{ _layer_check_path | basename }}"
+  ansible.builtin.include_tasks: "{{ _layer_check_path }}"
+
+- name: "upgrade_checks | Mark {{ upgrade_check_layer }}'s verdicts as gating every run class"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: "{{ _upgrade_verdicts | mark_always_gates(_verdicts_before, upgrade_check_layer, _layer_check_path) }}"

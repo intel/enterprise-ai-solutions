@@ -17,11 +17,19 @@ from upgrade_checks import (  # noqa: E402
     claim_layer_dirs,
     classify_run,
     cluster_probe_verdict,
+    compatibility_dependants,
+    compatibility_verdict,
+    config_tracking_capture,
+    config_tracking_compare,
+    config_tracking_merge_facts,
+    config_tracking_strip,
+    config_tracking_verdict,
     layer_fully_planned,
     layer_record_is_legacy,
     record_owned_by_layer,
     layer_release_version,
     lift_layer_record,
+    mark_always_gates,
     record_dependencies,
     record_forced,
     record_version,
@@ -29,6 +37,7 @@ from upgrade_checks import (  # noqa: E402
     upgrade_gate,
     upgrade_path_verdict,
     version_change_verdict,
+    versions_after_run,
 )
 
 ERAG_LEGACY = {
@@ -258,6 +267,40 @@ def test_conflict_on_deleting_names_the_teardown():
     assert v["resolve"] == "./es_auto_installer.sh teardown erag --env dev"
 
 
+def test_an_always_gates_verdict_gates_a_plain_install():
+    # The runner passes each layer's run class; a resume is otherwise never refused.
+    classes = {"erag": "resume"}
+    blocking = {"layer": "erag", "check": "compatibility", "verdict": "blocking", "reason": "r", "resolve": None}
+    assert upgrade_gate([dict(blocking, always_gates=True)], {"erag": True}, layer_class=classes)["refused"] == [
+        "erag/compatibility"]
+    assert upgrade_gate([blocking], {"erag": True}, layer_class=classes)["refused"] == []
+
+
+def _tasks(tasks):
+    for task in tasks:
+        yield task
+        for key in ("block", "rescue", "always"):
+            yield from _tasks(task.get(key, []))
+
+
+@pytest.mark.parametrize("action, step", [("install", "save"), ("teardown", "delete")])
+def test_a_failed_tracked_configuration_step_is_named(action, step):
+    jinja2 = pytest.importorskip("jinja2")
+    stop = next(t for t in _tasks(_task_file("playbooks/includes/run_layer.yaml"))
+                if t.get("name") == "Stop after the {{ layer }} failure")
+    rendered = jinja2.Template(stop["vars"]["_failed_step"].strip()).render(
+        _running_component="", component_action=action, _layer_tracking_save=True)
+    assert rendered == "its tracked configuration " + step
+
+
+def test_the_tracked_configuration_is_saved_after_the_record_end():
+    # Saved first, a failed record write would leave a halted record whose resume compares
+    # against the new state, so no rule would fire and no sets fact would be set.
+    names = [t.get("name") for t in _tasks(_task_file("playbooks/includes/run_layer.yaml"))]
+    assert (names.index("Record the {{ layer }} {{ component_action }} end")
+            < names.index("Save or delete the {{ layer }} tracked configuration"))
+
+
 DOWNGRADE = version_change_verdict("downgrade", "erag", record(version="3.1.0"), "3.0.0")
 PASS = version_change_verdict("reinstall", "platform", record(), "1.1.0")
 
@@ -286,6 +329,38 @@ def test_force_without_a_gating_verdict_is_not_forced():
     assert gate["forced"] is False and gate["forcedChecks"] == []
 
 
+LAYER_CHECK = {"layer": "erag", "check": "tag-check", "verdict": "blocking",
+               "reason": "tag mismatch", "resolve": "fix the tag", "always_gates": True}
+
+
+def test_layer_check_blocks_a_fresh_install_for_a_gating_layer():
+    gate = upgrade_gate([LAYER_CHECK], {"erag": True}, False, {"erag": "fresh"})
+    assert gate["refused"] == ["erag/tag-check"]
+    assert gate["checks"][0]["gating"] is True
+
+
+def test_layer_check_is_advisory_for_a_non_gating_layer():
+    gate = upgrade_gate([LAYER_CHECK], {"erag": False}, False, {"erag": "fresh"})
+    assert gate["refused"] == []
+    assert gate["checks"][0]["gating"] is False
+
+
+def test_layer_check_force_bypass_is_recorded():
+    gate = upgrade_gate([LAYER_CHECK], {"erag": True}, True, {"erag": "fresh"})
+    assert gate["refused"] == []
+    assert gate["forcedChecks"] == ["erag/tag-check"]
+
+
+def test_core_check_on_a_plain_install_stays_advisory():
+    core_check = {"layer": "erag", "check": "compatibility", "verdict": "blocking",
+                  "reason": "x", "resolve": "y"}
+    gate = upgrade_gate([core_check], {"erag": True}, False, {"erag": "fresh"})
+    assert gate["refused"] == []
+    assert gate["checks"][0]["gating"] is False
+    # without layer_class, nothing restricts it to upgrade/downgrade (back-compat)
+    assert upgrade_gate([core_check], {"erag": True})["refused"] == ["erag/compatibility"]
+
+
 @pytest.mark.parametrize("run_class, due", [
     ("upgrade", True), ("downgrade", True), ("fresh", False), ("reinstall", False),
     ("resume", False), ("conflict", False), ("unversioned", False),
@@ -310,6 +385,41 @@ def test_record_dependencies():
     assert record_dependencies(records, ["platform", "inference", "infrastructure"]) == {
         "platform": "1.1.0", "inference": None, "infrastructure": None}
     assert record_dependencies(records, None) == {}
+
+
+CORE = [{"layer": "erag", "check": "a", "verdict": "pass"}, {"layer": "platform", "check": "b", "verdict": "pass"}]
+
+
+def test_mark_always_gates_does_nothing_when_none_were_added():
+    assert mark_always_gates(list(CORE), CORE, "erag", "x.yaml") == CORE
+
+
+def test_mark_always_gates_marks_only_the_verdicts_the_file_appended():
+    added = {"layer": "erag", "check": "c", "verdict": "blocking"}
+    assert mark_always_gates(CORE + [added], CORE, "erag", "x.yaml") == CORE + [dict(added, always_gates=True)]
+
+
+def test_mark_always_gates_overwrites_a_files_own_mark():
+    added = {"layer": "erag", "check": "c", "verdict": "blocking", "always_gates": False}
+    assert mark_always_gates([added], [], "erag", "x.yaml") == [dict(added, always_gates=True)]
+
+
+def test_a_layer_check_file_verdict_needs_layer_check_and_verdict():
+    with pytest.raises(ValueError, match="x.yaml appended a verdict without layer, check and verdict"):
+        mark_always_gates([{"layer": "erag", "check": "c"}], [], "erag", "x.yaml")
+
+
+def test_the_default_deny_patterns_leave_out_common_secret_key_names():
+    kept = config_tracking_strip({k: 1 for k in ("apiKey", "openai_api_key", "passwd", "pwd", "auth", "author",
+                                                 "vector_dims")}, DENY)
+    assert kept == {"author": 1, "vector_dims": 1}
+
+
+def test_a_layer_check_file_may_only_append_verdicts_for_its_own_layer():
+    with pytest.raises(ValueError, match="x.yaml .layer erag. appended verdicts for platform"):
+        mark_always_gates(CORE + [{"layer": "platform", "check": "c", "verdict": "pass"}], CORE, "erag", "x.yaml")
+    with pytest.raises(ValueError, match="x.yaml changed the verdicts before it"):
+        mark_always_gates(CORE[:1] + [{"layer": "erag", "check": "c", "verdict": "pass"}], CORE, "erag", "x.yaml")
 
 
 def test_only_every_class_checks_judge_a_fresh_install():
@@ -391,6 +501,13 @@ def test_cluster_probe_refuses_only_a_layer_that_declares_supports_upgrade():
     assert gate["refused"] == ["erag/cluster-probe"]
     forced_gate = upgrade_gate(probed, {"erag": True, "platform": False}, forced=True)
     assert forced_gate["refused"] == [] and forced_gate["forcedChecks"] == ["erag/cluster-probe"]
+
+
+def test_cluster_probe_refuses_although_every_layer_is_classed_fresh():
+    # The failed probe classes every layer fresh, a plain install the gate otherwise never refuses.
+    probed = [cluster_probe_verdict("erag", "no error text")]
+    gate = upgrade_gate(probed, {"erag": True}, layer_class={"erag": "fresh"})
+    assert gate["refused"] == ["erag/cluster-probe"]
 
 
 def test_cluster_probe_does_not_refuse_with_no_gating_layer_planned():
@@ -622,3 +739,451 @@ def test_old_upgrade_reports_are_pruned_like_env_log_dir():
     prune = next(t for t in tasks if t["name"].endswith("Prune old {{ upgrade_record_layer }} upgrade reports"))
     assert prune["ansible.builtin.file"]["state"] == "absent"
     assert "upgrade_report_keep" in prune["loop"]
+
+
+# Compatibility
+
+ERAG_REQUIRES = {"erag": {"platform": ">=1.1.0,<1.2.0", "inference": ">=1.1.0,<1.2.0",
+                          "installer": ">=1.1.0,<2.0.0"}}
+INSTALLED = {"infrastructure": record(version="1.1.0"), "platform": record(version="1.1.0"),
+             "inference": record(version="1.1.0"), "erag": record(version="3.0.0")}
+
+
+def compat(classes, records=INSTALLED, requires=ERAG_REQUIRES, release=None, installer="1.1.0",
+           layer="erag", depends_on=("inference", "platform"), layer_order=()):
+    release = release if release is not None else {name: "3.1.0" if name == "erag" else "1.1.0" for name in classes}
+    versions = versions_after_run(records, release, installer)
+    return compatibility_verdict(layer, classes, requires, records, versions, list(depends_on), "dev",
+                                 layer_order=layer_order)
+
+
+def test_versions_after_run():
+    versions = versions_after_run({"platform": record(version="1.1.0"), "inference": {}},
+                                  {"platform": "1.2.0", "erag": None}, "1.1.0")
+    assert versions == {"platform": "1.2.0", "inference": None, "erag": None, "installer": "1.1.0"}
+
+
+def test_compatibility_pass():
+    v = compat({"erag": "upgrade"})
+    assert (v["check"], v["verdict"], v["reason"], v["resolve"]) == ("compatibility", "pass", "requires met", None)
+    assert compat({"platform": "reinstall"}, layer="platform", depends_on=["infrastructure"])["reason"] == \
+        "nothing required"
+
+
+@pytest.mark.parametrize("dep, version, verdict", [
+    ("platform", "1.0.9", "blocking"), ("platform", "1.2.0", "advisory"),
+    ("inference", "1.0.0", "blocking"), ("inference", "2.0.0", "advisory"),
+])
+def test_compatibility_lower_bound_blocks_upper_bound_advises(dep, version, verdict):
+    v = compat({"erag": "upgrade"}, records=dict(INSTALLED, **{dep: record(version=version)}))
+    assert v["verdict"] == verdict
+    assert v["reason"] == "erag 3.1.0 requires %s >=1.1.0,<1.2.0, %s is %s" % (dep, dep, version)
+    assert v["resolve"] == "./es_auto_installer.sh install %s --env dev from a release within >=1.1.0,<1.2.0" % dep
+
+
+@pytest.mark.parametrize("installer, verdict", [("1.0.0", "blocking"), ("2.0.0", "advisory"), ("1.9.3", "pass")])
+def test_compatibility_installer_range(installer, verdict):
+    v = compat({"erag": "upgrade"}, installer=installer)
+    assert v["verdict"] == verdict
+    if verdict != "pass":
+        assert v["resolve"] == "use an installer release within >=1.1.0,<2.0.0"
+
+
+def test_compatibility_bare_version_and_other_operators():
+    for expr, version, verdict in [("1.1.0", "1.0.0", "blocking"), ("1.1.0", "9.0.0", "pass"),
+                                   ("~=1.1.0", "1.0.5", "blocking"), ("~=1.1.0", "1.2.0", "advisory"),
+                                   ("==1.1.*", "1.0.0", "blocking"), ("!=1.1.0", "1.1.0", "advisory"),
+                                   (">1.1.0", "1.1.0", "blocking"), (">1.1.0", "1.0.0", "blocking"),
+                                   (">=1.1.0,<2.0.0", "1.2.0rc1", "pass"), (">=1.1.0", "1.1.0rc1", "blocking"),
+                                   (">=1.1.0,<1.2.0", "1.2.0rc1", "advisory"), ("<=1.1.0", "1.1.1rc1", "advisory")]:
+        v = compat({"erag": "upgrade"}, records=dict(INSTALLED, platform=record(version=version)),
+                   requires={"erag": {"platform": expr}})
+        assert v["verdict"] == verdict, (expr, version)
+
+
+def test_compatibility_missing_dependency_versions_block():
+    no_inference = {k: v for k, v in INSTALLED.items() if k != "inference"}
+    v = compat({"erag": "upgrade"}, records=no_inference)
+    assert v["verdict"] == "blocking"
+    assert v["reason"] == "inference has no version (no deployment record)"
+    assert v["resolve"] == "./es_auto_installer.sh install inference --env dev"
+    v = compat({"erag": "upgrade"}, records=dict(INSTALLED, inference={"layer": "inference", "version": None}))
+    assert v["reason"] == "inference has no version (its record has no version)"
+    # planned in the same run, without a version.yaml
+    v = compat({"inference": "unversioned", "erag": "upgrade"}, release={"inference": None, "erag": "3.1.0"})
+    assert v["reason"] == "inference has no version (it declares no version.yaml)"
+    # a depends_on layer the requires do not name still needs a version
+    v = compat({"erag": "upgrade"}, records=no_inference, requires={"erag": {"platform": ">=1.1.0"}})
+    assert v["verdict"] == "blocking" and v["reason"].startswith("inference has no version")
+
+
+def test_compatibility_judges_a_planned_dependency_at_its_release():
+    v = compat({"platform": "upgrade", "erag": "upgrade"}, release={"platform": "1.2.0", "erag": "3.1.0"})
+    assert v["verdict"] == "advisory" and "platform is 1.2.0" in v["reason"]
+
+
+def test_compatibility_reverse_direction_is_advisory():
+    v = compat({"platform": "upgrade"}, release={"platform": "1.2.0"}, layer="platform",
+               depends_on=["infrastructure"])
+    assert v["verdict"] == "advisory"
+    assert v["reason"] == ("erag (installed 3.0.0; range from its checkout) requires platform >=1.1.0,<1.2.0,"
+                           " platform is now 1.2.0")
+    assert v["resolve"] == ("install platform within >=1.1.0,<1.2.0, or upgrade erag first:"
+                            " ./es_auto_installer.sh init erag --upgrade --env dev")
+    # a planned dependant judges itself; an uninstalled one does not count; a reinstall changes nothing
+    assert compat({"platform": "upgrade", "erag": "upgrade"}, release={"platform": "1.2.0", "erag": "3.1.0"},
+                  layer="platform", depends_on=["infrastructure"])["verdict"] == "pass"
+    assert compat({"platform": "upgrade"}, records={k: v for k, v in INSTALLED.items() if k != "erag"},
+                  release={"platform": "1.2.0"}, layer="platform", depends_on=["infrastructure"])["verdict"] == "pass"
+    assert compat({"platform": "reinstall"}, records=dict(INSTALLED, platform=record(version="1.2.0")),
+                  release={"platform": "1.2.0"}, layer="platform", depends_on=["infrastructure"])["verdict"] == "pass"
+
+
+def test_compatibility_resolve_orders_bottom_up_on_mixed_input():
+    # requires names inference before infrastructure; bottom-up still puts infrastructure first
+    order = ["infrastructure", "platform", "inference"]
+    no_versions = {k: v for k, v in INSTALLED.items() if k not in ("inference", "infrastructure")}
+    v = compat({"erag": "upgrade"}, records=no_versions,
+               requires={"erag": {"inference": ">=1.1.0", "infrastructure": ">=1.1.0"}},
+               depends_on=(), layer_order=order)
+    assert v["resolve"] == ("1. ./es_auto_installer.sh install infrastructure --env dev"
+                            " 2. ./es_auto_installer.sh install inference --env dev")
+    # without a layer_order nothing is reordered: requires's own key order comes through
+    assert compat({"erag": "upgrade"}, records=no_versions,
+                  requires={"erag": {"inference": ">=1.1.0", "infrastructure": ">=1.1.0"}},
+                  depends_on=())["resolve"] == ("1. ./es_auto_installer.sh install inference --env dev"
+                                                " 2. ./es_auto_installer.sh install infrastructure --env dev")
+
+
+def test_compatibility_resolve_forward_and_reverse_combined_order():
+    requires = {"platform": {"infrastructure": ">=1.1.0"}, **ERAG_REQUIRES}
+    kwargs = dict(records=dict(INSTALLED, infrastructure=record(version="1.0.0")), requires=requires,
+                 release={"platform": "1.2.0"}, layer="platform", depends_on=["infrastructure"])
+    forward_fix = "./es_auto_installer.sh install infrastructure --env dev from a release within >=1.1.0"
+    reverse_fix = ("install platform within >=1.1.0,<1.2.0, or upgrade erag first:"
+                   " ./es_auto_installer.sh init erag --upgrade --env dev")
+
+    v = compat({"platform": "upgrade"}, layer_order=["infrastructure", "platform", "inference", "erag"], **kwargs)
+    assert v["resolve"] == "1. %s 2. %s" % (forward_fix, reverse_fix)
+
+    # a layer_order that ranks the reverse finding's layer first reorders the fixes to match
+    v2 = compat({"platform": "upgrade"}, layer_order=["erag", "infrastructure", "platform", "inference"], **kwargs)
+    assert v2["resolve"] == "1. %s 2. %s" % (reverse_fix, forward_fix)
+
+    # a layer_order that omits erag still sorts it after every named layer, not before
+    v3 = compat({"platform": "upgrade"}, layer_order=["infrastructure", "platform", "inference"], **kwargs)
+    assert v3["resolve"] == v["resolve"]
+
+
+def test_compatibility_dependants_filter():
+    found = compatibility_dependants("platform", {"erag": {"platform": ">=1.1.0,<1.2.0"}},
+                                     {"erag": record(version="3.0.0")}, "1.2.0", "dev")
+    assert found == [{
+        "dependant": "erag",
+        "reason": "erag (installed 3.0.0; range from its checkout) requires platform >=1.1.0,<1.2.0,"
+                 " platform is now 1.2.0",
+        "resolve": "install platform within >=1.1.0,<1.2.0, or upgrade erag first:"
+                  " ./es_auto_installer.sh init erag --upgrade --env dev",
+    }]
+    # within range: nothing found
+    assert compatibility_dependants("platform", {"erag": {"platform": ">=1.1.0,<1.2.0"}},
+                                    {"erag": record(version="3.0.0")}, "1.1.5", "dev") == []
+    # not installed: skipped
+    assert compatibility_dependants("platform", {"erag": {"platform": ">=1.1.0,<1.2.0"}}, {}, "1.2.0", "dev") == []
+    # no requires on this layer at all: skipped
+    assert compatibility_dependants("platform", {"erag": {}}, {"erag": record(version="3.0.0")},
+                                    "1.2.0", "dev") == []
+    # layer_class names a dependant to exclude it: a layer this run judges itself
+    assert compatibility_dependants("platform", {"platform": {"platform": ">=1.3.0"}},
+                                    {"platform": record(version="1.2.0")}, "1.2.0", "dev",
+                                    {"platform": True}) == []
+
+
+def test_compatibility_names_the_layer_of_a_bad_range():
+    with pytest.raises(ValueError, match="layer erag: requires.platform"):
+        compat({"erag": "upgrade"}, requires={"erag": {"platform": ">=one"}})
+    with pytest.raises(ValueError, match="layer erag: requires is not a mapping"):
+        compat({"erag": "upgrade"}, requires={"erag": ["platform"]})
+    # unquoted, YAML reads 1.10 as the float 1.1: refused rather than read as >=1.1
+    with pytest.raises(ValueError, match="layer erag: requires.platform 1.1 is not a range"):
+        compat({"erag": "upgrade"}, requires={"erag": {"platform": 1.10}})
+    with pytest.raises(ValueError, match="layer erag: requires.platform '===1.1.0' is not a range"):
+        compat({"erag": "upgrade"}, requires={"erag": {"platform": "===1.1.0"}})
+    # SpecifierSet("") matches every version
+    for blank in ("", "  "):
+        with pytest.raises(ValueError, match="layer erag: requires.platform '%s' is not a range" % blank):
+            compat({"erag": "upgrade"}, requires={"erag": {"platform": blank}})
+
+
+def test_compatibility_names_an_installed_dependant_whose_requires_is_not_a_mapping():
+    with pytest.raises(ValueError, match="layer erag: requires is not a mapping"):
+        compatibility_dependants("platform", {"erag": ["platform"]}, {"erag": record(version="3.0.0")}, "1.2.0", "dev")
+
+
+def test_compatibility_names_an_unversioned_release_as_such():
+    v = compatibility_verdict("erag", {"erag": "fresh"}, {"erag": {"platform": ">=2.0.0"}},
+                              {"platform": record(version="1.1.0")}, {"platform": "1.1.0"}, [], "dev")
+    assert v["reason"].startswith("erag (unversioned) requires platform >=2.0.0")
+
+
+def test_compatibility_accepts_a_pre_release_dependant_range():
+    assert compatibility_dependants("platform", {"erag": {"platform": ">=1.1.0,<2.0.0"}},
+                                    {"erag": record(version="3.0.0")}, "1.2.0rc1", "dev") == []
+
+
+BELOW = compat({"erag": "upgrade"}, records=dict(INSTALLED, platform=record(version="1.0.0")))
+
+
+@pytest.mark.parametrize("run_class, gating", [
+    ("fresh", False), ("reinstall", False), ("resume", False), ("upgrade", True), ("downgrade", True),
+])
+def test_gate_never_refuses_a_plain_install(run_class, gating):
+    gate = upgrade_gate([BELOW], {"erag": True}, False, {"erag": run_class})
+    assert gate["checks"][0]["gating"] is gating
+    assert gate["refused"] == (["erag/compatibility"] if gating else [])
+    forced = upgrade_gate([BELOW], {"erag": True}, True, {"erag": run_class})
+    assert forced["forcedChecks"] == (["erag/compatibility"] if gating else [])
+
+
+def test_gate_keeps_refusing_other_checks():
+    for run_class in ("downgrade", "conflict"):
+        verdict = version_change_verdict(run_class, "erag", record(version="3.1.0", target="3.2.0"), "3.0.0")
+        assert upgrade_gate([verdict], {"erag": True}, False, {"erag": run_class})["refused"] == \
+            ["erag/version-change"]
+    # without supports.upgrade nothing refuses, and without classes the gate is as before
+    assert upgrade_gate([BELOW], {"erag": False}, False, {"erag": "upgrade"})["refused"] == []
+    assert upgrade_gate([BELOW], {"erag": True})["refused"] == ["erag/compatibility"]
+
+
+def test_compatibility_judges_every_class():
+    classes = {"infrastructure": "fresh", "platform": "reinstall", "erag": "resume"}
+    assert check_layers(classes, "compatibility", ["version_change", "compatibility"]) == list(classes)
+
+
+# Configuration tracking
+
+DENY = yaml.safe_load(open(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "roles", "upgrade_checks", "defaults", "main.yaml")))["config_tracking_deny"]
+TRACKING = """
+files: [config.erag.yaml, models-rag.yaml]
+rules:
+  - id: EMBEDDING_MODEL_CHANGED
+    key: config.erag.yaml:inference_models[role=embedding].name
+    message: "Embedding model changed from '{old}' to '{new}'"
+    sets: {embedding_migration_required: "true", embedding_migration_old_model: "{old}"}
+  - id: VECTOR_DIMS_CHANGED
+    key: vector_dims
+    verdict: blocking
+"""
+ERAG_CONFIG = {
+    "vector_dims": 768, "replicas": 1, "admin_password": "x",
+    "inference_models": [{"role": "embedding", "name": "bge-base"}, {"role": "llm", "name": "llama"}],
+}
+
+
+@pytest.fixture
+def layer(tmp_path):
+    """A layer directory with config_tracking.yaml and an env directory with its files."""
+    layer_dir, env_dir = tmp_path / "deployment", tmp_path / "env"
+    layer_dir.mkdir()
+    env_dir.mkdir()
+    (layer_dir / "config_tracking.yaml").write_text(TRACKING)
+    (env_dir / "config.erag.yaml").write_text(yaml.safe_dump(ERAG_CONFIG))
+    return str(layer_dir), str(env_dir)
+
+
+def saved(config):
+    return yaml.safe_dump({"layer": "erag", "files": {"config.erag.yaml": config_tracking_strip(config, DENY)}})
+
+
+def changed(**values):
+    return dict(ERAG_CONFIG, **values)
+
+
+def test_strip_drops_denied_keys_at_any_depth():
+    data = {"a": 1, "db_password": "p", "nested": [{"api_token": "t", "keep": 2}], "ssh_key": "k", "keys": 3}
+    assert config_tracking_strip(data, DENY) == {"a": 1, "nested": [{"keep": 2}], "keys": 3}
+    assert config_tracking_strip({"DB_PASSWORD": "p", "ApiToken": "t", "a": 1}, DENY) == {"a": 1}
+
+
+def test_capture_without_tracking_file_is_none(tmp_path):
+    assert config_tracking_capture(str(tmp_path), str(tmp_path), DENY) is None
+    assert config_tracking_capture(None, str(tmp_path), DENY) is None
+
+
+def test_capture_skips_missing_files_and_secrets(layer):
+    layer_dir, env_dir = layer
+    captured = config_tracking_capture(layer_dir, env_dir, DENY)
+    assert list(captured) == ["config.erag.yaml"]
+    assert "admin_password" not in captured["config.erag.yaml"]
+
+
+def test_capture_of_an_empty_file(layer):
+    layer_dir, env_dir = layer
+    open(os.path.join(env_dir, "models-rag.yaml"), "w").close()
+    assert config_tracking_capture(layer_dir, env_dir, DENY)["models-rag.yaml"] == {}
+
+
+def test_no_saved_state_is_baseline(layer):
+    result = config_tracking_verdict(*layer, None, DENY, "erag")
+    assert result["check"]["verdict"] == "baseline" and result["facts"] == {}
+
+
+def test_layer_without_tracking_file_is_skipped(tmp_path):
+    result = config_tracking_verdict(str(tmp_path), str(tmp_path), None, DENY, "erag")
+    assert result["check"] == {"layer": "erag", "check": "config-tracking", "verdict": "skipped",
+                               "reason": "no config_tracking.yaml", "resolve": None}
+    assert config_tracking_verdict(None, str(tmp_path), None, DENY, "erag")["check"]["verdict"] == "skipped"
+
+
+def test_layer_supporting_upgrade_without_tracking_file_is_blocking(tmp_path):
+    check = config_tracking_verdict(str(tmp_path), str(tmp_path), None, DENY, "erag", "local", True)["check"]
+    assert check["verdict"] == "blocking"
+    assert check["reason"] == "erag declares supports.upgrade but ships no config_tracking.yaml"
+    assert check["resolve"] == "add config_tracking.yaml beside erag's components.yaml, or rerun with --force"
+    assert upgrade_gate([check], {"erag": True})["refused"] == ["erag/config-tracking"]
+
+
+def test_non_gating_layer_without_tracking_file_stays_skipped(tmp_path):
+    check = config_tracking_verdict(str(tmp_path), str(tmp_path), None, DENY, "erag", "local", False)["check"]
+    assert check["verdict"] == "skipped"
+
+
+def test_unchanged_passes(layer):
+    check = config_tracking_verdict(*layer, saved(ERAG_CONFIG), DENY, "erag")["check"]
+    assert (check["verdict"], check["reason"]) == ("pass", "no tracked change")
+
+
+def test_change_without_rule_passes_and_is_named(layer):
+    check = config_tracking_verdict(*layer, saved(changed(replicas=3)), DENY, "erag")["check"]
+    assert check["verdict"] == "pass"
+    assert check["reason"] == "changed, no rule: config.erag.yaml:replicas"
+
+
+def test_secret_change_is_not_seen(layer):
+    check = config_tracking_verdict(*layer, saved(changed(admin_password="y")), DENY, "erag")["check"]
+    assert check["reason"] == "no tracked change"
+
+
+def test_advisory_rule_with_list_selection_sets_facts(layer):
+    old = changed(inference_models=[{"role": "embedding", "name": "e5"}, {"role": "llm", "name": "llama"}])
+    result = config_tracking_verdict(*layer, saved(old), DENY, "erag")
+    assert result["check"]["verdict"] == "advisory"
+    assert result["check"]["reason"] == "EMBEDDING_MODEL_CHANGED: Embedding model changed from 'e5' to 'bge-base'"
+    assert result["check"]["resolve"] is None
+    assert result["facts"] == {"embedding_migration_required": "true", "embedding_migration_old_model": "e5"}
+
+
+def test_blocking_wins_and_names_the_value_to_set_back(layer):
+    old = changed(vector_dims=384, inference_models=[{"role": "embedding", "name": "e5"}])
+    check = config_tracking_verdict(*layer, saved(old), DENY, "erag", "prod")["check"]
+    assert check["verdict"] == "blocking"
+    assert "VECTOR_DIMS_CHANGED: vector_dims '384' -> '768'" in check["reason"]
+    assert check["resolve"] == "in env/prod set back vector_dims to '384'"
+
+
+def test_blocking_refuses_only_a_layer_that_supports_upgrade(layer):
+    check = config_tracking_verdict(*layer, saved(changed(vector_dims=384)), DENY, "erag")["check"]
+    assert upgrade_gate([check], {"erag": False})["refused"] == []
+    assert upgrade_gate([check], {"erag": True})["refused"] == ["erag/config-tracking"]
+
+
+@pytest.mark.parametrize("when, old, new, fires", [
+    ("changed", {"k": 1}, {"k": 2}, True),
+    ("changed", {}, {"k": 2}, False),
+    ("set", {"k": ""}, {"k": "x"}, True),
+    ("set", {"k": "a"}, {"k": "b"}, False),
+    ("cleared", {"k": "a"}, {}, True),
+    ("cleared", {}, {}, False),
+])
+def test_when(when, old, new, fires):
+    rules = [{"id": "R", "key": "f.yaml:k", "when": when}]
+    result = config_tracking_compare({"f.yaml": new}, {"f.yaml": old}, rules)
+    assert (result["verdict"] == "advisory") is fires
+
+
+def test_bare_key_reads_the_first_file_holding_it():
+    rules = [{"id": "R", "key": "a.b"}]
+    current, before = {"one.yaml": {"x": 1}, "two.yaml": {"a": {"b": 2}}}, {"two.yaml": {"a": {"b": 1}}}
+    findings = config_tracking_compare(current, before, rules, ["one.yaml", "two.yaml"])["findings"]
+    assert [(f["old"], f["new"]) for f in findings] == [("1", "2")]
+
+
+def test_saved_but_empty_state_is_compared_not_baseline():
+    assert config_tracking_compare({"f.yaml": {"k": 1}}, {}, [])["verdict"] == "pass"
+
+
+@pytest.mark.parametrize("tracking", [
+    "files: config.erag.yaml",
+    "files: []\nrules: [{key: k}]",
+    "files: []\nrules: [{id: R}]",
+    "files: []\nrules: [{id: R, key: a}, {id: R, key: b}]",
+    "files: []\nrules: [{id: R, key: a, verdict: fatal}]",
+    "files: []\nrules: [{id: R, key: a, when: renamed}]",
+    "files: []\nrules: [{id: R, key: a, sets: {f: x}}, {id: S, key: b, sets: {f: y}}]",
+    "files: []\nrules: [{id: R, key: a, sets: foo}]",
+    "files: []\nrules: [{id: R, key: a, sets: [f]}]",
+    "files: []\nrules: [{id: R, key: a, sets: {_upgrade_gate: x}}]",
+    "files: []\nrules: [{id: R, key: a, sets: {Flag: x}}]",
+    "files: []\nrules: [{id: R, key: a, sets: {flag: false}}]",
+    "files: [123]",
+    "files: [{a: b}]",
+    "files: []\nrules: [{id: R, key: .a}]",
+    "files: []\nrules: [{id: R, key: 'f.yaml:'}]",
+    "files: []\nrules: [{id: R, key: 'endpoints[url=http://x].name'}]",
+    "files: []\nrules: [{id: R, key: 'config.erag.yaml:llm.max_tokens'}]",
+    "files: []\nrules: [{id: R, key: 'db.Primary_Key'}]",
+    "files: []\nrules: [{id: R, key: 'users[token=x].name'}]",
+])
+def test_malformed_tracking_file_is_refused(tmp_path, tracking):
+    (tmp_path / "config_tracking.yaml").write_text(tracking)
+    with pytest.raises(ValueError, match="config_tracking.yaml"):
+        config_tracking_verdict(str(tmp_path), str(tmp_path), None, DENY, "erag")
+
+
+def test_a_rule_may_select_a_list_entry_by_a_value_the_deny_list_matches(tmp_path):
+    (tmp_path / "config_tracking.yaml").write_text(
+        "files: []\nrules: [{id: R, key: 'models[name=token].dims'}, {id: S, key: 'models[name=api_key.v2].dims'}]")
+    assert config_tracking_verdict(str(tmp_path), str(tmp_path), None, DENY, "erag")["check"]["verdict"] == "baseline"
+
+
+def test_message_values_are_not_substituted_again():
+    rules = [{"id": "R", "key": "f.yaml:k", "message": "{old} -> {new}"}]
+    findings = config_tracking_compare({"f.yaml": {"k": "b"}}, {"f.yaml": {"k": "{new}"}}, rules)["findings"]
+    assert findings[0]["message"] == "{new} -> b"
+
+
+def test_two_layers_setting_one_fact_are_refused():
+    merged = config_tracking_merge_facts({}, "erag", {"flag": "true"})
+    assert config_tracking_merge_facts(merged, "erag", {"flag": "false"})["flag"] == {"layer": "erag", "value": "false"}
+    with pytest.raises(ValueError, match="erag and other both set flag"):
+        config_tracking_merge_facts(merged, "other", {"flag": "true", "own": "x"})
+
+
+def test_config_tracking_judges_the_resume_of_a_failed_upgrade():
+    # The save runs only after a successful run, so the resume must set the fired rules' facts again.
+    defaults = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "..", "..", "..", "roles",
+                                                "upgrade_checks", "defaults", "main.yaml")))
+    classes = {"erag": "resume", "inference": "reinstall"}
+    assert check_layers(classes, "config_tracking", defaults["upgrade_checks_every_class"],
+                        defaults["upgrade_checks_also_classes"]["config_tracking"]) == ["erag"]
+
+
+def test_tracked_configuration_is_kept_in_a_secret():
+    save, delete = _task_file("roles/upgrade_checks/tasks/config_tracking.yaml")
+    assert save["kubernetes.core.k8s"]["definition"]["kind"] == "Secret"
+    assert save["kubernetes.core.k8s"]["definition"]["data"]["config.yaml"].rstrip().endswith("| b64encode }}")
+    assert delete["kubernetes.core.k8s"]["kind"] == "Secret"
+    assert "_current" not in save["when"]  # a None var is a string on ansible-core 2.17
+    read, verdict = _task_file("roles/upgrade_checks/tasks/checks/config_tracking.yaml")[:2]
+    assert read["block"][0]["kubernetes.core.k8s_info"]["kind"] == "Secret"
+    assert "data['config.yaml'] | b64decode" in verdict["vars"]["_result"]
+    assert save["no_log"] is True and read["block"][0]["no_log"] is True
+
+
+def test_tracked_file_that_is_not_a_mapping_is_refused(layer):
+    layer_dir, env_dir = layer
+    with open(os.path.join(env_dir, "models-rag.yaml"), "w") as f:
+        f.write("- a\n- b\n")
+    with pytest.raises(ValueError, match="models-rag.yaml: a tracked file must hold a mapping"):
+        config_tracking_capture(layer_dir, env_dir, DENY)
