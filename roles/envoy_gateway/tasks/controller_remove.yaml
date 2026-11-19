@@ -21,11 +21,16 @@
 - name: "envoy_gateway | Remove the mesh edge policies added to the existing controller"
   kubernetes.core.k8s:
     state: absent
-    api_version: security.istio.io/v1
-    kind: PeerAuthentication
-    name: "{{ item }}"
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
     namespace: "{{ envoy_gateway_namespace }}"
-  loop: [eg-gateway-edge, allow-webhook-ctrl]
+  loop:
+    - {api_version: security.istio.io/v1, kind: PeerAuthentication, name: eg-gateway-edge}
+    - {api_version: security.istio.io/v1, kind: PeerAuthentication, name: allow-webhook-ctrl}
+    - {api_version: networking.k8s.io/v1, kind: NetworkPolicy, name: envoy-gateway-ingress}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
   failed_when: false
   when:
     - not gateway_platform.controller_managed | bool

@@ -14,3 +14,5 @@ _envoy_gateway_openshift_routes: false
 _envoy_gateway_oidc_login_patches: true
 # Stamp the PSS labels when enforce_pss is set.
 _envoy_gateway_pss_labels: "{{ enforce_pss | default(false) | bool }}"
+# Only the API server's webhook calls (9443) come from outside the mesh.
+_envoy_gateway_ctrl_out_of_mesh: []
