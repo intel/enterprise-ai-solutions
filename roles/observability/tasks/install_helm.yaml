@@ -589,7 +589,9 @@
     - _ini['grafana.ini'] is defined
     - (observability_grafana_url ~ '/') not in _ini['grafana.ini']
       or (observability_grafana_sso | bool) != ('[auth.generic_oauth]' in _ini['grafana.ini'])
-      or (observability_grafana_sso | bool and (observability_grafana_url ~ '/oauth2/logout') not in _ini['grafana.ini'])
+      or (observability_grafana_sso | bool and 'auto_login = false' not in _ini['grafana.ini'])
+      or (observability_grafana_sso | bool and not (_ini['grafana.ini'] is search(
+            '(?m)^allowed_groups = ' ~ (observability_grafana_allowed_groups | join(',') | regex_escape) ~ '$')))
 
 - name: "observability | Publish Grafana"
   ansible.builtin.include_tasks: grafana_route.yaml
