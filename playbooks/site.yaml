@@ -57,9 +57,12 @@
               {{ (_pre_consistency_counts | default({}))
                  | pre_consistency_gate(_layer_supports_upgrade | default({}), _upgrade_force | default(false) | bool) }}
 
+        # The checks carry the reason into the layer's upgrade report.
         - name: "Record a forced pre-run count in the layer's forcedChecks"
           ansible.builtin.set_fact:
-            _upgrade_gate: "{{ _upgrade_gate | combine({'forcedChecks': _upgrade_gate.forcedChecks + _pre_consistency_gate.forcedChecks}) }}"
+            _upgrade_gate: >-
+              {{ _upgrade_gate | combine({'forcedChecks': _upgrade_gate.forcedChecks + _pre_consistency_gate.forcedChecks,
+                                          'checks': _upgrade_gate.checks + _pre_consistency_gate.checks | selectattr('gating') | list}) }}
           when: _pre_consistency_gate.forcedChecks | length > 0
 
       # No record is written yet, so there is nothing to mark halted.
@@ -74,7 +77,7 @@
           loop: "{{ _reported_layers | default([]) }}"
           loop_control:
             loop_var: layer
-          when: _layer_class[layer] != 'resume'
+          when: layer in _pre_snapshots_written | default([])
 
         - name: "Stop before any layer runs"
           ansible.builtin.fail:
@@ -82,7 +85,8 @@
               The data-consistency count before the run failed in {{ _counting_layer | default('a reported layer') }};
               nothing was changed. The failing task is reported above.
 
-    # Nothing ran, so nothing is unfinished: a kept snapshot would let the retry skip its counts.
+    # Nothing ran, so this run left nothing unfinished: its own snapshots would let the retry skip
+    # their counts. A snapshot kept from an earlier unfinished run stays.
     - name: "Discard the pre-run snapshots this run took"
       ansible.builtin.include_role:
         name: upgrade_checks
@@ -95,7 +99,7 @@
         loop_var: layer
       when:
         - _pre_consistency_gate.refused | length > 0
-        - _layer_class[layer] != 'resume'
+        - layer in _pre_snapshots_written | default([])
 
     - name: "Refuse before any change on a failed gating pre-run count"
       ansible.builtin.fail:

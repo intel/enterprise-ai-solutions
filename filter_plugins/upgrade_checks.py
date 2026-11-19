@@ -243,7 +243,6 @@ def upgrade_gate(verdicts, supports_upgrade, forced=False):
     return {
         "checks": checks,
         "refused": [] if forced else gating,
-        "forced": bool(forced and gating),
         "forcedChecks": gating if forced else [],
     }
 

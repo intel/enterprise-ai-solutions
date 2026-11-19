@@ -52,6 +52,18 @@
         _post_path: "{{ upgrade_report_dir }}/{{ upgrade_record_layer }}-consistency-post.yaml"
       when: upgrade_consistency_phase == 'pre'
 
+    # The kept snapshot holds this run's pre-run counts, so its failed entries reach the refusal check.
+    - name: "upgrade_checks | Note the {{ upgrade_record_layer }} kept pre-run counts for the refusal check"
+      ansible.builtin.set_fact:
+        _pre_consistency_counts: >-
+          {{ (_pre_consistency_counts | default({})) | combine({upgrade_record_layer:
+               (lookup('ansible.builtin.file', _pre_path) | from_yaml).stores | default({}, true)}) }}
+      vars:
+        _pre_path: "{{ upgrade_report_dir }}/{{ upgrade_record_layer }}-consistency-pre.yaml"
+      when: >-
+        upgrade_consistency_phase == 'pre' and _pre_snapshot_open
+        and _probe_list | length > 0 and not _probe_parse.error
+
     # Also for a layer that no longer ships probes: no snapshot outlives its run.
     - name: "upgrade_checks | Remove the {{ upgrade_record_layer }} snapshots of the previous run"
       ansible.builtin.file:
@@ -98,6 +110,12 @@
                   'takenAt': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
                   'stores': _probe_counts} | to_nice_yaml(indent=2, sort_keys=false) }}
             mode: "0600"
+
+        # Only the snapshots this run wrote are discarded when it stops before its first layer.
+        - name: "upgrade_checks | Note that this run wrote the {{ upgrade_record_layer }} pre-run snapshot"
+          ansible.builtin.set_fact:
+            _pre_snapshots_written: "{{ (_pre_snapshots_written | default([])) + [upgrade_record_layer] }}"
+          when: upgrade_consistency_phase == 'pre'
 
     # The pre-run counts come from the snapshot on disk, so the resume of an
     # interrupted upgrade compares with the counts its first attempt took.
