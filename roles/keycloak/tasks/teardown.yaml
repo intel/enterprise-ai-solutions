@@ -30,6 +30,16 @@
         namespace: "{{ keycloak_namespace }}"
         state: absent
 
+    # The realm goes with the instance's database. A marker left in a namespace that
+    # stays (the admin's, on OpenShift) would skip the next install's import.
+    - name: "keycloak | Delete the platform realm's import marker"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: "{{ keycloak_platform_realm }}-realm-imported"
+        namespace: "{{ keycloak_namespace }}"
+        state: absent
+
     # The admin's namespace stays on OpenShift: remove what namespace_labels.yaml added.
     - name: "keycloak | Delete the out-of-mesh exceptions"
       kubernetes.core.k8s:
