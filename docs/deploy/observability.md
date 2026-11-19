@@ -66,7 +66,7 @@ Then open `http://localhost:3000/`.
 
 ## Check it
 
-`./es_auto_installer.sh validate observability` checks that:
+`./toolkit_manager.sh validate observability` checks that:
 
 - `/login` shows the login form through the gateway, without a redirect;
 - **Sign in with Keycloak** starts at the `platform` realm;

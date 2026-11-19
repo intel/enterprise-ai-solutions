@@ -198,7 +198,7 @@ def test_version_change_verdict(run_class, verdict):
 
 def test_conflict_on_deleting_names_the_teardown():
     v = version_change_verdict("conflict", "erag", record(status="deleting"), "3.0.0", "dev")
-    assert v["resolve"] == "./es_auto_installer.sh teardown erag --env dev"
+    assert v["resolve"] == "./toolkit_manager.sh teardown erag --env dev"
 
 
 DOWNGRADE = version_change_verdict("downgrade", "erag", record(version="3.1.0"), "3.0.0")

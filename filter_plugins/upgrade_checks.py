@@ -105,7 +105,7 @@ def version_change_verdict(run_class, layer, record, release, env="<env>"):
                        resolve="install %s from a release at %s or later" % (layer, record.get("version")))
     elif run_class == "conflict" and record.get("status") == "deleting":
         verdict.update(verdict="blocking", reason="a teardown of %s did not finish" % layer,
-                       resolve="./es_auto_installer.sh teardown %s --env %s" % (layer, env))
+                       resolve="./toolkit_manager.sh teardown %s --env %s" % (layer, env))
     elif run_class == "conflict":
         verdict.update(verdict="blocking",
                        reason="a run towards %s is %s; this release is %s"
