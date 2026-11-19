@@ -1,0 +1,12 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# The recorded version against the release's upgrade_base_version, for an
+# upgrade and for a conflict; a layer without one (infrastructure, platform:
+# no version.yaml) and a downgrade are skipped.
+- name: "upgrade_checks | upgrade-path"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: >-
+      {{ _upgrade_verdicts + [_layer_version_data[item] | upgrade_path_verdict(item, _layer_records.get(item),
+                                                                             _layer_class[item], env_name | default('local'))] }}
+  loop: "{{ _check_layers }}"

@@ -12,6 +12,7 @@ to the top level on read; core writes over it only once the layer declares
 supports.upgrade, the release that stops writing its own.
 """
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 RECORD_FIELDS = ("layer", "version", "targetVersion", "status", "startedAt",
@@ -82,9 +83,18 @@ def classify_run(record, release, layer):
         return "fresh" if release else "unversioned"
     if not release:
         return "unversioned"
+    # The recorded version is parsed only for a complete record: on a halted or in-progress one,
+    # upgrade_path_verdict parses it, so a version that does not parse is a verdict, not a preflight error.
     if status in ("in-progress", "halted"):
         target = record.get("targetVersion")
-        return "resume" if target and _version(target, layer) == wanted else "conflict"
+        if not target:
+            return "conflict"
+        try:
+            return "resume" if _version(target, layer) == wanted else "conflict"
+        except ValueError:
+            # An unparseable targetVersion is a blocking verdict from version_change_verdict's
+            # conflict branch (it only reports the raw string), not a preflight crash.
+            return "conflict"
     if not record.get("version"):
         return "fresh"
     recorded = _version(record["version"], layer)
@@ -121,6 +131,69 @@ def cluster_probe_verdict(layer, reason):
     return {"layer": layer, "check": "cluster-probe", "verdict": "blocking",
             "reason": "the cluster did not answer (%s)" % reason,
             "resolve": "check the cluster connection and retry, or add --force to install as fresh"}
+
+
+def _upgrade_range(expr):
+    """A bare version means that version or later. Only a string is a range: YAML reads an
+    unquoted 1.10 as the float 1.1."""
+    if not isinstance(expr, str):
+        raise InvalidSpecifier(repr(expr))
+    expr = expr.strip()
+    if expr[:1] not in "><=!~":
+        expr = ">=" + expr
+    return SpecifierSet(expr)
+
+
+def upgrade_path_verdict(version_data, layer, record, run_class, env="<env>"):
+    """Whether the recorded version lies in the release's upgrade_base_version range.
+
+    A conflict (a run towards another release, halted or in progress) is judged from the
+    recorded version too, so a forced run knows whether this release supports that path.
+    classify_run parses the recorded version of an upgrade or a downgrade, not of a conflict;
+    a conflict's version that does not parse is a blocking verdict here."""
+    record, version_data = record or {}, version_data or {}
+    recorded = record.get("version")
+    base = version_data.get("upgrade_base_version")
+    verdict = {"layer": layer, "check": "upgrade-path", "verdict": "pass", "reason": None, "resolve": None}
+    if run_class == "conflict" and record.get("status") == "deleting":
+        verdict.update(verdict="skipped", reason="a teardown of %s did not finish" % layer)
+        return verdict
+    if run_class == "conflict" and not recorded:
+        verdict.update(verdict="skipped", reason="%s has no recorded version to upgrade from" % layer)
+        return verdict
+    if base is None or str(base).strip() == "":
+        verdict.update(verdict="skipped", reason="%s declares no upgrade_base_version" % layer)
+        return verdict
+    try:
+        recorded_version = _version(recorded, layer)
+    except ValueError as err:
+        verdict.update(verdict="blocking", reason="recorded version: %s" % err,
+                       resolve="install %s from a release whose upgrade_base_version covers %s,"
+                               " then this one (--env %s)" % (layer, recorded, env))
+        return verdict
+    release = layer_release_version(version_data)
+    returning = run_class == "conflict" and _version(release, layer) <= recorded_version
+    if run_class == "downgrade" or returning:
+        verdict.update(verdict="skipped",
+                       reason="%s %s -> %s is no upgrade; the version-change check judges it" % (layer, recorded, release))
+        return verdict
+    if str(base).strip().lower() == "unsupported":
+        verdict.update(verdict="blocking", reason="this release of %s does not upgrade from an earlier one" % layer,
+                       resolve="stay on the recorded release, or tear %s down and install it fresh (--env %s)" % (layer, env))
+        return verdict
+    try:
+        upgrade_range = _upgrade_range(base)
+    except InvalidSpecifier:
+        verdict.update(verdict="blocking", reason="upgrade_base_version %r of %s is not a range" % (base, layer),
+                       resolve="fix upgrade_base_version in the version.yaml of %s" % layer)
+        return verdict
+    if upgrade_range.contains(recorded_version, prereleases=True):
+        verdict.update(reason="%s is in %s" % (recorded, base))
+    else:
+        verdict.update(verdict="blocking", reason="%s %s is outside upgrade_base_version %s" % (layer, recorded, base),
+                       resolve="install %s from a release whose upgrade_base_version covers %s, then this one"
+                               " (--env %s)" % (layer, recorded, env))
+    return verdict
 
 
 def upgrade_gate(verdicts, supports_upgrade, forced=False):
@@ -161,9 +234,11 @@ def record_version(release, raw):
     return release if release is not None else (raw or {}).get("version")
 
 
-def check_layers(layer_class, check, every_class):
-    """The planned layers a check judges: all for a check in every_class, else upgrade and downgrade runs."""
-    return [layer for layer, run_class in layer_class.items() if check in every_class or run_class in UPGRADE_CLASSES]
+def check_layers(layer_class, check, every_class, also=()):
+    """The planned layers a check judges: all for a check in every_class, else upgrade and
+    downgrade runs, plus runs of the classes in also."""
+    classes = UPGRADE_CLASSES + tuple(also)
+    return [layer for layer, run_class in layer_class.items() if check in every_class or run_class in classes]
 
 
 def report_due(run_class, record=None):
@@ -189,6 +264,7 @@ class FilterModule:
             "classify_run": classify_run,
             "version_change_verdict": version_change_verdict,
             "cluster_probe_verdict": cluster_probe_verdict,
+            "upgrade_path_verdict": upgrade_path_verdict,
             "upgrade_gate": upgrade_gate,
             "record_forced": record_forced,
             "record_dependencies": record_dependencies,

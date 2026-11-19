@@ -35,3 +35,17 @@
 - name: "upgrade_checks | Show where the {{ upgrade_record_layer }} report is"
   ansible.builtin.debug:
     msg: "Upgrade report: {{ _upgrade_report_file.dest }}"
+
+- name: "upgrade_checks | List the {{ upgrade_record_layer }} upgrade reports"
+  ansible.builtin.find:
+    paths: "{{ upgrade_report_dir }}"
+    patterns: "{{ upgrade_record_layer }}-upgrade-report-*.yaml"
+  register: _upgrade_reports
+
+- name: "upgrade_checks | Prune old {{ upgrade_record_layer }} upgrade reports"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ (_upgrade_reports.files | sort(attribute='mtime', reverse=true))[upgrade_report_keep:] }}"
+  loop_control:
+    label: "{{ item.path | basename }}"

@@ -3,7 +3,9 @@
 """Unit tests for filter_plugins/upgrade_checks.py (no cluster)."""
 
 import os
+import subprocess
 import sys
+import textwrap
 
 import pytest
 import yaml
@@ -25,6 +27,7 @@ from upgrade_checks import (  # noqa: E402
     record_version,
     report_due,
     upgrade_gate,
+    upgrade_path_verdict,
     version_change_verdict,
 )
 
@@ -60,6 +63,8 @@ def record(version="1.1.0", status="complete", target=None):
     (record(status="deleting"), "1.1.0", "conflict"),
     (record(status="deleting"), None, "conflict"),
     (record(status="deleting"), "3.1.0-SNAPSHOT", "conflict"),
+    (record(status="halted", target="not-a-version"), "1.2.0", "conflict"),
+    (record(status="in-progress", target="not-a-version"), "1.2.0", "conflict"),
     ({}, None, "unversioned"),
     (record(), None, "unversioned"),
     (record(version=None, status="complete"), "1.1.0", "fresh"),
@@ -67,6 +72,25 @@ def record(version="1.1.0", status="complete", target=None):
 ])
 def test_classify_run(rec, release, expected):
     assert classify_run(rec, release, "platform") == expected
+
+
+def test_installer_layers_never_look_up_a_version_file():
+    # infrastructure and platform carry the installer's own VERSION; version.yaml is never
+    # read for them, since no ext repository claims those layers today.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "roles", "upgrade_checks", "tasks", "run.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    task = next(t for t in tasks if t["name"] == "upgrade_checks | Classify and check the install")
+    resolve = next(t for t in task["block"] if t["name"].endswith("Resolve each planned layer's release version"))
+    version_data = resolve["vars"]["_version_data"]
+    assert "upgrade_installer_layers" in version_data
+
+
+def test_classify_run_does_not_crash_on_an_unparseable_target_version():
+    # An unfinished record's target that does not parse is a conflict, not a preflight crash.
+    rec = {"status": "halted", "targetVersion": "not-a-version", "version": "1.0.0"}
+    assert classify_run(rec, "2.0.0", "inference") == "conflict"
 
 
 def test_classify_run_names_the_layer_of_a_bad_version():
@@ -126,6 +150,30 @@ def test_record_write_runs_for_deleting_with_no_prior_record():
     block_task = next(t for t in tasks if t["name"].endswith("Write the {{ upgrade_record_layer }} record"))
     status_cond = next(c for c in block_task["when"] if "upgrade_record_status in" in c)
     assert "deleting" in status_cond
+
+
+@pytest.mark.parametrize("given, component, expected", [
+    ("data-consistency", None, "data-consistency"),
+    ("data-consistency", "vllm", "data-consistency"),
+    (None, "vllm", "component-failed"),
+    (None, None, "None"),
+])
+def test_halted_write_keeps_the_reason_the_caller_gives(given, component, expected):
+    # The resume refusal after a data-consistency halt reads this reason.
+    from jinja2 import Environment
+
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "roles", "upgrade_checks", "tasks", "record.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    task_vars = next(t for t in tasks if t["name"].endswith("Write the {{ upgrade_record_layer }} record"))["vars"]
+    env = Environment()
+    ctx = {k: v for k, v in (("upgrade_record_halt_reason", given), ("_running_component", component)) if v}
+    ctx["_halt_reason_default"] = env.from_string(task_vars["_halt_reason_default"]).render(**ctx)
+    if ctx["_halt_reason_default"] == "None":
+        ctx["_halt_reason_default"] = None
+    template = task_vars["_changes"]["halted"]["haltReason"]
+    assert env.from_string(template).render(**ctx) == expected
 
 
 def test_supports_upgrade_is_coerced_once_for_gate_and_record():
@@ -380,6 +428,61 @@ def test_layer_not_recorded_is_noted_when_a_component_is_skipped():
     assert "not _layer_fully_planned" in note["when"]
 
 
+def test_run_layer_rescue_path_stops_the_run_on_a_failing_component(tmp_path):
+    # Runs run_layer.yaml for real, with a component that fails, and no cluster (_record_cluster
+    # unset keeps _layer_recorded false, so the rescue block's own logic is what is exercised:
+    # the halted note, the skipped record write and the stop message).
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    run_layer = os.path.join(repo_root, "playbooks", "includes", "run_layer.yaml")
+
+    component_tasks = tmp_path / "roles" / "a_failing_component" / "tasks"
+    component_tasks.mkdir(parents=True)
+    (component_tasks / "main.yaml").write_text(
+        "- name: Fail on purpose\n"
+        "  ansible.builtin.fail:\n"
+        "    msg: simulated component failure\n"
+    )
+
+    (tmp_path / "ansible.cfg").write_text(textwrap.dedent("""\
+        [defaults]
+        roles_path = {roles_path}
+        filter_plugins = {filter_plugins}
+        host_key_checking = False
+        """).format(roles_path=tmp_path / "roles", filter_plugins=os.path.join(repo_root, "filter_plugins")))
+
+    playbook = tmp_path / "play.yaml"
+    playbook.write_text(textwrap.dedent("""\
+        - hosts: localhost
+          connection: local
+          gather_facts: false
+          vars:
+            layer: test_layer
+            component_action: install
+            layers:
+              - {{name: test_layer, depends_on: []}}
+            components:
+              - {{name: a_failing_component, layer: test_layer, depends_on: []}}
+            _active_components:
+              - {{name: a_failing_component, layer: test_layer}}
+            _layer_class: {{}}
+            _layer_records: {{}}
+          tasks:
+            - ansible.builtin.include_tasks: {run_layer}
+        """).format(run_layer=run_layer))
+
+    ansible_playbook = os.path.join(os.path.dirname(sys.executable), "ansible-playbook")
+    result = subprocess.run(
+        [ansible_playbook, str(playbook)],
+        cwd=tmp_path, env=dict(os.environ, ANSIBLE_CONFIG=str(tmp_path / "ansible.cfg")),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "a_failing_component" in result.stdout
+    assert "is reported above" in result.stdout
+    # The rescue path noted the run halted, not complete.
+    assert "Note the test_layer run as halted" in result.stdout
+
+
 def test_record_read_failure_gives_the_recovery_hint_not_the_raw_error():
     # A denied or timed-out read must point at the same recovery as a failed cluster probe,
     # not surface the raw Kubernetes error.
@@ -401,3 +504,112 @@ def test_deployment_records_read_failure_gives_the_recovery_hint_not_the_raw_err
     msg = rescue["ansible.builtin.fail"]["msg"]
     assert "check the cluster connection and retry" in msg
     assert "add --force" not in msg
+
+
+# upgrade-path check
+
+
+@pytest.mark.parametrize("recorded, base, verdict", [
+    ("3.0.0", ">=3.0.0,<3.1.0", "pass"),
+    ("3.0.4", ">=3.0.0,<3.1.0", "pass"),
+    ("3.0.0+build.7", ">=3.0.0,<3.1.0", "pass"),
+    ("3.0.0", "3.0.0", "pass"),
+    ("3.5.0", "3.0.0", "pass"),
+    ("2.9.0", "3.0.0", "blocking"),
+    ("2.3.0", ">=3.0.0,<3.1.0", "blocking"),
+    ("3.1.0", ">=3.0.0,<3.1.0", "blocking"),
+    ("3.0.0", "unsupported", "blocking"),
+    ("3.0.0", "not a range", "blocking"),
+    ("1.2.0", 1.1, "blocking"),
+    ("3.0.0", None, "skipped"),
+    ("3.0.0", "", "skipped"),
+])
+def test_upgrade_path_verdict(recorded, base, verdict):
+    v = upgrade_path_verdict({"solution_version": "3.1.0", "upgrade_base_version": base},
+                             "erag", record(version=recorded), "upgrade", "dev")
+    assert v["verdict"] == verdict
+    assert v["check"] == "upgrade-path" and v["layer"] == "erag"
+    assert v["reason"]
+    assert bool(v["resolve"]) is (verdict == "blocking")
+
+
+def test_upgrade_path_names_the_range_it_refuses():
+    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"), "upgrade", "dev")
+    assert "2.3.0" in v["reason"] and ">=3.0.0,<3.1.0" in v["reason"]
+    assert "erag" in v["resolve"] and "dev" in v["resolve"]
+    v = upgrade_path_verdict({"upgrade_base_version": "3.x"}, "erag", record(version="2.3.0"), "upgrade", "dev")
+    assert "'3.x'" in v["reason"] and "not a range" in v["reason"]
+
+
+def test_upgrade_path_skips_a_layer_without_version_yaml():
+    assert upgrade_path_verdict({}, "platform", record(), "upgrade", "dev")["verdict"] == "skipped"
+    assert upgrade_path_verdict(None, "platform", record(), "upgrade", "dev")["verdict"] == "skipped"
+
+
+def test_upgrade_path_gates_only_a_supports_upgrade_layer():
+    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"), "upgrade")
+    assert upgrade_gate([v], {"erag": True})["refused"] == ["erag/upgrade-path"]
+    assert upgrade_gate([v], {"erag": False})["refused"] == []
+    assert upgrade_gate([v], {"erag": True}, forced=True)["forcedChecks"] == ["erag/upgrade-path"]
+
+
+def test_upgrade_path_judges_upgrades_downgrades_and_conflicts():
+    classes = {"platform": "reinstall", "inference": "fresh", "erag": "upgrade", "x": "downgrade"}
+    assert check_layers(classes, "upgrade_path", ["version_change"]) == ["erag", "x"]
+    classes["y"] = "conflict"
+    assert check_layers(classes, "upgrade_path", ["version_change"], ["conflict"]) == ["erag", "x", "y"]
+
+
+def test_upgrade_path_skips_a_downgrade():
+    data = {"solution_version": "3.0.0", "upgrade_base_version": ">=3.1.0"}
+    v = upgrade_path_verdict(data, "erag", record(version="3.1.0"), "downgrade")
+    assert v["verdict"] == "skipped" and "3.1.0 -> 3.0.0" in v["reason"]
+    downgrade = version_change_verdict("downgrade", "erag", record(version="3.1.0"), "3.0.0")
+    assert upgrade_gate([downgrade, v], {"erag": True}, forced=True)["forcedChecks"] == ["erag/version-change"]
+
+
+@pytest.mark.parametrize("recorded, release, verdict", [
+    ("3.0.0", "3.2.0", "pass"),
+    ("2.3.0", "3.2.0", "blocking"),
+    ("3.2.0", "3.0.0", "skipped"),
+])
+def test_upgrade_path_judges_a_conflict_from_the_recorded_version(recorded, release, verdict):
+    halted = record(version=recorded, status="halted", target="3.1.0")
+    data = {"solution_version": release, "upgrade_base_version": ">=3.0.0"}
+    assert classify_run(halted, release, "erag") == "conflict"
+    assert upgrade_path_verdict(data, "erag", halted, "conflict")["verdict"] == verdict
+
+
+@pytest.mark.parametrize("rec, reason", [
+    (record(version=None, status="halted", target="3.1.0"), "erag has no recorded version to upgrade from"),
+    (record(status="deleting"), "a teardown of erag did not finish"),
+])
+def test_upgrade_path_skips_a_conflict_it_cannot_judge(rec, reason):
+    v = upgrade_path_verdict({"solution_version": "3.2.0", "upgrade_base_version": ">=3.0.0"}, "erag", rec, "conflict")
+    assert (v["verdict"], v["reason"]) == ("skipped", reason)
+
+
+@pytest.mark.parametrize("status", ["halted", "in-progress"])
+def test_upgrade_path_blocks_a_conflict_whose_recorded_version_does_not_parse(status):
+    # Preflight does not parse an unfinished record's version; this check refuses it for that layer only.
+    unfinished = record(version="3.1.0-SNAPSHOT", status=status, target="3.1.0")
+    assert classify_run(unfinished, "3.2.0", "erag") == "conflict"
+    v = upgrade_path_verdict({"solution_version": "3.2.0", "upgrade_base_version": ">=3.0.0"},
+                             "erag", unfinished, "conflict")
+    assert v["verdict"] == "blocking"
+    assert v["reason"] == "recorded version: layer erag: '3.1.0-SNAPSHOT' is not a version"
+    assert v["resolve"] == ("install erag from a release whose upgrade_base_version covers"
+                             " 3.1.0-SNAPSHOT, then this one (--env <env>)")
+
+
+def test_old_upgrade_reports_are_pruned_like_env_log_dir():
+    # Same rule as ENV_LOG_DIR's logs (es_auto_installer.sh): keep the most recent, drop the rest.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "roles", "upgrade_checks", "tasks", "report.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    listing = next(t for t in tasks if t["name"].endswith("List the {{ upgrade_record_layer }} upgrade reports"))
+    assert listing["ansible.builtin.find"]["patterns"] == "{{ upgrade_record_layer }}-upgrade-report-*.yaml"
+    prune = next(t for t in tasks if t["name"].endswith("Prune old {{ upgrade_record_layer }} upgrade reports"))
+    assert prune["ansible.builtin.file"]["state"] == "absent"
+    assert "upgrade_report_keep" in prune["loop"]
