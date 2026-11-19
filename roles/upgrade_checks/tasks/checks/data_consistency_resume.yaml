@@ -1,0 +1,9 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# A layer whose last run the data-consistency verdict halted is refused on its
+# resume too.
+- name: "upgrade_checks | data-consistency on resume"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: >-
+      {{ _upgrade_verdicts + (_check_layers | data_consistency_resume_verdicts(_layer_class, _layer_records)) }}

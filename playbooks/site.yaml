@@ -35,6 +35,78 @@
       ansible.builtin.include_tasks: includes/preflight.yaml
 
   tasks:
+    # Before the first layer runs: a lower layer's run can change a higher layer's
+    # data. A resume keeps the snapshot its first attempt took.
+    - name: "Take the pre-run counts"
+      block:
+        - name: "Count the data of each reported layer before the run"
+          ansible.builtin.include_role:
+            name: upgrade_checks
+            tasks_from: consistency.yaml
+          vars:
+            upgrade_record_layer: "{{ layer }}"
+            upgrade_consistency_phase: pre
+          loop: "{{ _reported_layers | default([]) }}"
+          loop_control:
+            loop_var: layer
+          when: _layer_class[layer] != 'resume'
+
+        - name: "Note which reported layers' pre-run count failed"
+          ansible.builtin.set_fact:
+            _pre_consistency_gate: >-
+              {{ (_pre_consistency_counts | default({}))
+                 | pre_consistency_gate(_layer_supports_upgrade, _upgrade_force | default(false) | bool) }}
+
+        - name: "Record a forced pre-run count in the layer's forcedChecks"
+          ansible.builtin.set_fact:
+            _upgrade_gate: "{{ _upgrade_gate | combine({'forcedChecks': _upgrade_gate.forcedChecks + _pre_consistency_gate.forcedChecks}) }}"
+          when: _pre_consistency_gate.forcedChecks | length > 0
+
+      # No record is written yet, so there is nothing to mark halted.
+      rescue:
+        - name: "Discard the pre-run snapshots this run took"
+          ansible.builtin.include_role:
+            name: upgrade_checks
+            tasks_from: consistency.yaml
+          vars:
+            upgrade_record_layer: "{{ layer }}"
+            upgrade_consistency_phase: discard
+          loop: "{{ _reported_layers | default([]) }}"
+          loop_control:
+            loop_var: layer
+          when: _layer_class[layer] != 'resume'
+
+        - name: "Stop before any layer runs"
+          ansible.builtin.fail:
+            msg: >-
+              The data-consistency count before the run failed in {{ _counting_layer | default('a reported layer') }};
+              nothing was changed. The failing task is reported above.
+
+    # Nothing ran, so nothing is unfinished: a kept snapshot would let the retry skip its counts.
+    - name: "Discard the pre-run snapshots this run took"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: consistency.yaml
+      vars:
+        upgrade_record_layer: "{{ layer }}"
+        upgrade_consistency_phase: discard
+      loop: "{{ _reported_layers | default([]) }}"
+      loop_control:
+        loop_var: layer
+      when:
+        - _pre_consistency_gate.refused | length > 0
+        - _layer_class[layer] != 'resume'
+
+    - name: "Refuse before any change on a failed gating pre-run count"
+      ansible.builtin.fail:
+        msg: |-
+          The data-consistency count before the run failed; nothing was changed.
+          {% for check in _pre_consistency_gate.checks | selectattr('gating') %}
+            - {{ check.layer }} {{ check.check }}: {{ check.reason }}. Resolve: {{ check.resolve }}
+          {% endfor %}
+          To run anyway, add --force; the run is then recorded as forced.
+      when: _pre_consistency_gate.refused | length > 0
+
     - name: "Execute layers"
       ansible.builtin.include_tasks: includes/run_layer.yaml
       loop: "{{ _active_components | map(attribute='layer') | unique | list }}"

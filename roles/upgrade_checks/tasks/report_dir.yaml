@@ -1,0 +1,10 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Shared by consistency.yaml and report.yaml: both write into upgrade_report_dir
+# and must not assume the other has created it first.
+- name: "upgrade_checks | Create the report directory"
+  ansible.builtin.file:
+    path: "{{ upgrade_report_dir }}"
+    state: directory
+    mode: "0755"

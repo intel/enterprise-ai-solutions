@@ -17,6 +17,9 @@ from upgrade_checks import (  # noqa: E402
     claim_layer_dirs,
     classify_run,
     cluster_probe_verdict,
+    consistency_probe_list,
+    data_consistency_present_verdict,
+    data_consistency_resume_verdicts,
     layer_fully_planned,
     layer_record_is_legacy,
     record_owned_by_layer,
@@ -223,6 +226,111 @@ def test_probe_warning_names_the_refusal_only_with_a_gating_layer_planned(planne
     assert ("still refuses this run" in msg) == refuses
 
 
+def _tasks(tasks):
+    for task in tasks:
+        yield task
+        for key in ("block", "rescue", "always"):
+            yield from _tasks(task.get(key, []))
+
+
+@pytest.mark.parametrize("consistency_halt", [True, False])
+def test_halted_write_never_passes_omit_as_the_halt_reason(consistency_halt):
+    # omit is only valid as a module argument; in include_role vars it reaches record.yaml as a string.
+    jinja2 = pytest.importorskip("jinja2")
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "playbooks", "includes", "run_layer.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    write = next(t for t in _tasks(tasks) if t.get("name") == "Record {{ layer }} as halted")
+    omit = "__omit_place_holder__"
+    reason = jinja2.Template(write["vars"]["upgrade_record_halt_reason"]).render(
+        _layer_consistency_halt=consistency_halt, omit=omit)
+    assert omit not in reason
+    assert reason == ("data-consistency" if consistency_halt else "")
+
+
+def test_every_pre_run_count_comes_before_the_first_layer_and_skips_a_resume():
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "playbooks", "site.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)[0]["tasks"]
+    names = [t["name"] for t in tasks]
+    assert names.index("Take the pre-run counts") < names.index("Execute layers")
+    block = tasks[names.index("Take the pre-run counts")]
+    count = block["block"][0]
+    assert count["name"] != block["name"]
+    assert count["vars"]["upgrade_consistency_phase"] == "pre"
+    assert count["when"] == "_layer_class[layer] != 'resume'"
+    assert "nothing was changed" in block["rescue"][-1]["ansible.builtin.fail"]["msg"]
+
+
+def test_a_refused_pre_run_count_stops_before_any_layer_runs():
+    # The gate runs once, after every reported layer's pre-run count, and refuses before
+    # "Execute layers" so --force is the only way a failed gating count lets anything change.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "playbooks", "site.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)[0]["tasks"]
+    names = [t["name"] for t in tasks]
+    refuse_index = names.index("Refuse before any change on a failed gating pre-run count")
+    assert names.index("Take the pre-run counts") < refuse_index < names.index("Execute layers")
+    refuse = tasks[refuse_index]
+    assert refuse["when"] == "_pre_consistency_gate.refused | length > 0"
+    assert "nothing was changed" in refuse["ansible.builtin.fail"]["msg"]
+
+    block = tasks[names.index("Take the pre-run counts")]
+    gate_step = next(t for t in block["block"] if t["name"].startswith("Note which reported layers"))
+    assert "pre_consistency_gate" in gate_step["ansible.builtin.set_fact"]["_pre_consistency_gate"]
+    forced_step = next(t for t in block["block"] if t["name"].startswith("Record a forced pre-run count"))
+    assert forced_step["when"] == "_pre_consistency_gate.forcedChecks | length > 0"
+
+
+def test_a_run_that_stops_before_its_first_layer_discards_its_pre_run_snapshots():
+    # A pre-run snapshot with no post beside it reads as an unfinished run's on the retry,
+    # which would then skip its counts: neither refused again nor recorded as forced.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "playbooks", "site.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)[0]["tasks"]
+    names = [t["name"] for t in tasks]
+    block = tasks[names.index("Take the pre-run counts")]
+    refuse_index = names.index("Refuse before any change on a failed gating pre-run count")
+    discard = tasks[refuse_index - 1]
+    rescue_discard = block["rescue"][0]
+    for task in (discard, rescue_discard):
+        assert task["name"] == "Discard the pre-run snapshots this run took"
+        assert task["vars"]["upgrade_consistency_phase"] == "discard"
+        assert task["loop"] == block["block"][0]["loop"]
+    # A resumed layer's snapshot is its first attempt's, not this run's: it stays.
+    assert discard["when"] == ["_pre_consistency_gate.refused | length > 0", "_layer_class[layer] != 'resume'"]
+    assert rescue_discard["when"] == "_layer_class[layer] != 'resume'"
+    assert "ansible.builtin.fail" in block["rescue"][-1]
+
+
+def test_the_discard_phase_removes_only_the_pre_run_snapshot():
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "roles", "upgrade_checks", "tasks", "consistency.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    discard = [t for t in _tasks(tasks) if "discard" in str(t.get("when", ""))]
+    assert len(discard) == 1
+    assert discard[0]["ansible.builtin.file"] == {
+        "path": "{{ upgrade_report_dir }}/{{ upgrade_record_layer }}-consistency-pre.yaml", "state": "absent"}
+    count = next(t for t in tasks if t.get("name", "").startswith("upgrade_checks | Count the"))
+    assert "discard" not in count["when"]
+
+
+def test_pre_run_count_rescue_names_the_failing_layer():
+    # The rescue no longer sees the loop variable; the role leaves the layer it was counting.
+    jinja2 = pytest.importorskip("jinja2")
+    root = os.path.join(os.path.dirname(__file__), "..", "..", "..")
+    with open(os.path.join(root, "playbooks", "site.yaml")) as f:
+        tasks = yaml.safe_load(f)[0]["tasks"]
+    block = next(t for t in tasks if t.get("name") == "Take the pre-run counts")
+    msg = block["rescue"][-1]["ansible.builtin.fail"]["msg"]
+    assert "in erag;" in jinja2.Template(msg).render(_counting_layer="erag")
+    with open(os.path.join(root, "roles", "upgrade_checks", "tasks", "consistency.yaml")) as f:
+        role = yaml.safe_load(f)
+    find = next(t for t in _tasks(role) if t.get("name", "").startswith("upgrade_checks | Find the"))
+    assert find["ansible.builtin.set_fact"]["_counting_layer"] == "{{ upgrade_record_layer }}"
+
+
 @pytest.mark.parametrize("data, expected", [
     ({"layer_version": "1.1.0"}, "1.1.0"),
     ({"solution_version": "3.0.0"}, "3.0.0"),
@@ -256,6 +364,214 @@ def test_version_change_verdict(run_class, verdict):
 def test_conflict_on_deleting_names_the_teardown():
     v = version_change_verdict("conflict", "erag", record(status="deleting"), "3.0.0", "dev")
     assert v["resolve"] == "./es_auto_installer.sh teardown erag --env dev"
+
+
+def test_data_consistency_present_passes_when_the_file_is_there():
+    verdict = data_consistency_present_verdict("erag", True, True)
+    assert (verdict["verdict"], verdict["check"]) == ("pass", "data-consistency-present")
+    assert verdict["resolve"] is None
+
+
+def test_data_consistency_present_blocks_a_gating_layer_with_no_file():
+    verdict = data_consistency_present_verdict("erag", True, False)
+    assert verdict["verdict"] == "blocking"
+    assert verdict["reason"] == "erag declares supports.upgrade but ships no data_consistency.yaml"
+    assert "data_consistency.yaml" in verdict["resolve"] and "--force" in verdict["resolve"]
+
+
+def test_data_consistency_present_blocks_a_gating_layer_whose_file_does_not_parse():
+    error = consistency_probe_list("probes: [a.yaml", "erag/data_consistency.yaml")["error"]
+    verdict = data_consistency_present_verdict("erag", True, True, error)
+    assert verdict["verdict"] == "blocking" and verdict["reason"].startswith("erag/data_consistency.yaml does not parse")
+    assert data_consistency_present_verdict("inference", False, True, error)["verdict"] == "skipped"
+
+
+HALTED_ON_LOSS = dict(record(version="3.0.0", status="halted", target="3.1.0"), haltReason="data-consistency")
+
+
+def test_a_record_halted_on_data_consistency_resumes_as_a_resume():
+    assert classify_run(HALTED_ON_LOSS, "3.1.0", "erag") == "resume"
+
+
+def test_only_the_resume_of_a_data_consistency_halt_is_refused():
+    other = dict(HALTED_ON_LOSS, haltReason="component-failed")
+    classes = {"erag": "resume", "platform": "resume", "x": "upgrade"}
+    verdicts = data_consistency_resume_verdicts(list(classes), classes,
+                                                {"erag": HALTED_ON_LOSS, "platform": other, "x": HALTED_ON_LOSS})
+    assert [(v["layer"], v["check"], v["verdict"]) for v in verdicts] == [("erag", "data-consistency", "blocking")]
+    assert verdicts[0]["reason"] == "the last run of erag halted because it lost entries"
+
+
+def test_each_layer_counts_in_its_own_temporary_folder():
+    # Every layer's pre-run count runs before the first layer, so the layers must not share one folder.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "roles", "upgrade_checks", "defaults", "main.yaml")
+    with open(path) as f:
+        tmp_dir = yaml.safe_load(f)["upgrade_consistency_tmp_dir"]
+    assert tmp_dir.endswith("/{{ upgrade_record_layer | default('') }}")
+
+
+def test_the_consistency_report_is_not_world_or_group_readable():
+    # it holds raw probe failure text, which can include error detail from the cluster.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "roles", "upgrade_checks", "tasks", "consistency.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    write = next(t for t in _tasks(tasks) if t.get("name", "").startswith("upgrade_checks | Write"))
+    assert write["ansible.builtin.copy"]["mode"] == "0600"
+
+
+def test_the_upgrade_report_is_not_world_or_group_readable():
+    # it carries each check's reason, which can include raw cluster or probe error text.
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "roles", "upgrade_checks", "tasks", "report.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    write = next(t for t in _tasks(tasks) if t.get("name", "").startswith("upgrade_checks | Write"))
+    assert write["ansible.builtin.copy"]["mode"] == "0600"
+
+
+@pytest.mark.parametrize("pre_exists, post_exists, kept", [
+    (True, False, True),    # the layer's last run counted it but never finished: keep the snapshot
+    (True, True, False),    # a normal second run: both exist, so the layer did finish
+    (False, False, False),  # the layer's first run ever: nothing to keep
+])
+def test_an_open_pre_run_snapshot_survives_a_retry(tmp_path, pre_exists, post_exists, kept):
+    # A retry after a lower layer's failure must not retake a pre-run count the first attempt
+    # already took, or it would count data a failed run may have already damaged.
+    jinja2 = pytest.importorskip("jinja2")
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "roles", "upgrade_checks", "tasks", "consistency.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    task = next(t for t in _tasks(tasks) if t.get("name", "").endswith("pre-run snapshot is still open"))
+    if pre_exists:
+        (tmp_path / "erag-consistency-pre.yaml").write_text("stores: {}")
+    if post_exists:
+        (tmp_path / "erag-consistency-post.yaml").write_text("stores: {}")
+    env = jinja2.Environment()
+    env.tests["file"] = os.path.isfile
+    values = {"upgrade_report_dir": str(tmp_path), "upgrade_record_layer": "erag"}
+    for name in ("_pre_path", "_post_path"):
+        values[name] = env.from_string(task["vars"][name]).render(**values).strip()
+    rendered = env.from_string(task["ansible.builtin.set_fact"]["_pre_snapshot_open"]).render(**values).strip()
+    assert (rendered == "True") is kept
+
+
+def test_the_resume_refusal_gates_until_forced():
+    verdicts = data_consistency_resume_verdicts(["erag"], {"erag": "resume"}, {"erag": HALTED_ON_LOSS})
+    assert upgrade_gate(verdicts, {"erag": True})["refused"] == ["erag/data-consistency"]
+    forced = upgrade_gate(verdicts, {"erag": True}, forced=True)
+    assert (forced["forced"], forced["forcedChecks"]) == (True, ["erag/data-consistency"])
+
+
+def test_a_forced_resume_records_the_data_consistency_bypass():
+    assert record_forced(HALTED_ON_LOSS, ["erag/data-consistency"], "resume", "erag") == ["erag/data-consistency"]
+
+
+def test_the_resume_check_judges_every_planned_layer():
+    classes = {"erag": "resume", "platform": "reinstall"}
+    assert check_layers(classes, "data_consistency_resume", ["version_change", "data_consistency_resume"]) == list(classes)
+
+
+@pytest.mark.parametrize("snapshot, usable, error, pre, reason", [
+    ({"layer": "erag", "phase": "pre", "stores": {"vdb": 100}}, True, None, {"vdb": 100}, None),
+    (None, True, None, None, "no pre-run snapshot of erag was kept"),
+    (None, False, None, None, None),
+    (None, False, "erag/data_consistency.yaml does not parse: x", None, "erag/data_consistency.yaml does not parse: x"),
+])
+def test_the_verdict_reads_the_pre_run_counts_from_the_kept_snapshot(tmp_path, snapshot, usable, error, pre, reason):
+    # Renders the verdict task's own vars, so the snapshot read a resume relies on is covered.
+    import ast
+    jinja2 = pytest.importorskip("jinja2")
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "roles", "upgrade_checks", "tasks", "consistency.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    task = next(t for t in _tasks(tasks) if t.get("name", "").endswith("data-consistency verdict")
+                and "ansible.builtin.set_fact" in t)
+    if snapshot is not None:
+        (tmp_path / "erag-consistency-pre.yaml").write_text(yaml.safe_dump(snapshot))
+    env = jinja2.Environment()
+    env.globals["lookup"] = lambda _plugin, name: open(name).read()
+    env.tests["file"] = os.path.isfile
+    env.filters["from_yaml"] = yaml.safe_load
+    values = {"upgrade_report_dir": str(tmp_path), "upgrade_record_layer": "erag",
+              "_probe_list": "erag/data_consistency.yaml" if usable or error else "",
+              "_probe_parse": {"probes": [], "error": error}}
+    for name in ("_pre_file", "_usable", "_pre", "_no_pre_reason"):
+        rendered = env.from_string(task["vars"][name].strip()).render(**values).strip()
+        try:
+            values[name] = ast.literal_eval(rendered)
+        except (SyntaxError, ValueError):
+            values[name] = rendered
+    assert (values["_pre"], values["_no_pre_reason"]) == (pre, reason)
+
+
+@pytest.mark.parametrize("text, supports, present, error", [
+    (None, True, False, None),
+    ("probes: [probes/count_stores.yaml]\n", True, True, None),
+    ("probes: [\n", True, True, "does not parse"),
+    ("probes: [\n", False, True, None),
+])
+def test_the_present_check_reads_the_layers_probe_file(tmp_path, text, supports, present, error):
+    # Renders the present check's own vars; it loops the reported layers, so a resume is judged too.
+    import ast
+    jinja2 = pytest.importorskip("jinja2")
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "roles", "upgrade_checks", "tasks", "checks", "data_consistency_present.yaml")
+    with open(path) as f:
+        task = yaml.safe_load(f)[0]
+    assert task["loop"] == "{{ _reported_layers }}"
+    if text is not None:
+        (tmp_path / "data_consistency.yaml").write_text(text)
+    env = jinja2.Environment()
+    env.globals["lookup"] = lambda _plugin, name: open(name).read()
+    env.tests["file"] = os.path.isfile
+    env.filters["consistency_probe_list"] = consistency_probe_list
+    values = {"item": "erag", "_layer_dirs": {"erag": str(tmp_path)}, "_layer_supports_upgrade": {"erag": supports}}
+    for name in ("_probe_file", "_present", "_error"):
+        rendered = env.from_string(task["vars"][name].strip()).render(**values).strip()
+        try:
+            values[name] = ast.literal_eval(rendered)
+        except (SyntaxError, ValueError):
+            values[name] = rendered
+    assert values["_present"] is present
+    if error is None:
+        assert values["_error"] is None
+    else:
+        assert error in values["_error"]
+
+
+@pytest.mark.parametrize("forced_checks, halts", [([], True), (["erag/data-consistency"], False)])
+def test_only_a_forced_resume_lets_a_blocking_consistency_verdict_pass(forced_checks, halts):
+    # The resume compares with the first attempt's counts, which already hold the loss --force
+    # accepted, so new loss in the resumed run cannot be told apart from it.
+    jinja2 = pytest.importorskip("jinja2")
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "playbooks", "includes", "run_layer.yaml")
+    with open(path) as f:
+        tasks = yaml.safe_load(f)
+    note = next(t for t in _tasks(tasks) if t.get("name") == "Note whether the {{ layer }} data-consistency verdict stops the run")
+    rendered = jinja2.Template(note["ansible.builtin.set_fact"]["_layer_consistency_halt"].strip()).render(
+        layer="erag", _layer_reported=True, _layer_consistency={"erag": {"gating": True}},
+        _upgrade_gate={"forcedChecks": forced_checks})
+    assert rendered == str(halts)
+
+
+@pytest.mark.parametrize("text, probes, error", [
+    ("probes:\n  - probes/count.yaml\n", ["probes/count.yaml"], None),
+    ("", [], None),
+    ("probes:\n", [], None),
+    ("probes: [a.yaml", [], "f.yaml does not parse"),
+    ("- a.yaml\n", [], "f.yaml must set probes:"),
+    ("probes: a.yaml\n", [], "f.yaml must set probes:"),
+    ("probes: [{a: 1}]\n", [], "f.yaml must set probes:"),
+])
+def test_consistency_probe_list(text, probes, error):
+    parsed = consistency_probe_list(text, "f.yaml")
+    assert parsed["probes"] == probes
+    assert (parsed["error"] or "").startswith(error or "") and bool(parsed["error"]) is bool(error)
+
+
+def test_data_consistency_present_is_skipped_without_supports_upgrade():
+    assert data_consistency_present_verdict("inference", False, False)["verdict"] == "skipped"
+    assert data_consistency_present_verdict("inference", False, True)["verdict"] == "skipped"
 
 
 DOWNGRADE = version_change_verdict("downgrade", "erag", record(version="3.1.0"), "3.0.0")
@@ -622,3 +938,128 @@ def test_old_upgrade_reports_are_pruned_like_env_log_dir():
     prune = next(t for t in tasks if t["name"].endswith("Prune old {{ upgrade_record_layer }} upgrade reports"))
     assert prune["ansible.builtin.file"]["state"] == "absent"
     assert "upgrade_report_keep" in prune["loop"]
+# Data consistency
+from upgrade_checks import (  # noqa: E402
+    compare_consistency,
+    consistency_counts,
+    consistency_failed,
+    consistency_merge,
+    consistency_verdict,
+    pre_consistency_gate,
+)
+
+DISABLED = {"skipped": "chat history disabled (chat_history_enabled: false)"}
+
+
+class TestConsistencyCounts:
+    def test_counts_and_skipped_stores_are_kept(self):
+        assert consistency_counts({"vdb": 5, "edp": "7", "chat": DISABLED}, "count.yaml") == {
+            "vdb": 5, "edp": 7, "chat": DISABLED}
+
+    @pytest.mark.parametrize("value", [-1, True, "many", None, {"skipped": ""}, {"count": 3}, "²"])
+    def test_a_value_that_is_no_count_is_skipped_naming_the_probe(self, value):
+        # "²" (superscript two) is a digit by isdigit() but int() raises on it; isdecimal()
+        # rejects it cleanly, same as every other value here.
+        reason = consistency_counts({"vdb": value}, "count.yaml")["vdb"]["skipped"]
+        assert reason.startswith("probe count.yaml returned")
+
+    def test_a_result_that_is_no_mapping_is_one_skipped_store(self):
+        assert list(consistency_counts("5", "count.yaml")) == ["count.yaml"]
+        assert "not a mapping" in consistency_counts(None, "count.yaml")["count.yaml"]["skipped"]
+
+    def test_a_failed_probe_is_one_skipped_store(self):
+        assert consistency_failed("count.yaml", "Job timed out") == {
+            "count.yaml": {"skipped": "probe count.yaml failed: Job timed out", "failed": True}}
+
+    def test_a_store_two_probes_report_is_skipped_naming_the_second(self):
+        merged = consistency_merge(consistency_merge({}, {"vdb": 5}, "a.yaml"), {"vdb": 6, "edp": 1}, "b.yaml")
+        assert merged == {"vdb": {"skipped": "store reported by more than one probe, again by b.yaml"}, "edp": 1}
+
+
+class TestPreConsistencyGate:
+    def test_a_failed_pre_run_count_blocks_only_its_own_layer(self):
+        counts = {"erag": {"vdb": consistency_failed("count.yaml", "timed out")["count.yaml"]},
+                  "platform": {"vdb": 5}}
+        gate = pre_consistency_gate(counts, {"erag": True, "platform": True})
+        checks = {c["layer"]: c["verdict"] for c in gate["checks"]}
+        assert checks == {"erag": "blocking", "platform": "pass"}
+        assert "vdb" in next(c for c in gate["checks"] if c["layer"] == "erag")["reason"]
+
+    def test_a_failed_pre_run_count_refuses_only_when_the_layer_gates(self):
+        counts = {"erag": {"vdb": consistency_failed("count.yaml", "timed out")["count.yaml"]}}
+        assert pre_consistency_gate(counts, {"erag": True})["refused"] == ["erag/data-consistency"]
+        assert pre_consistency_gate(counts, {"erag": False})["refused"] == []
+
+    def test_force_passes_it_and_records_it_in_forced_checks(self):
+        counts = {"erag": {"vdb": consistency_failed("count.yaml", "timed out")["count.yaml"]}}
+        gate = pre_consistency_gate(counts, {"erag": True}, forced=True)
+        assert gate["refused"] == [] and gate["forcedChecks"] == ["erag/data-consistency"]
+
+    def test_a_skipped_but_not_failed_store_does_not_refuse(self):
+        # disabled (chat_history_enabled: false) is a normal skip, not a failed probe.
+        assert pre_consistency_gate({"erag": {"chat": DISABLED}}, {"erag": True})["refused"] == []
+
+
+class TestCompareConsistency:
+    @pytest.mark.parametrize("pre, post, verdict", [(5, 7, "pass"), (5, 5, "pass"), (5, 4, "blocking"), (0, 0, "baseline")])
+    def test_counted_store(self, pre, post, verdict):
+        assert compare_consistency({"vdb": pre}, {"vdb": post}) == {"vdb": {"pre": pre, "post": post, "verdict": verdict}}
+
+    def test_a_skipped_store_carries_the_reason_and_its_uncounted_side_is_null(self):
+        assert compare_consistency({"chat": 4}, {"chat": DISABLED}) == {
+            "chat": {"pre": 4, "post": None, "verdict": "skipped", "reason": DISABLED["skipped"]}}
+
+    def test_a_store_counted_on_one_side_only_is_skipped(self):
+        stores = compare_consistency({"vdb": 2}, {"edp": 1})
+        assert stores["vdb"]["reason"] == "not counted after the run"
+        assert stores["edp"]["reason"] == "not counted before the run"
+
+    def test_a_store_counted_before_and_lost_to_a_failed_probe_blocks(self):
+        stores = compare_consistency({"vdb": 100, "edp": 3}, consistency_failed("count.yaml", "Job timed out"))
+        assert stores["vdb"] == {"pre": 100, "post": None, "verdict": "blocking",
+                                 "reason": "not counted after the run: probe count.yaml failed"}
+        assert stores["count.yaml"]["verdict"] == "skipped"
+
+
+class TestConsistencyVerdict:
+    def test_a_layer_without_probes_is_skipped_naming_the_file(self):
+        verdict = consistency_verdict(None, {}, "erag", True)
+        assert (verdict["verdict"], verdict["gating"]) == ("skipped", False)
+        assert verdict["reason"] == "erag ships no data_consistency.yaml"
+
+    def test_a_probe_list_that_does_not_parse_is_skipped_with_the_error(self):
+        verdict = consistency_verdict(None, {}, "erag", True, "erag/data_consistency.yaml does not parse: x")
+        assert (verdict["verdict"], verdict["gating"]) == ("skipped", False)
+        assert verdict["reason"] == "erag/data_consistency.yaml does not parse: x"
+
+    def test_a_resume_compares_with_the_kept_snapshot_or_says_it_has_none(self):
+        kept = yaml.safe_load(yaml.safe_dump({"layer": "erag", "phase": "pre", "stores": {"vdb": 100}}))
+        verdict = consistency_verdict(kept["stores"], {"vdb": 10}, "erag", True)
+        assert (verdict["verdict"], verdict["reason"]) == ("blocking", "entries lost: vdb: 100 -> 10")
+        verdict = consistency_verdict(None, {"vdb": 10}, "erag", True, "no pre-run snapshot of erag was kept")
+        assert (verdict["verdict"], verdict["reason"]) == ("skipped", "no pre-run snapshot of erag was kept")
+
+    def test_lost_entries_block_and_gate_a_supports_upgrade_layer(self):
+        verdict = consistency_verdict({"vdb": 5, "chat": DISABLED}, {"vdb": 4, "chat": DISABLED}, "erag", True)
+        assert (verdict["verdict"], verdict["gating"], verdict["check"]) == ("blocking", True, "data-consistency")
+        assert verdict["reason"] == "entries lost: vdb: 5 -> 4"
+
+    def test_a_store_lost_to_a_failed_probe_gates_like_lost_entries(self):
+        verdict = consistency_verdict({"vdb": 100}, consistency_failed("count.yaml", "Job timed out"), "erag", True)
+        assert (verdict["verdict"], verdict["gating"]) == ("blocking", True)
+        assert verdict["reason"] == "entries lost: vdb: 100 -> not counted"
+
+    def test_lost_entries_on_a_layer_without_supports_upgrade_do_not_gate(self):
+        verdict = consistency_verdict({"vdb": 5}, {"vdb": 4}, "inference", False)
+        assert (verdict["verdict"], verdict["gating"]) == ("blocking", False)
+
+    def test_only_skipped_stores_is_skipped_never_a_baseline(self):
+        assert consistency_verdict({"chat": DISABLED}, {"chat": DISABLED}, "erag")["verdict"] == "skipped"
+        assert consistency_verdict({}, {}, "erag")["verdict"] == "skipped"
+
+    def test_every_counted_store_empty_is_a_baseline(self):
+        assert consistency_verdict({"vdb": 0, "chat": DISABLED}, {"vdb": 0, "chat": DISABLED}, "erag")["verdict"] == "baseline"
+
+    def test_an_empty_store_beside_a_kept_one_passes(self):
+        verdict = consistency_verdict({"vdb": 0, "edp": 3}, {"vdb": 0, "edp": 3}, "erag", True)
+        assert (verdict["verdict"], verdict["gating"]) == ("pass", False)

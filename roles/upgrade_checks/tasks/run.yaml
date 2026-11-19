@@ -13,6 +13,7 @@
     _layer_release: {}
     _layer_version_data: {}
     _layer_class: {}
+    _reported_layers: []
     _upgrade_verdicts: []
 
 - name: "upgrade_checks | Note the installer commit"
@@ -133,6 +134,12 @@
           {{ _installer_version if item in upgrade_installer_layers
              else _version_data | layer_release_version }}
       loop: "{{ _upgrade_layers }}"
+
+    - name: "upgrade_checks | Note the layers whose run is reported"
+      ansible.builtin.set_fact:
+        _reported_layers: "{{ _reported_layers + [item] }}"
+      loop: "{{ _upgrade_layers }}"
+      when: _layer_class[item] | report_due(_layer_records[item] | default({}))
 
     - name: "upgrade_checks | Run the checks"
       ansible.builtin.include_tasks: "checks/{{ check }}.yaml"

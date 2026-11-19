@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """
 Ansible filter plugin — the layer deployment record, the run class of an
-install, and the gating of upgrade-check verdicts.
+install, the gating of upgrade-check verdicts and the data-consistency
+comparison of a layer's stores before and after the run.
 
 Used by roles/upgrade_checks and playbooks/includes/run_layer.yaml.
 
@@ -12,6 +13,7 @@ to the top level on read; core writes over it only once the layer declares
 supports.upgrade, the release that stops writing its own.
 """
 
+import yaml
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
@@ -187,6 +189,49 @@ def upgrade_path_verdict(version_data, layer, record, run_class, release, env="<
     return verdict
 
 
+def data_consistency_present_verdict(layer, supports_upgrade, present, error=None):
+    """Refuse before any change if a layer gating on upgrade ships no usable data_consistency.yaml;
+    a layer that does not gate is skipped, same as the post-run data-consistency verdict is."""
+    verdict = {"layer": layer, "check": "data-consistency-present", "verdict": "pass",
+               "reason": "%s ships data_consistency.yaml" % layer, "resolve": None}
+    if not supports_upgrade:
+        verdict.update(verdict="skipped", reason="%s does not declare supports.upgrade" % layer)
+    elif not present:
+        verdict.update(verdict="blocking",
+                       reason="%s declares supports.upgrade but ships no data_consistency.yaml" % layer,
+                       resolve="add data_consistency.yaml next to %s's components.yaml "
+                               "(format: docs/reference/adding_solutions.md), or rerun with --force" % layer)
+    elif error:
+        verdict.update(verdict="blocking", reason=error,
+                       resolve="fix the data_consistency.yaml of %s "
+                               "(format: docs/reference/adding_solutions.md), or rerun with --force" % layer)
+    return verdict
+
+
+def data_consistency_resume_verdicts(layers, layer_class, records):
+    """A resume of a run the data-consistency check halted is refused like the halt itself,
+    so re-running the same command never clears it; --force accepts the loss.
+    The check id is the post-run check's own, so one --force covers the resume and its new count."""
+    return [{"layer": layer, "check": "data-consistency", "verdict": "blocking",
+             "reason": "the last run of %s halted because it lost entries" % layer,
+             "resolve": "restore the %s data from its backup, or rerun with --force to accept the loss" % layer}
+            for layer in layers
+            if layer_class.get(layer) == "resume" and (records.get(layer) or {}).get("haltReason") == "data-consistency"]
+
+
+def consistency_probe_list(text, path):
+    """The probes a data_consistency.yaml lists, and the error that makes it unusable, if any."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as err:
+        return {"probes": [], "error": "%s does not parse: %s" % (path, " ".join(str(err).split()))}
+    data = {} if data is None else data
+    probes = (data.get("probes") or []) if isinstance(data, dict) else None
+    if not isinstance(probes, list) or not all(isinstance(probe, str) for probe in probes):
+        return {"probes": [], "error": "%s must set probes: to a list of task files" % path}
+    return {"probes": probes, "error": None}
+
+
 def upgrade_gate(verdicts, supports_upgrade, forced=False):
     """Mark each verdict gating or not; return what refuses the run and what --force bypassed.
 
@@ -243,6 +288,105 @@ def report_due(run_class, record=None):
     return _version(record["version"], layer) != _version(record["targetVersion"], layer)
 
 
+# Data consistency: a layer's probes count its stores before and after the run.
+# A count is an integer >= 0; a store a probe cannot count is {skipped: <reason>},
+# never 0, so it is not compared and never reads as an empty store.
+
+def _skip_reason(count):
+    return count.get("skipped") if isinstance(count, dict) else None
+
+
+def consistency_failed(probe, message):
+    """The counts of a probe that failed: one store named after the probe file, marked failed."""
+    return {probe: {"skipped": "probe %s failed: %s" % (probe, message), "failed": True}}
+
+
+def consistency_counts(result, probe):
+    """Validate what one probe set in data_consistency_counts; a bad value becomes skipped."""
+    if not isinstance(result, dict):
+        return consistency_failed(probe, "data_consistency_counts is not a mapping: %r" % (result,))
+    counts = {}
+    for store, count in result.items():
+        if isinstance(count, dict) and str(count.get("skipped") or "").strip():
+            counts[store] = {"skipped": str(count["skipped"])}
+        elif str(count).isdecimal():
+            counts[store] = int(count)
+        else:
+            counts[store] = {"skipped": "probe %s returned %r" % (probe, count)}
+    return counts
+
+
+def consistency_merge(counts, new, probe):
+    """Add one probe's counts; a store an earlier probe already reported is skipped, never overwritten."""
+    merged = dict(counts or {})
+    for store, count in new.items():
+        merged[store] = ({"skipped": "store reported by more than one probe, again by %s" % probe}
+                         if store in merged else count)
+    return merged
+
+
+def pre_consistency_gate(counts_by_layer, supports_upgrade, forced=False):
+    """The gate for the pre-run counts, same shape as upgrade_gate: blocking per layer whose
+    pre-run snapshot has a failed entry, so a layer that declares supports.upgrade refuses the
+    run before anything changes rather than comparing against counts that were never taken.
+    --force accepts it and is recorded in forcedChecks."""
+    verdicts = []
+    for layer, counts in (counts_by_layer or {}).items():
+        failed = sorted(store for store, count in (counts or {}).items() if isinstance(count, dict) and count.get("failed"))
+        verdict = {"layer": layer, "check": "data-consistency", "verdict": "pass", "reason": None, "resolve": None}
+        if failed:
+            verdict.update(verdict="blocking", reason="the pre-run count failed: %s" % ", ".join(failed),
+                           resolve="fix the %s probe (docs/reference/adding_solutions.md), or rerun with --force" % layer)
+        verdicts.append(verdict)
+    return upgrade_gate(verdicts, supports_upgrade, forced)
+
+
+def _compare_store(pre, post, failed_probes):
+    reason = _skip_reason(pre) or _skip_reason(post)
+    if reason is None and pre is None:
+        reason = "not counted before the run"
+    result = {"pre": pre if isinstance(pre, int) else None, "post": post if isinstance(post, int) else None}
+    # A store counted before the run and missing after it is lost if a probe failed;
+    # with every probe run, the release no longer declares it.
+    if reason is None and post is None and failed_probes:
+        return dict(result, verdict="blocking",
+                    reason="not counted after the run: probe %s failed" % ", ".join(failed_probes))
+    if reason is None and post is None:
+        reason = "not counted after the run"
+    if reason is not None:
+        return dict(result, verdict="skipped", reason=reason)
+    if post < pre:
+        return dict(result, verdict="blocking")
+    return dict(result, verdict="baseline" if post == 0 else "pass")
+
+
+def compare_consistency(pre, post):
+    pre, post = pre or {}, post or {}
+    failed_probes = sorted(store for store, count in post.items() if isinstance(count, dict) and count.get("failed"))
+    stores = list(pre) + [store for store in post if store not in pre]
+    return {store: _compare_store(pre.get(store), post.get(store), failed_probes) for store in stores}
+
+
+def consistency_verdict(pre, post, layer, supports_upgrade=False, no_pre_reason=None):
+    """The layer's consistency verdict for the report; pre is None when nothing was counted
+    before the run: the layer ships no probes, or no_pre_reason says why."""
+    verdict = {"check": "data-consistency", "verdict": "skipped", "gating": False, "stores": {}}
+    if pre is None:
+        return dict(verdict, reason=no_pre_reason or "%s ships no data_consistency.yaml" % layer)
+    stores = compare_consistency(pre, post)
+    lost = ["%s: %s -> %s" % (name, s["pre"], "not counted" if s["post"] is None else s["post"])
+            for name, s in stores.items() if s["verdict"] == "blocking"]
+    counted = [s for s in stores.values() if s["verdict"] != "skipped"]
+    if lost:
+        return dict(verdict, verdict="blocking", reason="entries lost: " + ", ".join(lost),
+                    gating=bool(supports_upgrade), stores=stores)
+    if not counted:
+        return dict(verdict, reason="no store counted", stores=stores)
+    if all(s["verdict"] == "baseline" for s in counted):
+        return dict(verdict, verdict="baseline", reason="every counted store is empty", stores=stores)
+    return dict(verdict, verdict="pass", reason="no store lost entries", stores=stores)
+
+
 class FilterModule:
     def filters(self):
         return {
@@ -256,10 +400,19 @@ class FilterModule:
             "version_change_verdict": version_change_verdict,
             "cluster_probe_verdict": cluster_probe_verdict,
             "upgrade_path_verdict": upgrade_path_verdict,
+            "data_consistency_present_verdict": data_consistency_present_verdict,
+            "data_consistency_resume_verdicts": data_consistency_resume_verdicts,
             "upgrade_gate": upgrade_gate,
             "record_forced": record_forced,
             "record_dependencies": record_dependencies,
             "record_version": record_version,
             "check_layers": check_layers,
             "report_due": report_due,
+            "consistency_probe_list": consistency_probe_list,
+            "consistency_failed": consistency_failed,
+            "consistency_counts": consistency_counts,
+            "consistency_merge": consistency_merge,
+            "pre_consistency_gate": pre_consistency_gate,
+            "compare_consistency": compare_consistency,
+            "consistency_verdict": consistency_verdict,
         }

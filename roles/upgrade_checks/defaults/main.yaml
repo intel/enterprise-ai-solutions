@@ -8,11 +8,17 @@
 upgrade_checks:
   - version_change
   - upgrade_path
+  - data_consistency_present
+  - data_consistency_resume
 
 # Checks that judge every planned layer: version_change is what refuses a
-# downgrade or a conflict. The others judge only layers classed upgrade or downgrade.
+# downgrade or a conflict, data_consistency_resume the resume of a run halted
+# on data consistency. data_consistency_present judges the reported layers
+# (upgrade, downgrade, resume of either). The others judge only layers classed
+# upgrade or downgrade.
 upgrade_checks_every_class:
   - version_change
+  - data_consistency_resume
 
 # Run classes a check judges besides upgrade and downgrade: upgrade_path also
 # judges a conflict, so a forced run knows whether this release supports its path.
@@ -36,3 +42,7 @@ upgrade_report_dir: "{{ env_dir }}/reports"
 # Keep the most recent reports per layer, the same rule ENV_LOG_DIR applies to its logs
 # (es_auto_installer.sh): the oldest is the only record of why a run was forced or halted.
 upgrade_report_keep: 30
+
+# What a layer's data-consistency probes may write; removed when the layer's run ends.
+# One folder per layer: every layer's pre-run count runs before the first layer does.
+upgrade_consistency_tmp_dir: "{{ tmp_dir }}/data-consistency/{{ upgrade_record_layer | default('') }}"
