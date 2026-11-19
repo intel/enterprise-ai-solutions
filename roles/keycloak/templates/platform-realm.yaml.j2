@@ -26,6 +26,9 @@ spec:
     users:
       - username: "{{ keycloak_platform_bootstrap_admin_user }}"
         enabled: true
+        # Keycloak's user profile requires a name; without one it asks at first login.
+        firstName: Platform
+        lastName: Admin
         email: "{{ keycloak_platform_bootstrap_admin_email }}"
         emailVerified: true
         groups: ["/{{ keycloak_platform_admin_group }}"]

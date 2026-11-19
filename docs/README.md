@@ -36,6 +36,7 @@ Install the platform, serve a model, deploy RAG, and go beyond a single node.
 | [Multi-Node & BYO Cluster](deploy/topologies.md) | Deploying across several machines, or onto an existing cluster |
 | [Rack-scale Deployment](rack-scale-deployment.md) | A cluster on a dedicated high-speed fabric: the rack profile, star, Clos and L2 topologies, Ceph on the fabric, GPU nodes |
 | [Headlamp and Platform Sign-in](deploy/headlamp.md) | The cluster web UI, Keycloak sign-in for every UI, and the API server step on BYO clusters |
+| [Observability](deploy/observability.md) | Opening Grafana and signing in: local admin or Keycloak, roles, and the validate checks |
 | [Deploy on OpenShift](deploy/openshift.md) | Preparing an OpenShift + OpenShift AI cluster from the marketplace, then installing on top (preview) |
 | [NetApp ONTAP and Trident](deploy/netapp_ontap.md) | Deploying with Trident + ONTAP as the storage backend |
 | [Network Architecture](deploy/networking.md) | Network topology, IP allocation, and how a request reaches a model |
