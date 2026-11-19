@@ -2,34 +2,45 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
-# =============================================================================
-# Intel GPU Device Plugin — Detect Intel GPU nodes
-# =============================================================================
-# Sets _intel_gpu_nodes: names of the nodes NFD labelled with an Intel GPU.
-# Shared by install, validate and teardown so all three agree on the nodes.
-# Label selectors, not Jinja, match the keys: they contain dots and slashes.
-# =============================================================================
+# Sets _intel_gpu_nodes (nodes NFD labelled with an Intel GPU) and
+# _intel_gpu_unlabelled_nodes (nodes its worker runs on that carry no labels yet).
+# Shared by install, validate and teardown. Label selectors, not Jinja, match the
+# keys: they contain dots and slashes.
 
-# NFD has only just been installed on a fresh cluster: wait until its worker has
-# labelled every node (no node lacks its CPU vendor label), so "no Intel GPU
-# label" means no GPU rather than "not labelled yet".
-- name: "intel_gpu_plugin | Wait for NFD to label every node"
+# NFD labels only the nodes its worker DaemonSet runs on; a tainted control-plane node
+# the worker skips is never waited for. With NFD off, labels from an external NFD are
+# used as they are.
+- name: "intel_gpu_plugin | Find the nodes the NFD worker runs on"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ intel_gpu_plugin_nfd_namespace }}"
+    label_selectors:
+      - role=worker
+  register: _intel_gpu_nfd_workers
+  when: nfd_enabled | default(true) | bool
+
+- name: "intel_gpu_plugin | Record the NFD worker nodes"
+  ansible.builtin.set_fact:
+    _intel_gpu_worker_nodes: "{{ _intel_gpu_nfd_workers.resources | default([]) | map(attribute='spec.nodeName') | select | list }}"
+
+- name: "intel_gpu_plugin | Wait for NFD to label them"
   kubernetes.core.k8s_info:
     kind: Node
     label_selectors:
       - "!feature.node.kubernetes.io/cpu-model.vendor_id"
   register: _intel_gpu_unlabelled
-  until: _intel_gpu_unlabelled.resources | default([]) | length == 0
+  until: _intel_gpu_unlabelled.resources | map(attribute='metadata.name') | intersect(_intel_gpu_worker_nodes) | length == 0
   retries: "{{ intel_gpu_plugin_nfd_retries if component_action == 'install' else 0 }}"
   delay: 10
   failed_when: false
+  when: _intel_gpu_worker_nodes | length > 0
 
 - name: "intel_gpu_plugin | Find nodes with an Intel GPU"
   kubernetes.core.k8s_info:
     kind: Node
     label_selectors:
       - "{{ item }}=true"
-  loop: "{{ intel_gpu_plugin_node_labels }}"
+  loop: "{{ intel_gpu_plugin_node_selector_terms | map(attribute='matchExpressions') | flatten | map(attribute='key') | unique }}"
   register: _intel_gpu_by_label
 
 - name: "intel_gpu_plugin | Record the Intel GPU nodes"
@@ -37,4 +48,6 @@
     _intel_gpu_nodes: >-
       {{ _intel_gpu_by_label.results | map(attribute='resources') | flatten
          | map(attribute='metadata.name') | unique | sort }}
-    _intel_gpu_unlabelled_nodes: "{{ _intel_gpu_unlabelled.resources | default([]) | map(attribute='metadata.name') | list }}"
+    _intel_gpu_unlabelled_nodes: >-
+      {{ _intel_gpu_unlabelled.resources | default([]) | map(attribute='metadata.name')
+         | intersect(_intel_gpu_worker_nodes) | sort }}

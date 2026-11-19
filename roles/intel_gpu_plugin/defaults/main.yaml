@@ -2,33 +2,37 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
-# =============================================================================
-# Intel GPU Device Plugin Role Defaults
-# =============================================================================
-# Advertises Intel discrete GPUs (Arc Pro B-Series / B70, other Xe GPUs) to
-# Kubernetes as the gpu.intel.com/xe (or i915) extended resource, which the
-# GPU-backed model runtimes (SGLang, vLLM XPU) request. Intel only; NVIDIA is
-# nvidia_gpu_operator.
-#
-# Installs only when a node has an Intel GPU: NFD (the node_feature_discovery
-# component, which runs first) labels such nodes with the PCI class/vendor
-# labels below. A cluster without one skips the role, and the DaemonSet's node
-# affinity keeps it off CPU-only nodes of a mixed cluster.
-# =============================================================================
+# Advertises Intel GPUs (Arc Pro B-Series / B70, other Xe GPUs) as the gpu.intel.com/xe
+# (or i915) extended resource that the GPU model runtimes (SGLang, vLLM XPU) request.
+# Intel only; NVIDIA is nvidia_gpu_operator. Installs only where NFD labelled a node
+# with an Intel GPU, in kube-system (the plugin needs hostPath volumes, which only a
+# privileged Pod Security namespace allows).
 
 intel_gpu_plugin_version: "0.37.1"
 intel_gpu_plugin_manifest: "intel-gpu-plugin-v{{ intel_gpu_plugin_version }}.yaml"   # in files/
-intel_gpu_plugin_image: "intel/intel-gpu-plugin:{{ intel_gpu_plugin_version }}"
-intel_gpu_plugin_namespace: "kube-system"
+# The amd64 digest of the tag above; replace both together when bumping the version.
+intel_gpu_plugin_image_digest: "sha256:004641b2547d58f1eadce58473fa160ad71377de1eb588cf1f82832387bf3e33"
+intel_gpu_plugin_image: "intel/intel-gpu-plugin:{{ intel_gpu_plugin_version }}@{{ intel_gpu_plugin_image_digest }}"
 
-# NFD labels marking a node with an Intel GPU: PCI class 0300 (VGA, e.g. Arc Pro
-# B70) or 0380 (display controller, e.g. Data Center GPU Max), vendor 8086. Any
-# one of them selects the node.
-intel_gpu_plugin_node_labels:
-  - feature.node.kubernetes.io/pci-0300_8086.present
-  - feature.node.kubernetes.io/pci-0380_8086.present
+# NFD labels of an Intel GPU (vendor 8086): PCI class 0300 (VGA, e.g. Arc Pro B70) or
+# 0380 (display controller, e.g. Data Center GPU Max). Kubernetes ORs the terms, so any
+# one selects the node; detection reads the same keys.
+intel_gpu_plugin_node_selector_terms:
+  - matchExpressions:
+      - {key: feature.node.kubernetes.io/pci-0300_8086.present, operator: In, values: ["true"]}
+  - matchExpressions:
+      - {key: feature.node.kubernetes.io/pci-0380_8086.present, operator: In, values: ["true"]}
 
-# How long to wait for NFD to label the nodes before deciding whether any has an
-# Intel GPU, and for the plugin to advertise the GPUs (retries x 10s each).
+# What the plugin advertises, and the one the GPU runtimes request.
+intel_gpu_plugin_resources: [gpu.intel.com/xe, gpu.intel.com/i915]
+intel_gpu_plugin_required_resource: gpu.intel.com/xe
+
+# The affinity keeps the pod on Intel GPU nodes, so it tolerates whatever taints they carry.
+intel_gpu_plugin_tolerations:
+  - operator: Exists
+
+intel_gpu_plugin_nfd_namespace: "{{ nfd_namespace | default('node-feature-discovery') }}"
+
+# Retries x 10s each: NFD labelling the nodes, and the plugin rolling out and advertising.
 intel_gpu_plugin_nfd_retries: 30
 intel_gpu_plugin_ready_retries: 30
