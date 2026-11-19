@@ -20,6 +20,7 @@ these file formats; the YAML files themselves are kept comment-light and point b
 | 4 | your repo | `<subdir>/config.yaml` | operator-editable defaults, seeded on `init` |
 | 5 | your repo | `<subdir>/<config_dir>/<flavour>/config.yaml` | optional presets |
 | 6 | your repo | any path | optional `models.yaml` catalog |
+| 7 | your repo | `<subdir>/backup_profile.yaml` | optional; read by `run_backup.sh` to back up and restore the layer ([Backup profile](#backup-profile-optional)) |
 
 `<subdir>` is whatever you set as `deployment_subdir` - `""` when the Ansible tree sits at
 the repo root, `"deployment"` when it's nested.
@@ -94,6 +95,7 @@ my-solution/
 └── deployment/                     ← deployment_subdir
     ├── components.yaml             ← declares the layer + components
     ├── config.yaml                 ← seeded to env/<env>/config.mylayer.yaml
+    ├── backup_profile.yaml         ← optional, read by run_backup.sh (playbooks/backup.yaml)
     ├── pipelines/                  ← config_dir (optional)
     │   ├── chatqna/config.yaml
     │   ├── docsum/config.yaml
@@ -477,6 +479,21 @@ a running cluster, `install my_api --only` runs just that component.
 Ansible flags go after `--`: `install mylayer -- --check -vvv`. Set `ES_LOG_LEVEL=debug` for
 verbose output plus `ansible -vvv`, or `trace` to add bash xtrace. Per-run logs land in
 `env/<env>/logs/`.
+
+### Backup profile (optional)
+
+**`backup_profile.yaml`**, beside `components.yaml`, is what `run_backup.sh` (`playbooks/backup.yaml`)
+reads to back up and restore your layer and what the `backup-freshness` upgrade check looks for; the
+operator side is in [Upgrade a Layer](../deploy/upgrade.md). On a layer that declares
+`supports.upgrade`, an upgrade without the profile is refused (`--force` overrides, recorded as
+forced). The contract is
+[configs/backup.yaml](../../configs/backup.yaml); set `version_label` and `version_file` so each
+backup carries the installed version, or `backup-freshness` cannot match one. Leave `version_key`
+unset: the version is then read as the deployment record reads it (`layer_version`, else
+`solution_version`); an explicit `version_key` must name the key the record uses, or
+`backup-freshness` never matches a backup. Keep other layers'
+deployment records out of the profile's selection, and name only your own Helm releases and
+PersistentVolumeClaims in its cleanup: `restore` deletes them first.
 
 ---
 

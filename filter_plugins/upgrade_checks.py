@@ -12,6 +12,8 @@ to the top level on read; core writes over it only once the layer declares
 supports.upgrade, the release that stops writing its own.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
@@ -191,15 +193,26 @@ def upgrade_gate(verdicts, supports_upgrade, forced=False):
     """Mark each verdict gating or not; return what refuses the run and what --force bypassed.
 
     supports_upgrade maps a layer name to its supports.upgrade declaration.
+    label is how the run prints a verdict: gating, gating and bypassed, advisory (a blocking
+    verdict that does not gate), or empty.
+    A gating verdict marked bypassed (an operator flag waived it) does not refuse
+    the run either, and is listed in forcedChecks like one --force bypassed; the record
+    calls a run forced when forcedChecks is not empty.
     """
     checks = [dict(v, gating=bool(supports_upgrade.get(v["layer"])) and v["verdict"] == "blocking")
               for v in verdicts]
+    for check in checks:
+        check["label"] = ("gating, bypassed" if check["gating"] and check.get("bypassed") else
+                          "gating" if check["gating"] else
+                          "advisory" if check["verdict"] == "blocking" else "")
     gating = ["%s/%s" % (v["layer"], v["check"]) for v in checks if v["gating"]]
+    bypassed = ["%s/%s" % (v["layer"], v["check"]) for v in checks if v["gating"] and v.get("bypassed")]
+    forced_checks = gating if forced else bypassed
     return {
         "checks": checks,
-        "refused": [] if forced else gating,
-        "forced": bool(forced and gating),
-        "forcedChecks": gating if forced else [],
+        "refused": [] if forced else [name for name in gating if name not in bypassed],
+        "forced": bool(forced_checks),
+        "forcedChecks": forced_checks,
     }
 
 
@@ -243,6 +256,81 @@ def report_due(run_class, record=None):
     return _version(record["version"], layer) != _version(record["targetVersion"], layer)
 
 
+# Backup freshness: a fresh backup of the recorded version before an upgrade.
+
+
+def _utc(stamp):
+    moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def fresh_backups(backups, version_label, version, now, max_age_hours, checkout_bypass_label):
+    """The Completed Velero backups labelled with version, at most max_age_hours old, newest first.
+
+    Versions compare as versions (3.0 is 3.0.0). A backup carrying checkout_bypass_label was taken
+    with another release's profile and is never a restore point. A version that does not parse
+    (recorded or labelled) matches nothing, rather than raising: this check never fails a run.
+    """
+    cutoff = _utc(now) - timedelta(hours=float(max_age_hours))
+    try:
+        wanted = _version(version, "backup")
+    except ValueError:
+        return []
+    kept = []
+    for backup in backups or []:
+        labels = (backup.get("metadata") or {}).get("labels") or {}
+        status = backup.get("status") or {}
+        stamp = status.get("completionTimestamp")
+        if status.get("phase") != "Completed" or not stamp or checkout_bypass_label in labels:
+            continue
+        try:
+            same = _version(labels.get(version_label), "backup") == wanted
+        except ValueError:
+            same = False
+        if same and _utc(stamp) >= cutoff:
+            kept.append({"name": backup["metadata"]["name"], "completionTimestamp": stamp})
+    return sorted(kept, key=lambda b: _utc(b["completionTimestamp"]), reverse=True)
+
+
+def backup_freshness_verdict(facts, layer, version, without_velero=False, env="<env>"):
+    """Verdict of the backup-freshness check from what roles/backup/tasks/freshness.yaml found."""
+    facts = facts or {}
+    backup = "./run_backup.sh backup %s --env %s" % (layer, env)
+    verdict = {"layer": layer, "check": "backup-freshness", "verdict": "blocking", "resolve": backup}
+    fresh = facts.get("fresh") or []
+    if not facts.get("velero"):
+        if without_velero:
+            return dict(verdict, bypassed=True, resolve=None,
+                        reason="Velero is not deployed and upgrade_without_velero is set: no restore point")
+        return dict(verdict, reason="Velero is not deployed, so no backup of %s %s exists" % (layer, version),
+                    resolve="set velero_enabled: true in env/%s/global_config.yaml, run "
+                            "./es_auto_installer.sh install velero --env %s --only, then %s, "
+                            "or set upgrade_without_velero: true" % (env, env, backup))
+    if not facts.get("found"):
+        return dict(verdict, reason="%s has no backup profile%s" % (
+                        layer, " (%s)" % facts["profile"] if facts.get("profile") else ""),
+                    resolve="add backup_profile.yaml beside the components.yaml that declares %s" % layer)
+    if not facts.get("enabled"):
+        return dict(verdict, reason="the %s backup profile is not enabled" % layer,
+                    resolve="enable it in env/%s/config.%s.yaml, then %s" % (env, layer, backup))
+    if not facts.get("version_label"):
+        return dict(verdict, reason="the %s backup profile sets no version_label, so no backup "
+                                    "can be matched to %s" % (layer, version),
+                    resolve="set version_label in %s" % facts.get("profile"))
+    if not fresh:
+        return dict(verdict, reason="no Completed backup of %s %s in the last %s h"
+                                    % (layer, version, facts.get("max_age_hours")))
+    name = fresh[0]["name"]
+    if not facts.get("server"):
+        return dict(verdict, reason="no running Velero server to read backup %s" % name,
+                    resolve="kubectl -n %s get pods" % facts.get("namespace", "velero"))
+    if not facts.get("readable"):
+        return dict(verdict, reason="backup %s exists but its contents cannot be read from the store" % name,
+                    resolve="kubectl -n %s get backupstoragelocations" % facts.get("namespace", "velero"))
+    return dict(verdict, verdict="pass", resolve=None,
+                reason="backup %s, completed %s" % (name, fresh[0]["completionTimestamp"]))
+
+
 class FilterModule:
     def filters(self):
         return {
@@ -262,4 +350,6 @@ class FilterModule:
             "record_version": record_version,
             "check_layers": check_layers,
             "report_due": report_due,
+            "fresh_backups": fresh_backups,
+            "backup_freshness_verdict": backup_freshness_verdict,
         }

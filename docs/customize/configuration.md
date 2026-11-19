@@ -74,7 +74,7 @@ You need to edit the file when one of these is true:
 | `gateway_tls_mode` | `selfsigned` | Auto-generated CA, or bring your own — see [TLS](#tls) |
 | `kubernetes_accelerator` | `cpu` | Compute target for inference (Intel® Xeon®) |
 | `observability_enabled` | `true` | Deploy Prometheus + Grafana + Loki + Tempo |
-| `velero_enabled` | `false` | Deploy the backup mechanism (Velero + CSI snapshots). Needs `storage_backend: nfs` or `ceph`; each solution documents its own backup and restore procedure |
+| `velero_enabled` | `false` | Deploy the backup mechanism (Velero + CSI snapshots). Needs `storage_backend: nfs` or `ceph`; `run_backup.sh` backs up and restores a layer with it (see [Upgrade a Layer](../deploy/upgrade.md#backup-and-restore)) |
 
 Everything else is safe to leave alone until you have a reason to change it.
 

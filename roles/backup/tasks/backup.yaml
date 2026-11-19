@@ -191,5 +191,6 @@
       items: {{ _bk_status.resources[0].status.progress.itemsBackedUp | default('n/a') }};
       volume snapshots: {{ _bk_snap_completed | default(0) }}/{{ _bk_snap_attempted | default(0) }};
       expires: {{ _bk_status.resources[0].status.expiration | default('n/a') }}.
-      Restore it by running the solution's backup playbook with
-      backup_action=restore and velero_restore_from={{ _bk_name }}.
+      {{ ('Restore it with: ' ~ backup_manage_command_prefix | format('restore') ~ ' --from ' ~ _bk_name)
+         if backup_layer is defined
+         else ("Restore it by running the solution's backup playbook with backup_action=restore and velero_restore_from=" ~ _bk_name) }}.
