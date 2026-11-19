@@ -987,13 +987,25 @@ class TestPreConsistencyGate:
 
     def test_a_failed_pre_run_count_refuses_only_when_the_layer_gates(self):
         counts = {"erag": {"vdb": consistency_failed("count.yaml", "timed out")["count.yaml"]}}
-        assert pre_consistency_gate(counts, {"erag": True})["refused"] == ["erag/data-consistency"]
+        assert pre_consistency_gate(counts, {"erag": True})["refused"] == ["erag/data-consistency-pre"]
         assert pre_consistency_gate(counts, {"erag": False})["refused"] == []
 
     def test_force_passes_it_and_records_it_in_forced_checks(self):
         counts = {"erag": {"vdb": consistency_failed("count.yaml", "timed out")["count.yaml"]}}
         gate = pre_consistency_gate(counts, {"erag": True}, forced=True)
-        assert gate["refused"] == [] and gate["forcedChecks"] == ["erag/data-consistency"]
+        assert gate["refused"] == [] and gate["forcedChecks"] == ["erag/data-consistency-pre"]
+
+    def test_a_forced_pre_run_count_does_not_waive_a_loss_after_the_run(self):
+        from jinja2 import Environment
+
+        counts = {"erag": {"vdb": consistency_failed("count.yaml", "timed out")["count.yaml"]}}
+        forced = pre_consistency_gate(counts, {"erag": True}, forced=True)["forcedChecks"]
+        task = next(t for t in _tasks(_task_file("playbooks/includes/run_layer.yaml"))
+                    if t.get("name", "").endswith("data-consistency verdict stops the run"))
+        halt = Environment().from_string(task["ansible.builtin.set_fact"]["_layer_consistency_halt"].strip()).render(
+            layer="erag", _layer_reported=True, _layer_consistency={"erag": {"gating": True}},
+            _upgrade_gate={"forcedChecks": forced})
+        assert halt == "True"
 
     def test_a_skipped_but_not_failed_store_does_not_refuse(self):
         # disabled (chat_history_enabled: false) is a normal skip, not a failed probe.

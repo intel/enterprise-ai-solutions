@@ -55,7 +55,7 @@
           ansible.builtin.set_fact:
             _pre_consistency_gate: >-
               {{ (_pre_consistency_counts | default({}))
-                 | pre_consistency_gate(_layer_supports_upgrade, _upgrade_force | default(false) | bool) }}
+                 | pre_consistency_gate(_layer_supports_upgrade | default({}), _upgrade_force | default(false) | bool) }}
 
         - name: "Record a forced pre-run count in the layer's forcedChecks"
           ansible.builtin.set_fact:

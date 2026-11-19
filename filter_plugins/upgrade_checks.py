@@ -333,7 +333,7 @@ def pre_consistency_gate(counts_by_layer, supports_upgrade, forced=False):
     verdicts = []
     for layer, counts in (counts_by_layer or {}).items():
         failed = sorted(store for store, count in (counts or {}).items() if isinstance(count, dict) and count.get("failed"))
-        verdict = {"layer": layer, "check": "data-consistency", "verdict": "pass", "reason": None, "resolve": None}
+        verdict = {"layer": layer, "check": "data-consistency-pre", "verdict": "pass", "reason": None, "resolve": None}
         if failed:
             verdict.update(verdict="blocking", reason="the pre-run count failed: %s" % ", ".join(failed),
                            resolve="fix the %s probe (docs/reference/adding_solutions.md), or rerun with --force" % layer)
@@ -413,6 +413,5 @@ class FilterModule:
             "consistency_counts": consistency_counts,
             "consistency_merge": consistency_merge,
             "pre_consistency_gate": pre_consistency_gate,
-            "compare_consistency": compare_consistency,
             "consistency_verdict": consistency_verdict,
         }
