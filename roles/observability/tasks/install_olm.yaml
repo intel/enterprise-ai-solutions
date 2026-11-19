@@ -522,6 +522,10 @@
           plugins:
             plugin_admin_enabled: "true"
             preinstall: grafana-metricsdrilldown-app,grafana-lokiexplore-app,grafana-exploretraces-app,grafana-pyroscope-app
+            # The root filesystem is read-only: updating a bundled plugin (Prometheus,
+            # Loki, Tempo) unregisters it, then fails to replace it, and every panel
+            # on that data source fails with "Plugin not registered".
+            preinstall_auto_update: "false"
           auth: >-
             {{ {'login_maximum_lifetime_duration': '3h', 'login_maximum_inactive_lifetime_duration': '30m',
                 'token_rotation_interval_minutes': '10'} }}
