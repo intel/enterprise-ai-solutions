@@ -48,7 +48,6 @@
         label: "{{ component.name }}"
         loop_var: component
 
-    # A failure from here on is the layer's own step, not a component's.
     - name: "Note that no {{ layer }} component is running"
       ansible.builtin.set_fact:
         _running_component: null

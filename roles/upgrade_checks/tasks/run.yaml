@@ -35,20 +35,27 @@
     api_version: v1
     kind: ConfigMap
     namespace: "{{ upgrade_record_namespace }}"
-    # Cuts the list to the records this role owns, not every ConfigMap in the namespace.
     label_selectors:
       - "toolkit-manager.intel.com/record={{ upgrade_record_labels['toolkit-manager.intel.com/record'] }}"
   register: _record_probe
   # Not failed_when: false, which on ansible-core 2.19 drops the module's msg from the result.
   ignore_errors: true
 
+# Coerced once: a templated declaration renders as the string "False", which
+# the gate, the record write and the consistency verdict must all read as false.
+- name: "upgrade_checks | Note which layers declare supports.upgrade"
+  ansible.builtin.set_fact:
+    _layer_supports_upgrade: >-
+      {{ dict(layers | map(attribute='name') | zip(layers | map(attribute='supports.upgrade', default=false) | map('bool'))) }}
+
 - name: "upgrade_checks | Warn that the cluster of an existing kubeconfig did not answer"
   ansible.builtin.debug:
     msg: >-
       WARNING: the kubeconfig {{ kubernetes_kubeconfig }} exists, but the cluster did not answer
       ({{ _record_probe.msg | default('no error text') }}). Every layer is treated as fresh: no
-      record is read or written. A planned layer that declares supports.upgrade still refuses
-      this run; --force is the way through.
+      record is read or written.{{ ' A planned layer that declares supports.upgrade still refuses
+      this run; --force is the way through.' if _active_components | map(attribute='layer') | unique
+      | map('extract', _layer_supports_upgrade) | select | list else '' }}
   # A teardown's last pass runs after the cluster reset, with the kubeconfig still on disk.
   when:
     - component_action == 'install'
@@ -58,13 +65,6 @@
 - name: "upgrade_checks | Note whether records are read and written"
   ansible.builtin.set_fact:
     _record_cluster: "{{ _record_probe.resources is defined }}"
-
-# Coerced once: a templated declaration renders as the string "False", which
-# the gate, the record write and the consistency verdict must all read as false.
-- name: "upgrade_checks | Note which layers declare supports.upgrade"
-  ansible.builtin.set_fact:
-    _layer_supports_upgrade: >-
-      {{ dict(layers | map(attribute='name') | zip(layers | map(attribute='supports.upgrade', default=false) | map('bool'))) }}
 
 - name: "upgrade_checks | Classify and check the install"
   when: component_action == 'install'
