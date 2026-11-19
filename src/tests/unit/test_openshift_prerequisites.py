@@ -184,6 +184,38 @@ def test_instance_skipped_is_not_checked():
     assert instance_report({"skipped": True})["level"] == op.OK
 
 
+@pytest.mark.parametrize("gateway_config, level", [
+    ({"routingViaHost": True}, op.OK),
+    ({"routingViaHost": False}, op.FAIL),
+    ({}, op.FAIL),                     # unset is shared gateway mode, the default
+])
+def test_ambient_needs_local_gateway_mode(gateway_config, level):
+    spec = {"kind": "Network", "name": "cluster",
+            "fields": {"spec.defaultNetwork.ovnKubernetesConfig.gatewayConfig.routingViaHost": True}}
+    req = {"name": "ovn_local_gateway", "instances": [spec]}
+    network = {"metadata": {"name": "cluster"},
+               "spec": {"defaultNetwork": {"ovnKubernetesConfig": {"gatewayConfig": gateway_config}}}}
+    result = {"item": [req, spec], "resources": [network]}
+    assert op.openshift_prereq_report([req], instances={"results": [result]})[0]["level"] == level
+
+
+@pytest.mark.parametrize("policies, status", [
+    ([{"mtls": {"mode": "STRICT"}}], None),
+    ([{"mtls": {"mode": "PERMISSIVE"}}], "NOT READY"),
+    ([{}], "NOT READY"),                  # no mode inherits PERMISSIVE, the Istio default
+    ([], "MISSING"),
+])
+def test_mesh_needs_strict_mtls(policies, status):
+    spec = {"kind": "PeerAuthentication", "name": "default", "namespace": "istio-system",
+            "fields": {"spec.mtls.mode": "STRICT"}}
+    req = {"name": "mesh_strict_mtls", "instances": [spec]}
+    found = [{"metadata": {"name": "default", "namespace": "istio-system"}, "spec": p} for p in policies]
+    row = op.openshift_prereq_report([req], instances={"results": [{"item": [req, spec], "resources": found}]})[0]
+    assert row["level"] == (op.OK if status is None else op.FAIL)
+    if status:
+        assert row["status"] == status
+
+
 def storage_report(storage):
     return report({"storage": True}, storage=storage)
 

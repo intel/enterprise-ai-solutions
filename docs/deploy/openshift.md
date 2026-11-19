@@ -40,7 +40,7 @@ To stay on the tested versions, subscribe to the channel in the table with `inst
 |---|---|---|---|---|---|---|
 | 1 | Default StorageClass | `lvms-operator` (redhat-operators), or ODF / Trident | `stable-4.22` → 4.22.0 | | [LVM Storage](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/storage/persistent-storage-using-local-storage) | **Yes** |
 | 2 | cert-manager | `openshift-cert-manager-operator` (redhat-operators) | `stable-v1` → 1.20.1 | | [cert-manager Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/security_and_compliance/cert-manager-operator-for-red-hat-openshift) | **Yes** |
-| 3 | Service Mesh 3 (ambient) | `servicemeshoperator3` (redhat-operators) | `stable` → 3.4.3 | | [Ambient mode](https://docs.redhat.com/en/documentation/red_hat_openshift_service_mesh/3.4/html/installing/ossm-istio-ambient-mode) | **Yes** |
+| 3 | Service Mesh 3 (ambient), with OVN local gateway mode and mesh-wide STRICT mTLS | `servicemeshoperator3` (redhat-operators) | `stable` → 3.4.3 | | [Ambient mode](https://docs.redhat.com/en/documentation/red_hat_openshift_service_mesh/3.4/html/installing/ossm-istio-ambient-mode) | **Yes** (local gateway mode and STRICT mTLS: when `istio_enabled`) |
 | 4 | Gateway API | built in (Ingress Operator) | — | | [Gateway API](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ingress_and_load_balancing/configuring-gateway-api) | **Yes** (nothing to install) |
 | 5 | CloudNativePG | `cloudnative-pg` (certified-operators) | `stable-v1` → 1.30.1 | | [CloudNativePG](https://cloudnative-pg.io/documentation/current/installation_upgrade/) (certified, not a Red Hat product) | **Yes** |
 | 6 | Red Hat build of Keycloak | `rhbk-operator` (redhat-operators) | `stable-v26.6` → 26.6.7-opr.1 | | [RHBK Operator installation](https://docs.redhat.com/en/documentation/red_hat_build_of_keycloak/26.6/html/operator_guide/installation-) | When `keycloak_enabled: true` (the default) |
@@ -84,6 +84,18 @@ Create the `Istio`, `IstioCNI` and `ZTunnel` objects for ambient mode as the gui
 
 ```bash
 oc get istio,istiocni,ztunnel          # all READY / Healthy
+```
+
+The guide's prerequisites include OVN-Kubernetes in local gateway mode (`routingViaHost: true`); configure it as [Configuring a gateway](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/ovn-kubernetes_network_plugin/configuring-gateway) describes. Without it, the kubelet's probes of meshed pods time out, so those pods never become Ready. The setting is cluster-wide, and SR-IOV hardware offload needs it off: on such a cluster set `istio_enabled: false`, which also skips this check.
+
+```bash
+oc get network.operator cluster -o jsonpath='{.spec.defaultNetwork.ovnKubernetesConfig.gatewayConfig.routingViaHost}'   # true
+```
+
+Enforce mTLS across the whole mesh with the `PeerAuthentication` from [Enabling strict mTLS across the whole service mesh](https://docs.redhat.com/en/documentation/red_hat_openshift_service_mesh/3.4/html/installing/ossm-enabling-mtls#ossm-enabling-strict-mtls-whole-service-mesh_ossm-enabling-mtls), as the installer does on Kubernetes. The guide's `DestinationRule` for the API server applies to sidecars only; ambient mode does not need it. OpenShift components outside the mesh still reach the meshed workloads they need: the user-workload Prometheus scrapes them, the Grafana Operator configures Grafana, Connectivity Link's Authorino reads Keycloak's keys, and the OpenShift AI gateway calls the models. For each, the installer accepts plain TCP on that port only, and a `NetworkPolicy` admits it only from the caller's namespace.
+
+```bash
+oc get peerauthentication default -n istio-system -o jsonpath='{.spec.mtls.mode}'   # STRICT
 ```
 
 OpenShift already runs its own istiod (`openshift-gateway-istiod` in `openshift-ingress`) for Gateway API. It is separate from the `istio-system` control plane. Leave it alone.
