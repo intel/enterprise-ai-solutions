@@ -7,6 +7,10 @@
       ┃  Layer: {{ component.layer | default('unknown') }}{{ ' ' * (66 - (component.layer | default('unknown')) | length) }}┃
       ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
+- name: "Note {{ component.name }} as the running component"
+  ansible.builtin.set_fact:
+    _running_component: "{{ component.name }}"
+
 - name: "Execute {{ component.name }}"
   ansible.builtin.include_role:
     name: "{{ component.name }}"
