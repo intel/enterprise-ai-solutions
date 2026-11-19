@@ -74,17 +74,26 @@ def test_classify_run(rec, release, expected):
     assert classify_run(rec, release, "platform") == expected
 
 
-def test_installer_layers_never_look_up_a_version_file():
-    # infrastructure and platform carry the installer's own VERSION; version.yaml is never
-    # read for them, since no ext repository claims those layers today.
-    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
-                        "roles", "upgrade_checks", "tasks", "run.yaml")
-    with open(path) as f:
-        tasks = yaml.safe_load(f)
-    task = next(t for t in tasks if t["name"] == "upgrade_checks | Classify and check the install")
+def test_installer_layers_never_look_up_a_version_file(tmp_path):
+    from ansible.plugins.filter.core import FilterModule as CoreFilters
+    from jinja2 import Environment
+
+    (tmp_path / "version.yaml").write_text("solution_version: 3.1.0\n")
+    task = next(t for t in _task_file("roles/upgrade_checks/tasks/run.yaml")
+                if t["name"] == "upgrade_checks | Classify and check the install")
     resolve = next(t for t in task["block"] if t["name"].endswith("Resolve each planned layer's release version"))
-    version_data = resolve["vars"]["_version_data"]
-    assert "upgrade_installer_layers" in version_data
+    env = Environment()
+    env.filters.update(CoreFilters().filters())
+    env.tests["file"] = os.path.isfile
+    template = env.from_string(resolve["vars"]["_version_data"].strip())
+
+    def render(layer):
+        return template.render(item=layer, upgrade_installer_layers=["infrastructure", "platform"],
+                               _version_file=str(tmp_path / "version.yaml"),
+                               lookup=lambda _plugin, path: open(path).read())
+
+    assert render("platform") == "{}"
+    assert render("erag") == "{'solution_version': '3.1.0'}"
 
 
 def test_classify_run_does_not_crash_on_an_unparseable_target_version():
@@ -526,7 +535,7 @@ def test_deployment_records_read_failure_gives_the_recovery_hint_not_the_raw_err
 ])
 def test_upgrade_path_verdict(recorded, base, verdict):
     v = upgrade_path_verdict({"solution_version": "3.1.0", "upgrade_base_version": base},
-                             "erag", record(version=recorded), "upgrade", "dev")
+                             "erag", record(version=recorded), "upgrade", "3.1.0", "dev")
     assert v["verdict"] == verdict
     assert v["check"] == "upgrade-path" and v["layer"] == "erag"
     assert v["reason"]
@@ -534,20 +543,20 @@ def test_upgrade_path_verdict(recorded, base, verdict):
 
 
 def test_upgrade_path_names_the_range_it_refuses():
-    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"), "upgrade", "dev")
+    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"), "upgrade", None, "dev")
     assert "2.3.0" in v["reason"] and ">=3.0.0,<3.1.0" in v["reason"]
     assert "erag" in v["resolve"] and "dev" in v["resolve"]
-    v = upgrade_path_verdict({"upgrade_base_version": "3.x"}, "erag", record(version="2.3.0"), "upgrade", "dev")
+    v = upgrade_path_verdict({"upgrade_base_version": "3.x"}, "erag", record(version="2.3.0"), "upgrade", None, "dev")
     assert "'3.x'" in v["reason"] and "not a range" in v["reason"]
 
 
 def test_upgrade_path_skips_a_layer_without_version_yaml():
-    assert upgrade_path_verdict({}, "platform", record(), "upgrade", "dev")["verdict"] == "skipped"
-    assert upgrade_path_verdict(None, "platform", record(), "upgrade", "dev")["verdict"] == "skipped"
+    assert upgrade_path_verdict({}, "platform", record(), "upgrade", None, "dev")["verdict"] == "skipped"
+    assert upgrade_path_verdict(None, "platform", record(), "upgrade", None, "dev")["verdict"] == "skipped"
 
 
 def test_upgrade_path_gates_only_a_supports_upgrade_layer():
-    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"), "upgrade")
+    v = upgrade_path_verdict({"upgrade_base_version": ">=3.0.0,<3.1.0"}, "erag", record(version="2.3.0"), "upgrade", None)
     assert upgrade_gate([v], {"erag": True})["refused"] == ["erag/upgrade-path"]
     assert upgrade_gate([v], {"erag": False})["refused"] == []
     assert upgrade_gate([v], {"erag": True}, forced=True)["forcedChecks"] == ["erag/upgrade-path"]
@@ -562,7 +571,7 @@ def test_upgrade_path_judges_upgrades_downgrades_and_conflicts():
 
 def test_upgrade_path_skips_a_downgrade():
     data = {"solution_version": "3.0.0", "upgrade_base_version": ">=3.1.0"}
-    v = upgrade_path_verdict(data, "erag", record(version="3.1.0"), "downgrade")
+    v = upgrade_path_verdict(data, "erag", record(version="3.1.0"), "downgrade", "3.0.0")
     assert v["verdict"] == "skipped" and "3.1.0 -> 3.0.0" in v["reason"]
     downgrade = version_change_verdict("downgrade", "erag", record(version="3.1.0"), "3.0.0")
     assert upgrade_gate([downgrade, v], {"erag": True}, forced=True)["forcedChecks"] == ["erag/version-change"]
@@ -577,7 +586,7 @@ def test_upgrade_path_judges_a_conflict_from_the_recorded_version(recorded, rele
     halted = record(version=recorded, status="halted", target="3.1.0")
     data = {"solution_version": release, "upgrade_base_version": ">=3.0.0"}
     assert classify_run(halted, release, "erag") == "conflict"
-    assert upgrade_path_verdict(data, "erag", halted, "conflict")["verdict"] == verdict
+    assert upgrade_path_verdict(data, "erag", halted, "conflict", release)["verdict"] == verdict
 
 
 @pytest.mark.parametrize("rec, reason", [
@@ -585,7 +594,7 @@ def test_upgrade_path_judges_a_conflict_from_the_recorded_version(recorded, rele
     (record(status="deleting"), "a teardown of erag did not finish"),
 ])
 def test_upgrade_path_skips_a_conflict_it_cannot_judge(rec, reason):
-    v = upgrade_path_verdict({"solution_version": "3.2.0", "upgrade_base_version": ">=3.0.0"}, "erag", rec, "conflict")
+    v = upgrade_path_verdict({"solution_version": "3.2.0", "upgrade_base_version": ">=3.0.0"}, "erag", rec, "conflict", "3.2.0")
     assert (v["verdict"], v["reason"]) == ("skipped", reason)
 
 
@@ -595,7 +604,7 @@ def test_upgrade_path_blocks_a_conflict_whose_recorded_version_does_not_parse(st
     unfinished = record(version="3.1.0-SNAPSHOT", status=status, target="3.1.0")
     assert classify_run(unfinished, "3.2.0", "erag") == "conflict"
     v = upgrade_path_verdict({"solution_version": "3.2.0", "upgrade_base_version": ">=3.0.0"},
-                             "erag", unfinished, "conflict")
+                             "erag", unfinished, "conflict", "3.2.0")
     assert v["verdict"] == "blocking"
     assert v["reason"] == "recorded version: layer erag: '3.1.0-SNAPSHOT' is not a version"
     assert v["resolve"] == ("install erag from a release whose upgrade_base_version covers"

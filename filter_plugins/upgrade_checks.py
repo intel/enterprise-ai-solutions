@@ -83,8 +83,7 @@ def classify_run(record, release, layer):
         return "fresh" if release else "unversioned"
     if not release:
         return "unversioned"
-    # The recorded version is parsed only for a complete record: on a halted or in-progress one,
-    # upgrade_path_verdict parses it, so a version that does not parse is a verdict, not a preflight error.
+    # A version that does not parse is judged by the checks, not here.
     if status in ("in-progress", "halted"):
         target = record.get("targetVersion")
         if not target:
@@ -92,8 +91,6 @@ def classify_run(record, release, layer):
         try:
             return "resume" if _version(target, layer) == wanted else "conflict"
         except ValueError:
-            # An unparseable targetVersion is a blocking verdict from version_change_verdict's
-            # conflict branch (it only reports the raw string), not a preflight crash.
             return "conflict"
     if not record.get("version"):
         return "fresh"
@@ -144,13 +141,8 @@ def _upgrade_range(expr):
     return SpecifierSet(expr)
 
 
-def upgrade_path_verdict(version_data, layer, record, run_class, env="<env>"):
-    """Whether the recorded version lies in the release's upgrade_base_version range.
-
-    A conflict (a run towards another release, halted or in progress) is judged from the
-    recorded version too, so a forced run knows whether this release supports that path.
-    classify_run parses the recorded version of an upgrade or a downgrade, not of a conflict;
-    a conflict's version that does not parse is a blocking verdict here."""
+def upgrade_path_verdict(version_data, layer, record, run_class, release, env="<env>"):
+    """Whether the recorded version lies in the release's upgrade_base_version range."""
     record, version_data = record or {}, version_data or {}
     recorded = record.get("version")
     base = version_data.get("upgrade_base_version")
@@ -171,7 +163,6 @@ def upgrade_path_verdict(version_data, layer, record, run_class, env="<env>"):
                        resolve="install %s from a release whose upgrade_base_version covers %s,"
                                " then this one (--env %s)" % (layer, recorded, env))
         return verdict
-    release = layer_release_version(version_data)
     returning = run_class == "conflict" and _version(release, layer) <= recorded_version
     if run_class == "downgrade" or returning:
         verdict.update(verdict="skipped",

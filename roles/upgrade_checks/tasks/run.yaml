@@ -125,8 +125,6 @@
         _layer_class: >-
           {{ _layer_class | combine({item: _layer_records[item] | default({}) | classify_run(_release, item)}) }}
       vars:
-        # infrastructure and platform carry the installer's VERSION; every other layer its own
-        # version.yaml. Never looked up for the installer layers: no ext repo claims them today.
         _version_file: "{{ _layer_dirs[item] | default('') }}/version.yaml"
         _version_data: >-
           {{ {} if item in upgrade_installer_layers
