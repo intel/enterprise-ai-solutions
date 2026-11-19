@@ -36,26 +36,21 @@ def _run_cli(request, *args):
 
 
 _REFUSES_WITH_APP_LAYER = "is not supported on a cluster with"
-_NO_HELM = "helm missing"
+_NO_TOOLING = "missing. Run './es_auto_installer.sh configure'"
 
 
 def _assert_dry_run_leaves_the_cluster_alone(result, verb):
     """A dry run either reports nothing to do, or refuses for a reason the installer states.
 
-    Both outcomes are recognised by the installer's own message, which is the contract
-    here, and both are reached in preflight before the inventory is ever read. An
-    application layer deployed on the cluster is a documented refusal: scaling nodes
-    under a running application is not supported, and the operator is told to tear it
-    down first. Asserting that refusal keeps the guard covered on the clusters CI
-    actually has, where the layer is always installed by the time the suite runs. A
-    checkout whose installer has no helm cannot answer either way, so it skips.
+    On a CI cluster the application layer is installed by the time this suite runs, so the
+    refusal is the outcome that gets exercised here rather than the no-op.
     """
-    if _NO_HELM in result.stderr:
-        pytest.skip(f"the installer in this checkout has no helm, so {verb} --dry-run cannot run: "
-                    f"{result.stderr.strip()}")
+    if _NO_TOOLING in result.stderr:
+        pytest.skip(f"the installer in this checkout is missing a tool it needs, so {verb} "
+                    f"--dry-run cannot run: {result.stderr.strip()}")
     if _REFUSES_WITH_APP_LAYER in result.stderr:
         assert result.returncode != 0, \
-            f"{verb} --dry-run reported the application-layer refusal but exited 0:\n{result.stdout}"
+            f"{verb} --dry-run reported the application-layer refusal but exited 0:\n{result.stderr}"
         assert "Tear it down first" in result.stderr, \
             f"{verb} --dry-run refused without telling the operator what to do:\n{result.stderr}"
         return

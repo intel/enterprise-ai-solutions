@@ -23,12 +23,10 @@ PROVISIONER = "nfs.csi.k8s.io"
 def test_nfs_csi_driver_ready():
     """The driver behind the NFS StorageClass runs: controller available, node plugin on every node.
 
-    The workloads are the ones roles/nfs_storage installs with the csi-driver-nfs chart,
-    in the namespace of its own name. The node plugin is a DaemonSet, and a PVC binds
-    whether or not it runs: a missing plugin shows up only as a mount that fails on that
-    one node, which nothing else in the suite would attribute to storage. The controller
-    is covered by every PVC that binds, so it is asserted here only to name the culprit
-    when nothing binds.
+    The node plugin is a DaemonSet, and a PVC binds whether or not it runs: a missing
+    plugin shows up only as a mount that fails on that one node, which nothing else in
+    the suite would attribute to storage. The controller is covered by every PVC that
+    binds, so it is asserted here only to name the culprit when nothing binds.
     """
     assert_deployment_ready(NAMESPACE, "csi-nfs-controller")
     assert_daemonset_ready(NAMESPACE, "csi-nfs-node")
