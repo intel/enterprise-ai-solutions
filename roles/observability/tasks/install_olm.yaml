@@ -570,6 +570,72 @@
   loop_control:
     label: "{{ item.datasource.name }}"
 
+# =============================================================================
+# 4. Mesh
+# =============================================================================
+
+# Under STRICT mTLS ztunnel refuses plain TCP. The user-workload Prometheus and the
+# Grafana Operator run outside the mesh: only the ports they call accept plain TCP,
+# and the NetworkPolicy lets in only their namespaces. Meshed traffic arrives on
+# HBONE (15008); 169.254.7.127 is the address ztunnel gives the kubelet's probes.
+- name: "observability | olm | Open the ports out-of-mesh callers use"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop: "{{ _obs_mesh_objects }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+  vars:
+    _obs_mesh_open:
+      - name: logging-loki
+        pods: {app.kubernetes.io/instance: logging-loki, app.kubernetes.io/managed-by: lokistack-controller}
+        port: 3100
+        from: {network.openshift.io/policy-group: monitoring}
+      - name: "{{ observability_openshift_grafana_name }}"
+        pods: {app: "{{ observability_openshift_grafana_name }}"}
+        port: 3000
+        from: {kubernetes.io/metadata.name: "{{ observability_openshift_grafana_operator_namespace }}"}
+    _obs_mesh_objects: >-
+      {%- set out = [] -%}
+      {%- for o in _obs_mesh_open -%}
+      {%- set _ = out.append({'apiVersion': 'security.istio.io/v1', 'kind': 'PeerAuthentication',
+            'metadata': {'name': o.name, 'namespace': observability_namespace},
+            'spec': {'selector': {'matchLabels': o.pods}, 'mtls': {'mode': 'STRICT'},
+                     'portLevelMtls': {o.port | string: {'mode': 'PERMISSIVE'}}}}) -%}
+      {%- set _ = out.append({'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+            'metadata': {'name': o.name ~ '-ingress', 'namespace': observability_namespace},
+            'spec': {'podSelector': {'matchLabels': o.pods}, 'policyTypes': ['Ingress'],
+                     'ingress': [{'ports': [{'port': 15008, 'protocol': 'TCP'}]},
+                                 {'from': [{'ipBlock': {'cidr': '169.254.7.127/32'}}]},
+                                 {'from': [{'namespaceSelector': {'matchLabels': o.from}}],
+                                  'ports': [{'port': o.port, 'protocol': 'TCP'}]}]}}) -%}
+      {%- endfor -%}
+      {{ out }}
+  when: istio_enabled | default(false) | bool
+
+# The OpenTelemetry Operator's own NetworkPolicy admits only the OTLP and metrics
+# ports, so meshed senders, which arrive on HBONE, are dropped. Policies add up:
+# this one admits HBONE and the probes.
+- name: "observability | olm | Let meshed senders reach the OTel Collector"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: opentelemetry-collector-mesh
+        namespace: "{{ observability_namespace }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/component: opentelemetry-collector
+            app.kubernetes.io/instance: "{{ observability_namespace }}.opentelemetry"
+        policyTypes: [Ingress]
+        ingress:
+          - ports: [{port: 15008, protocol: TCP}]
+          - from: [{ipBlock: {cidr: 169.254.7.127/32}}]
+  when: istio_enabled | default(false) | bool
+
 - name: "observability | olm | Wait for the instances"
   vars:
     _r: "{{ item.ready | default(item) }}"
