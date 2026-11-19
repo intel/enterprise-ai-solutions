@@ -11,6 +11,9 @@
 cnpg_version: "0.25.0"
 cnpg_namespace: "cnpg-system"
 cnpg_helm_repo: "https://cloudnative-pg.github.io/charts"
+# Where the admin installed the marketplace CNPG operator on OpenShift (OperatorHub's
+# default). It reads the instances' status from outside the mesh.
+cnpg_olm_namespace: "openshift-operators"
 
 # PostgreSQL Cluster
 postgresql_namespace: "postgresql"
