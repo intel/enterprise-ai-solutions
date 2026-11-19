@@ -27,7 +27,6 @@ import {
   MANAGED_BY,
   MODEL_MANAGER,
   modelPods,
-  parseJobTemplate,
   Row,
   rowActions,
   RowFilter,
@@ -37,6 +36,7 @@ import { ModelActionButton, ModelMoreMenu } from './ModelActionMenu';
 import { ModelCards } from './ModelCards';
 import { ModelToolbar } from './ModelToolbar';
 import { InferenceService, LLMInferenceService, readyCondition, ServingObject } from './resources';
+import { useOfferedModels } from './useOfferedModels';
 
 function stateOf(svc: ServingObject | undefined, job: LatestJob | undefined) {
   if (job?.state === 'Running')
@@ -63,10 +63,6 @@ export function Models() {
   const scope = { namespace: CATALOG.namespace, labelSelector: MANAGED_BY };
   const [llmServices, servicesError] = LLMInferenceService.useList(scope);
   const [inferenceServices, isvcError] = InferenceService.useList(scope);
-  const [templateMap] = K8s.ResourceClasses.ConfigMap.useGet(
-    MODEL_MANAGER.template,
-    MODEL_MANAGER.namespace
-  );
   const [pods] = K8s.ResourceClasses.Pod.useList({ namespace: CATALOG.namespace });
   const [jobs] = K8s.ResourceClasses.Job.useList({
     namespace: MODEL_MANAGER.namespace,
@@ -80,21 +76,25 @@ export function Models() {
   const [accessing, setAccessing] = useState<Row | null>(null);
   const [error, setError] = useState('');
 
+  const { offered, template } = useOfferedModels(
+    catalogModels(catalog?.data),
+    new Set([...(llmServices ?? []), ...(inferenceServices ?? [])].map(s => s.metadata.name))
+  );
+
   if (
     (!catalog && !catalogError) ||
     (!llmServices && !servicesError) ||
-    (!inferenceServices && !isvcError)
+    (!inferenceServices && !isvcError) ||
+    !offered
   )
     return <Loader title="Loading models" />;
 
   // An InferenceService list that fails (no KServe v1beta1, no access) means none, not an error.
   const services: ServingObject[] = [...(llmServices ?? []), ...(inferenceServices ?? [])];
 
-  const template = parseJobTemplate(templateMap?.data);
   const jobByModel = latestJobs((jobs ?? []).map(j => j.jsonData));
   const jobObject = new Map((jobs ?? []).map(j => [j.metadata.name, j]));
   const byName = new Map(services.map(s => [s.metadata.name, s]));
-  const known = catalogModels(catalog?.data);
   // Absent before the inference release that publishes it: no "Access details" then.
   const access = catalogAccess(catalog?.data);
   const row = (m: CatalogModel, inCatalogue: boolean): Row => {
@@ -108,10 +108,10 @@ export function Models() {
     };
   };
   const rows: Row[] = [
-    ...known.map(m => row(m, true)),
+    ...offered.map(m => row(m, true)),
     // Deployed outside the catalogue (model-manager deploy --as / --hfid): shown, not managed here.
     ...[...byName.entries()]
-      .filter(([n]) => !known.some(m => m.name === n))
+      .filter(([n]) => !offered.some(m => m.name === n))
       .map(([n, s]) => row({ name: n, ...liveFacts(s.jsonData) }, false)),
   ];
   const shown = filterRows(rows, filter);

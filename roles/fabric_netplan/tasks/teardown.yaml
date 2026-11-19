@@ -8,12 +8,8 @@
 # Runs after the kubespray reset (es_auto_installer.sh): the node IPs live on
 # the fabric, and the reset needs them.
 
-- name: "fabric_netplan | teardown | Compute cluster node list"
-  ansible.builtin.set_fact:
-    _fabric_all_nodes: >-
-      {{ (groups['kube_control_plane'] | default([]))
-         | union(groups['kube_node'] | default([]))
-         | unique }}
+- name: "fabric_netplan | teardown | Cluster node list"
+  ansible.builtin.import_tasks: node_list.yaml
 
 # netplan apply leaves an address in place once its definition is gone, so read
 # what 99-fabric.yaml assigned before removing it.
@@ -63,7 +59,6 @@
   loop: "{{ _fabric_all_nodes }}"
   loop_control:
     label: "{{ item }}"
-  register: _netplan_removed
 
 - name: "fabric_netplan | teardown | Remove old 60-fabric.yaml from all nodes"
   ansible.builtin.file:
@@ -74,15 +69,6 @@
   loop: "{{ _fabric_all_nodes }}"
   loop_control:
     label: "{{ item }}"
-
-- name: "fabric_netplan | teardown | Re-apply netplan on nodes where config was removed"
-  ansible.builtin.command: netplan apply
-  delegate_to: "{{ item.item }}"
-  become: true
-  loop: "{{ _netplan_removed.results | selectattr('changed') | list }}"
-  loop_control:
-    label: "{{ item.item }}"
-  changed_when: true
 
 # Only the addresses the fabric file assigned: other addresses on the NIC stay.
 # rc 2 means the address is already gone.
@@ -96,3 +82,14 @@
   register: _addr_removed
   changed_when: _addr_removed.rc == 0
   failed_when: _addr_removed.rc not in [0, 2]
+
+# Another netplan file can set the same address on the NIC: the delete above
+# removes it too, and netplan apply puts it back, also on a re-run.
+- name: "fabric_netplan | teardown | Re-apply netplan on each node with fabric addresses"
+  ansible.builtin.command: netplan apply
+  delegate_to: "{{ item }}"
+  become: true
+  loop: "{{ _fabric_addresses | map(attribute='node') | unique }}"
+  loop_control:
+    label: "{{ item }}"
+  changed_when: true

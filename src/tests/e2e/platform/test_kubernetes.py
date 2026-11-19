@@ -6,13 +6,13 @@
 import allure
 import kr8s
 
-@allure.testcase("IEASG-T666")
+@allure.testcase("DSPTV-T395")
 def test_cluster_reachable():
     version = kr8s.api().version()
     assert version["major"]
 
 
-@allure.testcase("IEASG-T667")
+@allure.testcase("DSPTV-T396")
 def test_nodes_ready():
     nodes = list(kr8s.get("nodes"))
     assert len(nodes) > 0
@@ -21,7 +21,7 @@ def test_nodes_ready():
     assert not_ready == [], f"Nodes not Ready: {not_ready}"
 
 
-@allure.testcase("IEASG-T668")
+@allure.testcase("DSPTV-T397")
 def test_kubernetes_min_version():
     version = kr8s.api().version()
     minor = int(version["minor"].rstrip("+"))

@@ -12,6 +12,3 @@
 gpu_observability_namespace: "monitoring"
 gpu_observability_grafana_dashboard_enabled: true
 gpu_observability_alerts_enabled: true
-
-gpu_observability_dashboard_label_key: "grafana_dashboard"
-gpu_observability_dashboard_label_value: "1"

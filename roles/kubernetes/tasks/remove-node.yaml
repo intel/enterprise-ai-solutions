@@ -1,0 +1,64 @@
+# Copyright (C) 2024-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Kubernetes — remove-node (Kubespray remove-node.yml)
+# =============================================================================
+# es_auto_installer.sh (do_remove_node) finds the removed node(s) and runs:
+#   prep (_scale_phase=prep): the Kubespray stack only. The inventory is not
+#        regenerated yet: remove-node.yml reaches the node(s) through it, and
+#        its -e node= only selects among hosts the inventory defines;
+#   Kubespray remove-node.yml (drain, reset, remove);
+#   post (_scale_phase=post, _removed_nodes): regenerate the inventory from
+#        nodes.yaml, refresh the NFS exports, delete the node(s)' BalloonsPolicy.
+# =============================================================================
+
+- name: "kubernetes | remove-node | Post phase — drop removed node(s) from inventory"
+  when: _scale_phase | default('prep') == 'post'
+  block:
+    - name: "kubernetes | remove-node | Regenerate inventory from nodes.yaml"
+      ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+
+    - name: "kubernetes | remove-node | Reload inventory without the removed node(s)"
+      ansible.builtin.meta: refresh_inventory
+
+    # The export allowlist comes from the inventory: until it is rewritten, a
+    # removed node's address keeps rw,no_root_squash on the share.
+    - name: "kubernetes | remove-node | NFS exports without the removed node(s)"
+      ansible.builtin.include_role:
+        name: nfs_storage
+        tasks_from: refresh_exports.yaml
+      vars:
+        _nfs_exports_only: true
+      when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
+
+    - name: "kubernetes | remove-node | Delete the removed node(s)' NRI balloon policies"
+      ansible.builtin.include_role:
+        name: nri_cpu_balloons
+        tasks_from: node_policies.yaml
+      vars:
+        _nri_removed_nodes: "{{ _removed_nodes | split(',') | reject('equalto', '') | list }}"
+
+    - name: "kubernetes | remove-node | Post phase complete"
+      ansible.builtin.debug:
+        msg: "Inventory regenerated at {{ kubespray_custom_inventory }} — removed node(s) dropped."
+
+- name: "kubernetes | remove-node | End role (post phase complete)"
+  when: _scale_phase | default('prep') == 'post'
+  ansible.builtin.meta: end_role
+
+# =====================================================================
+# PHASE: prep — ensure kubespray only, inventory untouched
+# =====================================================================
+
+- name: "kubernetes | remove-node | Ensure kubespray stack"
+  ansible.builtin.include_tasks: kubespray_ensure.yaml
+
+- name: "kubernetes | remove-node | Prep complete"
+  ansible.builtin.debug:
+    msg: >-
+      es_auto_installer.sh now runs Kubespray remove-node.yml for the removed
+      node(s), against the current inventory (unregenerated on purpose).
+
+- name: "kubernetes | remove-node | End role (prep complete — remove-node.yml runs from caller)"
+  ansible.builtin.meta: end_role

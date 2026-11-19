@@ -4,19 +4,24 @@
 import { describe, expect, it } from 'vitest';
 import {
   accessExample,
+  aroundModels,
   buildJob,
   catalogAccess,
   catalogModels,
   categories,
+  clusterExtendedResources,
   filterRows,
   jobArgs,
   latestJobs,
   liveFacts,
+  modelAccelerators,
   modelPods,
+  offeredModels,
   parseJobTemplate,
   portalEntries,
   Row,
   rowActions,
+  templateAccelerator,
 } from './data';
 
 const entry = (v: unknown) => JSON.stringify(v);
@@ -27,13 +32,25 @@ describe('portalEntries', () => {
     expect(portalEntries({})).toEqual([]);
   });
 
-  it('keeps valid entries, sorted by title', () => {
+  it('keeps valid entries in the overview order, unlisted ones last by title', () => {
+    const svc = (title: string) => entry({ title, url: 'https://x.example.com' });
     const got = portalEntries({
-      keycloak: entry({ title: 'Keycloak', description: 'IAM', url: 'https://kc.example.com/' }),
+      zeta: svc('Zeta'),
+      langfuse: svc('Langfuse'),
+      'litellm-ui': svc('LiteLLM'),
+      alpha: svc('Alpha'),
       grafana: entry({ title: 'Grafana', url: 'https://grafana.example.com' }),
+      keycloak: entry({ title: 'Keycloak', description: 'IAM', url: 'https://kc.example.com/' }),
     });
-    expect(got.map(e => e.key)).toEqual(['grafana', 'keycloak']);
-    expect(got[0]).toEqual({
+    expect(got.map(e => e.key)).toEqual([
+      'keycloak',
+      'grafana',
+      'litellm-ui',
+      'langfuse',
+      'alpha',
+      'zeta',
+    ]);
+    expect(got[1]).toEqual({
       key: 'grafana',
       title: 'Grafana',
       description: '',
@@ -57,6 +74,133 @@ describe('portalEntries', () => {
       ok: entry({ title: 'Ok', url: 'https://ok.example.com' }),
     });
     expect(got.map(e => e.key)).toEqual(['ok']);
+  });
+});
+
+describe('aroundModels', () => {
+  it('puts Keycloak before the Models card and the rest after it', () => {
+    const svc = (title: string) => entry({ title, url: 'https://x.example.com' });
+    const [before, after] = aroundModels(
+      portalEntries({
+        langfuse: svc('Langfuse'),
+        grafana: svc('Grafana'),
+        keycloak: svc('Keycloak'),
+        x: svc('X'),
+      })
+    );
+    expect(before.map(e => e.key)).toEqual(['keycloak']);
+    expect(after.map(e => e.key)).toEqual(['grafana', 'langfuse', 'x']);
+  });
+
+  it('keeps a published entry whose key is the Models marker, before the Models card', () => {
+    const svc = (title: string) => entry({ title, url: 'https://x.example.com' });
+    const [before, after] = aroundModels(
+      portalEntries({ models: svc('Other models'), grafana: svc('Grafana') })
+    );
+    expect(before.map(e => e.key)).toEqual(['models']);
+    expect(after.map(e => e.key)).toEqual(['grafana']);
+  });
+
+  it('shows Models first when Keycloak is not published', () => {
+    const [before, after] = aroundModels(
+      portalEntries({ grafana: entry({ title: 'Grafana', url: 'https://g.example.com' }) })
+    );
+    expect(before).toEqual([]);
+    expect(after.map(e => e.key)).toEqual(['grafana']);
+  });
+});
+
+describe('modelAccelerators', () => {
+  it('maps the engine vendor to its GPU resource', () => {
+    expect(modelAccelerators({ name: 'a', runtime: 'vllm-cuda' })).toEqual(['nvidia.com/gpu']);
+    expect(modelAccelerators({ name: 'b', default_server: 'vllm-xpu', runtime: 'vllm' })).toEqual([
+      'gpu.intel.com/xe',
+      'gpu.intel.com/i915',
+    ]);
+    expect(modelAccelerators({ name: 'c', runtime: 'vllm-rocm' })).toEqual(['amd.com/gpu']);
+  });
+
+  it('is empty for CPU engines', () => {
+    expect(modelAccelerators({ name: 'a', runtime: 'vllm' })).toEqual([]);
+    expect(modelAccelerators({ name: 'b', runtime: 'openvino' })).toEqual([]);
+  });
+});
+
+describe('clusterExtendedResources', () => {
+  const node = (allocatable: Record<string, string>) => ({ status: { allocatable } });
+
+  it('collects extended resources above zero, from every node', () => {
+    const got = clusterExtendedResources([
+      node({ cpu: '172', memory: '503Gi', 'intel.com/qat': '2' }),
+      node({ 'nvidia.com/gpu': '8', 'gpu.intel.com/xe': '0' }),
+    ]);
+    expect([...got].sort()).toEqual(['intel.com/qat', 'nvidia.com/gpu']);
+  });
+
+  it('is empty without nodes, while loading or without access', () => {
+    expect(clusterExtendedResources([]).size).toBe(0);
+    expect(clusterExtendedResources(undefined).size).toBe(0);
+    expect(clusterExtendedResources(null).size).toBe(0);
+  });
+});
+
+describe('offeredModels', () => {
+  const models = [
+    { name: 'cpu-model', runtime: 'vllm' },
+    { name: 'nvidia-model', runtime: 'vllm-cuda' },
+    { name: 'intel-model', runtime: 'vllm-xpu' },
+  ];
+  const names = (gpus: string[], deployed: string[] = []) =>
+    offeredModels(models, new Set(gpus), new Set(deployed)).map(m => m.name);
+
+  it('hides GPU models on a cluster without a GPU', () => {
+    expect(names([])).toEqual(['cpu-model']);
+    expect(names(['intel.com/qat'])).toEqual(['cpu-model']);
+  });
+
+  it("offers a GPU model only where its vendor's GPU is", () => {
+    expect(names(['nvidia.com/gpu'])).toEqual(['cpu-model', 'nvidia-model']);
+    expect(names(['gpu.intel.com/i915'])).toEqual(['cpu-model', 'intel-model']);
+    expect(names(['nvidia.com/gpu', 'gpu.intel.com/xe'])).toEqual([
+      'cpu-model',
+      'nvidia-model',
+      'intel-model',
+    ]);
+  });
+
+  it('keeps a deployed GPU model visible, so it can still be undeployed', () => {
+    expect(names([], ['nvidia-model'])).toEqual(['cpu-model', 'nvidia-model']);
+  });
+
+  const withAccel = (gpus: string[], accelerator: string) =>
+    offeredModels(models, new Set(gpus), new Set(), accelerator).map(m => m.name);
+
+  it("follows model-manager's MM_ACCEL_RESOURCE when the template sets it", () => {
+    const both = ['nvidia.com/gpu', 'gpu.intel.com/xe'];
+    expect(withAccel(both, 'nvidia.com/gpu')).toEqual(['cpu-model', 'nvidia-model']);
+    expect(withAccel(both, 'gpu.intel.com/xe')).toEqual(['cpu-model', 'intel-model']);
+  });
+
+  it('hides GPU models when GPU deploys are off or the resource is on no node', () => {
+    expect(withAccel(['nvidia.com/gpu'], '')).toEqual(['cpu-model']);
+    expect(withAccel([], 'nvidia.com/gpu')).toEqual(['cpu-model']);
+  });
+});
+
+describe('templateAccelerator', () => {
+  const tpl = (env?: unknown) => ({ spec: { template: { spec: { containers: [{ env }] } } } });
+
+  it('reads MM_ACCEL_RESOURCE from the Job template', () => {
+    expect(templateAccelerator(tpl([{ name: 'MM_ACCEL_RESOURCE', value: 'nvidia.com/gpu' }]))).toBe(
+      'nvidia.com/gpu'
+    );
+    expect(templateAccelerator(tpl([{ name: 'MM_ACCEL_RESOURCE', value: '' }]))).toBe('');
+  });
+
+  it('is undefined when the template has no such variable or no template', () => {
+    expect(templateAccelerator(tpl([{ name: 'MM_CONFIG', value: '/x' }]))).toBeUndefined();
+    expect(templateAccelerator(tpl())).toBeUndefined();
+    expect(templateAccelerator(null)).toBeUndefined();
   });
 });
 

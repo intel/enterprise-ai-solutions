@@ -6,16 +6,22 @@
 import allure
 import kr8s
 
+from conftest import cfg
+from k8s_helper import assert_deployment_ready, is_openshift, skip_unless_installed
 
-@allure.testcase("IEASG-T673")
+pytestmark = skip_unless_installed(
+    "not cfg.get('metallb_enabled', True) or is_openshift()",
+    reason="MetalLB not installed by the platform (metallb_enabled is false, or OpenShift, "
+           "where the router provides it)"
+)
+
+
+@allure.testcase("DSPTV-T402")
 def test_metallb_controller_ready():
-    deploys = list(kr8s.get("deployments", namespace="metallb-system",
-                            field_selector={"metadata.name": "metallb-controller"}))
-    assert len(deploys) > 0, "metallb-controller not found"
-    assert (deploys[0].status.readyReplicas or 0) >= 1
+    assert_deployment_ready("metallb-system", "metallb-controller")
 
 
-@allure.testcase("IEASG-T674")
+@allure.testcase("DSPTV-T403")
 def test_metallb_ip_address_pool_exists():
     pools = list(kr8s.get("ipaddresspools.metallb.io", namespace="metallb-system"))
     assert len(pools) > 0, "No IPAddressPool found"

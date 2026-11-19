@@ -6,21 +6,21 @@
 # Source: https://github.com/askervin/Enterprise-Inference/blob/5f7-balloons-for-vllm-tp/core/scripts/gen-balloon-types.py
 # Enhanced for Enterprise Inference multi-model deployment
 
-"""Generate balloon types for vLLM tensor parallelism sizes 1, 2, 4 and 8.
+"""Generate balloon types for model tensor parallelism sizes 1, 2, 4 and 8.
 
 Usage: gen-balloon-types.py > balloon-types.yaml
 
 This scripts reads system hardware topology (CPU packages and their
-NUMA nodes) and generates balloon types for vLLM containers that need
+NUMA nodes) and generates balloon types for model containers that need
 an equal number of exclusive CPUs from 1, 2, 4 or 8 NUMA nodes. The
 output can be included in the "balloonTypes:" list of NRI balloons
 resource policy configuration. Containers are associated with correct
 balloon type with one of the following pod annotations:
 
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp1
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp2
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp4
-balloon.balloons.resource-policy.nri.io: vllm-balloon-tp8
+balloon.balloons.resource-policy.nri.io: model-balloon-tp1
+balloon.balloons.resource-policy.nri.io: model-balloon-tp2
+balloon.balloons.resource-policy.nri.io: model-balloon-tp4
+balloon.balloons.resource-policy.nri.io: model-balloon-tp8
 
 Environment variables:
 
@@ -35,7 +35,7 @@ Environment variables:
                 will not be generated unless there are at least 2, 4 or 8 NUMA
                 nodes in the system (or PKG_NODE corresponding to a system).
 
-  BALLOON_NAME  optional, base name for balloon types. The default is "vllm-balloon".
+  BALLOON_NAME  optional, base name for balloon types. The default is "model-balloon".
 
   INDENT        optional, number of spaces to indent each output line.
 
@@ -46,7 +46,7 @@ Environment variables:
 
 Examples:
 
-  # Generate balloon types to run -tp1 and -tp2 vLLMs on two-socket SNC3 system.
+  # Generate balloon types to run -tp1 and -tp2 models on two-socket SNC3 system.
 
   PKG_NODE="{0:[0,1,2],1:[3,4,5]}" MAX_TP=2 ./gen-balloon-types.py > balloon-types.yaml
 
@@ -59,12 +59,12 @@ import os
 import sys
 
 # balloon_name is the base name for -tp1, -tp2 and -tp4 balloon types.
-balloon_name = os.getenv("BALLOON_NAME", "vllm-balloon")
+balloon_name = os.getenv("BALLOON_NAME", "model-balloon")
 
 # tp1_match_label is an optional "key=value" pod label selecting -tp1 pods.
 tp1_match_label = os.getenv("TP1_MATCH_LABEL", "")
 
-# vllm_balloon_type_common are common attributes to be included in all
+# model_balloon_type_common are common attributes to be included in all
 # -tp1, -tp2 and -tp4 balloons. "|" denotes the indentation level of
 # the "balloonTypes" element in balloons policy configuration.
 #
@@ -79,12 +79,12 @@ tp1_match_label = os.getenv("TP1_MATCH_LABEL", "")
 # hideHyperthreads is false: sibling (HT) CPUs are isolated from the balloon
 # pool via `reservedResources.cpu: cpuset:<siblings>` in the BalloonsPolicy CR.
 # Reserved CPUs are off-limits to named balloons — NRI only allocates from
-# non-reserved (physical) cores for vLLM workloads.
+# non-reserved (physical) cores for model workloads.
 # Benefits over hideHyperthreads=true:
-#   - Sibling cores remain available for non-vLLM workloads (reserved pool)
+#   - Sibling cores remain available for every other workload (reserved pool)
 #   - No CPU request doubling needed (balloon pool is physical-cores-only)
 #   - Better overall CPU utilisation across the cluster
-vllm_balloon_type_common = """
+model_balloon_type_common = """
 |  preferNewBalloons: true
 |  pinMemory: true
 |  hideHyperthreads: false
@@ -165,8 +165,8 @@ def generate_node_balloon_types(pkg_node):
             """)
     return node_balloon_types
 
-def generate_vllm_balloon_types(pkg_node, max_tp):
-    # Generate balloon types for vllms with varying tensor
+def generate_model_balloon_types(pkg_node, max_tp):
+    # Generate balloon types for models with varying tensor
     # parallelisms up to max_tp.
     node_pkg = {}
     for pkg in pkg_node:
@@ -189,7 +189,7 @@ def generate_vllm_balloon_types(pkg_node, max_tp):
     if max_tp >= 1:
         tp1_balloon_types.append(f"""
         |- name: {balloon_name}-tp1
-        {vllm_balloon_type_common}
+        {model_balloon_type_common}
         |  componentCreation: balance-balloons
         |  components:
         """)
@@ -249,7 +249,7 @@ def generate_vllm_balloon_types(pkg_node, max_tp):
         if tp2_balloon_names:
             tp2_balloon_types.append(f"""
             |- name: {balloon_name}-tp2
-            {vllm_balloon_type_common}
+            {model_balloon_type_common}
             |  componentCreation: balance-balloons
             |  components:
             """)
@@ -345,7 +345,7 @@ def generate_vllm_balloon_types(pkg_node, max_tp):
 
         tp4_balloon_types.append(f"""
         |- name: {balloon_name}-tp4
-        {vllm_balloon_type_common}
+        {model_balloon_type_common}
         |  componentCreation: balance-balloons
         |  components:
         """)
@@ -383,7 +383,7 @@ def generate_vllm_balloon_types(pkg_node, max_tp):
 
         tp8_balloon_types.append(f"""
         |- name: {balloon_name}-tp8
-        {vllm_balloon_type_common}
+        {model_balloon_type_common}
         |  componentCreation: balance-balloons
         |  components:
         """)
@@ -438,7 +438,7 @@ if __name__ == "__main__":
 
     balloon_types = []
     balloon_types.extend(generate_node_balloon_types(pkg_node))
-    balloon_types.extend(generate_vllm_balloon_types(pkg_node, max_tp))
+    balloon_types.extend(generate_model_balloon_types(pkg_node, max_tp))
     balloon_types.extend(generate_builtin_balloon_types(pkg_node))
 
     # Post-process balloon_types by replacing "|" with selected

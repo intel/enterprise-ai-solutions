@@ -97,6 +97,10 @@ def _safe_ip_network(val, context, errors, strict=False):
         return None
 
 
+def _whole(val, lo, hi=None):
+    return not isinstance(val, bool) and isinstance(val, int) and lo <= val and (hi is None or val <= hi)
+
+
 VALID_LEAF_KEYS = {"name", "asn", "peer_ip", "fabric_subnet", "model",
                    "switch_name", "switch_mgmt_ip"}
 
@@ -495,10 +499,25 @@ def _parse_and_validate(profile):
     cluster_asn = bgp_block.get("cluster_asn", 65100)
     pod_cidr = network.get("pod_cidr", "10.244.0.0/16")
     service_cidr = network.get("service_cidr", "10.96.0.0/12")
-    fabric_mtu = network.get("mtu", 9000)
     vxlan_overhead = network.get("vxlan_overhead", 50)
+    overhead_ok = _whole(vxlan_overhead, 0)
+    if not overhead_ok:
+        errors.append(f"network.vxlan_overhead must be a whole number of at least 0, got {vxlan_overhead!r}")
+        vxlan_overhead = 50
     cp_on_fabric = network.get("control_plane_on_fabric", False)
     topology = network.get("topology", "clos")
+    # With no fabric, Calico runs on the management network, which is rarely jumbo.
+    default_mtu = 1500 if topology == "none" else 9000
+    fabric_mtu = network.get("mtu", default_mtu)
+    mtu_ok = _whole(fabric_mtu, 1280, 65535)
+    if not mtu_ok:
+        errors.append(f"network.mtu must be a whole number from 1280 to 65535, got {fabric_mtu!r}")
+        fabric_mtu = default_mtu
+    if calico_mode not in ("vxlan", "bgp"):
+        errors.append(f"network.calico_mode must be 'vxlan' or 'bgp', got {calico_mode!r}")
+    if mtu_ok and overhead_ok and calico_mode != "bgp" and fabric_mtu - vxlan_overhead < 1280:
+        errors.append(f"network.mtu less network.vxlan_overhead, Calico's MTU, must be at least 1280, "
+                      f"got {fabric_mtu - vxlan_overhead}")
     fabric_prefix = network.get("fabric_prefix", 16)
     netplan_renderer = network.get("netplan_renderer", "networkd")
 
