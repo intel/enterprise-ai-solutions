@@ -11,6 +11,7 @@
     _layer_dirs: {}
     _layer_records: {}
     _layer_release: {}
+    _layer_version_data: {}
     _layer_class: {}
     _upgrade_verdicts: []
 
@@ -120,21 +121,23 @@
     - name: "upgrade_checks | Resolve each planned layer's release version"
       ansible.builtin.set_fact:
         _layer_release: "{{ _layer_release | combine({item: _release}) }}"
+        _layer_version_data: "{{ _layer_version_data | combine({item: _version_data}) }}"
         _layer_class: >-
           {{ _layer_class | combine({item: _layer_records[item] | default({}) | classify_run(_release, item)}) }}
       vars:
-        # infrastructure and platform carry the installer's VERSION; every other layer its own version.yaml.
         _version_file: "{{ _layer_dirs[item] | default('') }}/version.yaml"
+        _version_data: >-
+          {{ {} if item in upgrade_installer_layers
+             else (lookup('ansible.builtin.file', _version_file) | from_yaml) if _version_file is file else {} }}
         _release: >-
-          {{ _installer_version if item in ['infrastructure', 'platform']
-             else (lookup('ansible.builtin.file', _version_file) | from_yaml | layer_release_version) if _version_file is file
-             else none }}
+          {{ _installer_version if item in upgrade_installer_layers
+             else _version_data | layer_release_version }}
       loop: "{{ _upgrade_layers }}"
 
     - name: "upgrade_checks | Run the checks"
       ansible.builtin.include_tasks: "checks/{{ check }}.yaml"
       vars:
-        _check_layers: "{{ _layer_class | check_layers(check, upgrade_checks_every_class) }}"
+        _check_layers: "{{ _layer_class | check_layers(check, upgrade_checks_every_class, upgrade_checks_also_classes.get(check, [])) }}"
       loop: "{{ upgrade_checks }}"
       loop_control:
         loop_var: check
