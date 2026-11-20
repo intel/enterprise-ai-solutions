@@ -62,24 +62,44 @@ One machine, default settings. Allow up to an hour for the first install: most o
 
    `configure` uses `sudo` to install Python 3.11+, `yq`, `kubectl` and `helm`, and creates the installer's Python environment in `.venv/`. It asks before changing anything. Skip it if those tools are already installed.
 
-2. Pick how far up the stack to go, and run its two commands. Each target includes every layer below it, so run one pair only:
+2. Install the layers you need. Pick one of the options below; each one also installs every layer underneath it.
+
+   If you want **only the infrastructure** (Kubernetes and storage):
 
    ```bash
-   # Layer 1: Kubernetes and storage
-   ./toolkit_manager.sh init infrastructure && ./toolkit_manager.sh install infrastructure
-
-   # Layers 1-2: + platform services (gateway, Keycloak, observability, ...)
-   ./toolkit_manager.sh init platform && ./toolkit_manager.sh install platform
-
-   # Layers 1-3: + model serving with an OpenAI-compatible endpoint
-   ./toolkit_manager.sh init inference && ./toolkit_manager.sh install inference
-
-   # Layers 1-4: + Intel® Chatbot Toolkit (RAG application)
-   ./toolkit_manager.sh init erag && ./toolkit_manager.sh install erag
-
-   # Layers 1-4: + Intel® Agent Toolkit
-   ./toolkit_manager.sh init agent-toolkit && ./toolkit_manager.sh install agent-toolkit
+   ./toolkit_manager.sh init infrastructure
+   ./toolkit_manager.sh install infrastructure
    ```
+
+   If you want **the infrastructure and the platform** (adds the gateway, Keycloak, observability and the other platform services):
+
+   ```bash
+   ./toolkit_manager.sh init platform
+   ./toolkit_manager.sh install platform
+   ```
+
+   If you want **model serving** (adds the Intel® Inference Toolkit and an OpenAI-compatible endpoint):
+
+   ```bash
+   ./toolkit_manager.sh init inference
+   ./toolkit_manager.sh install inference
+   ```
+
+   If you want **a RAG application** (adds the Intel® Chatbot Toolkit on top of model serving):
+
+   ```bash
+   ./toolkit_manager.sh init erag
+   ./toolkit_manager.sh install erag
+   ```
+
+   If you want **agents** (adds the Intel® Agent Toolkit on top of model serving):
+
+   ```bash
+   ./toolkit_manager.sh init agent-toolkit
+   ./toolkit_manager.sh install agent-toolkit
+   ```
+
+   In each option:
 
    - `init` creates the environment folder `env/local/` with your settings files, and downloads the repositories the target needs into `ext/`.
    - `install` builds the Kubernetes cluster and installs every layer up to the target. A successful run ends with an `INSTALLATION COMPLETE` banner that names the log file under `env/local/logs/`.
