@@ -104,7 +104,7 @@ One machine, default settings. Allow up to an hour for the first install: most o
    - `init` creates the environment folder `env/local/` with your settings files, and downloads the repositories the target needs into `ext/`.
    - `install` builds the Kubernetes cluster and installs every layer up to the target. A successful run ends with an `INSTALLATION COMPLETE` banner that names the log file under `env/local/logs/`.
 
-   To go higher later, run the pair for the higher target on the same environment.
+   To add more layers later, run the two commands of a higher option. What is already installed stays.
 
 ### Step 2 - Check the cluster
 
