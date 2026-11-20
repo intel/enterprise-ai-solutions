@@ -1,0 +1,94 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# backup | Back up or restore one layer, for playbooks/backup.yaml
+# =============================================================================
+# Included by playbooks/backup.yaml with backup_layer set to the target and
+# component_action backup, restore or list. A layer's
+# profile is backup_profile.yaml beside the components.yaml that declares it.
+# Every refusal here names its fix; the Velero checks are preflight.yaml's.
+# =============================================================================
+
+- name: "backup | Find the {{ backup_layer }} profile"
+  ansible.builtin.include_tasks: layer_profile.yaml
+
+- name: "backup | Refuse a layer with no backup profile"
+  ansible.builtin.fail:
+    msg: >-
+      {{ backup_layer }} has no backup profile, so it cannot be backed up or restored.
+      {{ ('Expected ' ~ _bk_layer_profile ~ '. Add it there; the contract is configs/backup.yaml.')
+         if _bk_layer_profile | length > 0
+         else (backup_layer ~ " has no repository under ext/; a backup profile is the"
+               ~ " backup_profile.yaml beside the components.yaml of the repository that provides the layer.") }}
+  when: not (_bk_layer_profile_found | bool)
+
+- name: "backup | Refuse a profile that is not enabled"
+  ansible.builtin.fail:
+    msg: >-
+      The {{ backup_layer }} backup profile is not enabled in env/{{ env_name | default('local') }}:
+      its enabled: field ({{ _bk_layer_profile }}) renders false. Set the variable it reads in
+      env/{{ env_name | default('local') }}/config.{{ backup_layer }}.yaml, then re-run.
+  when: not (backup_profile_active | bool)
+
+# The profile is read from the checkout, so a backup holds what the installed
+# release's profile names only while the checkout is at the recorded version.
+# The version compared is the one the backup is labelled with; with none (no
+# version_file, no version_label) there is nothing to compare.
+- name: "backup | Read the recorded {{ backup_layer }} version"
+  ansible.builtin.include_tasks: layer_record.yaml
+  when: component_action == 'backup'
+
+- name: "backup | Resolve the version the {{ backup_layer }} backup is labelled with"
+  ansible.builtin.include_tasks: resolve_version.yaml
+  when: component_action == 'backup'
+
+- name: "backup | Refuse to back up {{ backup_layer }} from a checkout at another version"
+  ansible.builtin.fail:
+    msg: >-
+      {{ backup_layer }} {{ _bk_recorded_version }} is installed, but this run would label the backup
+      {{ _bk_version }} (the checkout's version file, or a solution_version the run sets), and the
+      backup profile is read from the checkout.
+      Take the backup with the {{ backup_layer }} repository at {{ _bk_recorded_version }}, before moving
+      ext/ to another release, or re-run with --force ({{ backup_manage_command_prefix | format('backup') }} --force;
+      -e backup_force=true on a direct playbook call) to take it with this checkout's profile,
+      labelled as forced.
+  when:
+    - component_action == 'backup'
+    - _bk_version | default('') | string | length > 0
+    - not (_bk_recorded_version | checkout_matches_record(_bk_version))
+    - not (backup_force | default(false) | bool)
+
+# A bypassed backup never satisfies backup-freshness and is restored only by name (--from).
+- name: "backup | Label a {{ backup_layer }} backup taken from a checkout at another version"
+  ansible.builtin.set_fact:
+    backup_labels: "{{ backup_labels | combine({backup_checkout_bypass_label_key: 'checkout-version'}) }}"
+  when:
+    - component_action == 'backup'
+    - _bk_version | default('') | string | length > 0
+    - not (_bk_recorded_version | checkout_matches_record(_bk_version))
+    - backup_force | default(false) | bool
+
+# run_backup.sh asks and then passes backup_confirm=yes; a direct playbook call
+# passes it on the command line once the operator means it.
+- name: "backup | Refuse to restore {{ backup_layer }} without confirmation"
+  ansible.builtin.fail:
+    msg: >-
+      About to restore '{{ backup_layer }}' in env/{{ env_dir | default('<env>') | basename }}
+      from its newest backup of the installed version (or velero_restore_from). This DELETES
+      the Helm releases and
+      PersistentVolumeClaims its backup profile lists first, then replays the backup over
+      them. Objects in the profile's namespaces that do not carry the toolkit-manager.intel.com/layer
+      label are replaced too; a profile can exclude customer-owned kinds from that with
+      exclude_resources. To proceed, run {{ backup_manage_command_prefix | format('restore') }}
+      and answer the prompt (--force where there is no terminal), or pass
+      -e backup_confirm=yes to a direct playbook call.
+  when:
+    - component_action == 'restore'
+    - not (backup_confirm | default(false) | bool)
+
+- name: "backup | Check that Velero is usable"
+  ansible.builtin.include_tasks: preflight.yaml
+
+- name: "backup | {{ component_action | capitalize }} {{ backup_layer }}"
+  ansible.builtin.include_tasks: "{{ component_action }}.yaml"

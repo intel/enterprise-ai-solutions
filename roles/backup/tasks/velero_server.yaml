@@ -1,0 +1,25 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# The running Velero server pod, for readable.yaml. Never fails: a caller that must stop
+# on an API error reads _bk_velero_server_error.
+# Output: _bk_velero_server (pod name, '' when none is running or the query failed),
+# _bk_velero_server_error (the query's error, '' when it answered).
+- name: "backup | Find the Velero server pod"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ velero_namespace }}"
+    label_selectors: >-
+      {{ backup_velero_pod_labels.keys() | zip(backup_velero_pod_labels.values()) | map('join', '=') | list }}
+    field_selectors:
+      - status.phase=Running
+  register: _bk_velero_server_pods
+  failed_when: false
+
+- name: "backup | Note the Velero server pod"
+  ansible.builtin.set_fact:
+    _bk_velero_server: "{{ (_bk_velero_server_pods.resources | default([]) | first | default({})).metadata.name | default('') }}"
+    # failed_when: false clears the failed flag; an API error leaves no resources key.
+    _bk_velero_server_error: >-
+      {{ '' if 'resources' in _bk_velero_server_pods else _bk_velero_server_pods.msg | default('the query returned no pod list') }}

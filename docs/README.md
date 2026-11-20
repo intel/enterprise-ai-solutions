@@ -40,6 +40,7 @@ Install the platform, serve a model, deploy RAG, and go beyond a single node.
 | [Deploy on OpenShift](deploy/openshift.md) | Preparing an OpenShift + OpenShift AI cluster from the marketplace, then installing on top (preview) |
 | [NetApp ONTAP and Trident](deploy/netapp_ontap.md) | Deploying with Trident + ONTAP as the storage backend |
 | [Network Architecture](deploy/networking.md) | Network topology, IP allocation, and how a request reaches a model |
+| [Upgrade a Layer](deploy/upgrade.md) | Upgrading through `install`, the upgrade checks, backup, restore and rollback |
 
 ## Configure & customize
 

@@ -1,0 +1,47 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# backup | List one profile's backups, newest first
+# =============================================================================
+# One line per Velero Backup labelled with the profile: name, phase, the
+# version the profile's version_label recorded, completion time. Read-only.
+# The backup a restore would pick (restore_backup_choice, as restore.yaml)
+# is marked.
+# =============================================================================
+
+- name: "list | {{ backup_profile.name }} | Read this profile's backups"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: Backup
+    namespace: "{{ velero_namespace }}"
+    label_selectors:
+      - "{{ backup_profile_label_key }}={{ backup_profile.name }}"
+  register: _bk_list
+
+- name: "list | {{ backup_profile.name }} | Read the recorded {{ backup_layer }} version"
+  ansible.builtin.include_tasks: layer_record.yaml
+
+- name: "list | {{ backup_profile.name }} | Decide the backup a restore would pick"
+  ansible.builtin.set_fact:
+    _bk_choice: >-
+      {{ _bk_list.resources | default([])
+         | restore_backup_choice(backup_profile.version_label | default(''), _bk_recorded_version, '',
+                                  backup_checkout_bypass_label_key) }}
+
+- name: "list | {{ backup_profile.name }} | Show them"
+  vars:
+    _bk_version_key: "{{ backup_profile.version_label | default('') }}"
+    _bk_lines: |-
+      Backups of {{ backup_layer | default(backup_profile.name) }} in namespace {{ velero_namespace }} (name, phase, version, completed):
+      {% for b in _bk_list.resources | default([]) | sort(attribute='metadata.creationTimestamp', reverse=true) %}
+        {{ b.metadata.name }}  {{ b.status.phase | default('-') }}  {{ (b.metadata.labels | default({}))[_bk_version_key] | default('-') if _bk_version_key else '-' }}  {{ b.status.completionTimestamp | default('-') }}{{ '  <- restore picks this' if b.metadata.name == _bk_choice.name | default('') else '' }}
+      {% else %}
+        none
+      {% endfor %}
+      {{ ('Restore picks none: ' ~ ('no deployment record names the version to restore.' if _bk_choice.error == 'no record'
+          else 'no Completed backup of ' ~ _bk_recorded_version ~ (' that is not forced (restore one with --from: '
+                ~ _bk_choice.forced | join(', ') ~ ')' if _bk_choice.forced is defined else '') ~ '.'))
+         if _bk_choice.error is defined else '' }}
+  ansible.builtin.debug:
+    msg: "{{ (_bk_lines | trim).split('\n') }}"

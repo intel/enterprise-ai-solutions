@@ -9,10 +9,13 @@
 # The engine does not know where a solution keeps its version. The profile says:
 #   version_label: "meta.example/solution-version"
 #   version_file:  "{{ deployment_dir }}/version.yaml"   # optional
-#   version_key:   "solution_version"                    # optional
+#   version_key:   ""                                    # optional
 #
 # Precedence: a solution_version already in scope wins (the caller loaded it),
-# otherwise version_file is read. Output: _bk_version.
+# otherwise version_file is read: version_key when the profile sets one, else
+# layer_version, else solution_version, as the deployment record reads it, so
+# backup-freshness and restore find the backup by the recorded version.
+# Output: _bk_version.
 # =============================================================================
 
 - name: "backup | version | Use the version already in scope"
@@ -38,10 +41,14 @@
 
     - name: "backup | version | Extract the key"
       ansible.builtin.set_fact:
-        _bk_version: "{{ _bk_version_vars[backup_profile.version_key | default('solution_version')] }}"
+        _bk_version: >-
+          {{ _bk_version_vars[_bk_version_key] if _bk_version_key
+             else _bk_version_vars.layer_version | default(_bk_version_vars.solution_version | default(''), true) }}
+      vars:
+        _bk_version_key: "{{ backup_profile.version_key | default('', true) }}"
       when:
         - _bk_version_stat.stat.exists
-        - _bk_version_vars[backup_profile.version_key | default('solution_version')] is defined
+        - not _bk_version_key or _bk_version_vars[_bk_version_key] is defined
 
 # Labelling a backup "unknown" is worse than refusing to take it: the pre-upgrade
 # gate would then match every backup ever taken, and report a restore point that
@@ -56,8 +63,8 @@
       version_label: {{ backup_profile.version_label }}
       but the version itself could not be resolved.
 
-      Give the profile a version_file (and version_key if it is not
-      solution_version):
+      Give the profile a version_file whose version.yaml sets layer_version or
+      solution_version (or the key version_key names):
         version_file: "{{ '{{' }} deployment_dir {{ '}}' }}/version.yaml"
       or make solution_version available to the caller.
 

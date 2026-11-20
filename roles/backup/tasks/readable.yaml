@@ -1,0 +1,32 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# A Backup object can exist while its data is unreachable: ask the Velero server
+# (_bk_velero_server, from velero_server.yaml) for backup_readable_name's resource list.
+# Never fails. Output: _bk_backup_details (velero backup describe; when it could not be read,
+# only status.errorGettingResourceList, with the exec error, so the caller can show the cause).
+- name: "backup | Read the resource list of {{ backup_readable_name }}"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ velero_namespace }}"
+    pod: "{{ _bk_velero_server }}"
+    container: velero
+    command: >-
+      /velero backup describe {{ backup_readable_name }} --details -o json
+      {{ '--insecure-skip-tls-verify'
+         if (velero_external_bsl_enabled | bool) and (velero_external_bsl_tls_enabled | bool)
+         else '' }}
+  register: _bk_readable_describe
+  changed_when: false
+  failed_when: false
+  when: _bk_velero_server | length > 0
+
+- name: "backup | Parse the resource list of {{ backup_readable_name }}"
+  ansible.builtin.set_fact:
+    # regex_search: velero can print a warning line before the JSON. shortcut: braces that are not JSON
+    # still fail the parse; velero -o json has not printed such output.
+    _bk_backup_details: >-
+      {{ _bk_readable_describe.stdout | regex_search('(?s)[{].*[}]') | from_json
+         if _bk_readable_describe.rc | default(1) == 0 and _bk_readable_describe.stdout | default('') is search('(?s)[{].*[}]')
+         else {'status': {'errorGettingResourceList':
+                 (_bk_readable_describe.stderr | default('') or _bk_readable_describe.msg | default('')
+                  or 'velero backup describe printed no resource list') | trim}} }}

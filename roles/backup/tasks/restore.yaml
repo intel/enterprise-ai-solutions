@@ -19,6 +19,48 @@
   register: _bk_candidates
   when: velero_restore_from == ""
 
+# The profile names a layer only when restore.yaml is reached through
+# playbooks/backup.yaml (backup_layer set); a solution including this file
+# directly falls back to the newest Completed backup of any version below.
+- name: "restore | {{ backup_profile.name }} | Read the recorded {{ backup_layer | default('') }} version"
+  ansible.builtin.include_tasks: layer_record.yaml
+  when: velero_restore_from == "" and backup_layer is defined
+
+- name: "restore | {{ backup_profile.name }} | Decide the backup for {{ backup_layer | default('') }}"
+  ansible.builtin.set_fact:
+    _bk_choice: >-
+      {{ _bk_candidates.resources | default([])
+         | restore_backup_choice(backup_profile.version_label | default(''),
+                                  _bk_recorded_version | default(''), velero_restore_from,
+                                  backup_checkout_bypass_label_key) }}
+  when: backup_layer is defined
+
+- name: "restore | {{ backup_profile.name }} | Refuse without a record or a matching backup"
+  ansible.builtin.fail:
+    msg: |
+      {{ ("No deployment record for " ~ backup_layer ~ ": nothing names the version to restore.")
+         if _bk_choice.error == 'no record'
+         else ("No Completed backup of " ~ backup_layer ~ " " ~ _bk_recorded_version ~ " (label "
+               ~ (backup_profile.version_label | default('')) ~ ") in namespace " ~ velero_namespace ~ ".") }}
+      {% if _bk_choice.forced is defined %}
+      Only forced backups match (taken with backup --force from a checkout at another version, label
+      {{ backup_checkout_bypass_label_key }}); a restore never picks them on its own. To restore one anyway:
+      {% for b in _bk_choice.forced %}
+        {{ backup_manage_command_prefix | format('restore') }} --from {{ b }}
+      {% endfor %}
+      {% endif %}
+
+      Name one explicitly: {{ backup_manage_command_prefix | format('restore') }} --from <name>.
+      Completed backups of this profile:
+      {% for b in _bk_choice.available %}
+        {{ b }}
+      {% else %}
+        (none)
+      {% endfor %}
+  when:
+    - backup_layer is defined
+    - _bk_choice.error is defined
+
 - name: "restore | {{ backup_profile.name }} | Sort completed backups, newest first"
   ansible.builtin.set_fact:
     _bk_sorted: >-
@@ -28,7 +70,7 @@
          | selectattr('status.completionTimestamp', 'defined')
          | sort(attribute='status.completionTimestamp', reverse=true)
          | list }}
-  when: velero_restore_from == ""
+  when: velero_restore_from == "" and backup_layer is not defined
 
 - name: "restore | {{ backup_profile.name }} | Fail if there is nothing to restore"
   ansible.builtin.fail:
@@ -37,19 +79,19 @@
       {{ backup_profile_label_key }}={{ backup_profile.name }} in namespace
       '{{ velero_namespace }}'.
 
-      Take one first: the same playbook with backup_action=backup.
-      Or name a backup explicitly, with velero_restore_from=<name>.
+      Take one first, then retry. Or name a backup explicitly, with velero_restore_from=<name>.
       What exists:
         kubectl -n {{ velero_namespace }} get backups
   when:
     - velero_restore_from == ""
+    - backup_layer is not defined
     - _bk_sorted | default([]) | length == 0
 
 - name: "restore | {{ backup_profile.name }} | Choose the backup"
   ansible.builtin.set_fact:
     _bk_from: >-
-      {{ velero_restore_from if velero_restore_from != ''
-         else (_bk_sorted | first).metadata.name }}
+      {{ _bk_choice.name if backup_layer is defined
+         else (velero_restore_from if velero_restore_from != '' else (_bk_sorted | first).metadata.name) }}
 
 - name: "restore | {{ backup_profile.name }} | Read the chosen backup"
   kubernetes.core.k8s_info:
@@ -119,7 +161,16 @@
   ansible.builtin.debug:
     msg: |
       Restoring profile '{{ backup_profile.name }}' from '{{ _bk_from }}'
-      (completed {{ _bk_chosen.resources[0].status.completionTimestamp | default('unknown') }}).
+      (completed {{ _bk_chosen.resources[0].status.completionTimestamp | default('unknown') }}),
+      {{ ("named explicitly with velero_restore_from"
+          if velero_restore_from != ''
+          else ("the newest Completed backup of " ~ backup_layer ~ " " ~ _bk_recorded_version
+                if backup_layer is defined
+                else "the newest Completed backup of this profile")) }}.
+
+      Objects in the profile's namespaces that do not carry the toolkit-manager.intel.com/layer
+      label are replaced too; a profile can exclude customer-owned kinds from that
+      with exclude_resources.
 
       Will be DELETED first:
       {% for ns in backup_profile.namespace_order %}
@@ -265,13 +316,19 @@
         name: "{{ _bk_restore_name }}"
         namespace: "{{ velero_namespace }}"
         labels: "{{ restore_labels | combine({backup_profile_label_key: backup_profile.name}) }}"
-      spec:
-        backupName: "{{ _bk_from }}"
-        excludedResources: "{{ backup_profile.exclude_resources | default([]) }}"
-        existingResourcePolicy: "{{ backup_existing_resource_policy }}"
-        itemOperationTimeout: "{{ backup_profile.item_operation_timeout }}"
+      spec: >-
+        {{ {'backupName': _bk_from,
+            'excludedResources': backup_profile.exclude_resources | default([]),
+            'existingResourcePolicy': backup_existing_resource_policy,
+            'itemOperationTimeout': backup_profile.item_operation_timeout}
+           | combine({'labelSelector': _bk_layer_selector} if _bk_layer_selector else {}) }}
   vars:
     _bk_restore_name: "{{ restore_name_prefix }}-{{ backup_profile.name }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
+    # Restoring a layer leaves the objects of every other layer, such as their
+    # deployment records in default, as they are.
+    _bk_layer_selector: >-
+      {{ backup_layer | restore_layer_selector(layers | map(attribute='name') | list, backup_layer_label_key)
+         if backup_layer is defined else none }}
   register: _bk_restore_created
 
 - name: "restore | {{ backup_profile.name }} | Note the Restore name"

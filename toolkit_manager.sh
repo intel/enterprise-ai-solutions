@@ -30,6 +30,8 @@ fi
 # repoints them at a fixture tree.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The installer's own command for the hints it prints, also when run_backup.sh sources it.
+readonly INSTALLER_CMD="./$(basename "${BASH_SOURCE[0]}")"
 readonly INSTALLER_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo dev)"
 
 CONFIG_DIR="${SCRIPT_DIR}/configs"
@@ -654,12 +656,12 @@ _solutions_get() {
 solution_configs() {
     local f; f=$(solutions_file "$ENV_NAME")
     [[ -f "$f" ]] \
-        || err "env/${ENV_NAME}/${SOLUTIONS_BASE} is missing — this env predates the provisioning record. Run:  ./$(basename "$0") init <layer> --env ${ENV_NAME}"
+        || err "env/${ENV_NAME}/${SOLUTIONS_BASE} is missing — this env predates the provisioning record. Run:  ${INSTALLER_CMD} init <layer> --env ${ENV_NAME}"
     # Checked rather than ignored: an older record's fields are named differently, and
     # reading them as absent would quietly drop the pin checks instead of failing.
     local schema; schema=$(yq -r '.schema // 0' "$f" 2>/dev/null || echo 0)
     [[ "$schema" == "$SOLUTIONS_SCHEMA" ]] \
-        || err "env/${ENV_NAME}/${SOLUTIONS_BASE} is schema ${schema}, this installer writes ${SOLUTIONS_SCHEMA}. Re-run:  ./$(basename "$0") init <layer> --env ${ENV_NAME}  (it rewrites the record, keeping your configs)"
+        || err "env/${ENV_NAME}/${SOLUTIONS_BASE} is schema ${schema}, this installer writes ${SOLUTIONS_SCHEMA}. Re-run:  ${INSTALLER_CMD} init <layer> --env ${ENV_NAME}  (it rewrites the record, keeping your configs)"
     local name cfg
     while IFS='|' read -r name cfg; do
         [[ -z "$cfg" ]] && continue
@@ -829,7 +831,7 @@ ensure_repos() {
         while IFS='|' read -r layer_name dest; do
             [[ -z "$dest" || -d "${EXT_DIR}/${dest}" ]] && continue
             [[ -n "$fatal" ]] \
-                && err "Layer '${target}' needs ext/${dest} but it is not cloned. Run:  ./$(basename "$0") init ${target} --env ${ENV_NAME}"
+                && err "Layer '${target}' needs ext/${dest} but it is not cloned. Run:  ${INSTALLER_CMD} init ${target} --env ${ENV_NAME}"
             warn "env/${ENV_NAME} was provisioned with ext/${dest} but it is not on disk — layer '${layer_name}' will fail if the plan reaches it."
         done < <([[ -f "$f" ]] && yq -r '.layers[] | [(.name // ""), (.repo // "")] | join("|")' "$f" 2>/dev/null)
     fi
@@ -1164,7 +1166,7 @@ init() {
 
     _require_yq
     [[ -n "$layer" ]] \
-        || err "init requires a layer. Valid: $(known_layers | tr '\n' ' ')(try: ./$(basename "$0") init $(known_layers | head -1) --env ${name})"
+        || err "init requires a layer. Valid: $(known_layers | tr '\n' ' ')(try: ${INSTALLER_CMD} init $(known_layers | head -1) --env ${name})"
     local mf; mf=$(require_layer "$layer")
     [[ -z "$mf" && -n "$flavour" ]] \
         && err "Layer '${layer}' has no external repos, so no flavours; drop --flavour."
@@ -1208,7 +1210,7 @@ init() {
     info "  Configure  ${ENV_DIR}/global_config.yaml  (see README.md § Configuration Reference)"
     [[ -f "${ENV_DIR}/models.yaml" ]] \
         && info "  Configure  ${ENV_DIR}/models.yaml          (see README.md § Deploy a Model)"
-    info "  Then       ./$(basename "$0") install --env ${name} ${layer}"
+    info "  Then       ${INSTALLER_CMD} install --env ${name} ${layer}"
 }
 
 # =============================================================================
@@ -2033,6 +2035,50 @@ parse_args() {
     fi
 }
 
+# playbook_vars — fill the caller's `vars` array (declare `local -a vars` first) with the
+# -e arguments every playbook run takes: action, target, env, the solution and global
+# configs in record order, and the kubeconfig. Also exports KUBECONFIG for the run.
+# Shared by main and run_backup.sh.
+playbook_vars() {
+    vars=(
+        -e "_skip_components=${SKIP}"
+        -e "component_action=${ACTION}"
+        -e "target=${TARGET}"
+        -e "env_name=${ENV_NAME}"
+        -e "_include_deps=$([[ "$ONLY" == "true" ]] && echo false || echo true)"
+        -e "env_dir=${ENV_DIR}"
+        -e "kubespray_dir=${SCRIPT_DIR}/.kubespray"
+        -e "kubespray_custom_inventory=${INVENTORY}"
+        -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}"
+    )
+    [[ "$ACTION" == "install" && "$FORCE" == "true" ]] && vars+=(-e "_upgrade_force=true")
+    # Solution configs, in the order the provisioning record lists them (dependencies
+    # first, so a layer's own config wins over its deps'). Collected before the loop:
+    # solution_configs errors on a config the record names but that is gone, and inside
+    # a process substitution that exit would be swallowed.
+    if command -v yq &>/dev/null; then
+        local _sol_cfgs; _sol_cfgs=$(solution_configs)
+        local _env_cfg
+        while IFS= read -r _env_cfg; do
+            [[ -n "$_env_cfg" ]] && vars+=(-e "@$_env_cfg")
+        done <<< "$_sol_cfgs"
+        vars+=(-e "_env_layers=$(solution_layers | paste -sd, -)")
+    fi
+    [[ -f "$GLOBAL_CONFIG" ]] && vars+=(-e "@$GLOBAL_CONFIG")
+    # Only load nodes.yaml if it has actual YAML content (all-comments = null → Ansible rejects it)
+    if [[ -f "$ENV_DIR/nodes.yaml" ]] && [[ "$(yq -r 'type' "$ENV_DIR/nodes.yaml" 2>/dev/null)" == "!!map" ]]; then
+        vars+=(-e "@$ENV_DIR/nodes.yaml")
+    fi
+
+    _resolve_kubeconfig
+    vars+=(-e "kubernetes_kubeconfig=${KUBE_CFG}")
+    [[ "$IS_BYO" == "true" ]] && vars+=(-e "existing_kubernetes=${KUBE_CFG}")
+    # Export after the path is resolved so Ansible collections and kubectl
+    # both see the correct kubeconfig. Kubespray's subshell unsets these (see
+    # run_kubespray) so kubespray's own internal kubectl is unaffected.
+    export KUBECONFIG="$KUBE_CFG" K8S_AUTH_KUBECONFIG="$KUBE_CFG"
+}
+
 # main: linear flow, no branching on cluster/mode/storage state.
 # _target_exists <name> — a layer or a component in the merged registry.
 # Here-string for the same reason as _layer_exists.
@@ -2117,11 +2163,11 @@ main() {
     # After ensure_repos, so ext/ components are discoverable; before the venv and sudo
     # work, which a typo should not have to pay for.
     [[ -z "$TARGET" ]] || _target_exists "$TARGET" \
-        || err "Unknown target '${TARGET}'. Layers: $(known_layers | tr '\n' ' ')— run './$(basename "$0") show' for components."
+        || err "Unknown target '${TARGET}'. Layers: $(known_layers | tr '\n' ' ')— run '${INSTALLER_CMD} show' for components."
     # A solution layer (one with a manifest) must also be one this env was inited for.
     if [[ -n "$(layer_manifest "$TARGET")" ]] \
        && ! grep -qxF -- "$TARGET" <<< "$(solution_layers)"; then
-        err "env/${ENV_NAME} was not provisioned for layer '${TARGET}'. Run:  ./$(basename "$0") init ${TARGET} --env ${ENV_NAME}"
+        err "env/${ENV_NAME} was not provisioned for layer '${TARGET}'. Run:  ${INSTALLER_CMD} init ${TARGET} --env ${ENV_NAME}"
     fi
     ensure_deps
     ensure_sudo
@@ -2133,43 +2179,8 @@ main() {
     # Keep the 30 most recent; a failed run's log is the only record of why.
     ls -1t "$ENV_LOG_DIR"/*.log 2>/dev/null | tail -n +31 | xargs -r rm -f || true
 
-    local -a vars=(
-        -e "_skip_components=${SKIP}"
-        -e "component_action=${ACTION}"
-        -e "target=${TARGET}"
-        -e "env_name=${ENV_NAME}"
-        -e "_include_deps=$([[ "$ONLY" == "true" ]] && echo false || echo true)"
-        -e "env_dir=${ENV_DIR}"
-        -e "kubespray_dir=${SCRIPT_DIR}/.kubespray"
-        -e "kubespray_custom_inventory=${INVENTORY}"
-        -e "_add_node_pending_taint=${ADD_NODE_PENDING_TAINT}"
-    )
-    [[ "$ACTION" == "install" && "$FORCE" == "true" ]] && vars+=(-e "_upgrade_force=true")
-    # Solution configs, in the order the provisioning record lists them (dependencies
-    # first, so a layer's own config wins over its deps'). Collected before the loop:
-    # solution_configs errors on a config the record names but that is gone, and inside
-    # a process substitution that exit would be swallowed.
-    if command -v yq &>/dev/null; then
-        local _sol_cfgs; _sol_cfgs=$(solution_configs)
-        local _env_cfg
-        while IFS= read -r _env_cfg; do
-            [[ -n "$_env_cfg" ]] && vars+=(-e "@$_env_cfg")
-        done <<< "$_sol_cfgs"
-        vars+=(-e "_env_layers=$(solution_layers | paste -sd, -)")
-    fi
-    [[ -f "$GLOBAL_CONFIG" ]] && vars+=(-e "@$GLOBAL_CONFIG")
-    # Only load nodes.yaml if it has actual YAML content (all-comments = null → Ansible rejects it)
-    if [[ -f "$ENV_DIR/nodes.yaml" ]] && [[ "$(yq -r 'type' "$ENV_DIR/nodes.yaml" 2>/dev/null)" == "!!map" ]]; then
-        vars+=(-e "@$ENV_DIR/nodes.yaml")
-    fi
-
-    _resolve_kubeconfig
-    vars+=(-e "kubernetes_kubeconfig=${KUBE_CFG}")
-    [[ "$IS_BYO" == "true" ]] && vars+=(-e "existing_kubernetes=${KUBE_CFG}")
-    # Export after the path is resolved so Ansible collections and kubectl
-    # both see the correct kubeconfig. Kubespray's subshell unsets these (see
-    # run_kubespray) so kubespray's own internal kubectl is unaffected.
-    export KUBECONFIG="$KUBE_CFG" K8S_AUTH_KUBECONFIG="$KUBE_CFG"
+    local -a vars
+    playbook_vars
 
     # Status: reuses all the setup above, runs the status playbook, then exits.
     if [[ "$ACTION" == "status" ]]; then
@@ -2251,5 +2262,6 @@ main() {
     _completion_banner
 }
 
-# Sourced (the unit tests do) it only defines the functions.
-[[ "${BASH_SOURCE[0]}" != "$0" ]] || main "$@"
+# Sourced by run_backup.sh for its helpers; runs only when executed. An if, not &&:
+# a false test would be the sourcing command's status and stop a set -e caller.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

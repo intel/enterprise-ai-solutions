@@ -741,6 +741,139 @@ def test_old_upgrade_reports_are_pruned_like_env_log_dir():
     assert "upgrade_report_keep" in prune["loop"]
 
 
+# Backup freshness
+
+from upgrade_checks import backup_freshness_verdict, fresh_backups  # noqa: E402
+
+NOW = "2026-10-28T12:00:00Z"
+LABEL = "erag.example/version"
+BYPASS = "toolkit-manager.intel.com/checkout-bypass"
+
+
+def _backup(name, completed, version="3.0.0", phase="Completed", **labels):
+    return {"metadata": {"name": name, "labels": dict({LABEL: version}, **labels)},
+            "status": {"phase": phase, "completionTimestamp": completed}}
+
+
+def test_fresh_backups_keeps_completed_ones_of_the_version_within_the_window_newest_first():
+    backups = [_backup("older", "2026-10-28T07:00:00Z"), _backup("newer", "2026-10-28T11:00:00Z"),
+               _backup("edge", "2026-10-28T06:00:00Z")]
+    assert [b["name"] for b in fresh_backups(backups, LABEL, "3.0.0", NOW, 6, BYPASS)] == ["newer", "older", "edge"]
+
+
+def test_fresh_backups_compares_versions_not_strings():
+    assert fresh_backups([_backup("b", "2026-10-28T11:00:00Z", version="3.0")], LABEL, "3.0.0", NOW, 6, BYPASS)
+
+
+def test_fresh_backups_accepts_a_naive_utc_now():
+    assert fresh_backups([_backup("b", "2026-10-28T11:00:00Z")], LABEL, "3.0.0", "2026-10-28T12:00:00.123456", 6, BYPASS)
+
+
+@pytest.mark.parametrize("backup", [
+    _backup("stale", "2026-10-28T05:59:59Z"),
+    _backup("other-version", "2026-10-28T11:00:00Z", version="2.9.0"),
+    _backup("unversioned", "2026-10-28T11:00:00Z", version="not a version"),
+    _backup("failed", "2026-10-28T11:00:00Z", phase="PartiallyFailed"),
+    _backup("running", None, phase="InProgress"),
+    _backup("forced", "2026-10-28T11:00:00Z", **{BYPASS: "checkout-version"}),
+    {"metadata": {"name": "no-labels"}, "status": {"phase": "Completed", "completionTimestamp": "2026-10-28T11:00:00Z"}},
+])
+def test_fresh_backups_drops_what_is_not_a_restore_point(backup):
+    assert fresh_backups([backup], LABEL, "3.0.0", NOW, 6, BYPASS) == []
+
+
+def test_fresh_backups_does_not_raise_on_a_recorded_version_that_does_not_parse():
+    backups = [_backup("b", "2026-10-28T11:00:00Z", version="main")]
+    assert fresh_backups(backups, LABEL, "main", NOW, 6, BYPASS) == []
+
+
+FOUND = {"profile": "/ext/erag/deployment/backup_profile.yaml", "namespace": "velero", "max_age_hours": 6,
+         "found": True, "enabled": True, "version_label": LABEL, "velero": True,
+         "fresh": [{"name": "backup-erag-1", "completionTimestamp": "2026-10-28T11:00:00Z"}],
+         "server": True, "readable": True}
+
+
+def _freshness(without_velero=False, **facts):
+    return backup_freshness_verdict(dict(FOUND, **facts), "erag", "3.0.0", without_velero, "prod")
+
+
+def test_backup_freshness_passes_on_a_fresh_readable_backup():
+    verdict = _freshness()
+    assert verdict["verdict"] == "pass" and "backup-erag-1" in verdict["reason"]
+    assert verdict["check"] == "backup-freshness" and verdict["resolve"] is None
+    assert "bypassed" not in verdict
+
+
+@pytest.mark.parametrize("facts, reason", [
+    ({"found": False}, "no backup profile (/ext/erag/deployment/backup_profile.yaml)"),
+    ({"found": False, "profile": ""}, "erag has no backup profile"),
+    ({"enabled": False}, "not enabled"),
+    ({"version_label": ""}, "sets no version_label"),
+    ({"fresh": []}, "no Completed backup of erag 3.0.0 in the last 6 h"),
+    ({"server": False}, "no running Velero server to read backup backup-erag-1"),
+    ({"readable": False}, "backup backup-erag-1 exists but its contents cannot be read"),
+    ({"velero": False}, "Velero is not deployed"),
+])
+def test_backup_freshness_blocks_without_a_verified_fresh_backup(facts, reason):
+    verdict = _freshness(**facts)
+    assert verdict["verdict"] == "blocking" and reason in verdict["reason"]
+    assert verdict["resolve"] and "bypassed" not in verdict
+
+
+def test_backup_freshness_resolve_names_the_backup_command():
+    resolve = _freshness(fresh=[])["resolve"]
+    assert resolve == "./run_backup.sh backup erag --env prod"
+    assert "upgrade_without_velero: true" in _freshness(velero=False)["resolve"]
+    assert _freshness(velero=False)["resolve"].startswith(
+        "set velero_enabled: true in env/prod/global_config.yaml, run ./toolkit_manager.sh install velero")
+
+
+def test_backup_freshness_without_velero_flag_is_bypassed():
+    verdict = _freshness(without_velero=True, velero=False)
+    assert verdict["verdict"] == "blocking" and verdict["bypassed"] is True
+    assert "upgrade_without_velero" in verdict["reason"]
+
+
+def test_backup_freshness_without_velero_flag_is_ignored_where_velero_is_deployed():
+    assert "bypassed" not in _freshness(without_velero=True, fresh=[])
+    assert _freshness(without_velero=True)["verdict"] == "pass"
+
+
+BYPASSED = {"layer": "erag", "check": "backup-freshness", "verdict": "blocking", "reason": "r",
+            "resolve": None, "bypassed": True}
+
+
+def test_upgrade_gate_records_a_bypassed_gating_verdict_as_forced_without_refusing():
+    gate = upgrade_gate([BYPASSED], {"erag": True})
+    assert gate["refused"] == [] and gate["forcedChecks"] == ["erag/backup-freshness"]
+    assert gate["forced"] is True
+
+
+def test_upgrade_gate_still_refuses_the_other_gating_verdicts_next_to_a_bypassed_one():
+    gate = upgrade_gate([BYPASSED, DOWNGRADE], {"erag": True})
+    assert gate["refused"] == ["erag/version-change"]
+    assert gate["forcedChecks"] == ["erag/backup-freshness"]
+
+
+def test_upgrade_gate_bypassed_verdict_of_an_advisory_layer_is_not_forced():
+    gate = upgrade_gate([BYPASSED], {"erag": False})
+    assert gate["refused"] == [] and gate["forcedChecks"] == []
+
+
+def test_upgrade_gate_force_lists_bypassed_and_forced_checks_once():
+    gate = upgrade_gate([BYPASSED, DOWNGRADE], {"erag": True}, forced=True)
+    assert gate["refused"] == [] and gate["forcedChecks"] == ["erag/backup-freshness", "erag/version-change"]
+
+
+def test_backup_freshness_judges_only_upgrade_and_downgrade_runs():
+    classes = {"erag": "upgrade", "inference": "reinstall", "platform": "downgrade", "x": "fresh"}
+    assert check_layers(classes, "backup_freshness", ["version_change"]) == ["erag", "platform"]
+
+
+def test_upgrade_gate_labels_how_each_verdict_is_printed():
+    gate = upgrade_gate([BYPASSED, DOWNGRADE, PASS], {"erag": True})
+    assert [c["label"] for c in gate["checks"]] == ["gating, bypassed", "gating", ""]
+    assert upgrade_gate([DOWNGRADE], {"erag": False})["checks"][0]["label"] == "advisory"
 # Compatibility
 
 ERAG_REQUIRES = {"erag": {"platform": ">=1.1.0,<1.2.0", "inference": ">=1.1.0,<1.2.0",

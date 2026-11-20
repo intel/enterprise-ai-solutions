@@ -4,11 +4,10 @@
 # Included from preflight after the plan is resolved, before anything mutates.
 # Notes whether the cluster holds records; on install, reads them, classifies
 # each planned layer against the version of this release and runs the checks.
-- name: "upgrade_checks | Note the planned layers and where each layer's repository is"
+- name: "upgrade_checks | Note the planned layers"
   ansible.builtin.set_fact:
     _upgrade_layers: "{{ _active_components | map(attribute='layer') | unique | list }}"
     _installer_version: "{{ lookup('ansible.builtin.file', role_path ~ '/../../VERSION') | trim }}"
-    _layer_dirs: {}
     _layer_records: {}
     _layer_release: {}
     _layer_version_data: {}
@@ -85,15 +84,6 @@
       when:
         - not _record_cluster
         - kubernetes_kubeconfig | default('') is file
-
-    - name: "upgrade_checks | Find each layer's repository"
-      ansible.builtin.set_fact:
-        _layer_dirs: "{{ _layer_dirs | claim_layer_dirs(_manifest, item.path | dirname) }}"
-      vars:
-        _manifest: "{{ lookup('ansible.builtin.template', item.path) | from_yaml }}"
-      loop: "{{ (_ext_manifests.files | default([])) | sort(attribute='path') }}"
-      loop_control:
-        label: "{{ item.path | dirname }}"
 
     - name: "upgrade_checks | Read the deployment records"
       block:
@@ -188,7 +178,7 @@
           {% for layer in _upgrade_layers %}
           {{ layer }}: {{ _layer_class[layer] }} ({{ _layer_records.get(layer, {}).version | default('none', true) }} -> {{ _layer_release[layer] or 'unversioned' }})
           {% for check in _upgrade_gate.checks | selectattr('layer', 'equalto', layer) %}
-            {{ check.check }}: {{ check.verdict }}{{ ' (gating)' if check.gating else ' (advisory)' if check.verdict == 'blocking' else '' }} — {{ check.reason }}
+            {{ check.check }}: {{ check.verdict }}{{ ' (%s)' % check.label if check.label else '' }} — {{ check.reason }}
           {% endfor %}
           {% endfor %}
 
@@ -196,7 +186,7 @@
       ansible.builtin.fail:
         msg: |-
           Upgrade checks refuse this install; nothing was changed.
-          {% for check in _upgrade_gate.checks | selectattr('gating') %}
+          {% for check in _upgrade_gate.checks if (check.layer ~ '/' ~ check.check) in _upgrade_gate.refused %}
             - {{ check.layer }} {{ check.check }}: {{ check.reason }}. Resolve: {{ check.resolve }}
           {% endfor %}
           To run anyway, add --force; the run is then recorded as forced.

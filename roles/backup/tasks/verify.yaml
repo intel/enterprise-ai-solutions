@@ -184,44 +184,30 @@
           when: _bk_verified_backup is defined
           block:
             - name: "backup | verify | Find the Velero server pod"
-              kubernetes.core.k8s_info:
-                api_version: v1
-                kind: Pod
-                namespace: "{{ velero_namespace }}"
-                label_selectors: >-
-                  {{ backup_velero_pod_labels.keys() | zip(backup_velero_pod_labels.values())
-                     | map('join', '=') | list }}
-                field_selectors:
-                  - status.phase=Running
-              register: _bk_verify_pod
+              ansible.builtin.include_tasks: velero_server.yaml
+
+            - name: "backup | verify | Fail — the Velero server pods cannot be listed"
+              ansible.builtin.fail:
+                msg: "Upgrade blocked: listing the Velero pods in '{{ velero_namespace }}' failed: {{ _bk_velero_server_error }}"
+              when: _bk_velero_server_error | length > 0
 
             - name: "backup | verify | Cannot check — no server pod"
               ansible.builtin.debug:
                 msg: >-
                   WARNING: no running Velero pod, so the readability of backup
                   '{{ _bk_verified_backup }}' could not be confirmed.
-              when: _bk_verify_pod.resources | default([]) | length == 0
+              when: _bk_velero_server | length == 0
 
             - name: "backup | verify | Read the backup's resource list"
-              kubernetes.core.k8s_exec:
-                namespace: "{{ velero_namespace }}"
-                pod: "{{ _bk_verify_pod.resources[0].metadata.name }}"
-                container: velero
-                command: >-
-                  /velero backup describe {{ _bk_verified_backup }} --details -o json
-                  {{ '--insecure-skip-tls-verify'
-                     if (velero_external_bsl_enabled | bool) and (velero_external_bsl_tls_enabled | bool)
-                     else '' }}
-              register: _bk_verify_describe
-              changed_when: false
-              when: _bk_verify_pod.resources | default([]) | length > 0
+              ansible.builtin.include_tasks: readable.yaml
+              vars:
+                backup_readable_name: "{{ _bk_verified_backup }}"
+              when: _bk_velero_server | length > 0
 
             - name: "backup | verify | Parse it"
               ansible.builtin.set_fact:
-                _bk_verify_details: "{{ _bk_verify_describe.stdout | from_json }}"
-              when:
-                - _bk_verify_describe is defined
-                - _bk_verify_describe.stdout | default('') != ''
+                _bk_verify_details: "{{ _bk_backup_details }}"
+              when: _bk_velero_server | length > 0
 
             - name: "backup | verify | Fail — backup data unreadable"
               ansible.builtin.fail:

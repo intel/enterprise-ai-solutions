@@ -1,22 +1,24 @@
 ---
 # =============================================================================
-# Shared Preflight — Load components.yaml + resolve target → _active_components
+# Shared Preflight — Load components.yaml, detect platform, resolve env facts
 # =============================================================================
 # Required vars (set by the calling playbook):
-#   component_action:  install | teardown | validate
-#   target:            layer or component name(s), comma-separated
+#   component_action:  install | teardown | validate | backup | restore | list
 #
 # Optional vars:
-#   _include_deps:     true → auto-include dep/dependant layers  (default: true)
-#   _skip_components:  comma-separated names to exclude
+#   target:            layer or component name(s), comma-separated — required by
+#                      includes/resolve_target.yaml, not read here
 #
 # Output:
-#   _active_components:  list of component dicts, in execution order
+#   components, layers:  the merged registry (this repository + ext/ manifests)
+#   _layer_dirs:          layer name → directory of the ext components.yaml that
+#                         declares it (empty for a layer this repository declares
+#                         itself)
 # =============================================================================
 
 # ── Load registry ─────────────────────────────────────────────────────────────
 
-- name: "Preflight - Load the Toolkit Manager component registry"
+- name: "Preflight - Load ai-solutions component registry"
   ansible.builtin.include_vars:
     file: "{{ playbook_dir }}/../configs/components.yaml"
 
@@ -86,7 +88,7 @@
 # Captured before the ext merge. Toolkit Manager's own layers are always in scope; a
 # solution's layer is in scope only when this env was inited for it, which
 # env/<env>/.solutions.yaml records and the installer passes as _env_layers.
-- name: "Preflight - Note which layers Toolkit Manager declares itself"
+- name: "Preflight - Note which layers ai-solutions declares itself"
   ansible.builtin.set_fact:
     _core_layers: "{{ layers | default([]) | map(attribute='name') | list }}"
 
@@ -106,6 +108,11 @@
   register: _ext_manifests
   when: _ext_dir.stat.isdir | default(false)
 
+# Defined even with no ext/ manifest: the upgrade checks read it on a core-only checkout.
+- name: "Preflight - No layer directories yet"
+  ansible.builtin.set_fact:
+    _layer_dirs: {}
+
 # lookup('template') NOT lookup('file') — renders Jinja in ext manifests so
 # `enabled: "{{ var }}"` resolves to "True"/"False" instead of raw string (always truthy).
 - name: "Preflight - Merge ext components + layers"
@@ -116,6 +123,8 @@
     layers: >-
       {{ layers | default([])
          + ((lookup('template', item.path) | from_yaml).layers | default([])) }}
+    # Where each layer keeps its fixed-path files (backup_profile.yaml, version.yaml).
+    _layer_dirs: "{{ _layer_dirs | default({}) | claim_layer_dirs(lookup('template', item.path) | from_yaml, item.path | dirname) }}"
   loop: "{{ (_ext_manifests.files | default([])) | sort(attribute='path') }}"
   loop_control:
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
@@ -402,136 +411,3 @@
   loop_control:
     label: "{{ item.item }}"
   when: item.rc != 0
-
-# =============================================================================
-# Component Resolution — target → _active_components
-# =============================================================================
-# Custom filter plugin: filter_plugins/resolve_components.py
-# Auto-loaded via ansible.cfg `filter_plugins = filter_plugins`.
-#
-# Resolves the install/teardown target into an ordered component list:
-#   1. Classify target (base / layer name / component name)
-#   2. BFS layer dependencies (downward for install, upward for teardown)
-#   3. Collect components in registry order; narrow for component targets
-#   4. Solution scoping, skip filter, enabled filter (coerces "True"/"False"
-#      strings — fixes ext components and layers whose enabled: is a rendered
-#      Jinja expr)
-#   5. Reverse for teardown
-# =============================================================================
-
-# node_feature_discovery (platform) is the cluster's NFD on every cluster. An inference
-# repo that still ships an nfd component would find that release and skip its install,
-# but its teardown uninstalls the release whoever installed it, and the chart's
-# post-delete job then prunes every NFD label, the GPU nodes' included. On OpenShift it
-# would only repeat the operator check. So it is dropped from the registry for every
-# action, rather than skipped: a skipped component still counts as planned, so the
-# layer would look partly run.
-- name: "Preflight - Note the NFD owner"
-  ansible.builtin.debug:
-    msg: "NFD comes from node_feature_discovery (platform layer); the inference layer's nfd component is left out."
-  when: components | selectattr('name', 'equalto', 'nfd') | list | length > 0
-
-- name: "Preflight - Leave NFD to node_feature_discovery"
-  ansible.builtin.set_fact:
-    components: "{{ components | rejectattr('name', 'equalto', 'nfd') | list }}"
-
-- name: "Preflight - Resolve active components (see filter_plugins/resolve_components.py)"
-  ansible.builtin.set_fact:
-    _active_components: >-
-      {{ components | resolve_components(layers,
-                                         target=target,
-                                         action=component_action | default('install'),
-                                         include_deps=_include_deps | default(true) | bool,
-                                         skip=_skip_components | default('')) }}
-    _disabled_components: >-
-      {{ components | disabled_components(layers,
-                                          target=target,
-                                          action=component_action | default('install'),
-                                          include_deps=_include_deps | default(true) | bool,
-                                          skip=_skip_components | default('')) }}
-
-# Teardown around the kubespray reset (toolkit_manager.sh). What kubernetes
-# depends on (on rack-scale, the fabric that carries the node IPs) has to outlive
-# the reset: the pass before it leaves those components out, the pass after it
-# runs only them.
-- name: "Preflight - Teardown: split the plan around the kubernetes reset"
-  when: (_teardown_phase | default('')) in ['before_reset', 'after_reset']
-  vars:
-    _under_kubernetes: "{{ components | component_deps('kubernetes') }}"
-  ansible.builtin.set_fact:
-    _active_components: >-
-      {{ (_active_components | rejectattr('name', 'in', _under_kubernetes) | list)
-         if _teardown_phase == 'before_reset'
-         else (_active_components | selectattr('name', 'in', _under_kubernetes) | list) }}
-
-# The record is the source of truth for which solutions an env includes, so a plan that
-# reaches a layer it does not list is a mismatch between env/ and ext/, not a preference:
-# ext/ is per checkout and shared by every env, so a clone alone must not pull a solution
-# into an env that was never provisioned for it.
-- name: "Preflight - Refuse layers this env was not provisioned for"
-  vars:
-    _allowed: >-
-      {{ _core_layers + (_env_layers | default('') | split(',') | reject('equalto', '') | list) }}
-    _planned: "{{ (_active_components | map(attribute='name') | list) + (_disabled_components | default([])) }}"
-    _unprovisioned: >-
-      {{ components | selectattr('name', 'in', _planned)
-                    | map(attribute='layer') | unique | difference(_allowed) }}
-  ansible.builtin.fail:
-    msg: |-
-      env/{{ env_name | default('?') }} was not provisioned for layer(s): {{ _unprovisioned | join(', ') }}
-      The plan for target '{{ target }}' reaches them because they are declared by a repo in
-      ext/, but env/{{ env_name | default('?') }}/.solutions.yaml does not list them.
-      Either provision them   ./toolkit_manager.sh init {{ _unprovisioned | first }} --env {{ env_name | default('local') }}
-      or take them off disk    mv ext/<repo> elsewhere, so no plan can reach them.
-  when: _unprovisioned | length > 0
-
-# Records, run class and upgrade checks (roles/upgrade_checks/tasks/run.yaml).
-- name: "Preflight - Upgrade checks"
-  ansible.builtin.include_role:
-    name: upgrade_checks
-    tasks_from: run.yaml
-  when: component_action in ['install', 'teardown']
-
-- name: "Preflight - Show skipped components"
-  when: _disabled_components | length > 0
-  ansible.builtin.debug:
-    msg: "Skipped (disabled): {{ _disabled_components | join(', ') }}"
-
-# A `used_by` component goes with its users, but not while one outside the plan
-# is enabled: tearing down observability keeps the telemetry SeaweedFS for Langfuse.
-- name: "Preflight - Show components kept for others"
-  vars:
-    _kept: "{{ components | kept_components(_active_components) }}"
-  when:
-    - component_action | default('install') == 'teardown'
-    - _kept | length > 0
-  ansible.builtin.debug:
-    msg: "{% for name, staying in _kept.items() %}Kept: {{ name }}, still used by {{ staying | join(', ') }}. {% endfor %}"
-
-- name: "Preflight - Display execution plan"
-  ansible.builtin.debug:
-    msg: |
-      ━━━ {{ component_action | capitalize }} Plan ━━━
-      Action: {{ component_action }}
-      Target: {{ target }}
-      Components: {{ _active_components | map(attribute='name') | list | join(', ') }}
-
-# ── OpenShift prerequisites ───────────────────────────────────────────────────
-# The cluster admin installs the operators (docs/deploy/openshift.md); stop here,
-# with the full list, if the plan needs one that is missing, not ready or too old.
-
-- name: "Preflight - OpenShift prerequisites"
-  ansible.builtin.include_tasks: preflight_openshift.yaml
-  when:
-    - cluster_distribution | default('kubernetes') == 'openshift'
-    - component_action | default('install') in ['install', 'validate']
-    - openshift_prereq_check | default(true) | bool
-
-- name: "Preflight - Agent Toolkit node readiness"
-  ansible.builtin.include_tasks: agent_toolkit_preflight.yaml
-  when:
-    - (component_action | default('install')) == 'install'
-    - "'agent-toolkit' in (_env_layers | default('') | split(','))"
-    - not (_kubespray_skip_cluster_yml | default(false) | bool)
-    - _include_deps | default(true) | bool
-    - node_preflight_enabled | default(true) | bool

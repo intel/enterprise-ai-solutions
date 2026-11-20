@@ -81,7 +81,15 @@ Deploy components. Dependencies are resolved automatically.
 
 # Pass additional Ansible flags (use -- to separate)
 ./toolkit_manager.sh install inference --env local -- -vvv
+
+# Run past a refusing upgrade check (recorded as forced)
+./toolkit_manager.sh install erag --env local --force
 ```
+
+Installing a newer release over a deployed layer upgrades it. Before anything changes, `install`
+prints each layer's run class (`fresh`, `reinstall`, `resume`, `upgrade`, `downgrade`, `conflict`,
+`unversioned`) and the verdict of each upgrade check; a layer that declares `supports.upgrade`
+refuses a blocking verdict. See [Upgrade a Layer](../deploy/upgrade.md).
 
 **Targets for `install` / `teardown`:**
 
@@ -186,6 +194,20 @@ List all available layers and components, including which are opt-in.
 
 ---
 
+Backing up and restoring a layer are not `toolkit_manager.sh` actions; `run_backup.sh` runs them,
+with the same `--env` and `--` conventions:
+
+```bash
+./run_backup.sh backup  <layer> [--env <name>] [--force] [-- ansible-playbook args]
+./run_backup.sh restore <layer> [--env <name>] [--from <backup>] [--force] [-- args]
+./run_backup.sh list    <layer> [--env <name>]
+```
+
+`restore` asks before it deletes anything; `--force` answers for it, and a run with no terminal
+and no `--force` is refused. See [Upgrade a Layer](../deploy/upgrade.md#backup-and-restore).
+
+---
+
 ## Flags
 
 | Flag | Description |
@@ -195,7 +217,7 @@ List all available layers and components, including which are opt-in.
 | `--upgrade` | (init only) Move already-cloned ext/ repos onto the revs the manifests pin now. Refuses on local changes; never rewrites your configs. |
 | `--only` | Skip dependency auto-inclusion — run the named target alone |
 | `--skip <names>` | Comma-separated layers or components to leave out of the plan (e.g., `--skip erag` to tear down the cluster without uninstalling erag first) |
-| `--force` | Skip the confirmation prompt (required in CI, where there is no terminal to answer it) |
+| `--force` | Skip the confirmation prompt (required in CI, where there is no terminal to answer it). On `install`, also run past a refusing upgrade check, recorded as forced |
 | `--dry-run` | (`add-node`/`remove-node` only) print the computed node diff and Kubespray command, then exit |
 | `--node-lost` | (`remove-node` only) for a node that is already `NotReady`: no PDB check, the drain given up after 60 s, no reset; refused if any target is still `Ready` |
 | `--health` | (`status` only) print a green/red cluster health verdict and exit with it, instead of the full component-status table |
@@ -256,6 +278,7 @@ All Ansible output is captured per environment:
 | `env/<name>/logs/teardown-all-<timestamp>.log` | Full teardown output |
 | `env/<name>/logs/install-<component>-<timestamp>.log` | Per-component install output |
 | `env/<name>/logs/ai-solutions-ca.crt` | Self-signed CA certificate (import to browser) |
+| `env/<name>/reports/<layer>-upgrade-report-<UTC>.yaml` | One per layer of each install that upgrades or downgrades it |
 
 For more Ansible detail, append `-- -vvv` to any command.
 
@@ -266,6 +289,7 @@ For more Ansible detail, append `-- -vvv` to any command.
 | If you want to… | Go to |
 |---|---|
 | Look up what each `global_config.yaml` field controls | [Configuration Reference](configuration.md) |
+| Upgrade a layer, back it up, restore or roll it back | [Upgrade a Layer](../deploy/upgrade.md) |
 | Deploy, access, and manage LLM inference with `model-manager` | [Deploy an LLM](../deploy/deploy_models.md) |
 | Set up multi-node or bring-your-own-cluster installs | [Deployment Guide](../deploy/install_platform.md) |
 | Add or remove nodes from an already-provisioned cluster | [Node Scaling](node_scaling.md) |

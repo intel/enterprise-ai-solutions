@@ -34,6 +34,9 @@
     - name: "Preflight"
       ansible.builtin.include_tasks: includes/preflight.yaml
 
+    - name: "Resolve target"
+      ansible.builtin.include_tasks: includes/resolve_target.yaml
+
     # Teardown too: it first labels what a killed install left unlabelled.
     - name: "Record what is already on the cluster (ownership labels)"
       ansible.builtin.include_role:
