@@ -120,6 +120,8 @@ BUILTIN_GROUPS = {
 # them, so the API never calls a backend that is already gone.
 PHASES = ("custom", "webhooks", "namespaced", "namespaces", "cluster", "crds")
 
+PATCH_TRIES = 6
+
 
 def _get(api, path, query=None, headers=None):
     resp = api.call_api(path, "GET", query_params=query or [], header_params=headers or {"Accept": "application/json"},
@@ -274,15 +276,22 @@ def _before_key(p):
     return "%s/%s" % (p["label_prefix"], name.strip("-_."))
 
 
+def _transient(e):
+    return e.status == 500 and "failed calling webhook" in str(e.body)
+
+
 def _patch(api, res, meta, body):
-    try:
-        api.call_api(_path(res, meta), "PATCH", header_params={"Content-Type": "application/merge-patch+json"},
-                     body={"metadata": body}, auth_settings=["BearerToken"], _preload_content=False)
-    except ApiException as e:
-        if e.status != 404:  # 404: deleted since the list
-            raise
-        return False
-    return True
+    for attempt in range(PATCH_TRIES):
+        try:
+            api.call_api(_path(res, meta), "PATCH", header_params={"Content-Type": "application/merge-patch+json"},
+                         body={"metadata": body}, auth_settings=["BearerToken"], _preload_content=False)
+            return True
+        except ApiException as e:
+            if e.status == 404:  # 404: deleted since the list
+                return False
+            if attempt == PATCH_TRIES - 1 or not _transient(e):
+                raise
+        time.sleep(2 ** (attempt + 1))
 
 
 def _record_added(api, objects, known, before, reported, p, module):
