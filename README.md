@@ -70,13 +70,24 @@ One machine, default settings. Allow up to an hour for the first install: most o
 
    `init` creates the folder `env/local/` with your settings files, and downloads the Intel® Inference Toolkit into `ext/`.
 
-3. Choose the model to deploy during the install. The catalog of models is `env/local/models.yaml`; `qwen3-0-6b` is a small public model that runs on any Intel® Xeon® machine:
+3. Choose the model to deploy during the install. The model catalog is `env/local/models.yaml`; `qwen3-0-6b` is a small public model that runs on any Intel® Xeon® machine.
 
-   ```bash
-   yq -i '.llm_services_autodeploy_models = ["qwen3-0-6b"]' env/local/config.inference.yaml
-   ```
+   a. Open `env/local/models.yaml`, find the model's entry, and add `autodeploy: true` to it:
 
-   List more than one name to deploy several. If a listed model fails to deploy, the install stops and says why. Skip this step to install without a model and deploy one later (Step 3).
+      ```yaml
+        - name: qwen3-0-6b
+          model_id: Qwen/Qwen3-0.6B
+          ...
+          autodeploy: true          # deploy this model during install
+      ```
+
+   b. Turn on model deployment for the install: in `env/local/config.inference.yaml`, change `llm_services_deploy_models: false` to
+
+      ```yaml
+      llm_services_deploy_models: true
+      ```
+
+   Mark more entries `autodeploy: true` to deploy several. If a model fails to deploy, the install still finishes and prints a warning that names the model; deploy it again with `model-manager` (Step 3). Skip this step to install without a model.
 
 4. Install. This builds the Kubernetes cluster, then the platform, then model serving, and deploys your model:
 
