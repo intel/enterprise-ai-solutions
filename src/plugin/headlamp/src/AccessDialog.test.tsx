@@ -11,13 +11,13 @@ describe('AccessDialog', () => {
     render(
       <AccessDialog
         model={{ name: 'qwen3-0-6b', category: 'llm' }}
-        access={{ baseURL: 'https://inference.solutions.ai/v1', authType: 'jwt' }}
+        access={{ baseURL: 'https://inference.inteltoolkits.ai/v1', authType: 'jwt' }}
         ready
         onClose={onClose}
       />
     );
     expect(screen.getByText('Access qwen3-0-6b')).toBeTruthy();
-    expect(screen.getByText('https://inference.solutions.ai/v1')).toBeTruthy();
+    expect(screen.getByText('https://inference.inteltoolkits.ai/v1')).toBeTruthy();
     expect(screen.getByText(/Keycloak JWT/)).toBeTruthy();
     expect(screen.getByText(/get-keycloak-token\.sh/)).toBeTruthy();
     expect(screen.getByText(/\$TOKEN/)).toBeTruthy();
@@ -31,7 +31,7 @@ describe('AccessDialog', () => {
     render(
       <AccessDialog
         model={{ name: 'qwen-alias' }}
-        access={{ baseURL: 'https://litellm.solutions.ai/v1', authType: 'litellm_vkey' }}
+        access={{ baseURL: 'https://litellm.inteltoolkits.ai/v1', authType: 'litellm_vkey' }}
         ready={false}
         onClose={() => undefined}
       />

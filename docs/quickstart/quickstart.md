@@ -48,7 +48,7 @@ Open `env/local/global_config.yaml` and set:
 
 ```yaml
 # Required — base domain for all service URLs and TLS certificates
-base_domain_name: "solutions.ai"
+base_domain_name: "inteltoolkits.ai"
 
 # Optional — uncomment and set if behind a corporate proxy
 # http_proxy:  "http://proxy.example.com:8080"

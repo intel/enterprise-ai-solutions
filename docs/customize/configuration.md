@@ -50,7 +50,7 @@ env/prod/global_config.yaml      # the real cluster
 ### Do I Need to Change global_config.yaml Before My First Deploy?
 
 Not for a single-node trial. The defaults assume: one node (localhost), the
-`solutions.ai` domain, a self-signed TLS CA, Keycloak authentication, node-local
+`inteltoolkits.ai` domain, a self-signed TLS CA, Keycloak authentication, node-local
 storage, and Intel® Xeon® CPU inference.
 
 You need to edit the file when one of these is true:
@@ -68,7 +68,7 @@ You need to edit the file when one of these is true:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `base_domain_name` | `solutions.ai` | Every service URL derives from this — `grafana.<domain>`, `keycloak.<domain>`, `inference.<domain>` |
+| `base_domain_name` | `inteltoolkits.ai` | Every service URL derives from this — `grafana.<domain>`, `keycloak.<domain>`, `inference.<domain>` |
 | `auth_type` | `jwt` | Credential API clients send (Keycloak JWT or LiteLLM virtual key). Set in `env/<name>/config.inference.yaml` — see [API authentication](#api-authentication) |
 | `storage_backend` | `local-path` | Where persistent data lives — see [Storage](#storage) |
 | `gateway_tls_mode` | `selfsigned` | Auto-generated CA, or bring your own — see [TLS](#tls) |

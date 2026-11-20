@@ -39,7 +39,7 @@ kubernetes_kube_proxy_mode: "nftables"    # nftables | iptables | ipvs
 
 # ─── 3. Domain and access ────────────────────────────────────────────────────
 
-base_domain_name: "solutions.ai"          # all URLs: grafana.<domain>, keycloak.<domain>, ...
+base_domain_name: "inteltoolkits.ai"      # all URLs: grafana.<domain>, keycloak.<domain>, ...
 
 routing_mode: "subdomain"                 # subdomain: a host per service | path: <domain>/<service>
 # Path mode puts the apps on one browser origin; Langfuse and the vLLM-SR dashboard keep subdomains.

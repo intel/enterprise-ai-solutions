@@ -37,7 +37,7 @@ observability_prometheus_adapter_version: "4.11.0"
 observability_grafana_admin_user: "admin"
 # Password managed by tasks/credentials.yaml — stored in 'observability-credentials' Secret.
 observability_grafana_admin_password: ""
-observability_grafana_hostname: "grafana.{{ base_domain_name | default('solutions.ai') }}"
+observability_grafana_hostname: "grafana.{{ base_domain_name | default('inteltoolkits.ai') }}"
 # Path mode (routing_mode: path): served under <base>/grafana.
 observability_grafana_path: "/grafana"
 _obs_grafana_path_mode: "{{ (routing_mode | default('subdomain')) == 'path' }}"

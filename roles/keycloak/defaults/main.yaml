@@ -16,7 +16,7 @@ keycloak_k8s_resources_base: "https://raw.githubusercontent.com/keycloak/keycloa
 
 # Keycloak instance
 keycloak_instances: 1
-keycloak_hostname: "keycloak.{{ base_domain_name | default('inference-example.com') }}"
+keycloak_hostname: "keycloak.{{ base_domain_name | default('inteltoolkits.ai') }}"
 # Path mode (routing_mode: path): served under <base>/keycloak. The path is in
 # both the advertised URL and http-relative-path; the gateway forwards it as is.
 keycloak_path: "/keycloak"
@@ -53,7 +53,7 @@ keycloak_platform_viewer_group: "platform-viewers"
 keycloak_platform_bootstrap_admin: true
 keycloak_platform_bootstrap_admin_user: "platform-admin"
 # Langfuse and LiteLLM key accounts by email, so the bootstrap admin has one.
-keycloak_platform_bootstrap_admin_email: "{{ keycloak_platform_bootstrap_admin_user }}@{{ base_domain_name | default('inference-example.com') }}"
+keycloak_platform_bootstrap_admin_email: "{{ keycloak_platform_bootstrap_admin_user }}@{{ base_domain_name | default('inteltoolkits.ai') }}"
 # true: the bootstrap admin must enrol OTP at first login. Read when the realm is
 # first created; for an existing realm, add the OTP required action in Keycloak.
 keycloak_platform_bootstrap_admin_mfa: false

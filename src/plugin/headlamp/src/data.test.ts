@@ -425,8 +425,8 @@ describe('catalogAccess', () => {
   const data = (v: unknown) => ({ 'access.json': JSON.stringify(v) });
 
   it('reads the base URL and credential type', () => {
-    expect(catalogAccess(data({ base_url: 'https://solutions.ai/inference/v1/', auth_type: 'jwt' }))).toEqual({
-      baseURL: 'https://solutions.ai/inference/v1',
+    expect(catalogAccess(data({ base_url: 'https://inteltoolkits.ai/inference/v1/', auth_type: 'jwt' }))).toEqual({
+      baseURL: 'https://inteltoolkits.ai/inference/v1',
       authType: 'jwt',
     });
   });
@@ -441,10 +441,10 @@ describe('catalogAccess', () => {
 });
 
 describe('accessExample', () => {
-  const access = { baseURL: 'https://inference.solutions.ai/v1', authType: 'jwt' as const };
+  const access = { baseURL: 'https://inference.inteltoolkits.ai/v1', authType: 'jwt' as const };
 
   it('picks the API and body by category, the model in the body', () => {
-    expect(accessExample(access, 'q').endpoint).toBe('https://inference.solutions.ai/v1/chat/completions');
+    expect(accessExample(access, 'q').endpoint).toBe('https://inference.inteltoolkits.ai/v1/chat/completions');
     expect(JSON.parse(accessExample(access, 'q').body).model).toBe('q');
     expect(accessExample(access, 'e', 'embed').endpoint).toMatch(/\/v1\/embeddings$/);
     expect(JSON.parse(accessExample(access, 'e', 'embed').body).input).toEqual(['Hello world']);

@@ -229,8 +229,8 @@ agent = Agent(
 Any MCP host (Claude Desktop, Cursor, Continue, etc.) that lets you set a custom OpenAI-compatible endpoint can target the gateway. Configure:
 
 ```
-Base URL: https://litellm.inference-example.com/v1  (litellm mode)
-      or: https://inference.inference-example.com/llm-inference/<model>/v1  (keycloak mode)
+Base URL: https://litellm.inteltoolkits.ai/v1  (litellm mode)
+      or: https://inference.inteltoolkits.ai/llm-inference/<model>/v1  (keycloak mode)
 API Key:  <LiteLLM virtual key or Keycloak JWT>
 ```
 

@@ -44,7 +44,7 @@ Open `env/prod/global_config.yaml` and set the following before installing:
 storage_backend: nfs
 
 # Set your base domain (applies to all service URLs)
-base_domain_name: "solutions.ai"
+base_domain_name: "inteltoolkits.ai"
 
 # If behind a corporate proxy, uncomment and fill in:
 # http_proxy:  "http://proxy.example.com:8080"

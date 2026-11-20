@@ -15,7 +15,7 @@ headlamp_resources:
   requests: {cpu: 100m, memory: 128Mi}
   limits: {cpu: 500m, memory: 512Mi}
 
-headlamp_hostname: "headlamp.{{ base_domain_name | default('inference-example.com') }}"
+headlamp_hostname: "headlamp.{{ base_domain_name | default('inteltoolkits.ai') }}"
 # Path mode serves Headlamp at <base><headlamp_path>, on the base host's origin.
 # Headlamp skips OIDC refresh under a base URL (headlamp#7513), so people sign in
 # again when headlamp_token_lifespan runs out.
@@ -58,7 +58,7 @@ headlamp_kubelet_dir: /var/lib/kubelet
 
 # Foreign vars (canonical owner: keycloak role).
 keycloak_namespace: "keycloak"
-keycloak_hostname: "keycloak.{{ base_domain_name | default('inference-example.com') }}"
+keycloak_hostname: "keycloak.{{ base_domain_name | default('inteltoolkits.ai') }}"
 keycloak_path: "/keycloak"
 keycloak_frontend_url: >-
   {{ 'https://' ~ base_domain_name ~ keycloak_path if (routing_mode | default('subdomain')) == 'path'

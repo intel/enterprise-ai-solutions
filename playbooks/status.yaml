@@ -10,7 +10,7 @@
   connection: local
   gather_facts: false
   vars:
-    base_domain_name: "{{ base_domain_name | default('solutions.ai') }}"
+    base_domain_name: "{{ base_domain_name | default('inteltoolkits.ai') }}"
   environment:
     http_proxy: "{{ http_proxy | default('') }}"
     https_proxy: "{{ https_proxy | default('') }}"

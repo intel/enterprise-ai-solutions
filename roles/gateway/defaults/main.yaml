@@ -137,7 +137,7 @@ keycloak_realm: "inference"
 
 # TLS / Domain — HTTPS is mandatory, there is no plaintext mode
 gateway_tls_mode: "selfsigned"        # selfsigned | custom
-base_domain_name: "inference-example.com"
+base_domain_name: "inteltoolkits.ai"
 gateway_tls_cert_file: ""
 gateway_tls_key_file: ""
 # Optional CA (chain) that signed the custom certificate, stored as ca.crt in

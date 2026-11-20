@@ -146,7 +146,7 @@ spec:
     - name: https
       protocol: HTTPS
       port: 443
-      hostname: "*.inference-example.com"
+      hostname: "*.inteltoolkits.ai"
       tls:
         mode: Terminate
         certificateRefs:
@@ -173,11 +173,11 @@ spec:
   jwt:
     providers:
       - name: keycloak
-        issuer: https://keycloak.inference-example.com/realms/inference
+        issuer: https://keycloak.inteltoolkits.ai/realms/inference
         audiences:
           - inference-client
         remoteJWKS:
-          uri: https://keycloak.inference-example.com/realms/inference/protocol/openid-connect/certs
+          uri: https://keycloak.inteltoolkits.ai/realms/inference/protocol/openid-connect/certs
 ```
 
 ---
@@ -206,7 +206,7 @@ spec:
     - name: eg-gateway
       namespace: envoy-gateway-system
   hostnames:
-    - llama-3-2-1b.inference-example.com
+    - llama-3-2-1b.inteltoolkits.ai
   rules:
     - matches:
         - path:
@@ -263,14 +263,14 @@ Here is every hop an inference request takes through the stack, from the externa
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ [1] External Client (e.g., curl from laptop)                           │
-│     HTTPS POST https://llama-3-2-1b.inference-example.com/v1/completions│
+│     HTTPS POST https://llama-3-2-1b.inteltoolkits.ai/v1/completions     │
 │     Authorization: Bearer eyJhbGc...                                    │
 │     Body: {"prompt": "Hello", "max_tokens": 100}                       │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
 │ [2] DNS Resolution                                                      │
-│     llama-3-2-1b.inference-example.com → 203.0.113.50 (public IP)     │
+│     llama-3-2-1b.inteltoolkits.ai → 203.0.113.50 (public IP)          │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -315,7 +315,7 @@ Here is every hop an inference request takes through the stack, from the externa
 │                         ↓                                               │
 │     ┌─────────────────────────────────────────────┐                   │
 │     │ HTTPRoute Matching                          │                   │
-│     │ - Host: llama-3-2-1b.inference-example.com  │                   │
+│     │ - Host: llama-3-2-1b.inteltoolkits.ai       │                   │
 │     │ - Path: /v1/completions                     │                   │
 │     │ → Match found: route to llm-inference/      │                   │
 │     │   llama-3-2-1b-predictor:8000               │                   │
@@ -385,7 +385,7 @@ A typical multi-node stack that Toolkit Manager installs looks like this at the 
 ```
                     External Network (Internet)
                               │
-                              │ DNS: *.inference-example.com
+                              │ DNS: *.inteltoolkits.ai
                               │      → 203.0.113.50
                               ▼
                     ┌───────────────────┐
@@ -510,20 +510,20 @@ To reach a cluster that Toolkit Manager installed from outside the private netwo
 
 **Option 1: Wildcard DNS (recommended for production)**
 ```
-*.inference-example.com.  IN  A  203.0.113.50
+*.inteltoolkits.ai.  IN  A  203.0.113.50
 ```
 
 **Option 2: Individual records**
 ```
-llama-3-2-1b.inference-example.com.  IN  A  203.0.113.50
-keycloak.inference-example.com.      IN  A  203.0.113.50
+llama-3-2-1b.inteltoolkits.ai.  IN  A  203.0.113.50
+keycloak.inteltoolkits.ai.      IN  A  203.0.113.50
 ```
 
 **Option 3: /etc/hosts (testing)**
 ```bash
 # /etc/hosts on client machine
-203.0.113.50  llama-3-2-1b.inference-example.com
-203.0.113.50  keycloak.inference-example.com
+203.0.113.50  llama-3-2-1b.inteltoolkits.ai
+203.0.113.50  keycloak.inteltoolkits.ai
 ```
 
 ### Firewall Configuration
@@ -658,7 +658,7 @@ kubectl logs -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-nam
 
 # Make test request
 curl -k -H "Authorization: Bearer $TOKEN" \
-  https://llama-3-2-1b.inference-example.com/v1/completions
+  https://llama-3-2-1b.inteltoolkits.ai/v1/completions
 ```
 
 ---
