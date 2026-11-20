@@ -362,6 +362,43 @@ def test_list_fails_on_other_errors(status):
         own._list(api, {"base": "/api/v1", "resource": "secrets"})
 
 
+WEBHOOK_DOWN = ('Internal error occurred: failed calling webhook "webhook.cert-manager.io": failed to call webhook: '
+                'Post "https://cert-manager-webhook.cert-manager.svc:443/validate?timeout=30s": '
+                'dial tcp 10.233.0.10:443: connect: connection refused')
+
+
+@pytest.mark.parametrize("errors, slept, fails", [
+    ([(500, WEBHOOK_DOWN)] * 2, [2, 4], False),
+    ([(500, WEBHOOK_DOWN)] * 6, [2, 4, 8, 16, 32], True),
+    ([(500, "etcdserver: leader changed")], [], True),
+    ([(403, WEBHOOK_DOWN)], [], True),
+])
+def test_label_retries_only_a_webhook_that_is_not_ready(tmp_path, monkeypatch, errors, slept, fails):
+    api, p = FakeApi(), params(tmp_path)
+    own.snapshot(api, p, Module())
+    cert = api.add("Certificate", "istio-ca", "cert-manager")
+    record(p, type="object", uid=cert, kind="Certificate", name="istio-ca", namespace="cert-manager")
+    pending, sleeps, call_api = [], [], api.call_api
+    for status, message in errors:
+        pending.append(ApiException(status))
+        pending[-1].body = json.dumps({"message": message}).encode()
+
+    def flaky(path, method, **kw):
+        if method == "PATCH" and pending:
+            raise pending.pop(0)
+        return call_api(path, method, **kw)
+
+    monkeypatch.setattr(api, "call_api", flaky)
+    monkeypatch.setattr(own.time, "sleep", sleeps.append)
+    if fails:
+        with pytest.raises(ApiException):
+            own.label(api, p, Module())
+    else:
+        own.label(api, p, Module())
+        assert api.labels(cert)[COMPONENT] == "app"
+    assert sleeps == slept
+
+
 def test_teardown_snapshot_without_a_baseline_writes_nothing(tmp_path):
     api, p = FakeApi(), params(tmp_path, teardown=True)
     result = own.snapshot(api, p, Module())
