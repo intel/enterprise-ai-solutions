@@ -7,21 +7,28 @@ and the extra step on a cluster you bring yourself (BYO).
 
 ## Turn it on
 
-In `env/<name>/global_config.yaml`:
+Headlamp is off by default, and is not installed on OpenShift.
 
-```yaml
-headlamp_enabled: true
-```
+1. In `env/<name>/global_config.yaml`, set:
 
-Then install it on its own, or with the rest of the platform:
+   ```yaml
+   headlamp_enabled: true
+   ```
 
-```bash
-./toolkit_manager.sh install headlamp --env <name>
-```
+2. Install it on its own, or with the rest of the platform:
 
-Headlamp is at `https://headlamp.<base_domain_name>/` (subdomain mode) or
-`https://<base_domain_name>/headlamp/` (path mode, where the bare domain also
-lands on it).
+   ```bash
+   ./toolkit_manager.sh install headlamp --env <name>
+   ```
+
+3. Open it:
+
+   | Routing mode | URL |
+   |--------------|-----|
+   | `subdomain` (default) | `https://headlamp.<base_domain_name>/` |
+   | `path` | `https://<base_domain_name>/headlamp/` (the bare domain also lands on it) |
+
+   You are sent to the Keycloak sign-in page first; see below.
 
 ## How sign-in works
 
@@ -41,7 +48,7 @@ The first administrator is `platform-admin` (group `platform-admins`). Its
 temporary password, which must be changed at first login, is in a Secret:
 
 ```bash
-kubectl -n keycloak get secret platform-bootstrap-admin -o jsonpath='{.data.value}' | base64 -d
+kubectl -n keycloak get secret platform-bootstrap-admin -o jsonpath='{.data.value}' | base64 -d; echo
 ```
 
 To make it enrol a one-time password (OTP) at first login too, set
@@ -130,5 +137,5 @@ stop message, client ID `headlamp`, username claim `preferred_username`, groups 
 | Symptom | Cause |
 |---------|-------|
 | 403 right after the Keycloak login | The account is not in `headlamp_allowed_groups` |
-| "The cluster did not accept your sign-in" | The API server does not trust the realm, or cannot reach Keycloak for its keys (the issuer host must resolve to the gateway on the control-plane nodes). After the realm is re-created, click Sign In once for a fresh token |
+| Signed in, but Headlamp reports the sign-in was not accepted, or every page fails with 401 | The API server does not trust the realm, or cannot reach Keycloak for its keys (the issuer host must resolve to the gateway on the control-plane nodes). After the realm is re-created, click Sign In once for a fresh token |
 | Signed in, but resources are forbidden | The person's groups have no RoleBinding (`apiserver` mode) |

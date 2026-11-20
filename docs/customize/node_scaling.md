@@ -2,33 +2,46 @@
 
 [← Docs Index](../README.md)
 
-Grow or shrink an already-provisioned cluster without a full teardown/reinstall, using Kubespray's own `scale.yml` and `remove-node.yml` playbooks.
+Add a machine to a running cluster, or take one out, without tearing the cluster down and installing it again. Toolkit Manager does this with Kubespray's own `scale.yml` (add) and `remove-node.yml` (remove) playbooks. Kubespray is the tool that built the cluster in the first place.
 
 > **Note:** ADVANCED OPERATION: PROCEED ONLY IF YOU KNOW WHAT YOU'RE DOING — always run with `--dry-run` first.
 
 ## Overview
 
-Two CLI actions, both driven entirely from `env/<name>/nodes.yaml` (on a rack-scale env, `rack-profile.yaml`: see [Rack-scale](#rack-scale)) — neither takes a node name on the command line:
+There are two commands. Neither takes a node name: you describe the cluster you want in `env/<name>/nodes.yaml` (on a rack-scale env, in `rack-profile.yaml`: see [Rack-scale](#rack-scale)), and the command works out the difference.
 
 | Action | Kubespray playbook | Scope |
 |---|---|---|
 | `add-node` | `scale.yml` | **Worker nodes only** |
 | `remove-node` | `remove-node.yml` | **Worker nodes only** |
 
-The workflow is always: **edit `nodes.yaml`, then run the action**. The installer regenerates the inventory from the edited file and diffs it against the live cluster (`kubectl get nodes`) to figure out which host(s) changed — there is nothing else to specify.
+A *worker node* runs your workloads (models, services). A *control-plane node* runs the cluster itself (API server, etcd); these commands never add or remove one.
+
+The workflow is always the same:
+
+1. Edit `nodes.yaml`: add a worker entry, or delete one.
+2. Run the command with `--dry-run`. It compares `nodes.yaml` with the nodes the cluster reports (`kubectl get nodes`), prints the node(s) it would add or remove, and changes nothing.
+3. Run the command again without `--dry-run`, and answer `y` at the prompt.
 
 **One kind of change per edit.** `add-node` refuses while `nodes.yaml` is missing a node that is in the cluster, and `remove-node` refuses while it lists a node that has not joined, so an edit that both adds and removes nodes is refused by both. Revert one half, run that command, then reapply the other half and run the other one.
 
 ```bash
-./toolkit_manager.sh add-node --dry-run     # preview after editing nodes.yaml
-./toolkit_manager.sh add-node                # scale in the new worker(s)
-./toolkit_manager.sh remove-node --dry-run   # preview after deleting entries
-./toolkit_manager.sh remove-node             # remove the dropped node(s)
+./toolkit_manager.sh add-node --dry-run --env <name>      # preview after editing nodes.yaml
+./toolkit_manager.sh add-node --env <name>                # scale in the new worker(s)
+./toolkit_manager.sh remove-node --dry-run --env <name>   # preview after deleting entries
+./toolkit_manager.sh remove-node --env <name>             # remove the dropped node(s)
 ```
+
+`--env` defaults to `local`. `--force` skips the `y/N` prompt. `--skip` is refused by both commands.
 
 ## Before you start
 
-`add-node` and `remove-node` run against the live cluster from the installer host, so it must reach the API server at `https://<control-plane-ip>:6443`, not only the nodes over SSH. Without that access, both stop before Kubespray runs.
+Check these before you run either command:
+
+1. **The cluster was installed by Toolkit Manager.** Both commands need `env/<name>/kubeconfig.yaml`, which `install kubernetes` writes. Without it they stop and tell you to install the cluster first.
+2. **The installer host reaches the API server** at `https://<control-plane-ip>:6443`, not only the nodes over SSH. Without that access, both stop before Kubespray runs.
+3. **The installer host can SSH to the new node** with the node's `ssh_user`/`ssh_key` from `nodes.yaml` (or the file-wide `nodes_ssh_user`/`nodes_ssh_key`), without a password prompt. `add-node` tests this before it asks you to confirm. If it fails, authorize the key (for example with `ssh-copy-id`) and retry.
+4. **ERAG is not deployed** (see [What's not supported](#whats-not-supported)).
 
 ## What's supported
 
@@ -51,6 +64,9 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 | Star racks (`topology: star`) | The spokes reach each other through the hub, so a spoke added or removed changes the hub's fabric and every spoke's routes. Both refuse a star rack before doing anything |
 | On a rack: control-plane, etcd or storage nodes, and an edit that changes the nodes that stay | See [Rack-scale](#rack-scale) |
 | `add-node` with `storage_backend: local-path`, or `custom` with `storage_custom_rwx: false` | Both serve a single node: the storage check refuses them on more than one, so every later install, validate and teardown would stop. `add-node` refuses them up front; move the env to NFS or Ceph first |
+| `add-node` when the control plane in `nodes.yaml` is at a loopback address (`localhost`, `127.x`, `::1`) | A new node cannot reach a control plane at that address. Give the control plane its real IP in `nodes.yaml` |
+| `add-node` when the control plane has no `NoSchedule` taint and is not listed under `nodes_workers` | An untainted control plane is this cluster's worker; adding the first entry under `nodes_workers` would quietly end that. To keep it a worker, list it under `nodes_workers` too (an identical entry) |
+| `add-node` when `kubespray_extra.yml` or `kubespray_extra_auto.yml` sets `kubelet_config_extra_args` | It would override the `add-node-pending` registration taint `add-node` relies on. Move those settings out of the file first |
 | Per-node setup of other components on a new node | `add-node` runs only the kubernetes component (plus NFS exports and NRI balloons; on a rack also the node's fabric, BGP peers, labels and GPU stack, see [Rack-scale](#rack-scale)). A new node is not made a Ceph OSD node, does not get NetApp Trident's NFS client packages, and is not marked eligible for Kata. Re-run `install` for `rook_ceph_storage`, `netapp_trident_csi` or `kata_containers` if the new node needs them |
 
 
@@ -64,18 +80,27 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
        hostname: worker3
    ```
 
-2. Preview, then apply:
+   `ip` and `hostname` are required. `hostname` must be lower case: it becomes the Kubernetes node name, and the command refuses upper-case names. Add `ssh_user`/`ssh_key` only if they differ from the file-wide `nodes_ssh_user`/`nodes_ssh_key`.
+
+2. Preview. The dry run lists the new node(s), checks SSH to them, and prints the `scale.yml` command it would run:
 
    ```bash
    ./toolkit_manager.sh add-node --dry-run --env <name>
+   ```
+
+3. Apply, and answer `y` at the prompt:
+
+   ```bash
    ./toolkit_manager.sh add-node --env <name>
    ```
 
-3. What `add-node` does:
-   1. Regenerates the inventory and diffs `nodes.yaml` against the live cluster to find the new node(s).
-   2. Runs a pre-flight on them: SSH, not already joined, API server and internet reachability (see [Safety](#safety)).
-   3. Computes their kubelet CPU reservation, then runs Kubespray `scale.yml` for just the new node(s).
-   4. Applies the `workload-class` label (and NFS export, on NFS storage), waits for `Ready` and for the node's DaemonSet pods (calico-node, kube-proxy, ...), and — if `nri_cpu_balloons` is installed — creates each node's own `node.<NAME>` BalloonsPolicy. Existing nodes and running models are not touched.
+4. What `add-node` does, in order:
+   1. Diffs `nodes.yaml` against the live cluster to find the new node(s), and checks SSH to them.
+   2. Regenerates the inventory, then runs a pre-flight on the new node(s): not already joined, no Docker, API server and internet reachability (see [Safety](#safety)).
+   3. Computes their kubelet CPU reservation, then runs Kubespray `scale.yml` for just the new node(s) and the control plane.
+   4. Finishes the node(s): the `workload-class` label (when `node_topology_enabled` is true), the NFS export (on `storage_backend: nfs`), a wait for `Ready` and for the node's DaemonSet pods (calico-node, kube-proxy, ...), and, when CPU pinning is on (`kubernetes_cpu_policy: nri-balloons` on a CPU cluster), the node's own `node.<NAME>` BalloonsPolicy. Existing nodes and running models are not touched.
+
+   Success ends with `Added and Ready: <node>` and the node shows `Ready` in `kubectl get nodes`.
 
    New nodes join with an `ei.intel.com/add-node-pending:NoSchedule` taint that is removed only after the last step, so nothing is scheduled on a half-configured node. If a step fails, re-run `add-node` to resume: it runs `scale.yml` again for the tainted node, then the post phase. The taint stays in the node's kubelet configuration until Kubespray renders it again: if its Node object is deleted and the kubelet registers it again, it comes back tainted, and `add-node` lifts it the same way.
 
@@ -88,7 +113,7 @@ Kubespray's `scale.yml` cannot add control-plane or etcd members: that needs a f
 Kubernetes does not move running pods onto a new node. Models already deployed stay where they are; only new or restarted pods can be scheduled on it. To use the new node:
 
 - Deploy new models, or undeploy and redeploy an existing one (`./model-manager undeploy <model>` then `deploy <model> --wait`).
-- `model-manager deploy --node <name>` is a *preference*, not a requirement — if the node doesn't qualify, the pod lands elsewhere. Check where it went with `kubectl get pods -n llm-inference -o wide`.
+- To put a model on the new node, deploy it with `./model-manager deploy <model> --node <name>`. `--node` is optional, but when you give it, it is a hard rule: the pod runs on that node or stays `Pending`. Check where a pod runs with `kubectl get pods -n llm-inference -o wide`.
 
 ## Rack-scale
 
@@ -104,13 +129,21 @@ On a rack-scale env (`rack_scale_enabled: true`) the nodes come from `env/<name>
 ## Removing nodes
 
 1. Delete the entry from `nodes_workers` in `env/<name>/nodes.yaml`.
-2. Preview, then apply:
+2. Preview. The dry run lists the node(s) to remove and the workloads on them, runs every check below (PodDisruptionBudgets, the [preflight simulation](#preflight-simulation-capacity--spread--local-data--last-capable-node) with the node each evicted pod would land on), and prints the `remove-node.yml` command. It changes nothing:
 
    ```bash
    ./toolkit_manager.sh remove-node --dry-run --env <name>
+   ```
+
+3. Apply, and answer `y` at the prompt:
+
+   ```bash
    ./toolkit_manager.sh remove-node --env <name>
    ```
-3. Before anything runs, the installer lists any real workload pods (excluding DaemonSets and static/mirror pods) running on the node(s) about to be removed — so you know what the drain is about to evict before you confirm. Then Kubespray's `remove-node.yml` drains, resets, and removes the node from the cluster before the installer deletes its stale per-node `host_vars` file.
+
+4. Before anything runs, the installer lists any real workload pods (excluding DaemonSets and static/mirror pods) running on the node(s) about to be removed — so you know what the drain is about to evict before you confirm. Then Kubespray's `remove-node.yml` drains, resets, and removes the node from the cluster. After that the installer deletes the node's `node.<NAME>` BalloonsPolicy, regenerates the inventory without it, takes it out of the NFS exports (on `storage_backend: nfs`, so the removed machine loses its access to the share), and deletes its `host_vars` file.
+
+   Success ends with `remove-node: <node> removed; no new health findings.`
 
    ```
    remove-node: node(s) to remove: worker1
@@ -186,7 +219,7 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 - **PodDisruptionBudget guard** — refuses the removal if any pod on the node is currently covered by a PDB with `disruptionsAllowed: 0`; eviction would be rejected by the API server no matter how many times `remove-node.yml` retries.
 - **Preflight simulation (capacity / spread / local-data / last-capable-node)** — see below.
 - **Last-worker warning** — flags when the removal would leave zero worker nodes, and separately reports whether the control-plane node currently has the `NoSchedule` taint (so you know whether that actually means "nothing schedulable anywhere" or just "back to single-node"). A warning, not a block — dropping to zero workers is a valid, already-supported topology when it's intentional. (A control-plane node without the taint is also a valid remaining placement target for the preflight simulation above — it isn't excluded just for being control-plane, only for taints the evicted pods don't tolerate.)
-- **Balloon policy cleanup** — if CPU pinning (`nri_cpu_balloons`) is installed, `remove-node` deletes the removed node's `node.<NAME>` BalloonsPolicy once the node is gone, so a node later added under the same name starts from its own freshly generated policy instead of inheriting one written for the old hardware. (`add-node` applies the new node's per-node policy itself — see step 3 above.)
+- **Balloon policy cleanup** — if CPU pinning (`nri_cpu_balloons`) is installed, `remove-node` deletes the removed node's `node.<NAME>` BalloonsPolicy once the node is gone, so a node later added under the same name starts from its own freshly generated policy instead of inheriting one written for the old hardware. (`add-node` applies the new node's per-node policy itself — see step 4 of [Adding worker nodes](#adding-worker-nodes).)
 - **Post-remove health verdict** — once the node is gone, runs the same checks as `status --health` (node Readiness, no crash-looping/image-pull-failing/unschedulable pods) and fails the `remove-node` command on a problem that was not there before the removal. Advisory at that point, not a rollback: the node has already been reset and dropped from the cluster, so recovering means `add-node`, not an automatic revert.
 
 ### Preflight simulation (capacity / spread / local-data / last-capable-node)

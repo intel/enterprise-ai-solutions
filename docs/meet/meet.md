@@ -8,18 +8,18 @@ Toolkit Manager is an open source, Kubernetes-based platform that removes the co
 
 The repository acts as the integration and automation layer across Intel's AI portfolio. It connects the infrastructure, inference engines, models, retrieval services, security, and observability required to deploy complete AI solutions — through a consistent, automated workflow.
 
-Instead of requiring teams to manually assemble and configure each component, the platform takes them from bare metal or an existing Kubernetes cluster to a secured, observable, OpenAI-compatible AI environment. Because inference could run entirely locally — a meaningful advantage for regulated or data-sovereignty-sensitive environments that need to keep inference in-house.
+Instead of requiring teams to assemble and configure each component by hand, the platform takes them from bare metal or an existing Kubernetes cluster to a secured, observable, OpenAI-compatible AI environment. Inference can run entirely on your own machines, which matters for regulated or data-sovereignty-sensitive environments that must keep it in-house.
 
 The platform brings together:
 
 - Automated infrastructure deployment and lifecycle management via Ansible + Kubespray
 - Model serving through vLLM and OpenVINO™ Model Server
 - OpenAI-compatible endpoints (drop-in for any OpenAI SDK client)
-- TLS, authentication, and access control (Keycloak OIDC or LiteLLM virtual keys)
-- AI-aware inference routing via Envoy AI Gateway
-- Persistent model storage (NFS, local-path, Ceph)
+- TLS, authentication, and access control (Keycloak sign-in and tokens, or LiteLLM virtual keys)
+- AI-aware inference routing via Envoy AI Gateway (or agentgateway)
+- Persistent model storage (local-path, NFS, Ceph, NetApp ONTAP, or your own CSI driver)
 - NUMA-aware CPU optimization via NRI CPU Balloons
-- Retrieval-augmented generation services (Intel® Chatbot Toolkit — opt-in)
+- Retrieval-augmented generation (RAG) services (Intel® Chatbot Toolkit — opt-in) and agent services (Intel® Agent Toolkit — opt-in)
 - Metrics, logs, traces, and LLM observability (Prometheus, Grafana, Loki, Tempo, Langfuse)
 
 ---
@@ -43,9 +43,9 @@ Infrastructure  (Kubernetes, storage)
       ↓
 Platform services  (cert-manager, Istio, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, Observability)
       ↓
-Inference  (KServe, Envoy AI Gateway, LiteLLM, Langfuse, model runtimes)
+Inference  (KServe, Envoy AI Gateway, model runtimes; LiteLLM and Langfuse when enabled)
       ↓
-Applications  (RAG pipelines, vector DBs, chat UI — opt-in)
+Solutions  (Intel® Chatbot Toolkit or Intel® Agent Toolkit — opt-in)
 ```
 
 ---
@@ -54,7 +54,7 @@ Applications  (RAG pipelines, vector DBs, chat UI — opt-in)
 
 ### One entry point
 
-`toolkit_manager.sh` manages environment initialization, installation, validation, status, and teardown. There is no separate toolchain to learn for each layer.
+`toolkit_manager.sh` manages environment initialization, installation, validation, status, node scaling, and teardown. There is no separate toolchain to learn for each layer.
 
 ### OpenAI-compatible API
 
@@ -66,15 +66,15 @@ The platform is designed for AI inference on Intel® silicon, with NUMA-aware CP
 
 ### Modular by design
 
-Every platform component can be enabled, disabled, or replaced without rebuilding the complete architecture. Bring your own cert-manager, load balancer, identity provider, or service mesh — disable the built-in one with a single config flag.
+Optional components — Istio, observability, Headlamp, KEDA, Velero and others — are switched on or off with one setting each in `global_config.yaml`. On a cluster you already run, `cert_manager_enabled: false` and `metallb_enabled: false` keep your own cert-manager and load balancer. Keycloak and the gateway are always installed.
 
 ### Multi-environment from one bastion
 
-Each named environment under `env/<name>/` is fully isolated — its own config, inventory, kubeconfig, and model catalog. Run dev, staging, and prod from one machine.
+Each named environment under `env/<name>/` has its own config, inventory, kubeconfig, and model catalog. Run dev, staging, and prod from one machine. The downloaded toolkit repositories in `ext/` are shared by all environments, so they are always at one revision.
 
 ### Built-in operations
 
-Prometheus, Grafana, Loki, Tempo, OpenTelemetry, and Langfuse provide infrastructure and AI-workload visibility. Grafana dashboards are pre-wired; no manual datasource setup required.
+Prometheus, Grafana, Loki, Tempo and OpenTelemetry provide infrastructure and AI-workload visibility, and Langfuse traces LLM calls when LiteLLM is on. Grafana dashboards and data sources come pre-configured.
 
 ---
 
@@ -93,10 +93,11 @@ Each layer builds on the one below it. Deploy what you need today and add layers
 This one. Several repositories make up the portfolio, but you only ever clone and work from this one; `init` fetches the others into `ext/` at the revisions this repo pins.
 
 ```
-github.com/intel/enterprise-ai-solutions      <- start here; run all commands from this root
+github.com/intel/toolkit-manager            <- start here; run all commands from this root
   |
-  |-- toolkit_manager.sh      the single entry point (configure / init / install / teardown)
-  |-- env/<name>/               your configuration, kubeconfig, credentials, and logs
+  |-- toolkit_manager.sh        the single entry point (configure / init / install / teardown)
+  |-- model-manager             deploy and manage models
+  |-- env/<name>/               your configuration, inventory, kubeconfig, and logs
   `-- ext/                      cloned automatically by `init`
         |-- enterprise.ai-inference    Intel® Inference Toolkit: KServe, vLLM, OpenVINO Model Server
         |-- enterprise.ai-erag         Intel® Chatbot Toolkit: pipelines, ingestion, UI
@@ -113,21 +114,21 @@ github.com/intel/enterprise-ai-solutions      <- start here; run all commands fr
 | # | Component | Purpose |
 |---|---|---|
 | 1 | **Kubernetes** | Container orchestration — foundation for all workloads |
-| 2 | **Storage** | Shared persistent volumes for model weights (local-path / NFS / Ceph) |
+| 2 | **Storage** | Persistent volumes for model weights and databases (local-path / NFS / Ceph / NetApp ONTAP) |
 | 3 | **Cert-Manager** | Automated TLS certificate issuance and rotation |
 | 4 | **Istio (Ambient)** | Zero-sidecar service mesh — mTLS, traffic policies, no pod restarts |
 | 5 | **MetalLB** | Bare-metal load balancer — assigns external IPs from real node addresses |
 | 6 | **Envoy Gateway** | Kubernetes Gateway API — HTTPS ingress, TLS termination, JWT auth |
 | 7 | **PostgreSQL (CNPG)** | Managed database for Keycloak, LiteLLM, Langfuse |
-| 8 | **Keycloak** | OIDC/OAuth2 identity provider — SSO, RBAC, API keys |
-| 9 | **SeaweedFS** | S3-compatible object store for model weights and log storage |
+| 8 | **Keycloak** | OIDC/OAuth2 identity provider — single sign-on, roles, and the tokens API clients send |
+| 9 | **SeaweedFS** | S3-compatible object store for logs (Loki), traces (Tempo) and Langfuse |
 | 10 | **Observability** | Prometheus + Grafana + Loki + Tempo + OpenTelemetry + Prometheus Adapter |
 | 11 | **Envoy AI Gateway** | AI-aware routing — token-based load balancing, model-level rate limiting |
 | 12 | **KServe** | Model serving platform — InferenceService & LLMInferenceService CRDs |
-| 13 | **LiteLLM** | OpenAI-compatible proxy — unified endpoint, virtual key management |
-| 14 | **Valkey** | In-memory cache (Redis-compatible) for LiteLLM and Langfuse |
-| 15 | **Langfuse** | LLM observability — traces, token usage, cost tracking, prompt management |
-| 16 | **NRI CPU Balloons** | NUMA-aware CPU pinning for vLLM — eliminates noisy-neighbor interference |
+| 13 | **LiteLLM** | OpenAI-compatible proxy — virtual keys with budgets (with `auth_type: litellm_vkey`, or `litellm_enabled: true`) |
+| 14 | **Valkey** | In-memory cache (Redis-compatible) for LiteLLM and Langfuse, installed with them |
+| 15 | **Langfuse** | LLM observability — traces, token usage, cost tracking, prompt management; installed with LiteLLM |
+| 16 | **NRI CPU Balloons** | NUMA-aware CPU pinning for model servers — keeps other workloads off their cores |
 
 ---
 
@@ -145,7 +146,7 @@ github.com/intel/enterprise-ai-solutions      <- start here; run all commands fr
 
 | Goal | Link |
 |---|---|
-| Run the platform in 3 steps | [Quick Start](../quickstart/quickstart.md) |
+| Run the platform in 3 steps | [Quick Start](../../README.md#quick-start) |
 | All deployment options (multi-node, BYO, config) | [Getting Started](../quickstart/quickstart.md) |
 | Deploy models | [Deploy a Model](../deploy/deploy_models.md) |
 | Multi-node or BYO cluster | [Multi-Node & BYO Cluster](../deploy/topologies.md) |

@@ -1,12 +1,27 @@
 # Adding a Solution
 
-A **solution** is an external repository that contributes one layer of components to the
-stack. The ai-solutions repo owns `infrastructure`, `platform` and `inference`; anything
-above that lives in its own repo and is cloned into `ext/` on demand.
+[← Docs Index](../README.md)
+
+A **solution** is an external Git repository that adds one layer of components to the
+stack. This repo (Toolkit Manager) declares the `infrastructure`, `platform` and `inference`
+layers in `configs/components.yaml`; the inference layer's components come from the
+inference-toolkit repo, and every layer above that (Intel® Chatbot Toolkit, Intel® Agent
+Toolkit, yours) lives in its own repo. `init` clones those repos into `ext/`.
 
 This is the complete reference for wiring one up - the layer manifest, the component
 registry, roles, config, flavours, and how to verify it. It is the source of truth for
 these file formats; the YAML files themselves are kept comment-light and point back here.
+
+**In short**, to add a layer called `mylayer`:
+
+1. Add `configs/repos/repos.mylayer.yaml` to this repo, listing your repo and the repos it
+   builds on ([section 1](#1-the-layer-manifest-in-toolkit-manager)).
+2. In your repo, declare the layer and its components in `components.yaml`
+   ([section 3](#3-componentsyaml---the-layer-and-its-components)).
+3. Write one Ansible role per component ([section 4](#4-roles)) and a `config.yaml` with the
+   settings operators may change ([section 5](#5-config-and-flavours)).
+4. Run `./toolkit_manager.sh init mylayer --env dev`, then `install`, `validate` and
+   `teardown` it twice each ([section 9](#9-verify-before-opening-the-pr)).
 
 ---
 
@@ -14,7 +29,7 @@ these file formats; the YAML files themselves are kept comment-light and point b
 
 | # | Where | File | Purpose |
 |---|---|---|---|
-| 1 | **ai-solutions** | `configs/repos/repos.<layer>.yaml` | which repos the layer needs, and at which rev |
+| 1 | **Toolkit Manager** | `configs/repos/repos.<layer>.yaml` | which repos the layer needs, and at which rev |
 | 2 | your repo | `<subdir>/components.yaml` | declares the layer + its components |
 | 3 | your repo | `<subdir>/roles/<component>/` | one role per component |
 | 4 | your repo | `<subdir>/config.yaml` | operator-editable defaults, seeded on `init` |
@@ -27,11 +42,11 @@ these file formats; the YAML files themselves are kept comment-light and point b
 `<subdir>` is whatever you set as `deployment_subdir` - `""` when the Ansible tree sits at
 the repo root, `"deployment"` when it's nested.
 
-Exactly one change lands in ai-solutions: file 1. Everything else lives in your repo.
+Exactly one change lands in Toolkit Manager: file 1. Everything else lives in your repo.
 
 ---
 
-## 1. The layer manifest (in ai-solutions)
+## 1. The layer manifest (in Toolkit Manager)
 
 `configs/repos/repos.<layer>.yaml`. **The filename carries the layer name** - `init mylayer`
 and `install mylayer` resolve to this file.
@@ -84,9 +99,11 @@ which solutions an env includes. `ext/` is per checkout and shared by every env,
 reaches a layer the record does not list is refused rather than silently narrowed: either
 `init <layer> --env <env>`, or move the repo out of `ext/`.
 
-**ai-solutions' own layers need no manifest.** `init platform` works because `platform` is
-declared in [../../configs/components.yaml](../../configs/components.yaml) and every role ships in
-this repo. A layer is nameable when *either* a manifest or the merged registry declares it.
+**Toolkit Manager's own layers need no manifest.** `init platform` works because `platform`
+is declared in [../../configs/components.yaml](../../configs/components.yaml) and every role ships
+in this repo. `inference` is declared there too, but its roles come from the inference-toolkit
+repo, so it also has a manifest (`configs/repos/repos.inference.yaml`). A layer is nameable when
+*either* a manifest or the merged registry declares it.
 
 ---
 
@@ -158,8 +175,8 @@ saved state; a layer without the file is reported `skipped`.
 
 ## 3. components.yaml - the layer and its components
 
-Preflight discovers every `ext/**/components.yaml` and merges it into the ai-solutions
-registry.
+Preflight discovers every `ext/**/components.yaml` and merges it into the Toolkit Manager
+registry (`configs/components.yaml`).
 
 ```yaml
 ---
@@ -184,7 +201,7 @@ components:
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | yes | Declare your layer here, not in ai-solutions. Unique across the merged registry. |
+| `name` | yes | Declare your layer here, not in Toolkit Manager. Unique across the merged registry. |
 | `depends_on` | yes (may be `[]`) | Layer names. Everything in those layers runs before anything in yours. |
 | `enabled` | no | Kept for compatibility; a declared layer is part of the stack. |
 | `supports.upgrade` | no (`false`) | `true` makes the upgrade checks refuse a blocking verdict for this layer instead of warning. See [Upgrades](#upgrades-optional). |
@@ -195,7 +212,7 @@ components:
 |---|---|---|
 | `name` | yes | Must equal `roles/<name>/`. Unique across the merged registry. |
 | `layer` | yes | Your layer, or an existing one you're extending. |
-| `depends_on` | yes (may be `[]`) | Component names **in the same layer only**. |
+| `depends_on` | yes (may be `[]`) | Component names. Only names **in the same layer** set the order; see below. |
 | `enabled` | no (default `true`) | `true`/`false`, or a Jinja expression rendering to one. |
 | `teardown` | no (default `labels`) | `labels`: delete what install labelled (see [Ownership labels](#ownership-labels)). `role`: run the role's `teardown.yaml` instead. `both`: delete by label, then run `teardown.yaml`, for components that also change hosts. |
 | `teardown_tasks` | no | With `teardown: labels`, a tasks file of the role that runs before the labelled objects are deleted, to take back what the component changed in other components' objects (its portal entry and path on the gateway). The role needs `vars/<cluster_distribution>.yaml`. |
@@ -207,8 +224,11 @@ components:
 then components within each layer. Where nothing forces an order, declaration order is
 preserved - treat that as a tiebreaker, not a guarantee. If order matters, declare it.
 
-**Component `depends_on` is same-layer only.** Cross-layer ordering is the layer graph's job.
-A cross-layer component dependency is either redundant or silently ineffective:
+**Order across layers comes from the layer graph, not from component `depends_on`.** Layers
+always run in dependency order, so a component `depends_on` that names a component in another
+layer never changes the order. It only matters when someone installs that one component
+(`install my_api`): the resolver then pulls the named component in too, even from another
+layer. Put the ordering edge on the layer:
 
 ```yaml
 # WRONG - reaching across layers from a component
@@ -446,15 +466,17 @@ For presets, add a `config_dir` with one subdir per flavour, each holding its ow
 `config.yaml`. Flavours are auto-discovered from the directory listing; `examples` and any
 name starting with `_` or `.` are ignored (use `_shared/` for common material). `--flavour`
 applies only to the primary layer; passing it to a layer with no `config_dir`, or to an
-ai-solutions layer with no manifest, is an error rather than a silent no-op.
+Toolkit Manager layer with no manifest, is an error rather than a silent no-op.
 
 ### Variable precedence at install
 
 Later `-e` wins in Ansible. The installer builds them in this order:
 
-1. Base facts - `component_action`, `target`, `env_name`, `env_dir`, `_include_deps`
-2. `config.<layer>.yaml` for each layer in the manifest, **in manifest order** - dependencies
-   first, so your layer's config wins over the configs of layers you build on
+1. Base facts - `component_action`, `target`, `env_name`, `env_dir`, `_include_deps`,
+   `_skip_components` and the Kubespray paths
+2. `config.<layer>.yaml` for each layer the env was inited for, **in the order
+   `env/<env>/.solutions.yaml` lists them** - dependencies first (manifest order), so your
+   layer's config wins over the configs of layers you build on
 3. `env/<env>/global_config.yaml`
 4. `env/<env>/nodes.yaml` (only when it has real content, not just comments)
 5. `kubernetes_kubeconfig`
@@ -470,7 +492,7 @@ in your `config.yaml`, and expect anything an operator sets globally to take pre
 Set `model_catalog:` to a path from your repo root and `init` seeds it to
 `env/<env>/models.yaml` - again only when absent. Only one repo per manifest should declare
 one. Everything else your repo ships (image lists, compatibility matrices, version files) is
-private to it; ai-solutions reads nothing else.
+private to it; Toolkit Manager reads nothing else.
 
 Seeding is first-writer-wins: when an env already has a `models.yaml` (seeded by another
 layer), yours is skipped. To deploy a model from your layer, see
@@ -485,9 +507,12 @@ Reuse what the platform runs instead of rebuilding it. The points that bite:
 - **Publish hosts through the core `gateway` role** (`publish.yaml`, `unpublish.yaml`), not your
   own listeners. The gateway is **deny-by-default**: a route without its own policy needs a
   Keycloak JWT, so a UI with its own login gets `401` until you exempt its route with
-  `route_auth_exempt.yaml`. Example: `roles/langfuse` in enterprise-inference.
-- **Call models in-cluster** at `http://ai-gateway.envoy-gateway-system.svc/v1` (OpenAI-compatible,
-  no token).
+  `route_auth_exempt.yaml`. Example: `roles/langfuse` in inference-toolkit.
+- **Call models in-cluster** at `http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1`
+  (with `ai_gateway_provider: agentgateway`: `ai-gateway.llm-inference.svc.cluster.local`). It is
+  the same OpenAI-compatible API as `inference.<domain>`, with the model named in the request
+  body, but needs no token. The paths are in the inference-toolkit repo's
+  `docs/deploy/accessing_models.md`.
 - **Deploy a model you need** with `{{ playbook_dir }}/../model-manager deploy <model> --label
   <owner>`, setting `TKM_ENV: "{{ env_dir | basename }}"` (the wrapper otherwise prompts, and there
   is no tty). Skip it when the model is already served, and in teardown undeploy only what
@@ -539,6 +564,7 @@ unset: the version is then read as the deployment record reads it (`layer_versio
 `backup-freshness` never matches a backup. Keep other layers'
 deployment records out of the profile's selection, and name only your own Helm releases and
 PersistentVolumeClaims in its cleanup: `restore` deletes them first.
+
 ### Upgrades (optional)
 
 Installing a newer release of your layer over a deployed one upgrades it. What your layer provides
@@ -636,7 +662,7 @@ order your components will run in.
 | Your layer/components missing from `show` | `components.yaml` isn't where `deployment_subdir` says, or it's malformed - `show` warns on a bad merge. |
 | `'x' is undefined` during preflight | An `enabled:` expression lacks `| default(...)`. |
 | Role not found | Component name doesn't match the role directory, or `roles/` isn't under `deployment_subdir`. |
-| A component runs too early/late | Its `depends_on` is missing, or it names a component in another layer - put the edge on the layer instead. |
+| A component runs too early/late | Its `depends_on` is missing, or the edge it needs crosses layers - put that edge on the layer instead. |
 | `401` on your app's host from the gateway | The gateway is deny-by-default - exempt the route (see [Using the platform](#7-using-the-platform-from-your-layer)). |
 | `init` fails with `could not read Username for 'https://github.com'` | The repo is private or internal and the host has no git credentials. |
 | `install` on a new env starts provisioning Kubernetes | The env has no `kubeconfig.yaml` - see the warning in [Verify](#9-verify-before-opening-the-pr). |
@@ -644,4 +670,4 @@ order your components will run in.
 
 Resolution and ordering live in
 [../../filter_plugins/resolve_components.py](../../filter_plugins/resolve_components.py), called from
-[../../playbooks/includes/preflight.yaml](../../playbooks/includes/preflight.yaml).
+[../../playbooks/includes/resolve_target.yaml](../../playbooks/includes/resolve_target.yaml).

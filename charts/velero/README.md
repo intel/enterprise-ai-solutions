@@ -9,15 +9,15 @@ nothing of its own beyond the values that wire them together:
 | `seaweedfs` | 4.0.407 | The in-cluster object store, deployed only when `seaweedfs.enabled` |
 
 The chart is not installed directly. `roles/velero` renders its values, resolves
-the store's credentials and applies the CRDs, and the component is driven from
-the installer:
+the store's credentials and applies the CRDs, and the installer drives it:
 
-```bash
-./toolkit_manager.sh install velero --env <env> --only
-./toolkit_manager.sh validate velero --env <env>
-```
+1. Set `velero_enabled: true` in `env/<env>/global_config.yaml`. Velero needs
+   snapshot-capable storage: `storage_backend: nfs` or `ceph`. Without the switch,
+   the commands below skip Velero as disabled.
+2. Install it: `./toolkit_manager.sh install velero --env <env> --only`
+3. Check it: `./toolkit_manager.sh validate velero --env <env>`
 
 Every variable the component takes is declared in `roles/velero/defaults/main.yaml`.
-The profile contract the backup engine consumes is documented in `configs/backup.yaml`;
-taking and restoring a backup is driven by the solution that owns a profile, and
-documented there.
+The backup profile format the backup engine reads is documented in `configs/backup.yaml`.
+To take and restore a backup of a layer, use `./run_backup.sh`: see
+[Backup and restore](../../docs/deploy/upgrade.md#backup-and-restore).

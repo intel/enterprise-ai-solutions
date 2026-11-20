@@ -1,8 +1,9 @@
 # Observability: Grafana, Prometheus, Loki and Tempo
 
-The `observability` component installs Prometheus (metrics), Loki (logs),
-Tempo (traces) and Grafana, with the three already added to Grafana as data
-sources. This page covers reaching Grafana and signing in.
+The `observability` component (on by default, `observability_enabled`) installs
+Prometheus (metrics), Loki (logs), Tempo (traces) and Grafana, with the three
+already added to Grafana as data sources. They run in the `monitoring` namespace.
+This page covers reaching Grafana and signing in.
 
 ## Open Grafana
 
@@ -11,7 +12,8 @@ sources. This page covers reaching Grafana and signing in.
 | `subdomain` (default) | `https://grafana.<base_domain_name>/` |
 | `path` | `https://<base_domain_name>/grafana/` |
 
-Grafana opens on its own login form. Nothing sends you to Keycloak first.
+Grafana opens on its own login form. Nothing sends you to Keycloak first. If
+the host name does not resolve, see [Without the gateway](#without-the-gateway).
 
 ## Sign in
 
@@ -28,13 +30,13 @@ To choose it yourself, see [Admin passwords](../customize/configuration.md#admin
 
 ### Sign in with Keycloak
 
-Click **Sign in with Keycloak** on the login form and sign in with a
-`platform` realm account. The first one is `platform-admin`; its temporary
-password, which must be changed at first login, is in a Secret:
+1. Click **Sign in with Keycloak** on the login form.
+2. Sign in with a `platform` realm account. The first one is `platform-admin`;
+   its temporary password, which you must change at first login, is in a Secret:
 
-```bash
-kubectl -n keycloak get secret platform-bootstrap-admin -o jsonpath='{.data.value}' | base64 -d; echo
-```
+   ```bash
+   kubectl -n keycloak get secret platform-bootstrap-admin -o jsonpath='{.data.value}' | base64 -d; echo
+   ```
 
 Members of `platform-admins` are Grafana Admins; every other user is a Viewer.
 The role is set again at each login, so leaving the group removes Admin.
@@ -46,9 +48,13 @@ Signing out of Grafana ends only Grafana's session, not the Keycloak one.
 | `observability_grafana_allowed_groups` | `[]` | Keycloak groups Grafana admits; empty admits every `platform` realm user |
 
 On Kubernetes (the Helm stack) Grafana takes these settings on a fresh install
-of `observability` only, and `install` prints a notice while the running
-Grafana is out of date. Apply them with `teardown observability`, then
-`install observability`. On OpenShift every `install` applies them.
+of `observability` only; `install` prints a notice while the running Grafana is
+out of date. To apply them:
+
+1. `./toolkit_manager.sh teardown observability --env <name>`
+2. `./toolkit_manager.sh install observability --env <name>`
+
+On OpenShift every `install` applies them.
 
 ## Without the gateway
 
@@ -66,7 +72,7 @@ Then open `http://localhost:3000/`.
 
 ## Check it
 
-`./toolkit_manager.sh validate observability` checks that:
+`./toolkit_manager.sh validate observability --env <name>` checks that:
 
 - `/login` shows the login form through the gateway, without a redirect;
 - **Sign in with Keycloak** starts at the `platform` realm;

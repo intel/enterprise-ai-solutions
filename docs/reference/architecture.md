@@ -2,798 +2,457 @@
 
 [← Docs Index](../README.md)
 
+How Toolkit Manager is put together: the layers it installs, what happens when you run a
+command, where each file lives, and the patterns that let new components plug in. For
+installing step by step, see the [Deployment Guide](../deploy/install_platform.md).
+
 ## Overview
 
-Toolkit Manager is a modular, extensible deployment framework for a self-hosted Kubernetes cluster, LLM inference serving stack, and opt-in applications — deployable on-premises, air-gapped, or in a private cloud.
+Toolkit Manager deploys a self-hosted Kubernetes cluster, an LLM inference stack and opt-in
+applications on Intel® Xeon® servers, on-premises, air-gapped or in a private cloud. It is a
+shell script (`toolkit_manager.sh`) that drives Ansible playbooks.
 
-This repository provides:
-- **Infrastructure layer** - Kubernetes (via Kubespray), storage (local-path, NFS, Ceph or NetApp ONTAP via Trident)
-- **Platform layer** — Cert-manager, Istio (ambient), MetalLB, Envoy Gateway, PostgreSQL, Keycloak, Object Store (SeaweedFS), Observability
-- **Multi-environment support** — Isolated configs under `env/<name>/`
-- **Cross-repo orchestration** — Auto-discovers and integrates external solution repos
+- **This repository** holds the installer, the `infrastructure` and `platform` layers, and
+  the registry that declares the `inference` layer.
+- **Solution repositories** add layers on top. `init <layer>` clones them into `ext/`:
+  - inference-toolkit: the `inference` layer (KServe, model serving, LiteLLM, Langfuse);
+  - enterprise-rag: the `erag` layer (Intel® Chatbot Toolkit);
+  - enterprise-agent-toolkit: the `agent-toolkit` layer (Intel® Agent Toolkit).
+- **Environments** keep each deployment's settings apart, under `env/<name>/`.
 
-External solution repositories (e.g., `enterprise-inference`, `enterprise-rag`) contribute additional layers:
-- **Inference layer** — KServe, LiteLLM (proxy + virtual keys), Langfuse (observability), LLM services, Envoy AI Gateway, NRI CPU balloons
-- **Application layer** — RAG pipelines, UI, vector databases (opt-in)
+**Sign-in.** Keycloak is deployed by default (`keycloak_enabled: true`) and people sign in to
+every web UI through it. `auth_type`, in `env/<name>/config.inference.yaml`, selects what API
+clients send:
 
-**Auth modes:** Keycloak is always deployed and people sign in through it. `auth_type` in `env/<name>/config.inference.yaml` selects the credential API clients send:
-- `jwt` (default) — Keycloak JWT (client credentials) on the inference endpoint; LiteLLM + Langfuse optional (`litellm_enabled: true`)
-- `litellm_vkey` — LiteLLM virtual keys on `litellm.<domain>`; LiteLLM validates the key and proxies to the model; Langfuse on unless `langfuse_enabled: false`
+- `jwt` (default): a Keycloak access token on `inference.<domain>`. LiteLLM and Langfuse are
+  optional (`litellm_enabled: true`).
+- `litellm_vkey`: a LiteLLM virtual key on `litellm.<domain>`. LiteLLM checks the key and
+  forwards to the model; Langfuse is on unless `langfuse_enabled: false`.
 
-The gateway `SecurityPolicy` is a Keycloak JWT, deny-by-default, in both modes: a route without its own `SecurityPolicy` needs a Keycloak JWT. Routes that authenticate themselves (UI logins, the LiteLLM API) attach their own policy.
-
----
-
-## Layer Architecture
-
-Toolkit Manager installs in four ordered layers, each depending on the one before it:
-
-```
-infrastructure  →  platform   →  inference  →  erag (opt-in)
-      │               │               │               │
-  kubernetes      nri_cpu_balloons envoy_ai_gw    app_inference_models
-  storage         cert_manager     kserve         app_pre_install
-                  istio            litellm        app_vector_databases
-                  metallb          langfuse       app_keycloak_config
-                  envoy_gateway    keycloak_cfg   app_apisix
-                  postgresql       llm_services   app_chat_history
-                  keycloak*                       app_nats
-                  object_store                    app_fingerprint
-                  seaweedfs                       app_hpa
-                  observability                   app_pipeline
-                  velero†                         app_edp
-                                                  app_mcp_gateway
-                                                  app_ui
-                                                  app_watcher
-                                                  app_post_install
-
-* keycloak is always on (keycloak_enabled defaults true)
-† velero is opt-in (velero_enabled) and needs snapshot-capable storage
-```
-
-- **`install inference`** installs infrastructure + platform + inference (dependencies auto-pull)
-- **`install erag`** (and future layers) must be explicitly targeted
-- Dependencies are auto-resolved from `components.yaml` definitions
+The gateway denies by default in both modes: a route without its own `SecurityPolicy` needs a
+Keycloak token. Routes that check credentials themselves (UI logins, the LiteLLM API) attach
+their own policy.
 
 ---
 
-## Execution Flow
+## Layers and components
 
-A single `toolkit_manager.sh install` invocation is how Toolkit Manager resolves components and dispatches Ansible for every layer:
+A **layer** is a group of components installed together; a **component** is one Ansible role.
+Each layer depends on the ones below it, and `install <layer>` installs those first.
 
 ```
-./toolkit_manager.sh install inference --env local
-│
-├─ 1. Load environment: env/<name>/global_config.yaml + config.<solution>.yaml
-├─ 2. Resolve components: load components.yaml from this repo + ext repos → build active component list
-├─ 3. Preflight checks (internet connectivity for non-teardown/validate actions)
-├─ 4. Dispatch to playbooks/site.yaml with component_action + target
-│
-playbooks/site.yaml (universal dispatcher)
-│
-├─ includes/preflight.yaml:
-│   ├─ Load component registry (configs/components.yaml + ext components.yaml)
-│   ├─ Resolve component set from target + dependencies
-│   └─ Verify kubectl connectivity
-│   (solution + global configs are passed as -e @ by the installer)
-│
-├─ [Infrastructure Layer]
-│   └─ role: kubernetes          → tasks/{{ component_action }}.yaml
-│         ├─ Check for existing cluster (kubectl cluster-info)
-│         │   ├─ If existing_kubernetes is set (BYO) → skip install
-│         │   ├─ If exists + version OK → skip install
-│         │   └─ If not exists ↓
-│         ├─ precheck.yaml        (swap, kernel modules, sysctl, packages)
-│         ├─ install_kubespray.yaml (prep phase):
-│         │   ├─ Clone kubespray repo to .kubespray/ (pinned version)
-│         │   ├─ Create python venv + install requirements.txt
-│         │   ├─ Read inventory from env/<name>/inventory/hosts.yaml
-│         │   ├─ Apply kubespray_user_overrides or kubespray_full_config_file
-│         │   └─ Exit (3-phase split) → installer runs kubespray/cluster.yml
-│         ├─ post_install.yaml    (kubeconfig copy, node wait, helm verify)
-│         └─ storage, metallb (infrastructure components)
-│
-├─ [Platform Layer]
-│   ├─ role: nri_cpu_balloons     → tasks/install.yaml (CPU pinning — only when cpu_policy=nri-balloons)
-│   ├─ role: cert_manager         → tasks/install.yaml (helm install)
-│   ├─ role: istio                → tasks/install.yaml (ambient mesh — all workload namespaces enrolled)
-│   ├─ role: metallb              → tasks/install.yaml (LoadBalancer services)
-│   ├─ role: envoy_gateway        → tasks/install.yaml (helm install + TLS)
-│   ├─ role: postgresql           → tasks/install.yaml (CNPG operator + clusters)
-│   ├─ role: keycloak             → tasks/install.yaml (both auth modes)
-│   ├─ role: object_store         → tasks/install.yaml (backend selection)
-│   ├─ role: seaweedfs            → tasks/install.yaml (S3-compatible object storage)
-│   └─ role: observability        → tasks/install.yaml (prometheus/grafana/loki/tempo)
-│
-├─ [Inference Layer]
-│   ├─ role: keycloak_config      → tasks/install.yaml (realm + client — both auth modes)
-│   ├─ role: envoy_ai_gateway     → tasks/install.yaml (apply manifests)
-│   ├─ role: kserve               → tasks/install.yaml (CRDs + controller + deploy mode)
-│   ├─ role: litellm              → tasks/install.yaml (proxy — auth_type=litellm_vkey, or litellm_enabled)
-│   ├─ role: langfuse             → tasks/install.yaml (observability — with LiteLLM unless langfuse_enabled: false)
-│   └─ role: llm_services         → tasks/install.yaml (runtimes + default models)
-│
-└─ [Intel® Chatbot Toolkit] (opt-in, not included by `install inference`)
-    └─ roles from ext/enterprise.ai-erag (15 components: app_inference_models, app_pre_install,
-       app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats,
-       app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher,
-       app_post_install)
+infrastructure  →  platform  →  inference  →  erag / agent-toolkit (opt-in)
 ```
+
+| Layer | Components (in [configs/components.yaml](../../configs/components.yaml) unless noted) | Installed by |
+|---|---|---|
+| `infrastructure` | `kubernetes`, `storage`; `kata_containers` (`kata_containers_enabled`); rack-scale only (`rack_scale_enabled`): `fabric_inventory`, `fabric_netplan`, `fabric_sysctl`, `fabric_bgp`, `fabric_validate` | `install` of any layer |
+| `platform` | `node_feature_discovery`, `nri_cpu_balloons`, `cert_manager`, `istio`, `metallb`, `metrics_server`, `gateway` (alias `envoy_gateway`), `postgresql`, `keycloak`, `object_store`, `seaweedfs`, `observability`; opt-in: `headlamp`, `keda`, `velero`; rack-scale: `nvidia_gpu_operator`, `gpu_observability` | `install` of `platform` or any layer above |
+| `inference` | from inference-toolkit's `components.yaml`: `keycloak_config`, `envoy_ai_gateway` or `agentgateway` (`ai_gateway_provider`), `kserve`, `litellm`, `langfuse`, `llm_services`, `vllm_sr` (opt-in) | `install inference`, or a layer above it |
+| `erag` | from enterprise-rag's `components.yaml` (the `app_*` roles) | `install erag`, after `init erag` |
+| `agent-toolkit` | from enterprise-agent-toolkit's `components.yaml` | `install agent-toolkit`, after `init agent-toolkit` |
+
+Each component's `enabled:` expression in `components.yaml` decides whether it runs; for
+example `nri_cpu_balloons` runs only with `kubernetes_cpu_policy: nri-balloons` and
+`kubernetes_accelerator: cpu`. `./toolkit_manager.sh show` prints the merged list for your
+checkout.
 
 ---
 
-## Repository Structure
+## What happens when you run `install`
 
-Toolkit Manager spans this repository plus external solution repositories that plug into it.
+Take `./toolkit_manager.sh install inference --env local`.
 
-### enterprise-ai-solutions
+**1. The installer script prepares the run** (`main` in `toolkit_manager.sh`):
+
+1. Checks that `env/local/` exists (created by `init`).
+2. Checks that every repo the target's layers need is cloned in `ext/` (`init` clones them;
+   `install` never does).
+3. Makes sure the tools are there: `yq`, `kubectl`, `helm`, the Python venv in `.venv/` and
+   the Ansible collections.
+4. Builds the Ansible extra-vars (see [Variable precedence](#variable-precedence)) and picks
+   the kubeconfig: `existing_kubernetes` if set, else `env/local/kubeconfig.yaml`.
+
+**2. It runs `playbooks/site.yaml`, once or three times.** A plain run is one pass. When the
+cluster still has to be built (no kubeconfig yet, not a BYO cluster) it runs three passes:
+
+1. `site.yaml` with `target=kubernetes`: preflight and the Kubespray preparation
+   (inventory, `env/local/kubespray_extra_auto.yml`).
+2. Kubespray's `cluster.yml`, run directly so its output streams live.
+3. `site.yaml` for the whole target, with the cluster now up.
+
+Teardown of `kubernetes` or `infrastructure` works the same way around Kubespray's
+`reset.yml`: first everything that runs on the cluster is removed, then the cluster is
+reset, then what the cluster ran on (the rack-scale fabric). It asks for confirmation
+first, because the reset destroys the cluster.
+
+**3. `playbooks/site.yaml` runs the components**, on the installer host (`localhost`), against
+the cluster's API:
+
+1. `includes/preflight.yaml`: detects the platform (Kubernetes or OpenShift), merges every
+   `ext/**/components.yaml` into the registry, checks settings, computes node placement and
+   resolves the storage backend.
+2. `includes/resolve_target.yaml`: turns the target into the ordered list of components to
+   run (`filter_plugins/resolve_components.py`), refuses layers this env was not inited for,
+   runs the upgrade checks (`roles/upgrade_checks`) and prints the plan.
+3. The `ownership` role records what is already on the cluster.
+4. For each layer, `includes/run_layer.yaml` writes the layer's deployment record (ConfigMap
+   `<layer>-deployment-manifest` in `default`), then `includes/run_component.yaml` runs each
+   component: its role's `tasks/<action>.yaml`, and afterwards the `ownership` role labels
+   what it created (see [Ownership labels](adding_solutions.md#ownership-labels)).
+5. The installer prints the completion banner.
+
+---
+
+## Repository structure
+
+### This repository (Toolkit Manager)
 
 ```
-enterprise-ai-solutions/
-├── toolkit_manager.sh                          # CLI: configure, show, init, install, teardown, validate, status
-├── ansible.cfg                                 # Ansible settings + dynamic roles_path
-├── .kubespray/                                 # Kubespray clone
-├── ext/                                        # External repos cloned here
-│   └── enterprise.ai-inference/
-│       └── config.yaml                         # Seed for init (copied to env/, not read at install)
-├── env/                                        # Per-environment configs + state
-│   └── local/                                  # Example environment
-│       ├── global_config.yaml                  # Main config (components, TLS, proxy)
-│       ├── inventory/
-│       │   └── hosts.yaml                      # Kubespray-compatible inventory (YAML)
-│       ├── config.erag.yaml                    # Solution-specific config (if init erag)
-│       ├── config.inference.yaml               # Solution-specific config
-│       ├── kubeconfig.yaml                     # Generated after cluster install
-│       ├── nodes.yaml                          # Optional: MetalLB ranges, NFS overrides
-│       └── logs/                               # Per-run logs
-├── inventory/
-│   └── hosts.yaml                              # Template (copied by init) + ansible.cfg default
+toolkit-manager/
+├── toolkit_manager.sh           # the CLI: configure, init, show, install, teardown, validate, status, add-node, remove-node
+├── es_auto_installer.sh         # former name of the CLI; forwards to toolkit_manager.sh
+├── run_backup.sh                # back up, restore or list one layer with Velero
+├── model-manager                # wrapper for the inference repo's model-manager, pointed at env/<name>/
+├── VERSION                      # installer version (also the version of infrastructure and platform)
+├── ansible.cfg                  # Ansible settings
+├── requirements.txt             # Python packages for the installer venv
+├── collections/requirements.yml # Ansible collections
+├── configs/
+│   ├── components.yaml          # layer and component registry of this repo
+│   ├── defaults/                # seeds copied into env/<name>/ by init: global_config.yaml, nodes.yaml
+│   ├── repos/repos.<layer>.yaml # which repos each solution layer needs, at which revision
+│   ├── backup.yaml              # contract for a layer's backup_profile.yaml
+│   └── openshift_prerequisites.yaml  # what the OpenShift prerequisite check looks for
+├── inventory/hosts.yaml         # inventory template, copied into env/<name>/inventory/ by init
 ├── playbooks/
-│   ├── site.yaml                               # Universal dispatcher (all actions)
-│   ├── includes/
-│   │   ├── preflight.yaml                      # Component resolution + connectivity
-│   │   └── run_component.yaml                  # Per-component dispatch loop
-│   └── status.yaml                             # Cluster status reporting
-└── roles/
-    ├── kubernetes/
-    │   ├── meta/main.yaml
-    │   ├── defaults/main.yaml                  # K8s version, kubespray, networking
-    │   ├── files/
-    │   │   └── generate_reserved_cpus.sh       # NUMA detection script
-    │   └── tasks/
-    │       ├── main.yaml                       # Action dispatcher
-    │       ├── install.yaml                    # Detect existing or install fresh
-    │       ├── precheck.yaml                   # System prerequisites
-    │       ├── install_kubespray.yaml          # Prep phase (3-phase split)
-    │       ├── post_install.yaml               # Kubeconfig copy + health checks
-    │       ├── teardown.yaml                   # Kubespray reset + cleanup
-    │       └── validate.yaml                   # Health checks + version report
-    ├── storage/                                # Storage engine (registry + resolver + meta-role)
-    │   ├── defaults/main.yaml                  # storage_backend selector + storage_backends registry
-    │   └── tasks/
-    │       ├── resolve.yaml                    # selector → _resolved_storage_role (run in preflight)
-    │       └── main.yaml                       # meta-role: include_role the resolved backend
-    ├── nfs_storage/                            # Backend: NFS server + provisioner (RWX)
-    │   └── tasks/
-    │       ├── install.yaml
-    │       └── teardown.yaml
-    ├── rook_ceph_storage/                      # Backend: Ceph via Rook (multi-node block storage)
-    │   └── tasks/
-    │       ├── install.yaml
-    │       └── teardown.yaml
-    ├── netapp_trident_csi/                     # Backend: NetApp Trident + ONTAP (see docs/deploy/netapp_ontap.md)
-    │   └── tasks/
-    │       ├── validate_config.yaml            # Offline: variable-level checks, no cluster, no array
-    │       ├── preflight_nodes.yaml            # Per-node: NFS client packages, mount helper, LIF names
-    │       ├── preflight_ontap.yaml            # Array: TCP probes (ontap_preflight_online)
-    │       ├── install.yaml
-    │       ├── validate.yaml + validate_e2e.yaml
-    ├── metallb/
-    │   └── tasks/
-    │       ├── install.yaml                    # MetalLB for LoadBalancer services
-    │       └── teardown.yaml
-    ├── cert_manager/
-    │   └── tasks/
-    │       ├── install.yaml                    # Helm install cert-manager
-    │       └── teardown.yaml
-    ├── istio/
-    │   └── tasks/
-    │       ├── install.yaml                    # Istio ambient mesh (ztunnel + waypoint)
-    │       └── teardown.yaml
-    ├── envoy_gateway/
-    │   └── tasks/
-    │       ├── install.yaml                    # Helm install + TLS config
-    │       └── teardown.yaml
-    ├── postgresql/
-    │   └── tasks/
-    │       ├── install.yaml                    # CNPG operator + database clusters
-    │       └── teardown.yaml
-    ├── keycloak/
-    │   └── tasks/
-    │       ├── install.yaml                    # Keycloak (both auth modes)
-    │       └── teardown.yaml
-    ├── object_store/
-    │   └── tasks/
-    │       └── install.yaml                    # Backend selector (seaweedfs/rustfs)
-    ├── seaweedfs/
-    │   └── tasks/
-    │       ├── install.yaml                    # S3-compatible object storage
-    │       └── teardown.yaml
-    ├── observability/
-    │   └── tasks/
-    │       ├── install.yaml                    # Prometheus + Grafana + Loki + Tempo
-    │       └── teardown.yaml
-    └── nri_cpu_balloons/
-        └── tasks/
-            ├── install.yaml                    # NRI plugin + per-node BalloonsPolicy CRs
-            └── teardown.yaml
+│   ├── site.yaml                # entry point for install, teardown, validate, add-node, remove-node
+│   ├── status.yaml              # the status command
+│   ├── backup.yaml              # run by run_backup.sh
+│   └── includes/                # preflight, resolve_target, run_layer, run_component, OpenShift and Agent Toolkit preflights
+├── roles/                       # one role per component, plus the library roles (see below)
+├── filter_plugins/              # Python filters: component resolution, upgrade checks, rack profile parser, node preflight, …
+├── callback_plugins/ownership_record.py  # records what each task created, for the ownership labels
+├── charts/                      # local Helm charts (istio, velero)
+├── scripts/                     # helper scripts (custom DNS, CSI snapshots)
+├── src/                         # Headlamp plugin source, unit and e2e tests
+├── docs/                        # these guides
+├── ext/                         # solution repos, cloned by init (not committed)
+├── .kubespray/                  # Kubespray checkout and its venv, created on first cluster install
+└── env/<name>/                  # one directory per environment (not committed)
+    ├── global_config.yaml       # main settings
+    ├── nodes.yaml               # the machines; generates inventory/hosts.yaml when nodes are listed
+    ├── inventory/hosts.yaml     # Kubespray inventory
+    ├── config.<layer>.yaml      # one per solution layer, seeded by init
+    ├── models.yaml              # model catalog, seeded by init inference
+    ├── .solutions.yaml          # which layers this env was inited for
+    ├── kubeconfig.yaml          # written when the installer builds the cluster
+    └── logs/                    # one log per run, the generated CA certificate and credentials
 ```
 
-### enterprise-inference (external repo)
+### inference-toolkit (cloned to `ext/enterprise.ai-inference/`)
 
 ```
-enterprise-inference/
-├── config.yaml                                 # Seed for init (copied to env/config.inference.yaml)
-├── model_manager/                              # Model lifecycle CLI
-│   ├── model-manager                           # Entry point (resolves env/ models.yaml)
-│   ├── models.yaml                             # Default model catalog (seeded to env/)
-│   ├── default-models.yaml                     # Models deployed at initial install
-│   └── scripts/                                # deploy, undeploy, litellm register, etc.
-└── roles/
-    ├── envoy_ai_gateway/
-    │   └── tasks/
-    │       ├── install.yaml                    # Envoy AI Gateway manifests
-    │       └── teardown.yaml
-    ├── keycloak_config/
-    │   └── tasks/
-    │       ├── install.yaml                    # Realm + client (both auth modes)
-    │       └── teardown.yaml
-    ├── kserve/
-    │   ├── defaults/main.yaml
-    │   └── tasks/
-    │       ├── install.yaml                    # KServe CRDs + controller + deploy mode
-    │       ├── teardown.yaml
-    │       └── validate.yaml
-    ├── litellm/
-    │   ├── defaults/main.yaml                  # Version, sizing, cache, gateway integration
-    │   └── tasks/
-    │       ├── install.yaml                    # Helm deploy + HTTPRoute + own SecurityPolicy
-    │       ├── tls.yaml                        # Certificate provisioning
-    │       ├── teardown.yaml
-    │       └── validate.yaml
-    ├── langfuse/
-    │   ├── defaults/main.yaml
-    │   └── tasks/
-    │       ├── install.yaml                    # Observability for LLM calls (traces, cost)
-    │       └── teardown.yaml
-    └── llm_services/
-        ├── defaults/main.yaml
-        ├── files/
-        │   └── runtimes/
-        │       └── vllm-runtime.yaml           # vLLM ServingRuntime (auto-deployed)
-        └── tasks/
-            ├── install.yaml                    # Namespace + runtimes + LLMInferenceService CRDs
-            ├── deploy_models.yaml              # Deploys default-models.yaml (initial install only)
-            ├── teardown.yaml
-            └── validate.yaml
+inference-toolkit/
+├── components.yaml              # the inference layer's components
+├── config.yaml                  # seed for env/<name>/config.inference.yaml
+├── version.yaml                 # the layer's version and upgrade path
+├── model_manager/
+│   ├── model-manager            # model CLI: deploy, undeploy, list, …
+│   ├── models.yaml              # model catalog, seeded to env/<name>/models.yaml
+│   ├── core/, runtimes/, templates/, chat-templates/, scripts/
+└── roles/                       # agentgateway, envoy_ai_gateway, keycloak_config, kserve, langfuse, litellm, llm_services, vllm_sr
 ```
+
+The inference repo's own docs describe its roles and `model-manager` in detail.
 
 ---
 
-## Key Design Patterns
+## Key design patterns
 
-These patterns are what let Toolkit Manager stay modular — new components, repos, and actions plug in without touching the dispatcher.
+These patterns let new components, repos and layers plug in without changing the core.
 
-### Action Dispatch
+### One dispatcher per role
 
-Every component role's `tasks/main.yaml` is the same dispatcher ([Roles](adding_solutions.md#4-roles)).
-The `component_action` variable is passed as an extra-var from the CLI to `playbooks/site.yaml`:
-- `install` → tasks/install.yaml
-- `teardown` → tasks/teardown.yaml
-- `validate` → tasks/validate.yaml
+Every component role's `tasks/main.yaml` is the same small dispatcher
+([Roles](adding_solutions.md#4-roles)). It checks `component_action` (`install`, `teardown` or
+`validate`), loads `vars/<cluster_distribution>.yaml` if the role has one, and includes
+`tasks/<component_action>.yaml`. The task files are the same on Kubernetes and OpenShift;
+what differs is a value in those `vars/` files.
 
-The dispatcher first loads `vars/<cluster_distribution>.yaml`, if the role has one; the task
-files are the same on Kubernetes and OpenShift and take what differs from those values.
+### Roles found by name across repos
 
-This means adding a new action (e.g., `upgrade`) only requires adding CLI support and a new `tasks/upgrade.yaml` in each role.
+`configs/repos/repos.<layer>.yaml` lists the repos a layer needs; `init` clones each to
+`ext/<dest>/`. For every cloned repo the installer adds `ext/<dest>/<deployment_subdir>/roles`
+to `ANSIBLE_ROLES_PATH` (overriding `roles_path` in `ansible.cfg`), so a role is found by its
+name wherever it lives. Moving a role between repos is a `mv`.
 
-### Cross-Repo Role Discovery
+Solution settings come from the env only: `init <layer>` copies the repo's `config.yaml` (or
+the chosen `--flavour` preset) to `env/<name>/config.<layer>.yaml`, and `install` reads that
+copy. A layer takes part in an env only when `env/<name>/.solutions.yaml` lists it.
 
-External repos are declared in per-layer manifests at `configs/repos/repos.<layer>.yaml` and cloned under `ext/<dest>/` on first run. For example, [`configs/repos/repos.erag.yaml`](../../configs/repos/repos.erag.yaml) declares both the inference and Intel® Chatbot Toolkit repositories needed for that layer. Each entry may set `deployment_subdir` to locate the Ansible tree inside the repo:
+### Variable precedence
 
-```yaml
-repos:
-  - layer: "inference"
-    url: "https://github.com/intel/enterprise-inference"
-    dest: "enterprise.ai-inference"
-    deployment_subdir: ""          # roles/, components.yaml, config.yaml at repo root
-  - layer: "erag"
-    url: "https://github.com/intel/enterprise-rag"
-    dest: "enterprise.ai-erag"
-    deployment_subdir: "deployment" # Ansible tree lives under deployment/
-```
-
-The installer composes `ANSIBLE_ROLES_PATH` at runtime by joining `roles:ext/<dest>/<deployment_subdir>/roles` for every repo, then appending the Kubespray roles. The committed `ansible.cfg` `roles_path` value is overridden by this env var, so the file stays stable across runs.
-
-Solution configs are consumed from the env only. `init <layer>` seeds `env/<name>/config.<layer>.yaml` from the ext repo's `config.yaml` baseline (or from a flavour preset if `--flavour` is given); `install` reads that editable copy and never re-reads `ext/<repo>/config.yaml` at runtime. A layer is active for a run if `env/<name>/.solutions.yaml` records it (written by `init <layer>`).
-
-### Variable Precedence
+All settings files are passed to Ansible as extra-vars (`-e @file`); a later one wins. The
+installer passes them in this order:
 
 ```
-CLI: -e kserve_version=0.15.0                       ← highest (runtime override)
-  ↓
-env/<name>/global_config.yaml                       ← environment global overrides
-  ↓
-env/<name>/config.<solution>.yaml                   ← solution config (seeded by init)
-  ↓
-roles/<name>/defaults/main.yaml                     ← role defaults (lowest)
+roles/<role>/defaults/main.yaml          ← lowest: the role's defaults
+env/<name>/config.<layer>.yaml           ← one per inited layer, dependencies first
+env/<name>/global_config.yaml            ← environment-wide settings
+env/<name>/nodes.yaml                    ← when it lists anything
+kubernetes_kubeconfig                    ← the chosen kubeconfig
+-- -e key=value                          ← highest: anything after -- on the command line
 ```
 
-Config files are loaded and passed as extra-vars. This uses native Ansible variable precedence. No custom config merging. The ext repo `config.yaml` is a seed source for `init`, not a load-time layer for `install`.
+So a value in `global_config.yaml` overrides the same key in a layer config. There is no custom
+merging: a nested dict in a later file replaces the earlier one whole, which is why role
+variables are flat (`my_api_replicas`).
 
-### Component Resolution and Layers
+### Component resolution
 
-Components are defined in `components.yaml` files (this repo + ext repos). Each component specifies:
-- `layer` (infrastructure, platform, inference, application)
-- Position in the YAML list (registry order — determines execution sequence within layer)
-- `depends_on` (same-layer dependencies, auto-pulled when component is targeted)
+`filter_plugins/resolve_components.py` turns a target into the list of components to run:
 
-**Four layers** (executed in order):
+1. A **layer** target pulls in the layers it depends on (`install`) or the layers that depend
+   on it (`teardown`). `--only` turns that off.
+2. Layers run in dependency order; within a layer, components run in `depends_on` order, and
+   the order in the file breaks ties.
+3. A **component** target runs that component and the components its `depends_on` names
+   (for teardown: the components that depend on it).
+4. `--skip` drops components or whole layers, then disabled components are dropped.
+5. Teardown runs the list in reverse.
 
-| Layer | Components | Installation |
-|-------|-----------|--------------|
-| infrastructure | kubernetes, storage | Auto-pulled by `install inference` or `install erag` |
-| platform | nri_cpu_balloons***, cert_manager, istio, metallb, envoy_gateway, postgresql, keycloak*, object_store, seaweedfs, observability | Auto-pulled by `install inference` or `install erag` |
-| inference | keycloak_config*, envoy_ai_gateway, kserve, litellm**, langfuse**, llm_services | `install inference` (explicitly named, or auto-pulled by `install erag`) |
-| erag | app_inference_models, app_pre_install, app_vector_databases, app_keycloak_config, app_apisix, app_chat_history, app_nats, app_fingerprint, app_hpa, app_pipeline, app_edp, app_mcp_gateway, app_ui, app_watcher, app_post_install | `install erag` (opt-in, requires `init erag` first) |
+### Environments
 
-\* Keycloak + keycloak_config run in both auth modes (`keycloak_enabled` defaults `true`)
-\*\* LiteLLM is always on with `auth_type=litellm_vkey`, optional with `jwt` (`litellm_enabled: true`); Langfuse follows LiteLLM unless `langfuse_enabled: false`
-\*\*\* NRI CPU balloons enabled when `kubernetes_cpu_policy=nri-balloons` and `kubernetes_accelerator=cpu`
-
-The `erag` layer must be explicitly targeted: `install erag --env <name>`. See [../../ext/enterprise.ai-erag/docs/README.md](../../ext/enterprise.ai-erag/docs/README.md) (exists after `init erag` clones the repo) for RAG-layer documentation.
-
-Component resolution happens in `playbooks/includes/preflight.yaml`:
-1. Load all `components.yaml` files (this repo + ext repos)
-2. Resolve target (e.g., `kserve` → includes dependencies like `cert_manager`, `kubernetes`)
-3. Sort by layer order, then component order
-4. Pass resolved list to `site.yaml`
-
-### Environment Workflow
-
-Each environment is fully isolated under `env/<name>/`:
+Each environment is a directory under `env/<name>/` with its own settings, inventory and
+kubeconfig, so one machine can manage several clusters:
 
 ```bash
-# Initialize new environment (seeds config + inventory template)
-./toolkit_manager.sh init inference --env prod
-
-# Edit config and inventory
-vim env/prod/global_config.yaml
-vim env/prod/inventory/hosts.yaml
-
-# Deploy to that environment
-./toolkit_manager.sh install inference --env prod
+./toolkit_manager.sh init inference --env prod   # 1. create env/prod/ and clone the inference repo
+vi env/prod/global_config.yaml                    # 2. set the domain, storage, …
+vi env/prod/nodes.yaml                            # 3. list the machines (or leave empty for this one)
+./toolkit_manager.sh install inference --env prod # 4. deploy
 ```
 
-**Environment state**:
-- `env/<name>/kubeconfig.yaml` — generated after cluster install
-- `env/<name>/logs/` — per-run Ansible logs (timestamped)
-- `env/<name>/.solutions.yaml` — records which layers this env was inited for (written by `init <layer>`)
+Every command takes `--env`; without it, `env/local/` is used.
 
-**Multiple environments on one bastion**: Each environment uses its own inventory and kubeconfig, so you can manage dev/staging/prod from a single machine.
+### Models
 
-### Auto-Discovery of Models and Runtimes
+Models are entries in the catalog `env/<name>/models.yaml` (seeded from the inference repo's
+`model_manager/models.yaml`). `./model-manager deploy <name>` serves one. Adding a model is
+a catalog entry, not a code change; see [Deploy a Model](../deploy/deploy_models.md).
 
-The `llm_services` role uses `ansible.builtin.find` to auto-discover all YAML files in its `files/catalog/` and `files/runtimes/` directories. To deploy a new model or runtime, drop a YAML file — no code changes needed.
+### Kubernetes installation
 
-
-### Kubernetes Installation
-
-The `kubernetes` role uses **Kubespray** (kubernetes-sigs/kubespray) to install upstream Kubernetes.
+The `kubernetes` role installs upstream Kubernetes with [Kubespray](https://github.com/kubernetes-sigs/kubespray).
 
 | Variable | Default | Purpose |
-|----------|---------|---------|
-| `kubernetes_version` | (set in `global_config.yaml`) | Kubernetes release |
-| `kubespray_version` | (set in `global_config.yaml`) | Pinned Kubespray tag |
-| `kubernetes_cni` | `calico` | CNI plugin |
+|---|---|---|
+| `kubernetes_version` | `1.35.4` | Kubernetes release |
+| `kubespray_version` | `v2.31.0` | Kubespray release, cloned to `.kubespray/` |
+| `kubernetes_cni` | `calico` | Network plugin |
 | `kubernetes_container_manager` | `containerd` | Container runtime |
-| `existing_kubernetes` | `""` | Set to absolute path of a BYO kubeconfig to skip Kubespray entirely |
+| `existing_kubernetes` | `""` | Path of a kubeconfig for a cluster you bring; Kubespray is then never run |
 
-**Which cluster the installer acts on**: `toolkit_manager.sh` doesn't support `KUBECONFIG` (or `~/.kube/config`) for selecting the cluster. It uses only:
-- `existing_kubernetes: /path/to/kubeconfig` in `global_config.yaml`, for a cluster you bring (Kubespray is skipped)
-- `env/<name>/kubeconfig.yaml`, for the managed cluster. If `kubectl cluster-info` succeeds with it, provisioning is skipped. To reprovision, tear down `kubernetes` and install again.
+The role writes `env/<name>/kubespray_extra_auto.yml` with the settings it derives. To change
+any other Kubespray setting, put it in `env/<name>/kubespray_extra.yml`; it is passed last, so
+it wins.
 
-**Kubespray override model** (layered):
-1. Kubespray installer base defaults
-2. `kubespray_user_overrides` (dict of individual overrides like `kube_version`, `kube_network_plugin`)
-3. `kubespray_full_config_file` (path to complete group_vars file, takes precedence over user_overrides)
+**Which cluster the installer talks to.** Not `KUBECONFIG` or `~/.kube/config`. Only:
 
-### Deployment Topologies
+- `existing_kubernetes: /path/to/kubeconfig` in `global_config.yaml`, for a cluster you bring;
+- otherwise `env/<name>/kubeconfig.yaml`, written when the installer built the cluster. If
+  the cluster answers with it, provisioning is skipped. To rebuild, tear down `kubernetes`
+  and install again.
 
-The kubernetes role supports two deployment modes, derived entirely from the inventory content in `env/<name>/inventory/hosts.yaml`:
+### Where the cluster runs
 
-#### 1. Localhost Installation (default)
+| Setup | What to do |
+|---|---|
+| This machine only (default) | Leave `env/<name>/nodes.yaml` commented out. The inventory installs on `localhost`. |
+| Remote machines over SSH | List them in `env/<name>/nodes.yaml` (`nodes_control_plane`, optionally `nodes_workers`, with `ip` and `hostname`). The installer writes `inventory/hosts.yaml` from it. |
+| A hand-written inventory | Leave `nodes_control_plane` empty and edit `env/<name>/inventory/hosts.yaml` in Kubespray format. |
+| A cluster you already have | Set `existing_kubernetes` in `global_config.yaml`. |
 
-When the inventory contains only `localhost` hosts, Kubespray installs on this machine. Edit `env/<name>/inventory/hosts.yaml`:
+See [Multi-Node & BYO Cluster](../deploy/topologies.md) for full examples.
 
-```yaml
-# Option A — Localhost (uncommented by default in init)
-all:
-  hosts:
-    localhost:
-      ansible_connection: local
-  children:
-    kube_control_plane:
-      hosts:
-        localhost:
-    kube_node:
-      hosts:
-        localhost:
-    etcd:
-      hosts:
-        localhost:
-```
-
-```bash
-./toolkit_manager.sh install inference --env local
-```
-
-#### 2. Remote Installation (SSH-based)
-
-When the inventory contains remote hosts, Kubespray installs over SSH. Edit `env/<name>/inventory/hosts.yaml`:
-
-```yaml
-# Option C — Multi-node cluster
-all:
-  hosts:
-    master1:
-      ansible_host: 10.0.1.10
-      ansible_user: ubuntu
-    worker1:
-      ansible_host: 10.0.1.20
-      ansible_user: ubuntu
-    worker2:
-      ansible_host: 10.0.1.21
-      ansible_user: ubuntu
-  children:
-    kube_control_plane:
-      hosts:
-        master1:
-    kube_node:
-      hosts:
-        worker1:
-        worker2:
-    etcd:
-      hosts:
-        master1:
-```
-
-```bash
-./toolkit_manager.sh install inference --env prod
-```
-
-#### 3. Existing Kubernetes Cluster (skip Kubespray)
-
-To deploy components on an existing cluster without running Kubespray, set `existing_kubernetes: /path/to/kubeconfig` in `env/<name>/global_config.yaml`. The installer uses this kubeconfig directly — no need to copy it into the env dir.
-
-### Running from a Bastion Node
-
-When the Ansible controller (bastion) is **not** part of the cluster and reaches nodes via SSH, configure the inventory with bastion settings:
+**From a bastion host.** The installer host does not have to be in the cluster; it reaches
+the nodes over SSH. If they are behind a jump host, add it to the inventory vars:
 
 ```yaml
 # env/<name>/inventory/hosts.yaml
 all:
-  hosts:
-    master1:
-      ansible_host: 10.0.1.10
-      ansible_user: ubuntu
-    worker1:
-      ansible_host: 10.0.1.20
-      ansible_user: ubuntu
   vars:
-    # Optional: if nodes are behind a jump host
     ansible_ssh_common_args: '-o ProxyJump=jumpuser@10.0.0.5:22'
-  children:
-    kube_control_plane:
-      hosts:
-        master1:
-    kube_node:
-      hosts:
-        worker1:
-    etcd:
-      hosts:
-        master1:
 ```
 
-**Behind proxy** (in `env/<name>/global_config.yaml`):
-```yaml
-http_proxy: "http://proxy:8080"
-https_proxy: "http://proxy:8080"
-```
+**Behind a proxy**, set `http_proxy`, `https_proxy` and `no_proxy` in
+`env/<name>/global_config.yaml`.
 
 ---
 
-## File-by-File Reference
+## File reference
 
-A file-level map of this repository and the external inference repo it composes with.
-
-### enterprise-ai-solutions — Top Level
+### Top level
 
 | File | Purpose |
-|------|---------|
-| `toolkit_manager.sh` | CLI wrapper. Actions: `configure`, `show`, `init <layer>`, `install`, `teardown`, `validate`, `status`. Flags: `--env <name>`, `--flavour <name>` (init only), `--upgrade` (init only), `--only` (skip dep auto-inclusion), `--skip <names>` (comma-separated layers/components to exclude), `--force` (skip confirmation; on `install`, run past a refusing upgrade check), `--` (pass remaining args to ansible-playbook). |
-| `run_backup.sh` | Back up, restore or list one layer's backups with Velero: actions `backup`, `restore`, `list`, each with a `<layer>`; flags `--env <name>`, `--from <backup>` (restore), `--force`, `--`. Sources `toolkit_manager.sh` for its playbook arguments and runs `playbooks/backup.yaml`. |
-| `ansible.cfg` | Ansible configuration. `roles_path` is overridden at runtime by composed `ANSIBLE_ROLES_PATH`. Uses default stdout callback with yaml result format, `timer` + `profile_tasks` callbacks. |
-| `env/<name>/global_config.yaml` | Main config for environment: component versions, TLS settings, proxy, auth. Overrides ext repo and role defaults. Single place to change versions per environment. |
-| `env/<name>/inventory/hosts.yaml` | Kubespray-compatible inventory. Defines control-plane, workers, etcd groups. Copied from `inventory/hosts.yaml` by `init`. |
-| `inventory/hosts.yaml` | Inventory template with three options (localhost, single remote, multi-node). Used by `init` to seed new environments and as `ansible.cfg` default. |
+|---|---|
+| `toolkit_manager.sh` | The CLI. Actions: `configure`, `init <layer>`, `show`, `install`, `teardown`, `validate`, `status`, `add-node`, `remove-node`. Flags: `--env`, `--flavour` and `--upgrade` (init), `--only`, `--skip`, `--force`, `--dry-run` (add-node, remove-node), `--health` (status), `--node-lost` (remove-node), and `--` to pass the rest to `ansible-playbook`. See the [CLI Reference](../customize/cli.md). |
+| `es_auto_installer.sh` | The CLI's former name. Runs `toolkit_manager.sh` with the same arguments and prints a notice. |
+| `run_backup.sh` | Back up, restore or list one layer with Velero: `backup`, `restore`, `list <layer>`; flags `--env`, `--from <backup>` (restore), `--force`, `--`. Uses the installer's own functions and runs `playbooks/backup.yaml`. See [Upgrade a Layer](../deploy/upgrade.md). |
+| `model-manager` | Runs `ext/enterprise.ai-inference/model_manager/model-manager` against `env/<name>/` (`TKM_ENV`, default `local`). |
+| `ansible.cfg` | Ansible settings: `any_errors_fatal`, the `timer` and `profile_tasks` callbacks, plugin paths. `roles_path` is overridden at run time. |
+| `configs/components.yaml` | This repo's layers and components. |
+| `configs/defaults/*.yaml` | Seeds `init` copies into a new env: `global_config.yaml`, `nodes.yaml`. |
+| `configs/repos/repos.<layer>.yaml` | The repos each solution layer needs ([Adding a Solution](adding_solutions.md#1-the-layer-manifest-in-toolkit-manager)). |
+| `inventory/hosts.yaml` | Inventory template copied into each env by `init`. |
 
-### enterprise-ai-solutions — Playbooks
-
-| File | Purpose |
-|------|---------|
-| `playbooks/site.yaml` | Universal dispatcher. Accepts `component_action` (install/teardown/validate) and `target` as extra-vars. Includes `preflight.yaml`, then runs resolved components with the specified action. |
-| `playbooks/includes/preflight.yaml` | Component resolution logic. Loads ext repo configs, merges env-specific configs, resolves component dependencies, sorts by layer and registry order. Also verifies kubectl connectivity for non-teardown/validate actions. |
-| `playbooks/status.yaml` | Cluster status reporting — shows installed namespaces, pods, helm releases, and endpoints. |
-
-### enterprise-ai-solutions — Roles
-
-#### kubernetes
+### Playbooks
 
 | File | Purpose |
-|------|---------|
-| `defaults/main.yaml` | Kubernetes version, Kubespray version/repo, networking CIDRs, CNI (`calico`), container runtime, kubeconfig path, proxy settings. **Version set per environment in `global_config.yaml`.** |
-| `files/generate_reserved_cpus.sh` | CPU pinning script. Delegated to first control-plane node for accurate NUMA detection. |
-| `tasks/main.yaml` | The canonical dispatcher: runs `{{ component_action }}.yaml` |
-| `tasks/install.yaml` | Smart entry point: detects existing cluster (kubectl + kubeconfig), checks `existing_kubernetes` (BYO path), skips if cluster exists and version OK, otherwise runs precheck → install_kubespray (prep) → (installer runs cluster.yml) → post_install |
-| `tasks/precheck.yaml` | System prerequisites: OS check (Linux), swap disable, kernel modules (`br_netfilter`, `overlay`), sysctl (`ip_forward`, `bridge-nf-call-iptables`), required packages (`curl`, `tar`, `git`, `python3-pip`, `python3-venv`, `sshpass`) |
-| `tasks/install_kubespray.yaml` | **Prep phase only** (3-phase split): Clones Kubespray to `.kubespray/`, creates Python venv, reads inventory from `env/<name>/inventory/hosts.yaml`, applies `kubespray_user_overrides` or `kubespray_full_config_file`, then exits. Installer runs `cluster.yml` directly for live output. |
-| `tasks/post_install.yaml` | **Post-kubespray phase**: Copies kubeconfig from first control-plane node to `env/<name>/kubeconfig.yaml`, waits for nodes ready, verifies helm, prints cluster summary. |
-| `tasks/teardown.yaml` | Runs Kubespray `reset.yml` via 3-phase split (prep → installer runs reset → cleanup), removes kubeconfig |
-| `tasks/validate.yaml` | Checks kubectl, kubeconfig exists, cluster reachable, node status, server version, summary report |
+|---|---|
+| `playbooks/site.yaml` | The entry point. Takes `component_action` and `target`, runs preflight and resolution, then each layer. |
+| `playbooks/includes/preflight.yaml` | Platform detection, registry merge, setting checks, placement, storage resolution. |
+| `playbooks/includes/resolve_target.yaml` | Target to component list, provisioning check, upgrade checks, the printed plan. |
+| `playbooks/includes/run_layer.yaml` | One layer: its deployment record and its components. |
+| `playbooks/includes/run_component.yaml` | One component: its role, and the ownership labels. |
+| `playbooks/includes/preflight_platform.yaml`, `preflight_openshift.yaml` | Platform facts; the OpenShift prerequisite check. |
+| `playbooks/includes/agent_toolkit_preflight.yaml` | Node checks for the Agent Toolkit layer. |
+| `playbooks/status.yaml` | The `status` command: namespaces, pods, Helm releases, endpoints. |
+| `playbooks/backup.yaml` | Run by `run_backup.sh`. |
 
-#### Other platform roles
-
-All roles follow the same pattern: `defaults/main.yaml` for config, `tasks/main.yaml` for dispatch, action-specific task files.
+### Roles in this repo
 
 | Role | Purpose |
-|------|---------|
-| `storage` | Storage engine. `defaults/main.yaml` holds the `storage_backend` selector + `storage_backends` registry; `resolve.yaml` (run in preflight) normalizes the selector into `_resolved_storage_backend`, maps it to a backend role, rejects `local-path` on multi-node clusters and validates the ONTAP values; the meta-role `include_role`s the resolved role. Adding a backend = registry row + a role. |
-| `nfs_storage` | Storage backend: NFS server + NFS provisioner for ReadWriteMany volumes. Marks its SC cluster-default. Flat vars (`nfs_*`), idempotent. |
-| `rook_ceph_storage` | Storage backend: Rook/Ceph cluster on raw block devices. CephFS provides ReadWriteMany; teardown device wiping is opt-in (`rook_ceph_teardown_wipe_devices`). |
-| `netapp_trident_csi` | Storage backend: NetApp Trident operator + ONTAP `TridentBackendConfig` + StorageClass (`reclaimPolicy: Retain`, `volumeBindingMode: Immediate`). Splits its tasks by what they need (variables / nodes / array) so everything but the array probes runs offline. See [NetApp ONTAP](../deploy/netapp_ontap.md). |
-| `metallb` | MetalLB for LoadBalancer services. IP ranges from `env/<name>/nodes.yaml` or `global_config.yaml`. |
-| `cert_manager` | Helm install cert-manager (prerequisite for KServe, Istio, gateway TLS). |
-| `istio` | Istio ambient mesh (1.27.x). All workload namespaces enrolled via `istio.io/dataplane-mode: ambient` label. Provides zero-trust mTLS without sidecars. |
-| `envoy_gateway` | Helm install from OCI registry, waits for deployment rollout, TLS config, deny-by-default Keycloak JWT SecurityPolicy on the gateway. |
-| `postgresql` | CNPG operator + PostgreSQL clusters for Keycloak, LiteLLM, Langfuse. |
-| `keycloak` | Keycloak operator + instance. Deployed in both auth modes. |
-| `object_store` | Selects and configures the object store backend (seaweedfs/rustfs). |
-| `seaweedfs` | S3-compatible object storage for Loki, Tempo, Langfuse blob storage. |
-| `observability` | Prometheus + Grafana + Loki + Tempo stack. |
-| `nri_cpu_balloons` | NRI CPU-balloons plugin. Generates per-node `BalloonsPolicy` CRs based on NUMA topology. Enabled only when `kubernetes_cpu_policy=nri-balloons`. |
-
-### enterprise-inference — External Repo
-
-External repos live under `ext/<dest>/` and are cloned on first run based on per-layer manifests at `configs/repos/repos.<layer>.yaml`.
-
-| File | Purpose |
-|------|---------|
-| `config.yaml` | Baseline for inference components. Seed source for `init` (copied to `env/<name>/config.inference.yaml`); not read at install time. |
-| `components.yaml` | Component definitions for this repo (kserve, llm_services, etc.). |
-
-### enterprise-inference — Roles
-
-#### kserve
-
-| File | Purpose |
-|------|---------|
-| `defaults/main.yaml` | `kserve_version`, `kserve_namespace`, `kserve_deploy_mode`, `kserve_wait_timeout` |
-| `tasks/install.yaml` | Installs KServe CRDs + controller, installs built-in serving runtimes, patches deploy mode to `RawDeployment` |
-| `tasks/teardown.yaml` | Deletes KServe cluster resources and CRDs |
-| `tasks/validate.yaml` | Asserts InferenceService CRD exists, controller has ready replicas ≥ 1 |
-
-#### litellm
-
-| File | Purpose |
-|------|---------|
-| `defaults/main.yaml` | Version, namespace, sizing (single/multi-node), cache, gateway integration, TLS |
-| `tasks/install.yaml` | Helm deploy LiteLLM proxy + Valkey cache. Creates LiteLLM's HTTPRoute; with `auth_type=litellm_vkey` attaches a `no-auth SecurityPolicy` to it (LiteLLM validates virtual keys itself), otherwise the gateway's Keycloak JWT policy applies. |
-| `tasks/tls.yaml` | Provisions TLS certificate for the LiteLLM hostname |
-| `tasks/teardown.yaml` | Helm uninstall + cleanup namespace |
-| `tasks/validate.yaml` | Health check against LiteLLM `/health` endpoint |
-
-#### langfuse
-
-| File | Purpose |
-|------|---------|
-| `defaults/main.yaml` | Version, namespace, PostgreSQL + S3 config |
-| `tasks/install.yaml` | Deploys Langfuse for LLM observability (traces, cost tracking, prompt management) |
-| `tasks/teardown.yaml` | Helm uninstall + cleanup |
-
-#### keycloak_config
-
-| File | Purpose |
-|------|---------|
-| `tasks/install.yaml` | Creates Keycloak realm `inference` and client `inference-client`. Runs in both auth modes. |
-| `tasks/teardown.yaml` | Removes realm and client |
-
-#### llm_services
-
-| File | Purpose |
-|------|---------|
-| `defaults/main.yaml` | `llm_services_namespace`, runtime + model settings |
-| `tasks/install.yaml` | Creates namespace, applies `files/runtimes/*.yaml` (ServingRuntimes), installs LLMInferenceService CRDs + kserve-runtime-configs |
-| `tasks/deploy_models.yaml` | Deploys models from `default-models.yaml` at initial install. Sets `MM_LITELLM_ENABLED=true` when `auth_type=litellm_vkey` for auto-registration. |
-| `tasks/teardown.yaml` | Deletes all InferenceServices, ServingRuntimes, and namespace |
-| `tasks/validate.yaml` | Lists runtimes and deployed LLM services |
-| `files/runtimes/vllm-runtime.yaml` | vLLM ServingRuntime: OpenAI-compatible API server |
+|---|---|
+| `kubernetes` | Builds the cluster with Kubespray (or uses yours), writes the kubeconfig, adds and removes nodes. |
+| `storage` | Picks the storage backend from `storage_backend` and runs its role: `local-path` (built in), `nfs_storage`, `rook_ceph_storage`, `netapp_trident_csi` ([NetApp ONTAP](../deploy/netapp_ontap.md)) or `custom_storage` (your own CSI driver). |
+| `kata_containers` | Kata Containers runtime on the nodes that pass its check (opt-in). |
+| `fabric_inventory`, `fabric_netplan`, `fabric_sysctl`, `fabric_bgp`, `fabric_validate` | Rack-scale fabric: inventory from `rack-profile.yaml`, NIC configuration, kernel settings, Calico BGP peers, health checks ([Rack-scale Deployment](../rack-scale-deployment.md)). |
+| `node_feature_discovery` | Labels nodes with their hardware features (for example AMX), which model scheduling uses. |
+| `nri_cpu_balloons` | NUMA-aware CPU pinning for model pods ([NRI CPU Balloons](../customize/nri_cpu_balloons.md)). |
+| `cert_manager` | Issues TLS certificates. |
+| `istio` | Istio ambient mesh: encrypts traffic between services without sidecars ([labels](labels.md)). |
+| `metallb` | Gives `LoadBalancer` Services an IP on bare metal. |
+| `metrics_server` | The resource-metrics API (`kubectl top`, CPU/memory autoscaling, Headlamp tiles). |
+| `gateway` | The platform's front door (Gateway API): TLS, hostnames, the deny-by-default sign-in policy. `envoy_gateway` is its implementation. |
+| `postgresql` | CloudNativePG operator and the database cluster for Keycloak, LiteLLM and Langfuse. |
+| `keycloak` | Keycloak operator, instance and the platform realm for sign-in. |
+| `headlamp` | Kubernetes web UI with Keycloak sign-in (opt-in, `headlamp_enabled`) ([Headlamp](../deploy/headlamp.md)). |
+| `object_store`, `seaweedfs` | S3 object storage for logs, traces and Langfuse: `object_store` is the interface, `seaweedfs` the default backend. |
+| `observability` | Prometheus, Grafana, Loki, Tempo and the OpenTelemetry Collector ([Observability](../deploy/observability.md)). |
+| `keda` | Event-driven autoscaling (opt-in, `keda_enabled`). |
+| `velero` | Cluster backups (opt-in, `velero_enabled`; needs snapshot-capable storage). |
+| `nvidia_gpu_operator`, `gpu_observability` | NVIDIA GPU nodes on rack-scale: the GPU Operator, DCGM metrics and dashboards. |
+| `ownership` | Library role: labels what each component creates and deletes it on teardown. |
+| `upgrade_checks` | Library role: deployment records, run classes and the checks before an upgrade. |
+| `backup` | Library role used by `playbooks/backup.yaml`. |
 
 ---
 
-## CLI Usage
+## CLI usage
 
-All Toolkit Manager commands run from the repository root:
+The common commands, run from the repository root. Every flag is in the
+[CLI Reference](../customize/cli.md).
 
 ```bash
-# One-time machine setup (installs Python 3.11+, yq)
-./toolkit_manager.sh configure
-
-# Create a new environment
-./toolkit_manager.sh init inference
-
-# Create environment with the Intel® Chatbot Toolkit solution
-./toolkit_manager.sh init erag --env myenv
-
-# Create environment with a specific Intel® Chatbot Toolkit pipeline flavour
-./toolkit_manager.sh init erag --flavour docsum
-
-# Show available layers and components
-./toolkit_manager.sh show
-
-# Install infrastructure + platform + inference (via dependency auto-pull)
-./toolkit_manager.sh install inference --env local
-
-# Install specific component (auto-pulls dependencies)
-./toolkit_manager.sh install kserve --env local
-
-# Install without dependencies
-./toolkit_manager.sh install metallb --only --env local
-
-# Install a layer
-./toolkit_manager.sh install platform --env local
-
-# Install opt-in Intel® Chatbot Toolkit
-./toolkit_manager.sh install erag --env myenv
-
-# Teardown everything (cluster included)
-./toolkit_manager.sh teardown infrastructure --env local
-
-# Teardown specific component
-./toolkit_manager.sh teardown keycloak --env local
-
-# Validate health
-./toolkit_manager.sh validate inference --env local
-
-# Override a variable at runtime (pass ansible args after --)
-./toolkit_manager.sh install kserve --env local -- -e kserve_version=0.15.0
-
-# Single component without dependency auto-inclusion
-./toolkit_manager.sh install metallb --only --env local
-
-# Pass additional ansible-playbook flags (verbose mode)
-./toolkit_manager.sh install inference --env local -- -vvv
-
-# Work with multiple environments
-./toolkit_manager.sh install inference --env dev
-./toolkit_manager.sh install inference --env staging
-./toolkit_manager.sh install inference --env prod
+./toolkit_manager.sh configure                                  # once per machine: Python venv, yq, kubectl, helm
+./toolkit_manager.sh init inference --env local                 # create env/local/ for the inference layer
+./toolkit_manager.sh init erag --flavour docsum --env local      # Intel® Chatbot Toolkit with a pipeline preset
+./toolkit_manager.sh show                                       # layers and components
+./toolkit_manager.sh install inference --env local              # infrastructure + platform + inference
+./toolkit_manager.sh install kserve --env local                 # one component and its depends_on
+./toolkit_manager.sh install metallb --only --env local         # exactly that component
+./toolkit_manager.sh validate inference --env local             # read-only health checks
+./toolkit_manager.sh status --env local                         # what is installed
+./toolkit_manager.sh teardown erag --env local                  # a layer and everything above it
+./toolkit_manager.sh teardown infrastructure --env local        # everything, cluster included (asks first)
+./toolkit_manager.sh install kserve --env local -- -vvv         # pass flags to ansible-playbook
 ```
 
 ---
 
-## Version Updates
+## Changing a component's version
 
-Every Toolkit Manager component version is pinned in config, not hardcoded — to update one:
+Versions are role defaults, so you change one by setting the variable in
+`env/<name>/global_config.yaml` and installing that component again. For example, for
+cert-manager:
 
-1. Edit **one line** in `env/<name>/global_config.yaml`:
+1. Add the line to `env/<name>/global_config.yaml`:
    ```yaml
-   envoy_gateway_version: "1.4.0"    # was 1.3.0
+   certmanager_version: "<new version>"   # the role default is in roles/cert_manager/defaults/main.yaml
    ```
-
-2. Re-run:
+2. Re-run just that component:
    ```bash
-   ./toolkit_manager.sh install envoy_gateway --only --env <name>
+   ./toolkit_manager.sh install cert_manager --only --env <name>
    ```
 
-Alternatively, override at runtime without editing files:
-```bash
-./toolkit_manager.sh install envoy_gateway --only --env <name> -- -e envoy_gateway_version=1.4.0
-```
+Some components have a release switch instead of a free version. For Envoy Gateway (and the
+KServe release that matches it), set `envoy_gateway_upgrade: true`. To upgrade a whole layer
+to a newer release, follow [Upgrade a Layer](../deploy/upgrade.md).
 
 ---
 
-## Extensibility
+## Extending it
 
-Toolkit Manager is designed to grow without changes to this repo — add roles, repos, models, runtimes, or actions using the patterns below.
+### Adding a component
 
-### Adding a New Role
-
-1. Create the role directory under either repo's `roles/`:
+1. Create the role under `roles/` (here, or in a solution repo):
    ```
    roles/my_component/
-   ├── meta/main.yaml
-   ├── defaults/main.yaml
+   ├── defaults/main.yaml     # every variable it reads, with a working default
    └── tasks/
-       ├── main.yaml          # include_tasks: "{{ component_action }}.yaml"
+       ├── main.yaml          # the standard dispatcher
        ├── install.yaml
        ├── teardown.yaml
        └── validate.yaml
    ```
-
-2. Add an entry to `components.yaml` (here or in an ext repo):
+2. Add it to `components.yaml`:
    ```yaml
    components:
      - name: my_component
        layer: platform
-       order: 50
-       enabled: true
-       dependencies:
-         - cert_manager
+       enabled: "{{ my_component_enabled | default(true) | bool }}"
+       depends_on: [cert_manager]
    ```
+3. Check it with `./toolkit_manager.sh show`, then install it.
 
-3. Add default variables to `roles/my_component/defaults/main.yaml` and override in `env/<name>/global_config.yaml` if needed.
+The full contract (fields, file rules, ownership labels) is in
+[Adding a Solution](adding_solutions.md).
 
-### Adding a New Repo
+### Adding a solution layer
 
-See [Adding a Solution](adding_solutions.md) for the complete reference on creating a new solution layer with its own external repository. In brief:
+See [Adding a Solution](adding_solutions.md). In short: add `configs/repos/repos.<layer>.yaml`
+here; in your repo add `components.yaml`, `config.yaml` and the roles; then
+`./toolkit_manager.sh init <layer>`.
 
-1. Create `configs/repos/repos.<layer>.yaml` in ai-solutions with the repo entries.
-2. In your repo, create `components.yaml`, `config.yaml`, and `roles/<component>/` directories.
-3. Run `./toolkit_manager.sh init <layer>` to clone and seed configs.
+### Adding a model
 
-The installer auto-composes `ANSIBLE_ROLES_PATH` at runtime to include all ext repo roles.
+Add an entry to `env/<name>/models.yaml` (or to the catalog in the inference repo, so every
+new env gets it) and deploy it with `./model-manager deploy <name>`.
 
-### Moving Roles Between Repos
+### Adding an action
 
-Just `mv` the role directory. Ansible resolves roles by name from `roles_path` — no path coupling.
-
-### Adding a New Model (No Code Changes)
-
-Drop a YAML file in the appropriate role's `files/catalog/`:
-```
-ext/enterprise.ai-inference/roles/llm_services/files/catalog/my-new-llm.yaml
-```
-
-The install playbooks auto-discover all files in these directories.
-
-### Adding a New Serving Runtime
-
-Drop a YAML file:
-```
-ext/enterprise.ai-inference/roles/llm_services/files/runtimes/my-runtime.yaml
-```
-
-### Adding a New Action
-
-1. Add CLI support in `toolkit_manager.sh` to accept the new action (e.g., `upgrade`)
-2. Pass `component_action: upgrade` as an extra-var to `playbooks/site.yaml`
-3. Add `tasks/upgrade.yaml` to each role that needs it
+1. Accept the action in `parse_args` and `main` in `toolkit_manager.sh`.
+2. Add it to `VALID_ACTIONS` in `filter_plugins/resolve_components.py`.
+3. Allow it in the dispatcher of each role that supports it (the `component_action` check),
+   and add `tasks/<action>.yaml` to those roles.
 
 ---
 
-## Safety Features
-
-Toolkit Manager builds these safeguards into every install and teardown run:
+## Safety features
 
 | Feature | How |
-|---------|-----|
-| **Fail-fast** | `any_errors_fatal: true` in ansible.cfg — stops entire run on any failure |
-| **Idempotent** | Tasks use `failed_when: ... and 'already exists' not in stderr` patterns |
-| **Dry-run** | Pass `-- --check` to forward Ansible's check mode |
-| **Selective execution** | `--only` flag runs a single target without dependency auto-inclusion |
-| **Validation** | Dedicated `validate` action with `ansible.builtin.assert` checks |
-| **Timing** | `timer` + `profile_tasks` callbacks show per-task durations |
+|---|---|
+| **Stop on the first error** | `any_errors_fatal = true` in `ansible.cfg` |
+| **Idempotent** | A second `install` with no change makes no change ([role contract](adding_solutions.md#4-roles)) |
+| **Dry run** | `-- --check` passes Ansible's check mode through |
+| **Confirmation** | Teardown asks first and names what it removes; `--force` skips the prompt |
+| **Teardown removes only what install made** | Ownership labels ([details](adding_solutions.md#ownership-labels)) |
+| **Upgrade checks** | Before an upgrade changes anything ([Upgrade a Layer](../deploy/upgrade.md)) |
+| **Selective runs** | `--only` runs one target without its dependencies; `--skip` leaves components out |
+| **Validation** | `validate` runs each role's read-only checks |
+| **Timing** | The `timer` and `profile_tasks` callbacks print how long each task took |
 
 ---
 

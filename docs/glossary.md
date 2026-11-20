@@ -6,7 +6,7 @@ Terms used across this documentation, in alphabetical order.
 
 ---
 
-**Action.** What `toolkit_manager.sh` does to a target: `configure`, `init`, `install`, `teardown`, `validate`, `status`, or `show`. Each role implements the actions that apply to it.
+**Action.** The first word after `toolkit_manager.sh`: `configure`, `show`, `init`, `install`, `teardown`, `validate`, `status`, `add-node`, or `remove-node`. Roles implement the ones that run Ansible against a target (`install`, `teardown`, `validate`).
 
 **Ambient mesh.** Istio's sidecar-free mode. Traffic between pods is encrypted with mutual TLS by a per-node proxy (ztunnel) rather than by a proxy container injected into every pod.
 
@@ -26,19 +26,21 @@ Terms used across this documentation, in alphabetical order.
 
 **Envoy Gateway.** The Kubernetes ingress gateway that terminates TLS and admits external traffic into the cluster.
 
-**Environment (`env/<name>/`).** One deployment's state: `global_config.yaml`, per-layer configs, inventory, kubeconfig, credentials, and logs. Selected with `--env`, defaulting to `local`.
+**Environment (`env/<name>/`).** One deployment's state: `global_config.yaml`, `nodes.yaml`, per-layer `config.<layer>.yaml` files, `models.yaml`, the inventory, the kubeconfig, and logs. Created by `init`, selected with `--env`, defaulting to `local`.
 
 **Flavour.** A preset that `init <layer> --flavour <name>` seeds a layer's config from. Only layers that ship presets accept it, such as the RAG pipelines.
 
+**Headlamp.** An optional Kubernetes web UI with Keycloak sign-in, switched on with `headlamp_enabled: true`. See [Headlamp and Platform Sign-in](deploy/headlamp.md).
+
 **Idempotent.** Running the same install twice produces the same result rather than duplicating or breaking anything. Every role is written this way, which is why a failed run can simply be re-run.
 
-**Inventory.** The Kubespray-compatible `hosts.yaml` under `env/<name>/inventory/` that lists the machines and their roles. Single-node deployments get a generated localhost inventory.
+**Inventory.** The Kubespray-compatible `hosts.yaml` under `env/<name>/inventory/` that lists the machines and their roles. `init` copies a localhost inventory for single-node installs; when `nodes.yaml` lists nodes, the installer generates the inventory from it.
 
 **Keycloak.** The identity provider, always deployed. It issues the OIDC JWTs the gateway requires on every route that does not authenticate itself, and provides single sign-on and role-based access.
 
 **KServe.** The Kubernetes model-serving framework that runs the model servers and exposes them as cluster services.
 
-**Kubespray.** The upstream Ansible project used to provision the Kubernetes cluster. It is vendored under `.kubespray/` with its own virtual environment and inventory, and is driven by the `kubernetes` role.
+**Kubespray.** The upstream Ansible project used to provision the Kubernetes cluster. The first install clones the pinned release (`kubespray_version`, v2.31.0) into `.kubespray/` with its own Python virtual environment; the installer drives it for the `kubernetes` component.
 
 **Langfuse.** LLM observability (traces, prompts, token usage), deployed whenever LiteLLM is, unless `langfuse_enabled: false`.
 
@@ -47,8 +49,6 @@ Terms used across this documentation, in alphabetical order.
 **LiteLLM.** An OpenAI-compatible proxy that issues virtual API keys with per-key budgets. Always deployed with `auth_type: litellm_vkey`; optional with `jwt` (`litellm_enabled: true`).
 
 **MetalLB.** The load balancer that hands out external IP addresses on bare metal, where no cloud load balancer exists.
-
-**SeaweedFS.** S3-compatible object storage used as the backend for logs, traces, and blobs.
 
 **model-manager.** The CLI that deploys, scales, lists, and undeploys models. It downloads weights, chooses serving parameters, and creates the serving resources, so no YAML is needed.
 
@@ -60,7 +60,7 @@ Terms used across this documentation, in alphabetical order.
 
 **NUMA (non-uniform memory access).** A property of multi-socket servers where each CPU has faster access to its own memory. Ignoring it costs inference performance, which is why CPU pinning exists.
 
-**OpenVINO™ Model Server (OVMS).** An Intel model server, one of the two serving runtimes available alongside vLLM.
+**OpenVINO™ Model Server (OVMS).** An Intel model server, the other CPU serving runtime besides vLLM.
 
 **PSA (Pod Security Admission).** The Kubernetes admission controller that enforces per-namespace security levels. Which level each namespace gets is documented in [Namespace Security Labels](reference/labels.md).
 
@@ -68,9 +68,11 @@ Terms used across this documentation, in alphabetical order.
 
 **RWX (ReadWriteMany).** A volume access mode allowing several nodes to mount the same volume. Required for multi-node deployments, since model weights must be readable from every node.
 
+**SeaweedFS.** S3-compatible object storage, the default backend for Loki logs, Tempo traces, and Langfuse data (`object_store_backend: seaweedfs`).
+
 **Storage backend.** Where persistent data lives: `local-path` (single node), `nfs`, `ceph`, `netapp-trident`, or `custom` (a StorageClass your own CSI driver already provides). Set with `storage_backend`.
 
-**Target.** What an action applies to: a layer such as `platform`, a component such as `istio`, or `erag`. Dependencies resolve automatically unless you pass `--only`.
+**Target.** What an action applies to: a layer such as `platform` or `erag`, or a component such as `istio`. Dependencies resolve automatically unless you pass `--only`.
 
 **Virtual key.** A scoped API key issued by LiteLLM, with its own budget and rate limits, used instead of a Keycloak JWT when `auth_type: litellm_vkey`.
 

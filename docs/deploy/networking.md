@@ -2,35 +2,56 @@
 
 [← Docs Index](../README.md)
 
-Complete guide to network topology, IP allocation, and request routing in a stack Toolkit Manager installs and operates.
+How a request from outside the cluster reaches a model, which IP address the cluster answers on, and how to make it reachable from your network.
 
 ---
 
 ## Overview
 
-A stack that Toolkit Manager installs and operates provides **external access to AI inference endpoints** through a multi-layer architecture:
+Every request enters the cluster through one IP address and one gateway. In the default mode (`auth_type: jwt`, see [API authentication](../customize/configuration.md#api-authentication)) the path is:
 
 ```
-External Client
-    ↓ (Internet/VPN)
-Firewall/NAT (port forwarding)
-    ↓ (Layer 3 routing)
-MetalLB (Layer 2 ARP announcement)
-    ↓ (LoadBalancer Service)
-Envoy Gateway (TLS termination + JWT auth + routing)
-    ↓ (HTTPRoute matching)
-KServe Predictor Pod (vLLM inference)
+Client (curl, SDK, browser)
+    │  HTTPS to inference.<base_domain_name>
+    ▼
+Your network: DNS, and NAT/firewall if the client is outside the node subnet
+    │
+    ▼
+MetalLB IP (the gateway's LoadBalancer address)
+    │
+    ▼
+Envoy Gateway "eg-gateway": TLS termination, Keycloak JWT check, host/path routing
+    │
+    ▼
+AI gateway "ai-gateway": picks the model from the "model" field of the request
+    │
+    ▼
+Model pod (vLLM or OpenVINO™ Model Server, run by KServe)
 ```
+
+In LiteLLM mode (`auth_type: litellm_vkey`) clients call `litellm.<base_domain_name>` instead. Envoy Gateway forwards to LiteLLM, which checks the virtual key and then calls the AI gateway. The rest of the path is the same.
+
+The layers below follow that path, one component at a time.
+
+### Service addresses
+
+`routing_mode` in `global_config.yaml` decides how services are told apart:
+
+| Service | `routing_mode: subdomain` (default) | `routing_mode: path` |
+|---|---|---|
+| Inference API (`jwt` mode) | `https://inference.<domain>/v1/...` | `https://<domain>/inference/v1/...` |
+| LiteLLM API (`litellm_vkey` mode) | `https://litellm.<domain>/v1/...` | `https://<domain>/litellm/v1/...` |
+| Keycloak | `https://keycloak.<domain>` | `https://<domain>/keycloak` |
+| Grafana | `https://grafana.<domain>` | `https://<domain>/grafana` |
+| Headlamp (when enabled) | `https://headlamp.<domain>` | `https://<domain>/headlamp` |
+
+`<domain>` is `base_domain_name` (default `inteltoolkits.ai`). Plain HTTP on port 80 only redirects to HTTPS.
 
 ---
 
 ## Layer 1: MetalLB — LoadBalancer IP Assignment
 
-MetalLB is the component that gives the stack LoadBalancer IPs on bare-metal clusters that have no cloud load balancer to call.
-
-### Purpose
-
-Provides **LoadBalancer Service** support on bare-metal Kubernetes (equivalent to AWS ELB, GCP Load Balancer).
+On a cloud, the provider hands out an external IP for a Kubernetes Service of type `LoadBalancer`. Bare-metal clusters have no such provider. [MetalLB](../glossary.md) fills that gap: it gives the gateway its external IP and makes that IP reachable on your local network.
 
 ### Components
 
@@ -38,95 +59,76 @@ Provides **LoadBalancer Service** support on bare-metal Kubernetes (equivalent t
 ┌─────────────────────────────────────────────────────┐
 │ MetalLB (metallb-system namespace)                  │
 ├─────────────────────────────────────────────────────┤
-│                                                      │
+│                                                     │
 │  Controller (Deployment)                            │
-│  ├─ Watches Service type=LoadBalancer               │
-│  ├─ Allocates IP from IPAddressPool                 │
-│  └─ Updates Service.status.loadBalancer.ingress     │
-│                                                      │
-│  Speaker (DaemonSet)                                │
-│  ├─ Runs on ALL nodes                               │
-│  ├─ Announces IP via ARP (Layer 2 mode)             │
-│  ├─ Responds to "who has <IP>?" queries             │
-│  └─ Makes IP routable on local network              │
-│                                                      │
+│  ├─ Watches Services of type LoadBalancer           │
+│  ├─ Gives each one an IP from the IPAddressPool     │
+│  └─ Writes it to Service.status.loadBalancer        │
+│                                                     │
+│  Speaker (DaemonSet, one pod per node)              │
+│  ├─ Answers "who has <IP>?" (ARP) for that IP       │
+│  └─ So the local network sends packets to its node  │
+│                                                     │
 └─────────────────────────────────────────────────────┘
 ```
 
+The installer creates one pool, `default-pool`, and announces it in Layer 2 mode (an `L2Advertisement`).
+
 ### IP Allocation Strategy
 
-With `metallb_ip_range` empty, the installer picks the pool from the cluster's shape:
+With `metallb_ip_range` unset (the default), the installer picks the pool from the cluster's shape:
 
 | Cluster | Pool | Example | Why |
 |---|---|---|---|
 | **Single node** | The node IP `/32` | `10.1.1.1/32` | Reachable as it is, no extra routing |
 | **One control-plane node + workers**, kube-proxy nftables or iptables | The control-plane node IP `/32` | `10.1.1.1/32` | These kube-proxy modes put no LoadBalancer IP on the nodes |
-| **More than one control-plane node** | `.240`–`.250` in the first node's `/24` | `10.1.1.240-10.1.1.250` | MetalLB can announce a VIP from any node: if the VIP were one node's own IP, two nodes would answer ARP for it |
+| **More than one control-plane node** | `.240`–`.250` in the first node's `/24` | `10.1.1.240-10.1.1.250` | MetalLB can announce the IP from any of them: if it were one node's own IP, two nodes would answer ARP for it |
 | **kube-proxy ipvs**, more than one node | `.240`–`.250` in the first node's `/24` | `10.1.1.240-10.1.1.250` | IPVS binds every LoadBalancer IP on every node (`kube-ipvs0`), so a node IP in the pool would be taken over |
 
-The `.240`–`.250` addresses must be free on that subnet, and clients outside it may need a route or NAT at the edge. To choose the pool yourself, set `metallb_ip_range` in `global_config.yaml`. Rack-scale installs must set it, to free management-subnet addresses: see [Rack-scale deployment](../rack-scale-deployment.md).
+The `.240`–`.250` addresses must be free on that subnet, and clients outside it may need a route or NAT at the edge. To choose the pool yourself, set `metallb_ip_range` in `global_config.yaml` or `nodes.yaml`, for example `"10.1.2.1-10.1.2.14"` or `"203.0.113.50/32"`. Rack-scale installs must set it, to free management-subnet addresses: see [Rack-scale deployment](../rack-scale-deployment.md).
+
+If the cluster already has a working LoadBalancer controller (for example on a BYO cluster), the installer skips MetalLB. Set `metallb_enabled: false` to skip it yourself.
 
 ### L2 Mode Operation
 
-MetalLB operates in **Layer 2 mode** by default:
+1. The **controller** gives the gateway's Service an IP from the pool.
+2. One **speaker** becomes the owner of that IP. Envoy Gateway's Service only accepts traffic on nodes that run an Envoy proxy (control-plane nodes, see below), so the owner is a control-plane node.
+3. The owner answers ARP requests for the IP with its own MAC address.
+4. Packets for the IP arrive at that node, and kube-proxy (nftables by default) hands them to the local Envoy proxy.
 
-1. **Controller** allocates IP from pool → Service gets external IP
-2. **Leader election** — One Speaker pod becomes leader for that IP
-3. **ARP announcement** — Leader responds to ARP requests with node's MAC address
-4. **Traffic ingress** — Packets arrive at the elected node's interface
-5. **Kubernetes routing** — kube-proxy (nftables by default) forwards to Service ClusterIP
-
-**Characteristics:**
-- ✅ Simple setup (no BGP configuration needed)
-- ✅ Works on any L2 network
-- ⚠️ Single node handles all traffic (leader election)
-- ⚠️ On node failure, new leader elected (~10 seconds failover)
+Good to know:
+- No router configuration is needed; it works on any flat (Layer 2) network.
+- One node receives all traffic for the IP at a time.
+- If that node fails, another speaker takes the IP over, usually within seconds.
 
 ---
 
 ## Layer 2: Envoy Gateway — Ingress & Routing
 
-Envoy Gateway is the ingress and auth-enforcement point for every request the stack serves.
+[Envoy Gateway](../glossary.md) is the single entry point. It implements the Kubernetes **Gateway API** and:
 
-### Purpose
+- terminates TLS: `gateway_tls_mode: selfsigned` (default, an internal CA) or `custom` (your certificate files);
+- checks a Keycloak JWT on every request, unless the route has its own policy (deny by default);
+- routes by hostname (subdomain mode) or by path (path mode) to the service behind it;
+- applies a request timeout of `gateway_request_timeout` (default `600s`), long enough for slow model answers.
 
-Kubernetes **Gateway API** implementation providing:
-- TLS termination (self-signed, Let's Encrypt, or custom certs)
-- JWT authentication via Keycloak
-- HTTP routing to backend services
-- Load balancing across pods
+In selfsigned mode the CA certificate is saved as `env/<env>/logs/ai-solutions-ca.crt`. Give it to clients (`curl --cacert ...`) instead of turning certificate checks off.
 
-### How Envoy Gateway Gets Its IP
+### How Envoy Gateway gets its IP
 
-```yaml
-# Created automatically by Envoy Gateway
-apiVersion: v1
-kind: Service
-metadata:
-  name: envoy-eg-gateway-<hash>
-  namespace: envoy-gateway-system
-  labels:
-    gateway.envoyproxy.io/owning-gateway-name: eg-gateway
-spec:
-  type: LoadBalancer  # ← Triggers MetalLB IP allocation
-  ports:
-    - name: http
-      port: 80
-      targetPort: 8080
-    - name: https
-      port: 443
-      targetPort: 8443
-  selector:
-    gateway.envoyproxy.io/owning-gateway-name: eg-gateway
+Envoy Gateway runs its proxy as a **DaemonSet on every control-plane node** and puts a Service of type `LoadBalancer` in front of it. MetalLB gives that Service its IP. To see it:
+
+```bash
+kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway
+# EXTERNAL-IP is the address clients connect to
 ```
 
-**Sequence:**
-1. Envoy Gateway controller creates LoadBalancer Service
-2. MetalLB controller sees the Service, allocates IP from pool
-3. MetalLB Speaker announces IP via ARP on local network
-4. Service status updated: `status.loadBalancer.ingress[0].ip: 10.1.1.1`
+On OpenShift there is no MetalLB: the OpenShift router owns ports 80/443 and forwards to Envoy, which then runs as a normal Deployment. See [Deploy on OpenShift](openshift.md).
 
-### Gateway Resource
+### Gateway resource
+
+The installer creates one Gateway, `eg-gateway` in `envoy-gateway-system` (simplified):
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -135,550 +137,364 @@ metadata:
   name: eg-gateway
   namespace: envoy-gateway-system
 spec:
-  gatewayClassName: eg
+  gatewayClassName: eg            # "enterprise-ai" if another controller already owns "eg"
   listeners:
-    - name: http
+    - name: http                  # port 80: only the redirect to HTTPS
       protocol: HTTP
       port: 80
-      allowedRoutes:
-        namespaces:
-          from: All
-    - name: https
+    - name: https                 # "*.<domain>": routes not on a ListenerSet
       protocol: HTTPS
       port: 443
       hostname: "*.inteltoolkits.ai"
       tls:
         mode: Terminate
         certificateRefs:
-          - kind: Secret
-            name: gateway-tls
-      allowedRoutes:
-        namespaces:
-          from: All
+          - name: gateway-wildcard-tls   # gateway-tls in custom mode
+    - name: https-apex            # the bare domain; every service in path mode
+      protocol: HTTPS
+      port: 443
+      hostname: "inteltoolkits.ai"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: gateway-tls
 ```
 
-### SecurityPolicy (JWT Authentication)
+### How services attach to the gateway
+
+Each service publishes its own host. How it does so depends on the Envoy Gateway version:
+
+- **Envoy Gateway 1.9 or newer** (`envoy_gateway_upgrade: true` installs 1.9.3): each service adds a **ListenerSet** in its own namespace, with a listener and certificate for its hostname. The Gateway accepts ListenerSets only from namespaces labelled `gateway.enterprise-ai/allow-listenersets: "true"`. An admission policy accepts a hostname only if it is listed in that namespace's `gateway.enterprise-ai/hostnames` annotation.
+- **Envoy Gateway 1.7.5** (the default) has no ListenerSets. Services attach their routes to the shared `*.<domain>` listener, and the same hostname grants decide which namespace may serve which host.
+- **Path mode**: every service lives on the apex host. Only namespaces labelled `gateway.enterprise-ai/allow-apex-routes: "true"` may attach there, and only under the paths granted to them in the `gateway-path-grants` ConfigMap.
+
+Grants live on namespaces or in the gateway namespace, so only cluster operators can hand out hostnames and paths.
+
+### SecurityPolicy (JWT authentication)
+
+One gateway-wide policy, `gateway-auth`, requires a Keycloak token on every request:
 
 ```yaml
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
-  name: jwt-auth
+  name: gateway-auth
   namespace: envoy-gateway-system
 spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: Gateway
-    name: eg-gateway
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: eg-gateway
   jwt:
     providers:
       - name: keycloak
-        issuer: https://keycloak.inteltoolkits.ai/realms/inference
+        issuer: https://keycloak.inteltoolkits.ai/realms/inference   # path mode: https://<domain>/keycloak/realms/inference
         audiences:
           - inference-client
         remoteJWKS:
-          uri: https://keycloak.inteltoolkits.ai/realms/inference/protocol/openid-connect/certs
+          # fetched inside the cluster, not through the gateway
+          uri: http://keycloak-service.keycloak.svc.cluster.local:8080/realms/inference/protocol/openid-connect/certs
 ```
+
+Routes that sign users in or check their own credential (UI logins, the LiteLLM API) attach their own SecurityPolicy, which replaces this one for that route. With `keycloak_enabled: false` the policy denies every request instead.
 
 ---
 
-## Layer 3: KServe — Model Serving
+## Layer 3: Model Serving — AI Gateway and KServe
 
-KServe is the model-serving layer the stack uses to run vLLM and OpenVINO™ Model Server workloads on Kubernetes.
+The inference layer (from the inference repo) adds a second, internal gateway and the model pods.
 
-### HTTPRoute Auto-Creation
+In `jwt` mode:
 
-When you deploy an `LLMInferenceService`, KServe **automatically creates** an HTTPRoute:
+1. The inference layer publishes `inference.<domain>` and creates the HTTPRoute `inference-external` in `envoy-gateway-system`. It sends every request for that host to the AI gateway's Service on port 80.
+2. The **AI gateway** (`ai-gateway`, Envoy AI Gateway, internal only) reads the `"model"` field from the JSON body and picks that model's backend.
+3. **KServe** runs each model as its own workload. For an `LLMInferenceService` the backend is an `InferencePool`: a scheduler picks the least-loaded replica. Other models are reached through their Service on port 8000.
 
-```yaml
-# Auto-created by KServe controller
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: llama-3-2-1b
-  namespace: llm-inference
-  ownerReferences:
-    - apiVersion: serving.kserve.io/v1alpha1
-      kind: LLMInferenceService
-      name: llama-3-2-1b
-spec:
-  parentRefs:
-    - name: eg-gateway
-      namespace: envoy-gateway-system
-  hostnames:
-    - llama-3-2-1b.inteltoolkits.ai
-  rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      backendRefs:
-        - name: llama-3-2-1b-predictor
-          port: 8000
-```
+In `litellm_vkey` mode `inference.<domain>` is not published at all (requests there get `404`). LiteLLM calls the AI gateway over the cluster network instead.
 
-### Predictor Service
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: llama-3-2-1b-predictor
-  namespace: llm-inference
-spec:
-  type: ClusterIP
-  selector:
-    serving.kserve.io/inferenceservice: llama-3-2-1b
-  ports:
-    - port: 8000
-      targetPort: 8000
-```
+For every resource name and the full detail, see the inference repo's request flow guide (after `init`: `ext/enterprise.ai-inference/docs/reference/request_flow.md`) and its [Accessing Models](../../ext/enterprise.ai-inference/docs/deploy/accessing_models.md) guide.
 
 ---
 
 ## Layer 4: Istio Ambient — Service Mesh (mTLS)
 
-In a stack Toolkit Manager installs, all workload namespaces are enrolled in **Istio ambient mode**. This provides transparent mutual TLS (mTLS) between pods via the `ztunnel` DaemonSet — no sidecars injected.
+Workload namespaces are enrolled in **Istio ambient mode** (`istio_enabled: true`, the default). Traffic between pods is encrypted and authenticated with mutual TLS (mTLS) by the `ztunnel` DaemonSet. No sidecars are injected, and applications don't change.
 
-- **L4 (ztunnel)**: Automatic mTLS for all east-west pod traffic. Zero config, zero application changes.
-- **Enforcement is STRICT**: a mesh-wide `PeerAuthentication` named `default` in `istio-system` (`mtls.mode: STRICT`) makes ztunnel **reject any plaintext inbound** to a mesh workload. Configurable via `istio_mtls_mode`; applied by the platform `istio` role.
-- **Exceptions are owned by the component that creates the workload**, not centralized in the istio role: each role applies its own `PeerAuthentication` right after its ambient-label task. The istio role owns only the mesh-wide default and the `cert-manager` exception (istio-csr is its own dependency). This way nothing pre-defines a namespace/port for a component that may not be installed.
-- **Mesh-edge exceptions** — namespaces/workloads that receive traffic from *outside* the mesh get a `PeerAuthentication: PERMISSIVE` overriding STRICT for them only:
-  - `cert-manager` (namespace-wide, **istio role**) — the trust root (istio-csr CA + cert-manager webhook); STRICT here deadlocks cert bootstrap.
-  - `eg-gateway` (selector-scoped, **envoy_gateway role**) — the north-south ingress edge proxy; external clients present no mesh identity. The internal `ai-gateway` proxy in the same namespace stays STRICT (reached in-mesh via passthrough).
-- **Admission-webhook exceptions** — the kube-apiserver is host-network with **no mesh identity**, so STRICT rejects its calls to any in-mesh admission webhook (symptom: `failed calling webhook … EOF` at admission time). Each owning role gives its operator a `PeerAuthentication` with `portLevelMtls` opening **only** the webhook container port (`9443` for CNPG/KServe/LWS/AI-gateway/envoy-gateway controllers; `10250`/`6443` for the Prometheus operator/adapter; `10250` for metrics-server's aggregated API) as PERMISSIVE, with an `AuthorizationPolicy` letting only the node addresses reach it where nothing else calls that port — every other port (e.g. metrics scrape) stays STRICT.
-- **Calico handles L3 routing** (pod-to-pod IP, VXLAN or direct), Istio handles **L4 identity and encryption** on top.
-- Namespaces excluded from the mesh: `metallb-system` (raw ARP), `csi-driver-nfs` (host network; the CSI driver mounts NFS on the node, not through a pod's network), `kube-system`.
+- **Pod-to-pod traffic (L4):** ztunnel adds mTLS automatically.
+- **Enforcement is STRICT:** a mesh-wide `PeerAuthentication` named `default` in `istio-system` (`mtls.mode: STRICT`) makes ztunnel reject any plaintext traffic into a mesh workload. Set it with `istio_mtls_mode`; the platform `istio` role applies it.
+- **Each component owns its exceptions:** the role that creates a workload also applies its `PeerAuthentication`, right after enrolling its namespace. The `istio` role owns only the mesh-wide default and the `cert-manager` exception. So nothing reserves a namespace or port for a component that isn't installed.
+- **Mesh-edge exceptions:** workloads that receive traffic from *outside* the mesh get `PeerAuthentication: PERMISSIVE`, for them only:
+  - `cert-manager` (whole namespace, **istio role**): the trust root (istio-csr CA and the cert-manager webhook). STRICT here would block certificate bootstrap.
+  - `eg-gateway` (its pods only, **envoy_gateway role**): the edge proxy. External clients have no mesh identity. The internal `ai-gateway` proxy in the same namespace stays STRICT.
+- **Admission-webhook exceptions:** the Kubernetes API server runs on the host network and has **no mesh identity**, so STRICT would reject its calls to admission webhooks inside the mesh (symptom: `failed calling webhook … EOF`). Each operator's role opens **only** its webhook port as PERMISSIVE (`9443` for the CNPG, KServe, LWS, AI gateway and Envoy Gateway controllers; `10250`/`6443` for the Prometheus operator and adapter; `10250` for metrics-server). Where nothing else uses that port, an `AuthorizationPolicy` lets only the node addresses reach it. Every other port stays STRICT.
+- **Calico** routes pod IPs between nodes; Istio adds identity and encryption on top.
+- **Not in the mesh:** `metallb-system` (raw ARP), `csi-driver-nfs` (host network; it mounts NFS on the node), `kube-system`.
 
-The ambient mesh is transparent to the request flow described below — it adds ~0.1-0.3ms per hop for encryption/decryption but does not change the routing topology.
+The mesh doesn't change the request path described here. It adds a small encryption cost per hop.
 
 ---
 
 ## Complete Request Flow
 
-Here is every hop an inference request takes through the stack, from the external client to the vLLM predictor pod and back.
-
-### Scenario: Client Requests Inference
+Every hop of one inference request in the default `jwt` mode, on a cluster with one control-plane node (`10.1.1.1`) and two workers:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [1] External Client (e.g., curl from laptop)                           │
-│     HTTPS POST https://llama-3-2-1b.inteltoolkits.ai/v1/completions     │
-│     Authorization: Bearer eyJhbGc...                                    │
-│     Body: {"prompt": "Hello", "max_tokens": 100}                       │
+│ [1] Client                                                             │
+│     POST https://inference.inteltoolkits.ai/v1/chat/completions        │
+│     Authorization: Bearer <Keycloak JWT>                               │
+│     Body: {"model": "qwen3-0-6b", "messages": [...]}                   │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [2] DNS Resolution                                                      │
-│     llama-3-2-1b.inteltoolkits.ai → 203.0.113.50 (public IP)          │
+│ [2] DNS: inference.inteltoolkits.ai → the gateway's MetalLB IP         │
+│     (or a public IP that your firewall NATs to it)                     │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [3] Firewall/NAT (network edge)                                        │
-│     Port forwarding: 203.0.113.50:443 → 10.1.1.1:443                  │
-│     Latency: ~0.01ms (hardware) to ~1ms (software NAT)                │
+│ [3] MetalLB: the control-plane node answers ARP for 10.1.1.1           │
+│     kube-proxy hands the packet to the Envoy proxy on that node        │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [4] Network Layer 2 — ARP Resolution                                   │
-│     Switch: "Who has 10.1.1.1?"                                        │
-│     MetalLB Speaker on master: "I do! MAC: aa:bb:cc:..."               │
-│     Packet delivered to master node's network interface                │
-│     Latency: <0.001ms (hardware switching)                             │
+│ [4] Envoy Gateway (eg-gateway proxy, on the control-plane node)        │
+│     ├─ TLS terminated with the gateway certificate                     │
+│     ├─ JWT checked against Keycloak (realm inference)                  │
+│     │    missing / invalid / expired → 401, request stops here         │
+│     └─ Host inference.inteltoolkits.ai → HTTPRoute inference-external  │
+│          → AI gateway Service, port 80                                 │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [5] Master Node (10.1.1.1) — Kernel Routing                            │
-│     iptables/IPVS: 10.1.1.1:443 → ClusterIP 10.96.10.50:443           │
-│     Service: envoy-eg-gateway-<hash>                                   │
-│     kube-proxy load-balances to Envoy Gateway pod                      │
-│     (Pod could be on master or any worker node)                        │
-│     Latency: <0.1ms (iptables) or <0.01ms (IPVS)                      │
+│ [5] AI gateway (ai-gateway proxy)                                      │
+│     ├─ Reads "model": "qwen3-0-6b" from the body                       │
+│     └─ Asks the model's scheduler (InferencePool) for the best replica │
 └────────────────────────────────────────────────────────────────────────┘
-                              ↓
+                              ↓  pod network (Calico), mTLS by Istio
 ┌────────────────────────────────────────────────────────────────────────┐
-│ [6] Envoy Gateway Pod (e.g., running on worker2: 10.1.1.3)            │
-│                                                                         │
-│     ┌─────────────────────────────────────────────┐                   │
-│     │ TLS Termination                             │                   │
-│     │ - Decrypt HTTPS using gateway-tls secret    │                   │
-│     │ Latency: ~1-5ms (RSA/ECDSA handshake)       │                   │
-│     └─────────────────────────────────────────────┘                   │
-│                         ↓                                               │
-│     ┌─────────────────────────────────────────────┐                   │
-│     │ JWT Validation (SecurityPolicy)             │                   │
-│     │ - Extract Bearer token from header          │                   │
-│     │ - Verify signature with Keycloak JWKS       │                   │
-│     │ - Check issuer, audience, expiration        │                   │
-│     │ Latency: ~1-5ms (JWKS cached after first)   │                   │
-│     └─────────────────────────────────────────────┘                   │
-│                         ↓                                               │
-│     ┌─────────────────────────────────────────────┐                   │
-│     │ HTTPRoute Matching                          │                   │
-│     │ - Host: llama-3-2-1b.inteltoolkits.ai       │                   │
-│     │ - Path: /v1/completions                     │                   │
-│     │ → Match found: route to llm-inference/      │                   │
-│     │   llama-3-2-1b-predictor:8000               │                   │
-│     │ Latency: <0.1ms (in-memory routing table)   │                   │
-│     └─────────────────────────────────────────────┘                   │
-│                         ↓                                               │
-│     ┌─────────────────────────────────────────────┐                   │
-│     │ Load Balance to Backend                     │                   │
-│     │ - Query available pods via Kubernetes API   │                   │
-│     │ - Select healthy replica (round-robin)      │                   │
-│     │ Latency: <0.5ms                             │                   │
-│     └─────────────────────────────────────────────┘                   │
+│ [6] Model pod (llm-inference namespace, on a worker node)              │
+│     vLLM or OpenVINO Model Server computes the answer on port 8000     │
+│     ← nearly all of the request's time is spent here                   │
 └────────────────────────────────────────────────────────────────────────┘
                               ↓
-┌────────────────────────────────────────────────────────────────────────┐
-│ [7] Pod Network — Calico CNI                                           │
-│     Envoy pod (worker2: 10.1.1.3)                                      │
-│       → vLLM pod (worker1: 10.1.1.2)                                   │
-│     Calico direct routing (if same subnet) OR VXLAN overlay            │
-│     Latency: ~0.1ms (direct) or ~0.5ms (VXLAN)                        │
-└────────────────────────────────────────────────────────────────────────┘
-                              ↓
-┌────────────────────────────────────────────────────────────────────────┐
-│ [8] vLLM Predictor Pod (llm-inference namespace)                       │
-│     Name: llama-3-2-1b-predictor-<hash>                                │
-│     Node: worker1 (10.1.1.2)                                           │
-│                                                                         │
-│     ┌─────────────────────────────────────────────┐                   │
-│     │ vLLM Engine                                 │                   │
-│     │ - Model: Llama-3.2-1B-Instruct              │                   │
-│     │ - CPU: 8 cores (pinned by cpumanager)       │                   │
-│     │ - Memory: 24Gi                              │                   │
-│     │ - Process inference request                 │                   │
-│     │ Latency: ~50-500ms (model-dependent)        │                   │
-│     │ ← THIS IS 99% OF TOTAL LATENCY ←            │                   │
-│     └─────────────────────────────────────────────┘                   │
-│                         ↓                                               │
-│     Response: {"choices": [...], "usage": {...}}                       │
-└────────────────────────────────────────────────────────────────────────┘
-                              ↓
-        [Response path: reverse through all layers]
-                              ↓
-                    Client receives inference result
+          The response goes back the same way to the client
 ```
 
-### Latency Breakdown
-
-| Layer | Operation | Typical Latency | % of Total |
-|-------|-----------|----------------|------------|
-| **NAT/Firewall** | Port forwarding | 0.01 - 1ms | <0.2% |
-| **MetalLB** | ARP + L2 routing | <0.001ms | <0.001% |
-| **kube-proxy** | nftables (default), iptables or IPVS | 0.01 - 0.1ms | <0.02% |
-| **Envoy Gateway** | TLS + JWT + routing | 2 - 10ms | 1-2% |
-| **Calico CNI** | Pod-to-pod network | 0.1 - 0.5ms | <0.1% |
-| **vLLM Inference** | Model computation | 50 - 500ms | **98%** |
-
-**Total network overhead: ~2-12ms** (negligible compared to inference time)
+The network hops add a few milliseconds at most, mostly for TLS and the JWT check. Generating the answer takes from tens of milliseconds to many seconds, depending on the model and prompt.
 
 ---
 
 ## Multi-Node Network Topology
 
-A typical multi-node stack that Toolkit Manager installs looks like this at the network layer.
-
-### Example: 1 Master + 2 Workers
+### Example: 1 control-plane node + 2 workers
 
 ```
-                    External Network (Internet)
-                              │
-                              │ DNS: *.inteltoolkits.ai
-                              │      → 203.0.113.50
-                              ▼
-                    ┌───────────────────┐
-                    │ Firewall/Router   │
-                    │ Public: 203.0.113.50│
-                    │ NAT: 443→10.1.1.1:443│
-                    └───────────────────┘
-                              │
-            ┌─────────────────┼─────────────────┐
-            │   Private Network (10.1.1.0/24)   │
-            └─────────────────┼─────────────────┘
-                              │
-            ┌─────────────────┼─────────────────┐
-            │                 │                 │
-      ┌─────▼────┐      ┌─────▼────┐      ┌────▼─────┐
-      │ Master   │      │ Worker1  │      │ Worker2  │
-      │10.1.1.1  │      │10.1.1.2  │      │10.1.1.3  │
-      └──────────┘      └──────────┘      └──────────┘
-            │                 │                 │
-            │    MetalLB IP: 10.1.1.1 (master)  │
-            │    Speaker elects master as owner │
-            │                 │                 │
-            └─────────────────┼─────────────────┘
-                              │
-                    Kubernetes Services
-                    (ClusterIP: 10.96.0.0/12)
-                              │
-            ┌─────────────────┼─────────────────┐
-            │                 │                 │
-    ┌───────▼──────┐  ┌───────▼──────┐  ┌──────▼───────┐
-    │ Envoy Pod    │  │ vLLM Pod     │  │ Keycloak Pod │
-    │ (any node)   │  │ (worker1)    │  │ (master)     │
-    └──────────────┘  └──────────────┘  └──────────────┘
-            │                 │                 │
-            └─────────────────┼─────────────────┘
-                              │
-                      Pod Network (Calico)
-                      (10.244.0.0/16 VXLAN)
+                         Clients
+                         │  DNS: *.inteltoolkits.ai → 10.1.1.1
+                         │  (or a public IP NATed to it)
+                         ▼
+          Node network 10.1.1.0/24
+       ┌─────────────────┼─────────────────┐
+       │                 │                 │
+ ┌─────▼──────┐    ┌─────▼──────┐    ┌─────▼──────┐
+ │ Control    │    │ Worker1    │    │ Worker2    │
+ │ plane      │    │ 10.1.1.2   │    │ 10.1.1.3   │
+ │ 10.1.1.1   │    │            │    │            │
+ │            │    │ model pods │    │ model pods │
+ │ MetalLB IP │    └─────┬──────┘    └─────┬──────┘
+ │ Envoy proxy│          │                 │
+ │ Keycloak,  │          │                 │
+ │ PostgreSQL │          │                 │
+ └─────┬──────┘          │                 │
+       └─────────────────┴─────────────────┘
+       Pod network (Calico): 10.233.64.0/18
+       Services (ClusterIP): 10.233.0.0/18
 ```
 
-### Traffic Flow Detail
+- The MetalLB IP is the control-plane node's own IP here (see [IP Allocation Strategy](#ip-allocation-strategy)).
+- The Envoy proxy runs on the control-plane node. Platform pods prefer it and model pods prefer the workers ([Node Topology](../customize/node_topology.md)).
+- The pod and Service ranges are the defaults, `kubernetes_cluster_cidr` and `kubernetes_service_cidr`. Change them in `global_config.yaml` if they overlap your network.
 
-**External request → Master:**
-1. Client sends to `203.0.113.50:443`
-2. Firewall NATs to `10.1.1.1:443`
-3. Arrives at master's `eth0` interface
+### Traffic flow
 
-**Master → Envoy Gateway pod (could be on worker2):**
-1. Master kernel: iptables DNAT `10.1.1.1:443` → ClusterIP `10.96.10.50:443`
-2. kube-proxy load-balances to Envoy pod IP `10.244.2.5` (on worker2)
-3. Calico routes: master (`10.1.1.1`) → worker2 (`10.1.1.3`) via VXLAN
-4. Packet arrives at Envoy pod
-
-**Envoy pod → vLLM pod (on worker1):**
-1. Envoy resolves backend: `llama-3-2-1b-predictor.llm-inference.svc:8000`
-2. DNS returns ClusterIP: `10.96.20.100`
-3. kube-proxy load-balances to vLLM pod IP `10.244.1.10` (on worker1)
-4. Calico routes: worker2 (`10.1.1.3`) → worker1 (`10.1.1.2`) direct or VXLAN
-
-**Total hops:**
-- External → Master: **1 hop** (NAT at edge)
-- Master → Envoy pod: **1 hop** (Calico CNI)
-- Envoy pod → vLLM pod: **1 hop** (Calico CNI)
-- **Total: 3 hops**, each <1ms
+1. The client connects to `10.1.1.1:443` (directly, or through NAT at your network edge).
+2. The packet arrives at the control-plane node, where the Envoy proxy runs.
+3. Envoy sends the request to the AI gateway, which picks a model replica, for example on `worker1`.
+4. Calico carries the packet from the control-plane node to `worker1`.
 
 ---
 
 ## Multi-Master HA Topology
 
-For production, high-availability clusters that Toolkit Manager installs, MetalLB fails over across multiple control-plane nodes instead of relying on a single master.
+With three control-plane nodes, every one of them runs an Envoy proxy, and MetalLB can move the gateway IP between them.
 
-### Example: 3 Masters + 2 Workers
+### Example: 3 control-plane nodes + 2 workers
 
 ```
-                    External Network
-                              │
-                    ┌─────────▼────────┐
-                    │  External LB     │
-                    │  (HAProxy/nginx) │
-                    │  203.0.113.50    │
-                    └──────────────────┘
-                              │
-            Round-robin across masters:
-            ├─→ 10.1.1.1:443 (master1)
-            ├─→ 10.1.1.2:443 (master2)
-            └─→ 10.1.1.3:443 (master3)
-                              │
-            ┌─────────────────┼─────────────────┐
-            │   Private Network (10.1.1.0/24)   │
-            └─────────────────┼─────────────────┘
-                              │
-      ┌───────────┬───────────┼───────────┬───────────┐
-      │           │           │           │           │
- ┌────▼───┐ ┌────▼───┐ ┌────▼───┐ ┌─────▼──┐ ┌─────▼──┐
- │Master1 │ │Master2 │ │Master3 │ │Worker1 │ │Worker2 │
- │10.1.1.1│ │10.1.1.2│ │10.1.1.3│ │10.1.1.10│ │10.1.1.11│
- └────────┘ └────────┘ └────────┘ └────────┘ └─────────┘
-      │           │           │           │           │
-      │  MetalLB IP range: 10.1.1.1-10.1.1.3         │
-      │  Speaker can elect any master as owner       │
-      │  (Failover on master failure)                │
-      └───────────┴───────────┴───────────┴───────────┘
+                    Clients
+                       │  DNS: *.inteltoolkits.ai → 10.1.1.240
+                       ▼
+             MetalLB IP 10.1.1.240
+        (owned by one control-plane node;
+         another takes over if it fails)
+                       │
+   ┌───────────────────┼───────────────────┐
+   │                   │                   │
+┌──▼───────┐     ┌─────▼────┐       ┌──────▼───┐
+│ Master1  │     │ Master2  │       │ Master3  │
+│ 10.1.1.1 │     │ 10.1.1.2 │       │ 10.1.1.3 │
+│ Envoy    │     │ Envoy    │       │ Envoy    │
+│ etcd     │     │ etcd     │       │ etcd     │
+└──────────┘     └─────┬────┘       └──────────┘
+                       │
+         ┌─────────────┴─────────────┐
+   ┌─────▼─────┐               ┌─────▼─────┐
+   │ Worker1   │               │ Worker2   │
+   │ 10.1.1.10 │               │ 10.1.1.11 │
+   └───────────┘               └───────────┘
 ```
 
-**HA Benefits:**
-- ✅ External LB distributes load across all 3 masters
-- ✅ If one master fails, external LB routes to healthy masters
-- ✅ MetalLB can failover IP ownership between masters
-- ✅ No single point of failure
+- With more than one control-plane node, the automatic pool is `10.1.1.240-10.1.1.250`, so the gateway gets `10.1.1.240`. Those addresses must be free; otherwise set `metallb_ip_range`.
+- If the node that owns the IP fails, MetalLB moves it to another control-plane node, and its local Envoy proxy keeps serving.
+- etcd keeps working while 2 of the 3 control-plane nodes are up.
 
-**Performance:**
-- External LB adds: ~1-5ms (still negligible vs inference)
-- Same internal routing as single-master setup
+An external load balancer is not needed. If you put one in front anyway, point it at the MetalLB IP, not at the node IPs.
 
 ---
 
 ## External Access Configuration
 
-To reach a cluster that Toolkit Manager installed from outside the private network, configure DNS and firewall rules as follows.
+To reach the cluster from outside the node network, give clients a name that resolves to the gateway, and, if needed, forward traffic to it.
 
-### DNS Setup
+### Step 1 — Find the gateway IP
 
-**Option 1: Wildcard DNS (recommended for production)**
+```bash
+export KUBECONFIG=$(pwd)/env/<env>/kubeconfig.yaml
+kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
+```
+
+### Step 2 — Set up DNS
+
+**Option 1: wildcard record (recommended).** One record covers every subdomain:
 ```
 *.inteltoolkits.ai.  IN  A  203.0.113.50
 ```
-
-**Option 2: Individual records**
+In path mode, add a record for the bare domain too:
 ```
-llama-3-2-1b.inteltoolkits.ai.  IN  A  203.0.113.50
-keycloak.inteltoolkits.ai.      IN  A  203.0.113.50
+inteltoolkits.ai.    IN  A  203.0.113.50
 ```
 
-**Option 3: /etc/hosts (testing)**
+**Option 2: one record per service:**
+```
+inference.inteltoolkits.ai.  IN  A  203.0.113.50
+keycloak.inteltoolkits.ai.   IN  A  203.0.113.50
+grafana.inteltoolkits.ai.    IN  A  203.0.113.50
+```
+
+**Option 3: `/etc/hosts` on the client (for testing):**
 ```bash
-# /etc/hosts on client machine
-203.0.113.50  llama-3-2-1b.inteltoolkits.ai
-203.0.113.50  keycloak.inteltoolkits.ai
+203.0.113.50  inference.inteltoolkits.ai keycloak.inteltoolkits.ai grafana.inteltoolkits.ai
 ```
 
-### Firewall Configuration
+Use the gateway IP from step 1 if clients are on the node network, or your public IP if they come through NAT.
 
-**iptables (if master is the firewall):**
+### Step 3 — Forward traffic (only if clients are outside the node network)
+
+Forward TCP ports 443 and 80 from your public IP to the gateway IP. On a dedicated firewall or router, add a port-forwarding rule. On a Linux host acting as the router:
+
 ```bash
-# Enable IP forwarding
+# Let the host forward packets
 sysctl -w net.ipv4.ip_forward=1
 
-# Port forwarding
+# Send public :443 and :80 to the gateway IP (10.1.1.1 here)
 iptables -t nat -A PREROUTING -d 203.0.113.50 -p tcp --dport 443 \
   -j DNAT --to-destination 10.1.1.1:443
-
 iptables -t nat -A PREROUTING -d 203.0.113.50 -p tcp --dport 80 \
   -j DNAT --to-destination 10.1.1.1:80
 
-# Allow forwarding
+# Allow the forwarded traffic and the replies
 iptables -A FORWARD -d 10.1.1.1 -j ACCEPT
 iptables -A FORWARD -s 10.1.1.1 -j ACCEPT
-
-# Masquerade
 iptables -t nat -A POSTROUTING -s 10.1.1.0/24 -j MASQUERADE
 
-# Persist
+# Keep the rules after a reboot (iptables-persistent)
 iptables-save > /etc/iptables/rules.v4
 ```
 
-**External HAProxy (multi-master HA):**
-```
-# /etc/haproxy/haproxy.cfg
-frontend k8s_https
-    bind 203.0.113.50:443
-    mode tcp
-    default_backend k8s_masters
+Don't run these on a cluster node: Kubernetes manages the firewall rules there.
 
-backend k8s_masters
-    mode tcp
-    balance roundrobin
-    option tcp-check
-    server master1 10.1.1.1:443 check
-    server master2 10.1.1.2:443 check
-    server master3 10.1.1.3:443 check
+### Step 4 — Check it works
+
+```bash
+curl --cacert env/<env>/logs/ai-solutions-ca.crt https://inference.inteltoolkits.ai/v1/models
+# 401 means the gateway answered and asks for a token: networking is working
 ```
 
 ---
 
-## Performance Optimization
+## Performance Notes
 
-The networking defaults Toolkit Manager applies are already tuned for near-zero overhead; the patterns below explain why and how to go further.
+The defaults already keep network overhead small:
 
-### Zero-Overhead Pattern
+- **A node IP as the MetalLB IP where it is safe** (a single node, or one control-plane node with nftables or iptables), so no extra router hop. See [IP Allocation Strategy](#ip-allocation-strategy).
+- **kube-proxy in nftables mode** (the default, `kubernetes_kube_proxy_mode: nftables`): fast rule matching, and unlike IPVS it never binds LoadBalancer IPs to the nodes.
+- **NAT on a dedicated firewall or router** rather than on a cluster node.
 
-✅ **A node IP as the MetalLB VIP where it is safe**: a single node, or one control-plane node with kube-proxy nftables or iptables (see [IP Allocation Strategy](#ip-allocation-strategy))
-
-✅ **Hardware NAT at network edge** (dedicated firewall/router)
-- Overhead: ~0.01ms (wire speed)
-
-✅ **Direct node-to-node routing** (Calico without VXLAN if same subnet)
-- Configure Calico in direct routing mode for <0.1ms pod-to-pod
-
-✅ **nftables mode for kube-proxy** (the default, `kubernetes_kube_proxy_mode: nftables`)
-- IPVS-level performance without IPVS's `kube-ipvs0` interface, so a LoadBalancer IP is never bound to the nodes (see [IP Allocation Strategy](#ip-allocation-strategy))
-
-### BGP Mode (Advanced)
-
-For **true multi-node load balancing** without leader election:
-
-```yaml
-# MetalLB BGP configuration
-apiVersion: metallb.io/v1beta2
-kind: BGPPeer
-metadata:
-  name: router
-  namespace: metallb-system
-spec:
-  myASN: 64500
-  peerASN: 64501
-  peerAddress: 10.1.1.254  # Your BGP router
-
----
-apiVersion: metallb.io/v1beta1
-kind: BGPAdvertisement
-metadata:
-  name: bgp-advert
-  namespace: metallb-system
-spec:
-  ipAddressPools:
-    - default-pool
-```
-
-**Benefits:**
-- Multiple nodes announce same IP (ECMP)
-- Router distributes traffic across all nodes
-- Automatic failover (BGP convergence ~1-2 seconds)
+MetalLB runs in Layer 2 mode only: the installer does not configure BGP peering.
 
 ---
 
 ## Troubleshooting
 
-Diagnostic commands for the networking layer of a stack Toolkit Manager installed, in the order a request travels.
+Commands for each hop, in the order a request travels.
 
-### Check MetalLB IP allocation
+### 1. Does the gateway have an IP?
 ```bash
-kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name
-# Should show EXTERNAL-IP from MetalLB pool
+kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway
+# EXTERNAL-IP should be an address from the MetalLB pool, not <pending>
+kubectl get ipaddresspool -n metallb-system   # the pool the installer created
 ```
 
-### Verify ARP announcement
+### 2. Does the network see the IP?
 ```bash
-# From external machine on same network
+# From another machine on the same subnet
 arping -c 3 10.1.1.1
-# Should see replies from master node's MAC
+# Replies should come from one node's MAC address
 ```
 
-### Test connectivity
+### 3. Does the gateway answer?
 ```bash
-# From external client
-curl -k https://10.1.1.1
-# Should reach Envoy Gateway (may return 404 if no route matches)
+curl --cacert env/<env>/logs/ai-solutions-ca.crt \
+  --resolve inference.inteltoolkits.ai:443:10.1.1.1 \
+  https://inference.inteltoolkits.ai/v1/models
+# 401 = gateway reached, token needed. 404 = no route for that host
 ```
 
-### Check HTTPRoute
+### 4. Is the route there?
 ```bash
-kubectl get httproute -n llm-inference
-kubectl describe httproute llama-3-2-1b -n llm-inference
+kubectl get httproute -A
+kubectl describe httproute inference-external -n envoy-gateway-system
 ```
 
-### Trace request path
+### 5. Follow a request through Envoy
 ```bash
-# Enable Envoy access logs
-kubectl logs -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name -f
-
-# Make test request
-curl -k -H "Authorization: Bearer $TOKEN" \
-  https://llama-3-2-1b.inteltoolkits.ai/v1/completions
+kubectl logs -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway -f
+# Then, in another terminal, send a request with a token
+# (see Accessing Models for how to get $TOKEN)
+curl --cacert env/<env>/logs/ai-solutions-ca.crt -H "Authorization: Bearer $TOKEN" \
+  https://inference.inteltoolkits.ai/v1/models
 ```
 
 ---
 
 ## Summary
 
-Networking in a stack Toolkit Manager installs follows a small set of principles that keep deployments fast and simple to operate.
-
-**Key Principles:**
-
-1. **Use a node IP as the VIP where it is safe** — otherwise free addresses on the node subnet (see [IP Allocation Strategy](#ip-allocation-strategy))
-2. **Handle external routing at edge** — NAT/LB at firewall, not inside cluster
-3. **Trust Kubernetes CNI** — Already optimized for pod-to-pod routing
-4. **Network overhead is negligible** — <1% of inference latency
-
-**Result:**
-- Zero additional hops inside cluster
-- Works across all deployment modes (single/multi-node/HA)
-- Production-grade performance
-- No compromise on inference speed
+1. **One IP, one gateway.** MetalLB gives Envoy Gateway one address; every service is reached through it by hostname or path.
+2. **Auth at the edge.** Envoy Gateway checks the Keycloak JWT before a request reaches any model (or LiteLLM checks the key, in LiteLLM mode).
+3. **Routing by model name.** The AI gateway picks the model from the request body, then the least-loaded replica.
+4. **Network overhead is small.** Almost all request time is model computation.
 
 ---
 

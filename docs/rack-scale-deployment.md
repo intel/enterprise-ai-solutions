@@ -4,8 +4,10 @@
 
 ---
 
-Deploy ai-solutions on multi-node rack-scale hardware with high-speed fabric
-networking, Ceph storage on fabric, and optional GPU acceleration.
+Deploy Toolkit Manager on a rack of servers joined by a dedicated high-speed
+network (the *fabric*), with Ceph storage on that fabric and optional GPU
+acceleration. You describe the hardware once, in `rack-profile.yaml`, and the
+installer configures the network, the cluster and the storage from it.
 
 ## Overview
 
@@ -32,7 +34,7 @@ Four topologies are supported from the same `rack-profile.yaml` schema:
 
 ## Prerequisites
 
-- All [standard ai-solutions prerequisites](quickstart/prerequisites.md)
+- All [standard Toolkit Manager prerequisites](quickstart/prerequisites.md)
 - **Ubuntu 22.04 or 24.04 LTS on every node:** the fabric is configured through
   netplan, so RHEL and Rocky Linux nodes are not supported for rack-scale, even
   though the base installer supports them. The fabric step stops before writing
@@ -88,26 +90,42 @@ another cluster. See
 
 ## Quick Start
 
-```bash
-git clone https://github.com/intel/enterprise-ai-solutions.git
-cd enterprise-ai-solutions
+Run these steps on the node the installer runs from. The example env is named `rack`.
 
-./toolkit_manager.sh configure
+1. Get the code and install the host tools (`configure` asks before it changes anything):
 
-# Create environment and enable rack-scale
-./toolkit_manager.sh init inference --env rack
-vim env/rack/global_config.yaml           # set rack_scale_enabled: true, metallb_ip_range, proxy
+   ```bash
+   git clone https://github.com/intel/toolkit-manager.git
+   cd toolkit-manager
+   ./toolkit_manager.sh configure
+   ```
 
-# Write your hardware profile
-cp configs/defaults/rack-profile.yaml.example env/rack/rack-profile.yaml
-vim env/rack/rack-profile.yaml            # edit for your hardware — see below
+2. Create the environment:
 
-# Deploy
-./toolkit_manager.sh install inference --env rack
+   ```bash
+   ./toolkit_manager.sh init inference --env rack
+   ```
 
-# Validate
-./toolkit_manager.sh validate inference --env rack
-```
+3. Edit `env/rack/global_config.yaml`: set `rack_scale_enabled: true`, `metallb_ip_range` (free addresses on the management network, required unless `topology: none`), and your proxy settings if you use one.
+
+4. Write the hardware profile, following [Writing rack-profile.yaml](#writing-rack-profileyaml):
+
+   ```bash
+   cp configs/defaults/rack-profile.yaml.example env/rack/rack-profile.yaml
+   vim env/rack/rack-profile.yaml
+   ```
+
+5. Deploy. The installer checks the profile first and stops with a clear message on any mistake (see [Troubleshooting](#troubleshooting)):
+
+   ```bash
+   ./toolkit_manager.sh install inference --env rack
+   ```
+
+6. Validate. This runs the fabric checks in [Validation](#validation) along with the other layers' checks:
+
+   ```bash
+   ./toolkit_manager.sh validate inference --env rack
+   ```
 
 > [!Note]
 > `rack-profile.yaml` replaces `nodes.yaml` for rack-scale. Leave `nodes.yaml`
@@ -156,20 +174,22 @@ network:
   control_plane_on_fabric: true  # bind kubelet + etcd to fabric IP (recommended)
 ```
 
+Defaults when a key is left out: `topology: clos`, `calico_mode: vxlan`, `pod_cidr: 10.244.0.0/16`, `service_cidr: 10.96.0.0/12`, `mtu: 9000` (`1500` with `none`), `vxlan_overhead: 50`, `fabric_prefix: 16`, `netplan_renderer: networkd`, `control_plane_on_fabric: false`. Set `topology` and `calico_mode` explicitly: left out, they give `clos` with `vxlan`, while a Clos fabric runs `bgp`.
+
 ### SSH Access
 
 ```yaml
 access:
-  ansible_user: ubuntu
-  ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+  ansible_user: ubuntu                          # default: ubuntu
+  ansible_ssh_private_key_file: ~/.ssh/id_ed25519  # default: ~/.ssh/id_ed25519
 ```
 
-Per-node overrides are supported — set `ansible_user` or
+Every node is reached over SSH at its `mgmt_ip`, the one the installer runs on included. Per-node overrides are supported — set `ansible_user` or
 `ansible_ssh_private_key_file` directly on any node.
 
 ### Node Profiles (optional)
 
-Define silicon once, reference from nodes via `profile:`:
+Define silicon once, reference from nodes via `profile:`. A profile can set `node_family`, `sku`, `accelerator` and `gpu_count`; the same keys can also be set directly on a node, and a node's own value wins:
 
 ```yaml
 node_profiles:
@@ -206,13 +226,18 @@ racks:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `hostname` | yes | Used for netplan file names. The Kubernetes node name is the node's key under `racks` (e.g. `master1`), and Kubespray sets the OS hostname to it |
-| `mgmt_ip` | yes | SSH reachable from the bastion. Every node needs it, the `local: true` node included: it SSHs to itself |
-| `roles` | yes | At least one of `kube_control_plane`, `etcd`, `kube_node`, `storage` |
-| `local` | no | Exactly one node — the bastion running the installer |
-| `fabric_nics` | yes | At least one fabric NIC per node |
+| `hostname` | no | The machine's short hostname, kept as `node_hostname` in the inventory and used for the netplan file name (default: the node's key). The Kubernetes node name is the node's key under `racks` (e.g. `master1`), and Kubespray sets the OS hostname to it |
+| `mgmt_ip` | yes | SSH reachable from the installer host. Every node needs it, the `local: true` node included: it SSHs to itself |
+| `roles` | yes | At least one of `kube_control_plane`, `etcd`, `kube_node`, `storage`. A `storage` node must also be `kube_node` or `kube_control_plane`: Ceph runs as pods |
+| `local` | no | Marks the node the installer runs on. It is still reached over SSH; the flag tells the installer whether its own host is on the fabric |
+| `fabric_nics` | star, Clos, L2 | The node's fabric NICs, each with `nic` and `fabric_ip` (and optional `prefix`, `peer`, `leaf`). The first one is the node's Kubernetes address. Not allowed with `none` |
 | `fabric_router` | no | **Star only.** Exactly one node. The hub that forwards between spokes |
 | `profile` | no | Reference to a `node_profiles` entry |
+| `node_family`, `sku` | no | CPU family (`cpu-gnr-ap`, `cpu-gnr-sp`, `cpu-cwf`, `cpu-spr`) and SKU, applied as the `cpu-gen` / `cpu-sku` node labels |
+| `accelerator`, `gpu_count` | no | GPU as `vendor-model[-form]` (vendor `nvidia`, `intel` or `amd`) and its count. Both together, and `node_family` with them; see [GPU Nodes](#gpu-nodes) |
+| `ansible_user`, `ansible_ssh_private_key_file` | no | Per-node SSH overrides of `access` |
+
+An unknown key is an error (`unknown field 'X' — typo?`).
 
 ### Storage
 
@@ -506,8 +531,8 @@ racks:
 - `node_feature_discovery`, first in the platform layer, installs the cluster's one NFD (release `node-feature-discovery` in namespace `node-feature-discovery`). It does this on every cluster, rack-scale or not, with or without GPUs, and the inference layer's `nfd` component is left out of install, validate and teardown; `nfd_enabled: false` turns NFD off
 - `nvidia_gpu_operator` role installs the NVIDIA GPU operator without the chart's bundled NFD (NVIDIA only; other vendors log a warning and get no stack from this role)
 - Both are platform components: `teardown inference` keeps them, `teardown platform` removes the GPU operator and NFD, and with NFD the node labels it set. On OpenShift the GPU operator and `gpu_observability` are not installed for now
-- Node labels applied: `gpu-vendor=nvidia`, `gpu-model=b300`, `gpu-form=hgx`, `gpu-count=8`
-- Inference scheduling and the GPU operator use these labels
+- Node labels applied: `gpu-vendor=nvidia`, `gpu-model=b300`, `gpu-form=hgx`, `gpu-count=8` (and `cpu-gen` / `cpu-sku` from `node_family` / `sku`)
+- These labels describe the hardware for you and your tools. GPU model pods are placed by their `nvidia.com/gpu` request, which the GPU operator makes the node advertise
 
 No separate flag is needed — describe the hardware, the stack figures out what
 to install.
@@ -520,24 +545,23 @@ to install.
 ./toolkit_manager.sh validate inference --env rack
 ```
 
-The `fabric_validate` role checks:
+The `fabric_validate` role checks (read-only; with `topology: none` only the node labels are re-applied):
 
-| Check | Star | Clos | Failure means |
-|-------|------|------|---------------|
-| Fabric IP reachability | ✓ | ✓ | NIC not configured or cable disconnected |
-| Don't-fragment ping at the profile MTU (above 1500 only) | ✓ | ✓ | A switch port or NIC carries a smaller MTU |
-| NIC MTU = `network.mtu` | ✓ | ✓ | Netplan not applied or NIC misconfigured |
-| Spoke-to-spoke ping | ✓ | ✓ | Routing broken — check hub or BGP |
-| Hub ip_forward = 1 | ✓ | | Hub not forwarding — re-run fabric_sysctl |
-| Hub rp_filter = 2 | ✓ | | Reverse-path filtering blocking fabric traffic |
-| Hub iptables FORWARD ACCEPT | ✓ | | FORWARD chain dropping fabric packets |
-| BIRD daemon active | | ✓ | Calico bird backend not running |
-| BGP sessions Established | | ✓ | Leaf switch config mismatch — check ASN/peer_ip |
-| ECMP hash policy = 1 | | ✓ | Multipath hashing not enabled |
-| Node labels applied | ✓ | ✓ | Labels missing — GPU operator can't select nodes |
+| Check | Star | Clos | L2 | Failure means |
+|-------|------|------|----|---------------|
+| Fabric IP reachability from the installer host | ✓ | ✓ | ✓ | NIC not configured or cable disconnected |
+| Each fabric NIC up, with carrier, `network.mtu` and its address | ✓ | ✓ | ✓ | Netplan not applied, cable out, or NIC misconfigured |
+| Don't-fragment ping at the profile MTU (above 1500 only) | ✓ | ✓ | ✓ | A switch port or NIC carries a smaller MTU |
+| Node-to-node ping | ✓ | ✓ | ✓ | Routing broken — check hub or BGP |
+| Hub `ip_forward` = 1 | ✓ | | | Hub not forwarding — re-run `install infrastructure` |
+| Hub `rp_filter` = 2 | ✓ | | | Reverse-path filtering blocking fabric traffic |
+| Hub iptables FORWARD ACCEPT, and saved | ✓ | | | FORWARD chain dropping fabric packets |
+| BIRD running | | ✓ | | Calico's BGP daemon not running |
+| Routes learned over BGP (`proto bird`) | | ✓ | ✓ (`bgp`) | Leaf (Clos) or node mesh (L2) sessions down — check ASN/`peer_ip`, TCP 179 |
+| ECMP hash policy = 1 (dual-homed nodes) | | ✓ | | Multipath hashing not enabled |
 
 Quorum members (etcd/control-plane) fail hard if unreachable. Worker nodes warn
-and continue.
+and continue. Every check is listed per node as `OK:` or `FAIL:`; any `FAIL` fails the run.
 
 ---
 
@@ -549,13 +573,13 @@ and continue.
 | `rack_scale_enabled is true but metallb_ip_range is not set` | Missing VIP | Set `metallb_ip_range` in `global_config.yaml` to free management-subnet addresses (e.g. `172.18.168.240-172.18.168.250`), not a node's own IP |
 | `metallb_ip_range ... overlaps the fabric subnet` | VIP range on the fabric | Move `metallb_ip_range` to free management-subnet addresses; fabric IPs are not reachable from outside the rack |
 | Kubespray can't SSH to workers | Star hub not forwarding | Check hub: `sysctl net.ipv4.ip_forward` (must be 1), `iptables -S FORWARD` (must have ACCEPT rules) |
-| `star cable faults: both ends must share...` | /30 subnet mismatch | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
+| `declares peer '<node>', but no NIC on '<node>' is in <subnet>` | /30 subnet mismatch on a star cable | Both ends of a cable need IPs in the same /30 block (e.g. `.1/30` and `.2/30`) |
 | `duplicate fabric_ip` | Two nodes share an IP | Check `rack-profile.yaml` for collisions |
 | `storage node ... has no fabric_ip in ceph_public_network` | Ceph networks don't match the storage nodes | Give each storage node a fabric IP in the Ceph networks, or fix `ceph_public_network` / `ceph_cluster_network` |
 | `storage node ... node IP ... is outside ceph_public_network` | The node IP (first fabric NIC, or `mgmt_ip` on a control-plane node off the fabric) is on another network | List the NIC in `ceph_public_network` first; on a control-plane node set `control_plane_on_fabric: true` or move the `storage` role |
 | `storage node ... mgmt_ip ... is outside ceph_..._network` | Topology `none`: the Ceph networks don't hold the management addresses | Set the Ceph networks to the management subnet, or leave them out |
 | `fabric_ip ... is not within leafX's fabric_subnet` | IP and `leaf:` disagree | Fix the `fabric_ip`, or drop `leaf:` and let the parser derive it |
-| `fabric_ip ... is outside the L2 segment` | L2 node addressed in another subnet | Put every fabric IP in the one L2 subnet |
+| `fabric_ip ... is outside the L2 segment ...` | L2 node addressed in another subnet | Put every fabric IP in the one L2 subnet |
 | `missing required field 'mgmt_ip'` / `has no roles` | Incomplete node entry | Add `mgmt_ip` and at least one role to the node |
 | `the nodes come from rack-profile.yaml, but nodes_control_plane ... also set` | `nodes.yaml` defines nodes on a rack-scale env | Remove `nodes_control_plane` and `nodes_workers` from `env/<env>/nodes.yaml`; the rack profile lists the nodes |
 | Kubespray hangs behind proxy | Fabric CIDRs not in no_proxy | The installer injects them automatically; verify with `echo $no_proxy` |
@@ -598,10 +622,10 @@ fabric_inventory → kubernetes → fabric_validate (labels only) → storage
 ```
 fabric_netplan, fabric_sysctl, fabric_bgp all skip. No fabric network — rack-profile used for inventory and GPU labels only.
 
-**Platform layer** (every cluster), after the infrastructure layer: NFD comes first, and
+**Platform layer**, after the infrastructure layer: NFD comes first on every cluster, and on a rack-scale env
 **with NVIDIA GPU nodes** (any topology) the GPU operator follows it:
 ```
-node_feature_discovery → nvidia_gpu_operator → cert_manager → …
+node_feature_discovery → nvidia_gpu_operator → nri_cpu_balloons → cert_manager → …
 ```
 
 **Default (rack_scale_enabled=false):**
@@ -626,6 +650,6 @@ kubernetes → storage
 | Variable | Default | Location | Purpose |
 |----------|---------|----------|---------|
 | `rack_scale_enabled` | `false` | `global_config.yaml` | Master gate for all fabric components |
-| `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale.** Free management-subnet addresses for LoadBalancer VIPs (e.g. `172.18.168.240-172.18.168.250`). Not a fabric address: auto-detection picks fabric IPs, which are unreachable from outside the rack, and install stops if the range overlaps a fabric subnet. Not a node's own IP: with more than one control-plane node, MetalLB can announce it from another node, which then answers ARP for that node's address. |
+| `metallb_ip_range` | (auto-detect) | `global_config.yaml` | **Required for rack-scale** (except `topology: none`, where auto-detection picks reachable management addresses). Free management-subnet addresses for LoadBalancer VIPs (e.g. `172.18.168.240-172.18.168.250`). Not a fabric address: auto-detection picks fabric IPs, which are unreachable from outside the rack, and install stops if the range overlaps a fabric subnet. Not a node's own IP: with more than one control-plane node, MetalLB can announce it from another node, which then answers ARP for that node's address. |
 | `storage_backend` | `local-path` | `global_config.yaml` | Set to `ceph` for fabric-attached storage |
 | `rack-profile.yaml` | (none) | `env/<env>/` | Hardware profile — see above |

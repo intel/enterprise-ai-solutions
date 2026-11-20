@@ -9,8 +9,8 @@ Three ways to deploy Toolkit Manager — single node, multi-node, or an existing
 ## Before you begin
 
 Check [Prerequisites](prerequisites.md). At minimum you need:
-- Ubuntu 22.04/24.04 or RHEL/Rocky x86_64
-- Passwordless sudo on the machine running the installer
+- Ubuntu 22.04/24.04 or RHEL/Rocky Linux
+- `git`, and `sudo` rights on the machine running the installer (passwordless is easiest)
 - Internet access
 
 ---
@@ -18,11 +18,13 @@ Check [Prerequisites](prerequisites.md). At minimum you need:
 ## Step 1 — Get the code
 
 ```bash
-git clone https://github.com/intel/enterprise-ai-solutions.git
-cd enterprise-ai-solutions
+git clone https://github.com/intel/toolkit-manager.git
+cd toolkit-manager
 
 ./toolkit_manager.sh configure    # one-time machine prep — installs Python 3.11+, yq, kubectl, helm
 ```
+
+`configure` lists the changes it will make with `sudo` and asks you to confirm: type `y`. It ends with `configure: done.` Skip it if Python 3.11+, `yq`, `kubectl` and `helm` are already installed. Run every command in this guide from the `toolkit-manager` folder.
 
 ---
 
@@ -34,20 +36,24 @@ Every deployment lives in a named environment under `env/<name>/`. The name is a
 ./toolkit_manager.sh init inference
 ```
 
-This creates `env/local/` with:
-- `global_config.yaml` — all platform settings
-- `nodes.yaml` — node IPs and SSH credentials (edit for multi-node)
-- `inventory/hosts.yaml` — Kubespray-compatible inventory (auto-generated from nodes.yaml)
-- `models.yaml` — your model catalog (pre-seeded with defaults)
+It clones the Intel® Inference Toolkit into `ext/enterprise.ai-inference/` and creates `env/local/` with:
+- `global_config.yaml` — platform-wide settings
+- `config.inference.yaml` — the inference layer's settings, including the API auth type (`auth_type`)
+- `nodes.yaml` — the machines to install on (leave it as it is for a single node)
+- `inventory/hosts.yaml` — Kubespray-compatible inventory; a localhost one to start with, regenerated from `nodes.yaml` once that lists nodes
+- `models.yaml` — your model catalog (copied from the inference repository)
+- `.solutions.yaml` — the record of which layers this environment was set up for (do not edit)
+
+It ends with `init: done.` and the next command to run. Pass `--env <name>` to use a name other than `local`.
 
 ---
 
 ## Step 3 — Configure
 
-Open `env/local/global_config.yaml` and set:
+For a first try nothing needs changing. Open `env/local/global_config.yaml` if you want to:
 
 ```yaml
-# Required — base domain for all service URLs and TLS certificates
+# Optional — base domain for all service URLs and TLS certificates (default shown)
 base_domain_name: "inteltoolkits.ai"
 
 # Optional — uncomment and set if behind a corporate proxy
@@ -72,13 +78,13 @@ The default inventory created by `init` already targets localhost, so just insta
 ./toolkit_manager.sh install inference --env local
 ```
 
-Takes 15–20 minutes. When it finishes:
+Allow up to an hour on a first install, mostly for downloading container images. A successful run ends with an `INSTALLATION COMPLETE` banner that names its log file. Then:
 
 ```bash
 export KUBECONFIG=$(pwd)/env/local/kubeconfig.yaml
 kubectl get nodes
-# NAME      STATUS   ROLES           AGE   VERSION
-# master1   Ready    control-plane   10m   v1.35.4
+# NAME        STATUS   ROLES           AGE   VERSION
+# <your-node> Ready    control-plane   10m   v1.35.4
 ```
 
 → Continue to [Deploy a Model](../deploy/deploy_models.md).
@@ -93,9 +99,9 @@ See the full guide → [Multi-Node & BYO Cluster](../deploy/topologies.md).
 
 Quick overview:
 
-1. Set up passwordless SSH from the installer host to every node.
-2. Edit `env/local/inventory/hosts.yaml` with your node IPs.
-3. Set `storage_backend: nfs` (or `ceph`) in `global_config.yaml` — `local-path` only works for single-node.
+1. Set up passwordless (key-based) SSH from the installer host to every node.
+2. List the nodes in `env/local/nodes.yaml` under `nodes_control_plane` and `nodes_workers` (an `ip` and a `hostname` each), and set `nodes_ssh_user` and `nodes_ssh_key`. The installer generates `inventory/hosts.yaml` from this file.
+3. Set `storage_backend: nfs` (or `ceph`, or `netapp-trident`) in `global_config.yaml` — `local-path` only works for single-node.
 4. Run `./toolkit_manager.sh install inference --env local`.
 
 ---
@@ -124,6 +130,8 @@ Then install:
 ./toolkit_manager.sh install inference --env local
 ```
 
+On a BYO cluster the installer uses your kubeconfig and writes none of its own, so in the steps below set `KUBECONFIG` to the path you gave in `existing_kubernetes`.
+
 ---
 
 ## Verify the install
@@ -134,7 +142,8 @@ export KUBECONFIG=$(pwd)/env/local/kubeconfig.yaml
 kubectl get nodes                  # all nodes Ready
 kubectl get pods -A                # all pods Running or Completed
 
-# Or use the built-in health check:
+# Or use the built-in checks:
+./toolkit_manager.sh status --health --env local   # green/red cluster verdict
 ./toolkit_manager.sh validate inference --env local
 ```
 
@@ -142,7 +151,7 @@ kubectl get pods -A                # all pods Running or Completed
 
 ## Access the services
 
-After install, the gateway IP and per-service hostnames are derived from your `base_domain_name`. Add the gateway IP to `/etc/hosts` on any machine that needs access:
+Every service has its own hostname under your `base_domain_name` (for example `grafana.inteltoolkits.ai`), and all of them point at one gateway IP. Unless your DNS already resolves those names, add them to `/etc/hosts` on each machine that needs access:
 
 ```bash
 GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
@@ -151,9 +160,11 @@ GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
 
 DOMAIN=$(yq '.base_domain_name' env/local/global_config.yaml)
 
-# Add to /etc/hosts on any client machine
-echo "${GATEWAY_IP}  ${DOMAIN} grafana.${DOMAIN} keycloak.${DOMAIN} litellm.${DOMAIN}"
+# Prints the line to add to /etc/hosts on each client machine
+echo "${GATEWAY_IP}  ${DOMAIN} inference.${DOMAIN} keycloak.${DOMAIN} grafana.${DOMAIN}"
 ```
+
+Add `litellm.${DOMAIN}` and `langfuse.${DOMAIN}` when LiteLLM is on (`auth_type: litellm_vkey`), and `headlamp.${DOMAIN}` with `headlamp_enabled: true`. `./toolkit_manager.sh status` prints the service URLs. With `routing_mode: path` the services sit under the one name `${DOMAIN}` (Langfuse and the vLLM Semantic Router dashboard keep their own hostnames).
 
 > [!IMPORTANT]
 > Every subdomain must be listed explicitly. Wildcards do not work in `/etc/hosts`, so a missing entry looks like a connection failure in the browser rather than an error from the cluster.
@@ -161,7 +172,7 @@ echo "${GATEWAY_IP}  ${DOMAIN} grafana.${DOMAIN} keycloak.${DOMAIN} litellm.${DO
 For self-signed TLS (the default), import the CA certificate to remove browser warnings:
 
 ```bash
-# The CA cert is written here after install
+# The installer writes the CA certificate here during install
 cat env/local/logs/ai-solutions-ca.crt
 ```
 

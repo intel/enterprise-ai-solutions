@@ -1,6 +1,6 @@
 # Contributing
 
-We welcome community contributions to Intel® Enterprise for AI Solutions.
+We welcome community contributions to Toolkit Manager.
 
 ## Table of contents
 
@@ -15,7 +15,7 @@ We welcome community contributions to Intel® Enterprise for AI Solutions.
 - [Coding guidelines](#coding-guidelines)
 - [Commits guidelines](#commits-guidelines)
 - [Pull request guidelines](#pull-request-guidelines)
-- [Contributing across the AI Solutions portfolio](#contributing-across-the-ai-solutions-portfolio)
+- [Contributing across the toolkit portfolio](#contributing-across-the-toolkit-portfolio)
 - [Pull request activity and review process](#pull-request-activity-and-review-process)
 
 
@@ -65,7 +65,7 @@ When making changes, follow the [coding guidelines](#coding-guidelines) and the 
 > Never commit credentials, secrets, or confidential information. Do not include unexplained binary or generated files.
 
 
-#### 4. Sign your work
+### 4. Sign your work
 Every commit requires a Developer Certificate of Origin sign-off:
 
 ```bash
@@ -83,16 +83,23 @@ Use your real name and an email associated with your GitHub account. If you set 
 
 ### 5. Open a pull request
 
-Push your branch to your fork and open a pull request to the `main` branch that follows the [pull request guidelines](#pull-request-guidelines). 
+Push your branch to your fork and open a pull request to the `main` branch that follows the [pull request guidelines](#pull-request-guidelines).
 
 
-Your pull request will be automatically tested by pre-commit and marked as "green" if all checks have passed and the pull request is ready for maintainer review. 
+GitHub Actions checks your pull request automatically: Ansible Lint, ShellCheck, Bandit, Checkov, Trivy, Dependency Review, the unit tests, and the Headlamp plugin build. When every check passes, the pull request shows green and is ready for maintainer review.
 
-If any builders fail, the status is "red," you need to fix the issues listed in console logs. Any change to the pull request branch will automatically trigger a new set of checks.
+If a check fails it shows red: open its log, fix the issue, and push again. Every push to the branch runs the checks again.
 
+Run the unit tests locally before you push, the same way CI does (Python 3.11 or newer):
+
+```bash
+python3 -m venv /tmp/tkm-tests
+/tmp/tkm-tests/bin/pip install --require-hashes -r src/tests/unit/requirements.txt
+/tmp/tkm-tests/bin/python -m pytest src/tests/unit -p no:cacheprovider
+```
 
 > [!NOTE]
-> Include links to related pull requests in other repositories when applicable. See [Contributing across the AI Solutions portfolio](#contributing-across-the-ai-solutions-portfolio) for guidance on coordinating changes across repositories.
+> Include links to related pull requests in other repositories when applicable. See [Contributing across the toolkit portfolio](#contributing-across-the-toolkit-portfolio) for guidance on coordinating changes across repositories.
 
 
 We'll make sure to review your Pull Request as soon as possible and provide you with our feedback. You can expect a merge once your changes are validated with automatic tests and approved by maintainers.
@@ -101,18 +108,18 @@ We'll make sure to review your Pull Request as soon as possible and provide you 
 
 ### Copyright headers
 
-All source files must carry the standard AI Solutions copyright header. For new files, use the current year.
+All source files must carry the standard Intel copyright header. For new files, use the current year.
 
-Python (`.py`):
+Python, shell and YAML files use the same two comment lines:
 ```python
-  # Copyright (C) 2025-2026 Intel Corporation
-  # SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ```
 
 ## Commits guidelines
 
 Write commit messages following the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. Supported commit types:
- 
+
 - `fix`: bug fixes
 - `feat` / `add`: new features
 - `docs`: documentation changes
@@ -131,7 +138,7 @@ Write commit messages following the [Conventional Commits](https://www.conventio
 * Your pull request should be rebased against the current main branch.
 * Make your PRs small - each PR should address one issue. Remove all changes unrelated to the PR.
 * Link your Pull Request to an issue if it addresses one.
-* For Work In Progress, or checking test results early, use a Draft PR. you can submit it with the PR title including [WIP] and list Todo items in the desciption to easier follow what is still missing
+* For work in progress, or to see test results early, open a Draft PR. You can add [WIP] to the title and list the remaining to-do items in the description.
 
 
 ### Before requesting a review
@@ -154,8 +161,8 @@ Use one of these formats:
 Where:
 
 * **`type`** — follows the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) convention and indicates the type of change, such as `feat`, `fix`, `docs`, `test`, `ci`, etc.
-* **`scope`** — when a change primarily affects one area, consider specifying the corresponding scope identifies the component, module, or area affected by the change. See the [change scope](#change-scope) section for examples.
-* **`solution`** — use it when the change is specific to a solution, for example `ai-inference`, `ai-erag`, or another solution repository.
+* **`scope`** — when a change mainly affects one area, name that component, module or area. See [Change scope](#change-scope) for examples.
+* **`solution`** — use it when the change is specific to a solution, for example `ai-inference`, `ai-erag`, or another toolkit repository.
 
 
 Examples:
@@ -186,53 +193,53 @@ For changes in another portfolio repository, use the solution name followed by t
 
 
 ### Pull request content
- 
+
 Every pull request must include:
- 
+
 - **Description:** Explain the purpose of the change and link related issues, tickets, or pull requests when applicable.
 - **Tests:** List the commands, test scenarios, and validation steps used to verify the change.
- 
+
 When a repository provides a pull request template, follow its structure and complete all applicable sections. Mark sections that do not apply as N/A when appropriate.
 
 Include additional context that may help reviewers assess the change, when applicable:
 
- - Related pull requests in other repositories, including any required merge order. See [Contributing across the AI Solutions portfolio](#contributing-across-the-ai-solutions-portfolio) for guidance.
+ - Related pull requests in other repositories, including any required merge order. See [Contributing across the toolkit portfolio](#contributing-across-the-toolkit-portfolio) for guidance.
  - User-visible behavior, configuration changes, upgrade or migration steps, and compatibility impact.
  - Security considerations, known limitations, and follow-up work.
  - Documentation updates, relevant logs, screenshots, or before-and-after examples.
  - Any other information requested by the repository's pull request template.
 
 
-## Contributing across the AI Solutions portfolio
- 
-AI Solutions is delivered as a portfolio of related projects maintained across multiple repositories. Each repository owns a specific layer or capability, while [`enterprise-ai-solutions`][ai-solutions] serves as the parent integration repository that assembles and releases the complete solution.
+## Contributing across the toolkit portfolio
 
-Repositories within the AI Solutions include:
- 
-- [`enterprise-inference`][ai-inference]
-- [`enterprise-rag`][ai-erag]
-- [`enterprise-agent-toolkit`][agent-toolkit]
+The toolkits are separate projects, each in its own repository. Each repository owns one layer or capability, while [`toolkit-manager`][ai-solutions] (this repository) is the parent integration repository that assembles and releases the complete solution.
+
+The other repositories are:
+
+- [`inference-toolkit`][ai-inference] — Intel® Inference Toolkit
+- [`chatbot-toolkit`][ai-erag] — Intel® Chatbot Toolkit
+- [`agent-toolkit`][agent-toolkit] — Intel® Agent Toolkit
 
 The complete list of portfolio repositories can be found in [README.md](README.md) or under [`configs/repos`](configs/repos/).
 
 
-When implementing a feature or a fix, contributors should make changes in the repository that owns the functionality. For example, a change to Enterprise RAG functionality should be implemented in [`enterprise-rag`][ai-erag].
+Make a feature or fix in the repository that owns the functionality. For example, a change to Intel® Chatbot Toolkit functionality belongs in [`chatbot-toolkit`][ai-erag].
 
-If the change affects the integration layer provided by [`enterprise-ai-solutions`][ai-solutions], the corresponding updates must also be made in the parent repository. This may include:
+If the change affects the integration layer in [`toolkit-manager`][ai-solutions], make the matching updates here too. This may include:
 - updating the component revision referenced in `configs/repos`,
 - adjusting solution or deployment configuration when required,
 - updating documentation,
 - updating tests and validation assets when applicable.
 
 When a contribution spans multiple repositories:
- 
+
 1. Create a separate pull request for each affected repository.
 2. Link the related pull requests.
-4. Complete review and CI validation for every pull request.
-5. Merge the AI Solutions integration change only after the required component changes are available.
- 
+3. Complete review and CI validation for every pull request.
+4. Merge the Toolkit Manager integration change only after the required component changes are available.
 
-A contribution is considered complete only when all affected repositories are updated and the change is fully integrated into [`enterprise-ai-solutions`][ai-solutions].
+
+A contribution is complete only when every affected repository is updated and the change is integrated into [`toolkit-manager`][ai-solutions].
 
 
 ## Pull request activity and review process
@@ -298,9 +305,9 @@ To avoid losing valuable contributions:
 
 In such cases, credit to the original author will be preserved.
 
-[ai-solutions]: https://github.com/intel/enterprise-ai-solutions
-[ai-inference]: https://github.com/intel/enterprise-inference
-[ai-erag]: https://github.com/intel/enterprise-rag
-[agent-toolkit]: https://github.com/intel/enterprise-agent-toolkit
-[ai-solutions-issues]: https://github.com/intel/enterprise-ai-solutions/issues
-[ai-solutions-pulls]: https://github.com/intel/enterprise-ai-solutions/pulls
+[ai-solutions]: https://github.com/intel/toolkit-manager
+[ai-inference]: https://github.com/intel/inference-toolkit
+[ai-erag]: https://github.com/intel/chatbot-toolkit
+[agent-toolkit]: https://github.com/intel/agent-toolkit
+[ai-solutions-issues]: https://github.com/intel/toolkit-manager/issues
+[ai-solutions-pulls]: https://github.com/intel/toolkit-manager/pulls

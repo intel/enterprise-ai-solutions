@@ -1,5 +1,18 @@
 # NetApp ONTAP and Trident
 
+[← Docs Index](../README.md)
+
+Use a NetApp ONTAP storage array for the cluster's persistent volumes (and, optionally,
+as the document store for Intel® Chatbot Toolkit) instead of node-local disks.
+
+A few ONTAP terms used below:
+
+| Term | Meaning |
+|---|---|
+| **SVM** (storage virtual machine) | A virtual storage server on the array; it owns the volumes and the network addresses below. |
+| **LIF** (logical interface) | An IP address on the array. The *management* LIF takes API calls (TCP 443); a *data* LIF serves NFS (TCP 2049, 111) or S3. |
+| **Trident** | NetApp's Kubernetes storage driver (CSI). It creates an ONTAP volume for each PersistentVolumeClaim (PVC) and mounts it over NFS. |
+
 ## Quickstart
 
 Two flows. Pick the one that matches what you want on the cluster:
@@ -58,8 +71,17 @@ Both flows assume the array side already exists. The installer creates nothing o
    ```
 
    Storage preflight runs before the Trident chart is installed: it probes both LIFs from
-   every cluster node, installs the NFS client packages and resolves LIF hostnames per
+   the cluster nodes, installs the NFS client packages and resolves LIF hostnames per
    node. A failure there names the node, the port and the remedy.
+
+5. Check it worked. `install` does not run the validation for you; run it with:
+
+   ```bash
+   ./toolkit_manager.sh validate storage --env prod
+   ```
+
+   Success means the Trident backend is `Bound` and a test volume could be created,
+   mounted and written to.
 
 ### Flow B: Flow A plus ONTAP S3 as the RAG document store
 
@@ -92,7 +114,9 @@ Both flows assume the array side already exists. The installer creates nothing o
    ```
 
    `ontap_s3_data_lif` is a **different LIF** from `ontap_data_lif`. Setting it is what
-   activates the dedicated gateway S3 listener and the reverse proxy. Set `ontap_s3_port`
+   activates the dedicated gateway S3 listener and the reverse proxy. Keep the default
+   `routing_mode: subdomain`: with `routing_mode: path` the S3 API would share the UI's
+   hostname, so the installer does not create the S3 listener and prints a warning. Set `ontap_s3_port`
    too whenever the object-store server does not answer on 443, so preflight probes the
    right port.
 
@@ -128,8 +152,8 @@ either can be used without the other:
    network and browsers upload straight to the presigned URL they are handed, the
    endpoint is published through the platform Envoy Gateway as a reverse proxy. The
    proxy objects are owned by Intel® Chatbot Toolkit (`ext/enterprise.ai-erag`, role `app_edp`);
-   the dedicated gateway listener that makes SigV4 signatures survive the hop is owned
-   by `roles/envoy_gateway`.
+   the dedicated gateway listener (`https-s3`, host `s3.<base_domain_name>`) that makes
+   SigV4 signatures survive the hop is owned by `roles/gateway`.
 
 Capability 1 with the in-cluster object store is a complete, supported deployment
 ([Flow A](#flow-a-array-backed-persistent-volumes)). Add capability 2 only if you want
@@ -148,7 +172,7 @@ or deleted by this installer. Everything below must exist before you run it.
 | ONTAP 9.16.1P4 or newer (recommended) | The pairing the pinned Trident 25.10 chart is qualified against, and the floor for the ONTAP S3 presigned-URL behaviour Intel® Chatbot Toolkit relies on. ONTAP 9.11 is the floor for the REST-based backend the role configures (`ontap_use_rest: true`). |
 | A licensed ONTAP system, with the NFS protocol and FlexClone entitled | Trident is Apache-2.0 and needs no license of its own, but every capability it drives is an ONTAP feature. |
 | An SVM with NFS enabled | Trident's `ontap-nas` driver provisions FlexVols and exports them over NFS. |
-| A management LIF reachable on TCP 443 from **every** cluster node | The Trident controller can be scheduled on any node. Preflight probes this from each node and fails with the full node-by-port matrix. |
+| A management LIF reachable on TCP 443 (`ontap_mgmt_port`) from **every** cluster node | The Trident controller can be scheduled on any node. Preflight probes this from each node and fails with the full node-by-port matrix. |
 | An NFS data LIF reachable on TCP 2049 and 111 from every **schedulable** node | 2049 is nfsd; some export configurations still need rpcbind on 111 for mount negotiation, so both are probed. Only nodes that can run a pod mount a volume, so preflight probes these ports from the `kube_node` group - a `NoSchedule`-tainted control plane off the storage VLAN is not a failure. An inventory with no `kube_node` group is probed from every node. |
 | An NFS export policy on that SVM permitting the Kubernetes node network | Missing or read-only rules produce a PVC that binds and a pod that cannot write. The end-to-end validation test catches this with a `test -w` inside the volume, which no reachability probe can replace. |
 | An ONTAP user with `http`/`ontapi` application access to that SVM | Used by the Trident controller. Credentials are placed in a Kubernetes Secret; nothing else reads them. |
@@ -201,7 +225,8 @@ preflight runs `getent hosts` from each node and reports every unresolvable pair
 | `edp_s3_compatible_secret_access_key` | `config.erag.yaml` | Its secret key |
 
 The array topology is the installer's concern; the credentials belong to the layer that
-consumes them. See `../../ext/enterprise.ai-erag/docs/customize/object_store.md` for the RAG side.
+consumes them. For the RAG side, see `docs/customize/object_store.md` in the Intel® Chatbot
+Toolkit repository (cloned to `ext/enterprise.ai-erag/` by `init erag`).
 
 `ontap_s3_data_lif` is what activates the gateway's dedicated S3 listener and, together
 with the credentials, the reverse proxy in Intel® Chatbot Toolkit. `edp_rbac_enabled` must stay
@@ -244,7 +269,7 @@ wrong in a running deployment it tells you where it came from.
 | The ONTAP aggregate | Never specified; ONTAP picks it |
 | Access mode for the shared model cache | `ReadWriteMany` on every backend except `local-path` |
 | StorageClass for the model store | Empty, meaning "use the cluster default", which this backend asserts is exactly one, and exactly its own, at install time |
-| Activation of the ONTAP S3 reverse proxy | Implied by `ontap_s3_data_lif` |
+| Activation of the ONTAP S3 reverse proxy | Implied by `ontap_s3_data_lif` (with `routing_mode: subdomain`) |
 | `edp_storage_type: s3compatible` | From `ontap_s3_data_lif` plus an access key on a `netapp-trident` cluster. Set once in `app_pre_install`, so the data-prep layer, the UI and the pod checks all agree on it. Setting it yourself still wins, and Intel® Chatbot Toolkit then reports the contradiction rather than picking a side. |
 | EDP internal URL, external URL, region, bucket filter, two certificate-verify flags | From the LIF, the port, the TLS mode, `base_domain_name` and `routing_mode` |
 | `presignedUrlCredentialsSystemFallback`, the scheduled bucket sync and its period | Role defaults; the scheduled sync is switched on automatically because ONTAP S3 has no bucket notifications |

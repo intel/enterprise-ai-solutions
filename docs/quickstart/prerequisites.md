@@ -34,9 +34,9 @@ Intel® Xeon® processors are recommended for CPU-based inference. NUMA-aware pi
 
 | Requirement | Single-node | Multi-node |
 |---|---|---|
-| Passwordless sudo on installer host | Required | Required |
-| Passwordless SSH from installer host to all nodes | — | Required |
-| Passwordless sudo on all target nodes | — | Required |
+| `sudo` on the installer host (passwordless is easiest; otherwise Ansible asks for the password at the start of each run) | Required | Required |
+| Passwordless SSH (key-based) from the installer host to every node | — | Required |
+| `sudo` on every target node (passwordless, or the same password as the installer host) | — | Required |
 | Installer host reaches the API server at `https://<control-plane-ip>:6443` (not only SSH to the nodes); see [Bastion (Jump Host)](../deploy/install_platform.md#option-c-bastion-jump-host) | — | Required |
 
 ---
@@ -94,7 +94,7 @@ done
 
 ## Tooling
 
-`./toolkit_manager.sh configure` installs the following pinned versions into `/usr/local/bin`. Run it once per machine before anything else. If these tools are already installed at compatible versions, `configure` skips them.
+`./toolkit_manager.sh configure` installs the tools below. Run it once per machine before anything else; it lists the changes and asks you to confirm (type `y`). Python comes from the OS package manager; `yq`, `kubectl` and `helm` are downloaded at the pinned versions into `/usr/local/bin`. A tool that is already on your `PATH` is kept as it is, with a warning to check that its version is at least the pinned one. `configure` also creates the installer's Python environment in `.venv/`.
 
 | Tool | Version | Notes |
 |---|---|---|
@@ -103,21 +103,20 @@ done
 | kubectl | v1.35.4 | |
 | helm | v3.20.2 | |
 
-> **`git` must already be installed** before running `configure`. It is preinstalled on most Ubuntu and RHEL images. The installer uses it to clone external repos on first run.
+> **`git` and `curl` (or `wget`) must already be installed.** Both are preinstalled on most Ubuntu and RHEL images. `configure` downloads the tools with `curl` or `wget`, and `init` uses `git` to clone the external repositories.
 
 ---
 
 ## Credentials
 
 - **Hugging Face token** — required only for gated models (Llama, Mistral, Gemma, etc.). Get one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) (free account). Export as `HF_TOKEN=hf_...` before deploying those models.
-- **Keycloak admin password** — auto-generated if not set. Override by exporting `KEYCLOAK_ADMIN_PASSWORD` before install.
-- **Grafana admin password** — auto-generated if not set. Override by exporting `GRAFANA_ADMIN_PASSWORD` before install.
+- **Keycloak and Grafana admin passwords** — generated on the first install and kept in Kubernetes Secrets. To choose them yourself, set `keycloak_admin_password` and `observability_grafana_admin_password` in `env/<name>/global_config.yaml` before the first install. See [Admin passwords](../customize/configuration.md#admin-passwords) for how to read them.
 
 ---
 
 ## What `configure` does not do
 
-- Install `git` — must already be present
+- Install `git`, `curl` or `wget` — they must already be present
 - Configure proxy settings — edit `env/<name>/global_config.yaml` yourself
 - Set up SSH keys — you must distribute them to target nodes for multi-node installs
 

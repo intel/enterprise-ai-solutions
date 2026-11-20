@@ -5,7 +5,20 @@
 There is no `upgrade` command. Running `install <layer>` from a newer release over a layer that is
 already deployed **is** the upgrade. Before anything changes, the installer reads what the cluster
 records about each layer, compares it with the release you are installing, runs the upgrade checks,
-and either proceeds or refuses with the command that fixes the problem.
+and either goes ahead or refuses with the command that fixes the problem.
+
+In short, to upgrade a solution layer such as the Intel® Chatbot Toolkit (`erag`):
+
+1. **Back up** the layer with the release that is installed now: `./run_backup.sh backup erag --env prod`
+   (see [Backup and restore](#backup-and-restore)).
+2. **Move the checkout** to the new release, then run `./toolkit_manager.sh init erag --env prod --upgrade`
+   to move the layer's repositories in `ext/` to the revisions it pins.
+3. **Install**: `./toolkit_manager.sh install erag --env prod`. Read the check lines it prints
+   first; a refusal changes nothing and names the fix.
+4. **Check** the result: `./toolkit_manager.sh validate erag --env prod`.
+
+The [worked example](#worked-example-intel-chatbot-toolkit-300--310) below goes through these
+steps with real output.
 
 Upgrade one layer at a time, bottom up — there is no single command that upgrades the whole stack:
 
@@ -44,20 +57,25 @@ tarball and from a git checkout behave the same.
 | `cluster-probe` | every class, when the kubeconfig exists | the cluster did not answer the read of the deployment records (every layer would otherwise read as `fresh`) |
 | `version-change` | every class | `downgrade`, `conflict` |
 | `upgrade-path` | `upgrade`, `conflict` (a `downgrade` is skipped: `version-change` judges it) | the recorded version is outside the release's `upgrade_base_version`, or an unfinished run's recorded version does not parse |
-| `backup-freshness` | `upgrade`, `downgrade` of a solution layer | no Completed backup of the **installed** version, at most `upgrade_backup_max_age_hours` (6) old |
+| `backup-freshness` | `upgrade`, `downgrade` of a solution layer (not `infrastructure` or `platform`) | no Completed backup of the **installed** version, at most `upgrade_backup_max_age_hours` (6) old; Velero not deployed; or the layer has no enabled backup profile |
+| `compatibility` | every class (it never refuses a `fresh`, `reinstall` or `resume` run) | a layer this release `requires` (see the layer's `version.yaml`) is below the required range, or has no version. Above the range, or an installed layer on top whose own `requires` no longer matches, is only `advisory` |
+| `config-tracking` | `upgrade`, `downgrade`, `resume` | a rule of the layer's `config_tracking.yaml` marked `blocking` fires (for example, a setting that must not change across an upgrade did change); or the layer declares `supports.upgrade` but ships no `config_tracking.yaml` |
+| the layer's own checks | every class | whatever the layer's `upgrade_checks/*.yaml` files decide (see [Adding Solution Layers](../reference/adding_solutions.md#upgrades-optional)) |
 
 Each check prints one line per layer with its verdict: `pass`, `advisory`, `blocking` or `skipped`
-(with the reason).
+(with the reason). `config-tracking` prints `baseline` on a layer's first install with tracking:
+there is no saved configuration to compare with yet, and this run saves it.
 
 ### Advisory or gating
 
 Whether a `blocking` verdict stops the run depends on the layer, not on the check:
 
 - A layer that declares `supports.upgrade: true` on its `layers` entry (today: Intel® Chatbot
-  Toolkit, layer `erag`) is **refused** before anything changes. The line reads
-  `blocking (gating)`.
+  Toolkit, layer `erag`) is **refused** before anything changes, when the run is an `upgrade`,
+  `downgrade` or `conflict`. The line reads `blocking (gating)`. A `blocking` verdict from the
+  layer's own checks refuses every run class, `fresh` included.
 - Every other layer — including `infrastructure`, `platform` and `inference` — only **warns**: the
-  line reads `blocking (advisory)` and the install proceeds.
+  line reads `blocking (advisory)` and the install goes ahead.
 
 A refusal lists every gating check with its reason and the fix:
 
@@ -207,8 +225,9 @@ There is no automatic rollback. The procedure has three steps, in this order:
 1. **Clean (mandatory):** `./toolkit_manager.sh teardown <layer> --env <env> --force`. This also
    deletes the layer's deployment record. Do not restore over the failed
    upgrade: the backup does not hold everything the newer release created.
-2. **Reinstall the previous release:** move the checkout back to it (`repos.<layer>.yaml` pin, then
-   `init <layer> --upgrade`) and run `install <layer>`. With no record left, this is a `fresh` run,
+2. **Reinstall the previous release:** move the checkout back to the previous release (so
+   `configs/repos/repos.<layer>.yaml` pins the old revision again), run `init <layer> --upgrade`
+   to move `ext/` back, then run `install <layer>`. With no record left, this is a `fresh` run,
    and it records the previous version again.
 3. **Restore the data:** run the restore above. It picks the newest backup of the version step 2
    recorded, which is the pre-upgrade one; name another with `--from <backup-name>`.
@@ -236,7 +255,8 @@ and users; its 3.0.0 record is in the solution's own shape.
 ./toolkit_manager.sh install erag --env prod
 ```
 
-Step 3 prints, before anything changes:
+Step 3 prints, before anything changes (shortened: the `compatibility` and `config-tracking` lines
+are left out):
 
 ```text
 infrastructure: reinstall (1.1.0 -> 1.1.0)
