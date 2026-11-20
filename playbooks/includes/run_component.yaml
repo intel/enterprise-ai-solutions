@@ -19,9 +19,97 @@
     - component_action == 'install'
     - istio_enabled | default(false) | bool
 
-- name: "Execute {{ component.name }}"
+# Teardown deletes what the ownership role labelled during install. A component
+# whose teardown also has to clean up hosts sets `teardown: both` (labels, then its
+# own role), or `teardown: role` (its own role only) in components.yaml. In an env
+# no install labelled (_ownership_unlabelled), every component's own teardown runs.
+# In an env installed before the labels (_ownership_predates), a component also runs
+# its own (`both`) until that has run once.
+#
+# Labels cover what the component created, not what it changed in other components'
+# objects (a portal entry, a path on the gateway's route): `teardown_tasks` names the
+# role's tasks file that takes those back, run first.
+- name: "How {{ component.name }} is torn down"
+  when: component_action == 'teardown'
+  ansible.builtin.set_fact:
+    _component_teardown: >-
+      {{ 'role' if not (ownership_enabled | default(true) | bool) or _ownership_unlabelled | default(false)
+         else 'both' if _ownership_predates | default(false)
+                        and component.name not in _ownership_cleared | default([])
+                        and component.teardown | default('labels') != 'role'
+         else component.teardown | default('labels') }}
+
+- name: "Take {{ component.name }} off other components' objects"
   ansible.builtin.include_role:
     name: "{{ component.name }}"
+    tasks_from: "{{ component.teardown_tasks }}"
+    vars_from: "{{ cluster_distribution }}.yaml"
+  when:
+    - component_action == 'teardown'
+    - _component_teardown == 'labels'
+    - component.teardown_tasks is defined
+
+- name: "Delete what {{ component.name }} installed"
+  ansible.builtin.include_role:
+    name: ownership
+  vars:
+    ownership_action: teardown
+  when:
+    - component_action == 'teardown'
+    - _component_teardown in ['labels', 'both']
+
+# `always`: a component that fails halfway still gets what it created labelled.
+# Otherwise the next run would record those objects as already there, and
+# teardown would never remove them. A run that is killed never gets to `always`:
+# `begin` notes the component, and the next run's snapshot labels it first.
+# A `teardown: role` component is not recorded (nothing reads its labels); its
+# label pass only records the cluster again for the next component.
+- name: "Note that {{ component.name }} runs"
+  ansible.builtin.include_role:
+    name: ownership
+  vars:
+    ownership_action: begin
+  when:
+    - component_action == 'install'
+    - ownership_enabled | default(true) | bool
+    - component.teardown | default('labels') != 'role'
+
+- name: "Execute {{ component.name }}"
+  block:
+    - name: "Execute {{ component.name }}"
+      ansible.builtin.include_role:
+        name: "{{ component.name }}"
+      when: component_action != 'teardown' or _component_teardown in ['role', 'both']
+  # A failure a rescue inside the role handled is not the component's: only this one
+  # makes `label` carry the unclaimed new objects for the rerun.
+  rescue:
+    - name: "Note that {{ component.name }} failed"
+      ansible.builtin.set_fact:
+        _ownership_failed: true
+
+    - name: "{{ component.name }} failed"
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_task.name | default('') }}: {{ ansible_failed_result.msg | default('failed') }}"
+  always:
+    - name: "Label what {{ component.name }} installed"
+      ansible.builtin.include_role:
+        name: ownership
+      vars:
+        ownership_action: label
+      when:
+        - component_action == 'install'
+        - ownership_enabled | default(true) | bool
+
+- name: "Label what {{ component.name }} installs from now on"
+  ansible.builtin.include_role:
+    name: ownership
+  vars:
+    ownership_action: clear
+  when:
+    - component_action == 'teardown'
+    - _component_teardown == 'both'
+    - _ownership_predates | default(false)
+    - component.name not in _ownership_cleared | default([])
 
 - name: "Mesh for what {{ component.name }} installed"
   ansible.builtin.include_role:

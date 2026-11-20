@@ -1,0 +1,31 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# Node Feature Discovery — take its labels off the nodes (teardown_tasks)
+# =============================================================================
+# The chart's post-delete hook (the prune Job) removes the labels, annotations
+# and extended resources nfd-master set on the nodes. It runs only on helm
+# uninstall, so this goes before the labelled objects are deleted; those
+# deletes take what is left. With _node_feature_discovery_from_olm the
+# operator's labels belong to the cluster.
+# =============================================================================
+
+- name: "node_feature_discovery | Take NFD's labels off the nodes"
+  when: not _node_feature_discovery_from_olm | bool
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "node_feature_discovery | Uninstall the release, so its prune Job runs"
+      kubernetes.core.helm:
+        name: node-feature-discovery
+        release_namespace: "{{ node_feature_discovery_namespace }}"
+        state: absent
+        wait: true
+  rescue:
+    - name: "node_feature_discovery | Prune did not run"
+      ansible.builtin.debug:
+        msg: >-
+          helm uninstall node-feature-discovery failed ({{ ansible_failed_result.msg | default('') }});
+          the nodes may keep NFD's feature.node.kubernetes.io labels.
