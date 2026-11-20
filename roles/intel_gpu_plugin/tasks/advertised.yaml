@@ -1,0 +1,35 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Sets _intel_gpu_adv: per Intel GPU node, what it advertises (resources, total) and the
+# quantity of the resource the GPU runtimes request (required). Install waits for the
+# kubelet to add the resources once the plugin registers; validate reads them once.
+
+- name: "intel_gpu_plugin | Read the GPU resources each node advertises"
+  kubernetes.core.k8s_info:
+    kind: Node
+    name: "{{ item }}"
+  loop: "{{ _intel_gpu_nodes }}"
+  register: _intel_gpu_node_state
+  until: >-
+    _intel_gpu_node_state.resources[0].status.allocatable | default({}) | dict2items
+    | selectattr('key', 'in', intel_gpu_plugin_resources) | map(attribute='value') | map('int') | sum > 0
+  retries: "{{ intel_gpu_plugin_ready_retries if component_action == 'install' else 0 }}"
+  delay: 10
+  failed_when: false
+
+- name: "intel_gpu_plugin | Start the advertised-resources map"
+  ansible.builtin.set_fact:
+    _intel_gpu_adv: {}
+
+- name: "intel_gpu_plugin | Record the advertised resources"
+  ansible.builtin.set_fact:
+    _intel_gpu_adv: >-
+      {{ _intel_gpu_adv | combine({item.item: {
+           'resources': resources, 'total': resources.values() | map('int') | sum,
+           'required': allocatable[intel_gpu_plugin_required_resource] | default(0) | int}}) }}
+  loop: "{{ _intel_gpu_node_state.results }}"
+  vars:
+    allocatable: "{{ item.resources[0].status.allocatable | default({}) if item.resources | default([]) | length > 0 else {} }}"
+    resources: "{{ allocatable | dict2items | selectattr('key', 'in', intel_gpu_plugin_resources) | items2dict }}"

@@ -112,9 +112,9 @@ components:
 
   # NVIDIA; enabled when rack_scale is on; role checks gpu_vendor and no-ops if not nvidia.
   # One role per vendor: this is the NVIDIA stack. The Intel stack is a separate
-  # role (intel_gpu_operator, planner epic B2), so the two never share a node.
-  # The roles gate on rack_scale_gpu_vendor, which preflight loads from
-  # rack-profile.yaml for every action, and no-op unless it is nvidia.
+  # role (intel_gpu_plugin, gated on NFD's Intel GPU labels).
+  # This role gates on rack_scale_gpu_vendor, which preflight loads from
+  # rack-profile.yaml for every action, and no-ops unless it is nvidia.
   # In the platform layer after NFD, whose labels place its operands; fabric_validate
   # (infrastructure) has run before it. Planned (B2): detect vendors from NFD labels
   # and drop the rack_scale gate. Not on OpenShift for now: it expects the NFD Helm
@@ -130,6 +130,15 @@ components:
     layer: platform
     enabled: "{{ (kubernetes_cpu_policy | default('nri-balloons')) == 'nri-balloons' and (kubernetes_accelerator | default('cpu')) == 'cpu' }}"
     depends_on: []
+
+  # Intel GPUs (Arc Pro B-Series / B70 and other Xe GPUs): the device plugin that advertises
+  # gpu.intel.com/xe for the GPU model runtimes. Installs only where NFD labelled a node
+  # with an Intel GPU, so CPU-only clusters are unchanged. Not on OpenShift: the Intel
+  # Device Plugins Operator provides it there.
+  - name: intel_gpu_plugin
+    layer: platform
+    enabled: "{{ intel_gpu_plugin_enabled | default(true) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
+    depends_on: [node_feature_discovery]
 
   - name: cert_manager
     layer: platform

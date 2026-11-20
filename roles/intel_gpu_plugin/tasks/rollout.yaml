@@ -1,0 +1,23 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Waits until the DaemonSet's current generation is rolled out to every Intel GPU node.
+# The same condition for install and validate; install retries, validate checks once.
+
+- name: "intel_gpu_plugin | Wait for the DaemonSet to roll out"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: intel-gpu-plugin
+    namespace: intel-gpu-plugin
+  register: _intel_gpu_ds_state
+  until:
+    - _intel_gpu_ds_state.resources | default([]) | length > 0
+    # Right after an apply the status can still describe the previous generation.
+    - (_intel_gpu_ds_state.resources[0].status.observedGeneration | default(0) | int) >= (_intel_gpu_ds_state.resources[0].metadata.generation | int)
+    - (_intel_gpu_ds_state.resources[0].status.desiredNumberScheduled | default(0) | int) >= (_intel_gpu_nodes | length)
+    - (_intel_gpu_ds_state.resources[0].status.updatedNumberScheduled | default(0) | int) == (_intel_gpu_ds_state.resources[0].status.desiredNumberScheduled | default(0) | int)
+    - (_intel_gpu_ds_state.resources[0].status.numberReady | default(0) | int) == (_intel_gpu_ds_state.resources[0].status.desiredNumberScheduled | default(0) | int)
+  retries: "{{ intel_gpu_plugin_ready_retries if component_action == 'install' else 0 }}"
+  delay: 10

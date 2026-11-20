@@ -119,3 +119,33 @@ def test_install_platform_runs_nri_cpu_balloons_before_the_platform_services():
     order = [n for n in resolve_registry("platform", "install")
              if n in {c["name"] for c in _REGISTRY["components"] if c["layer"] == "platform"}]
     assert set(order[:order.index("nri_cpu_balloons")]) == {"node_feature_discovery", "nvidia_gpu_operator"}
+
+
+def _component(name):
+    return next(c for c in _REGISTRY["components"] if c["name"] == name)
+
+
+def test_intel_gpu_plugin_is_a_platform_component_after_nfd_and_nri_cpu_balloons():
+    assert _component("intel_gpu_plugin")["layer"] == "platform"
+    assert _component("intel_gpu_plugin")["depends_on"] == ["node_feature_discovery"]
+    order = resolve_registry("platform", "install")
+    assert order.index("node_feature_discovery") < order.index("nri_cpu_balloons") < order.index("intel_gpu_plugin")
+
+
+def test_intel_gpu_plugin_runs_in_the_platform_layer_but_not_the_inference_layer():
+    assert "intel_gpu_plugin" in resolve_registry("platform", "install")
+    assert "intel_gpu_plugin" not in resolve_registry("inference", "teardown")
+
+
+@pytest.mark.parametrize("variables, enabled", [
+    ({}, True),
+    ({"intel_gpu_plugin_enabled": False}, False),
+    ({"cluster_distribution": "openshift"}, False),
+    ({"cluster_distribution": "kubernetes"}, True),
+])
+def test_intel_gpu_plugin_enable_rule(variables, enabled):
+    import jinja2
+    env = jinja2.Environment()
+    env.filters["bool"] = lambda v: str(v).lower() in ("1", "true", "yes", "on")
+    rendered = env.from_string(_component("intel_gpu_plugin")["enabled"]).render(**variables)
+    assert (rendered == "True") is enabled

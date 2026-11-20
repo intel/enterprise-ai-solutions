@@ -1,0 +1,44 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "intel_gpu_plugin | validate"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "intel_gpu_plugin | validate | Detect Intel GPU nodes"
+      ansible.builtin.import_tasks: detect.yaml
+
+    # Nodes NFD has not labelled yet may hold a GPU: that is not a pass.
+    - name: "intel_gpu_plugin | validate | FAIL — discovery incomplete"
+      ansible.builtin.fail:
+        msg: >-
+          NFD has not labelled node(s) {{ _intel_gpu_unlabelled_nodes | join(', ') }}, so whether they hold an Intel GPU
+          is unknown. Check the node_feature_discovery component.
+      when: _intel_gpu_nodes | length == 0 and _intel_gpu_unlabelled_nodes | length > 0
+
+    - name: "intel_gpu_plugin | validate | PASS — no Intel GPU node"
+      ansible.builtin.debug:
+        msg: "No Intel GPU node; nothing to validate."
+      when: _intel_gpu_nodes | length == 0
+
+    - name: "intel_gpu_plugin | validate | Intel GPU nodes"
+      when: _intel_gpu_nodes | length > 0
+      block:
+        - name: "intel_gpu_plugin | validate | Check the DaemonSet rollout"
+          ansible.builtin.include_tasks: rollout.yaml
+
+        - name: "intel_gpu_plugin | validate | Read the advertised GPUs"
+          ansible.builtin.include_tasks: advertised.yaml
+
+        - name: "intel_gpu_plugin | validate | Check every Intel GPU node advertises {{ intel_gpu_plugin_required_resource }}"
+          ansible.builtin.assert:
+            that: _intel_gpu_missing | length == 0
+            fail_msg: "{{ _intel_gpu_missing | join(', ') }} do not advertise {{ intel_gpu_plugin_required_resource }}, which the GPU model runtimes request."
+            quiet: true
+          vars:
+            _intel_gpu_missing: "{{ _intel_gpu_adv | dict2items | selectattr('value.required', 'equalto', 0) | map(attribute='key') | list }}"
+
+        - name: "intel_gpu_plugin | validate | PASS"
+          ansible.builtin.debug:
+            msg: "Intel GPU plugin ready on {{ _intel_gpu_nodes | join(', ') }}."

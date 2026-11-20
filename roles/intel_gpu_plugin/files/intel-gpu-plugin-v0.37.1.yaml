@@ -1,0 +1,118 @@
+# Vendored from intel/intel-device-plugins-for-kubernetes v0.37.1
+# (deployments/gpu_plugin/base/intel-gpu-plugin.yaml, Apache-2.0), so installs do
+# not fetch from GitHub. Differences from upstream:
+#   - its own namespace, intel-gpu-plugin, created here with the privileged Pod Security
+#     label (upstream leaves the namespace to kustomize)
+#   - the image is pinned by digest (the role overrides it from intel_gpu_plugin_image)
+#   - a pod-level seccompProfile
+#   - the NetworkPolicy at the end: the plugin talks to the kubelet over a unix socket only
+# The role also sets the tolerations and the Intel-GPU node affinity.
+# The plugin runs as root with hostPath volumes: it must write its socket into the
+# kubelet's device-plugin directory, and it serves no port, so it has no probes.
+# Bumping: replace this file and intel_gpu_plugin_version/_image_digest in defaults/main.yaml.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: intel-gpu-plugin
+  labels:
+    # hostPath volumes and root are refused by the baseline and restricted levels.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: intel-gpu-plugin
+  namespace: intel-gpu-plugin
+  labels:
+    app: intel-gpu-plugin
+spec:
+  selector:
+    matchLabels:
+      app: intel-gpu-plugin
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: intel-gpu-plugin
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: intel-gpu-plugin
+        env:
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: HOST_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+        image: intel/intel-gpu-plugin:0.37.1@sha256:004641b2547d58f1eadce58473fa160ad71377de1eb588cf1f82832387bf3e33
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          seLinuxOptions:
+            type: "container_device_plugin_t"
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          requests:
+            memory: "45Mi"
+            cpu: 40m
+          limits:
+            memory: "115Mi"
+            cpu: 100m
+        volumeMounts:
+        - name: devfs
+          mountPath: /dev/dri
+          readOnly: true
+        - name: sysfsdrm
+          mountPath: /sys/class/drm
+          readOnly: true
+        - name: kubeletsockets
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: cdipath
+          mountPath: /var/run/cdi
+      volumes:
+      - name: devfs
+        hostPath:
+          path: /dev/dri
+      - name: sysfsdrm
+        hostPath:
+          path: /sys/class/drm
+      - name: kubeletsockets
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+      - name: cdipath
+        hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: intel-gpu-plugin
+  namespace: intel-gpu-plugin
+spec:
+  podSelector:
+    matchLabels:
+      app: intel-gpu-plugin
+  policyTypes:
+  - Ingress
+  - Egress

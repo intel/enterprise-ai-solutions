@@ -1,0 +1,112 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# A no-op unless NFD found an Intel GPU on a node, so CPU-only clusters are unchanged.
+
+- name: "intel_gpu_plugin | Install"
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "intel_gpu_plugin | Detect Intel GPU nodes"
+      ansible.builtin.import_tasks: detect.yaml
+
+    - name: "intel_gpu_plugin | Warn — nodes NFD has not labelled"
+      ansible.builtin.debug:
+        msg:
+          - "WARNING: NFD has not labelled node(s) {{ _intel_gpu_unlabelled_nodes | join(', ') }}."
+          - "An Intel GPU on them cannot be detected, so the plugin is not installed there."
+          - "Check the node_feature_discovery component, then re-run: install intel_gpu_plugin"
+      when: _intel_gpu_unlabelled_nodes | length > 0
+
+    - name: "intel_gpu_plugin | Skip — no Intel GPU node"
+      ansible.builtin.debug:
+        msg: "No node carries an Intel GPU label — Intel GPU plugin not needed."
+      when: _intel_gpu_nodes | length == 0
+
+    - name: "intel_gpu_plugin | Install on the Intel GPU nodes"
+      when: _intel_gpu_nodes | length > 0
+      block:
+        - name: "intel_gpu_plugin | Intel GPU nodes"
+          ansible.builtin.debug:
+            msg: "Intel GPU node(s): {{ _intel_gpu_nodes | join(', ') }}"
+
+        # Two plugins on one node fight over the kubelet's device-plugin socket and the
+        # second one fails with "Socket ... is already in use".
+        - name: "intel_gpu_plugin | Look for a plugin installed elsewhere"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: DaemonSet
+            label_selectors:
+              - app=intel-gpu-plugin
+          register: _intel_gpu_existing
+
+        - name: "intel_gpu_plugin | Stop on a plugin from another install"
+          ansible.builtin.fail:
+            msg: >-
+              An Intel GPU plugin DaemonSet already runs in
+              {{ _intel_gpu_elsewhere | map(attribute='metadata.namespace') | unique | join(', ') }}. Two plugins on one node
+              fight over the kubelet's device-plugin socket. Delete it (or its GpuDevicePlugin resource),
+              then re-run: install intel_gpu_plugin
+          vars:
+            _intel_gpu_elsewhere: "{{ _intel_gpu_existing.resources | rejectattr('metadata.namespace', 'equalto', 'intel-gpu-plugin') | list }}"
+          when: _intel_gpu_elsewhere | length > 0
+
+        - name: "intel_gpu_plugin | Load the vendored manifests"
+          ansible.builtin.set_fact:
+            _intel_gpu_docs: "{{ lookup('ansible.builtin.file', intel_gpu_plugin_manifest) | from_yaml_all | select | list }}"
+
+        # The image, tolerations and node affinity come from the defaults, so a mirror
+        # registry or extra taints need no edit of the vendored file.
+        - name: "intel_gpu_plugin | Render the manifests"
+          ansible.builtin.set_fact:
+            _intel_gpu_rendered: >-
+              {{ _intel_gpu_docs | rejectattr('kind', 'equalto', 'DaemonSet') | list + [_intel_gpu_ds] }}
+          vars:
+            _intel_gpu_src: "{{ _intel_gpu_docs | selectattr('kind', 'equalto', 'DaemonSet') | first }}"
+            _intel_gpu_ds: >-
+              {{ _intel_gpu_src | combine({'spec': {'template': {'spec': {
+                   'containers': [_intel_gpu_src.spec.template.spec.containers[0] | combine({'image': intel_gpu_plugin_image})],
+                   'tolerations': intel_gpu_plugin_tolerations,
+                   'affinity': {'nodeAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': {
+                     'nodeSelectorTerms': intel_gpu_plugin_node_selector_terms}}}}}}}, recursive=true) }}
+
+        - name: "intel_gpu_plugin | Apply the manifests"
+          kubernetes.core.k8s:
+            state: present
+            definition: "{{ item }}"
+          loop: "{{ _intel_gpu_rendered }}"
+          loop_control:
+            label: "{{ item.kind }}/{{ item.metadata.name }}"
+
+        - name: "intel_gpu_plugin | Wait for the rollout"
+          ansible.builtin.include_tasks: rollout.yaml
+
+        - name: "intel_gpu_plugin | Wait for the nodes to advertise their GPUs"
+          ansible.builtin.include_tasks: advertised.yaml
+
+        # An integrated GPU without a driver has nothing for the plugin to advertise; that
+        # must not stop the platform install.
+        - name: "intel_gpu_plugin | Warn — nodes advertising no GPU"
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: {{ _intel_gpu_adv | dict2items | selectattr('value.total', 'equalto', 0) | map(attribute='key') | join(', ') }}
+              carry an Intel GPU label but advertise none of {{ intel_gpu_plugin_resources | join(', ') }}
+              (an integrated GPU, or no driver loaded?). GPU models will not schedule there.
+          when: _intel_gpu_adv | dict2items | selectattr('value.total', 'equalto', 0) | list | length > 0
+
+        - name: "intel_gpu_plugin | Warn — nodes without the resource the GPU runtimes request"
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: {{ _intel_gpu_adv | dict2items | selectattr('value.total', '>', 0) | selectattr('value.required', 'equalto', 0)
+                          | map(attribute='key') | join(', ') }} advertise GPUs, but not {{ intel_gpu_plugin_required_resource }},
+              which the GPU model runtimes request. GPU models will not schedule there.
+          when: >-
+            _intel_gpu_adv | dict2items | selectattr('value.total', '>', 0) | selectattr('value.required', 'equalto', 0)
+            | list | length > 0
+
+        - name: "intel_gpu_plugin | ━━━ DONE ━━━"
+          ansible.builtin.debug:
+            msg: >-
+              Intel GPU plugin {{ intel_gpu_plugin_version }} in the intel-gpu-plugin namespace:
+              {% for node, adv in _intel_gpu_adv.items() %}{{ node }} {{ adv.resources }}{{ '; ' if not loop.last }}{% endfor %}
