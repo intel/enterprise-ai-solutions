@@ -1,13 +1,12 @@
 # Copyright (C) 2024-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 ---
+# After the inventory reload, localhost is listed only when it is a node: the
+# local single-node install, or a nodes.yaml entry. Reaching it needs no SSH.
 - name: "kubernetes | Detect SSH requirement from inventory"
+  vars:
+    _nodes: >-
+      {{ (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([])) | unique | list }}
   ansible.builtin.set_fact:
-    _k8s_needs_ssh: >-
-      {{
-        (groups['kube_control_plane'] | default([]) + groups['kube_node'] | default([]))
-        | unique
-        | reject('equalto', 'localhost')
-        | list
-        | length > 0
-      }}
+    _k8s_cluster_nodes: "{{ _nodes or ['localhost'] }}"
+    _k8s_needs_ssh: "{{ _nodes | reject('equalto', 'localhost') | list | length > 0 }}"

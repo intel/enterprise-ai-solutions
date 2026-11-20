@@ -50,7 +50,11 @@ Four topologies are supported from the same `rack-profile.yaml` schema:
 ### Node readiness
 
 Check every node before deploying. Reused nodes are the most common cause of a
-failed rack-scale install.
+failed rack-scale install. On a fresh install the installer also checks every
+node before Kubespray starts. It stops on time, disk, internet access, a
+half-removed etcd and, with Ceph, the OSD disks, and warns on leftovers from
+another cluster. See
+[Node checks before install](quickstart/prerequisites.md#node-checks-before-install).
 
 - **Clean nodes:** start from a fresh OS install. A node that was part of
   another cluster can carry kubelet and etcd state, `/etc/kubernetes`, CNI

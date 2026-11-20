@@ -1,0 +1,54 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: "kubernetes | node preflight | Skip list"
+  ansible.builtin.set_fact:
+    # A single ID written without brackets is a one-item list. Time sync is
+    # required on multi-node installs only (docs/quickstart/prerequisites.md).
+    _np_skip: "{{ [kubernetes_node_preflight_skip] | flatten + ([] if _k8s_needs_ssh | bool else ['N1', 'N2']) }}"
+
+- name: "kubernetes | node preflight | Probe each node"
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/node_preflight_probe.py"
+    executable: python3
+  delegate_to: "{{ item }}"
+  become: true
+  vars:
+    _np_ceph: "{{ _resolved_storage_backend | default(storage_backend | default('local-path')) == 'ceph' }}"
+    _np_spec:
+      controller_epoch: "{{ now().timestamp() }}"
+      etcd: "{{ item in groups['etcd'] | default([]) }}"
+      ceph_devices: >-
+        {{ ((rook_ceph_devices | default({})).get(item)
+            or (rook_ceph_devices | default({})).get(hostvars[item].node_hostname | default(item))
+            or []) if _np_ceph | bool else [] }}
+      skip: "{{ _np_skip }}"
+      # Kubespray's bin_dir: its own tree on a single-node install (kubespray_extra_auto.yml.j2).
+      bin_dir: "{{ '/usr/local/bin' if _k8s_needs_ssh | bool else kubespray_bin_dir_local }}"
+  # The proxy settings come from the play's environment (playbooks/site.yaml).
+  environment:
+    NODE_PREFLIGHT_SPEC: "{{ _np_spec | to_json }}"
+  loop: "{{ _k8s_cluster_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _np_probe
+  changed_when: false
+
+- name: "kubernetes | node preflight | Evaluate"
+  ansible.builtin.set_fact:
+    _np: "{{ _np_probe.results | node_preflight_evaluate(_np_skip) }}"
+
+- name: "kubernetes | node preflight | Results"
+  ansible.builtin.debug:
+    msg: "{{ _np.table }}"
+
+- name: "kubernetes | node preflight | Stop on failed checks"
+  ansible.builtin.fail:
+    msg: |-
+      Node preflight: {{ _np.failures | length }} check(s) failed; Kubespray did not start.
+      {% for r in _np.failures %}
+      - {{ r.node }}: {{ r.id }} {{ r.check }}: {{ r.evidence }}
+        Fix: {{ r.hint }}
+      {% endfor %}
+      Fix these and re-run. To skip a check, set kubernetes_node_preflight_skip (e.g. [{{ _np.failures | map(attribute='id') | unique | join(', ') }}]) in global_config.yaml.
+  when: _np.failures | length > 0

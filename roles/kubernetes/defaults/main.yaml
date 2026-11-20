@@ -132,3 +132,7 @@ kubernetes_disable_swap: true
 kubernetes_disable_firewall: false
 kubernetes_load_kernel_modules: true
 kubernetes_registry_enabled: false
+
+# --- Node preflight (fresh installs only; docs/quickstart/prerequisites.md) ---
+kubernetes_node_preflight: true
+kubernetes_node_preflight_skip: []
