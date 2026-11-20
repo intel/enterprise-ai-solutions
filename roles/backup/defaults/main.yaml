@@ -23,6 +23,15 @@ restore_name_prefix: "restore"
 # find the backups that belong to a given profile.
 backup_profile_label_key: "ai-solutions.io/backup-profile"
 
+# Label carrying the layer an object belongs to (each layer's deployment record
+# in default carries it); restoring a layer leaves objects of the other layers alone.
+backup_layer_label_key: "toolkit-manager.intel.com/layer"
+
+# Label backup_force=true puts on a backup taken from a checkout at another
+# version than the installed one; a restore never picks such a backup unless
+# velero_restore_from names it, and it never satisfies backup-freshness.
+backup_checkout_bypass_label_key: "toolkit-manager.intel.com/checkout-bypass"
+
 # --- Labels -------------------------------------------------------------------
 backup_labels:
   backup-reason: regular
@@ -30,9 +39,17 @@ restore_labels:
   restore-reason: recovery
 
 # --- Restore ------------------------------------------------------------------
-# Empty = newest Completed backup for this profile. Set it to pin one.
+# Empty = newest Completed backup labelled with the layer's recorded version
+# and not labelled backup_checkout_bypass_label_key (any version when
+# restore.yaml is included outside playbooks/backup.yaml, with no layer to look
+# up a record for). Set it to pin one.
 velero_restore_from: ""
 backup_existing_resource_policy: "update"
+
+# The run_backup.sh command the user-facing messages print, with %s for the action:
+#   backup_manage_command_prefix | format('restore') ~ ' --force'
+# Only rendered where backup_layer is defined (every call site guards on that).
+backup_manage_command_prefix: "{{ './run_backup.sh %s ' ~ backup_layer ~ ' --env ' ~ (env_name | default(env_dir | default('env/local') | basename)) }}"
 
 # --- Monitoring ---------------------------------------------------------------
 backup_monitor_retries: 360          # 360 x 10s = 60 minutes

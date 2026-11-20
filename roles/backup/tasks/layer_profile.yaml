@@ -1,0 +1,26 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Locate and load backup_layer's profile, backup_profile.yaml beside the components.yaml
+# that declares the layer. Never fails. Output: _bk_layer_profile (path, '' for a layer
+# with no repository under ext/), _bk_layer_profile_found, and when found the
+# backup_profile / backup_profile_active facts of load_profile.yaml.
+- name: "backup | Locate the {{ backup_layer }} profile"
+  ansible.builtin.set_fact:
+    _bk_layer_profile: "{{ backup_layer | backup_profile_path(_layer_dirs | default({})) }}"
+
+- name: "backup | Check the {{ backup_layer }} profile exists"
+  ansible.builtin.stat:
+    path: "{{ _bk_layer_profile }}"
+  register: _bk_layer_profile_stat
+  when: _bk_layer_profile | length > 0
+
+- name: "backup | Note whether {{ backup_layer }} has a profile"
+  ansible.builtin.set_fact:
+    _bk_layer_profile_found: "{{ _bk_layer_profile_stat.stat.exists | default(false) }}"
+
+- name: "backup | Load the {{ backup_layer }} profile"
+  ansible.builtin.include_tasks: load_profile.yaml
+  vars:
+    backup_profile_file: "{{ _bk_layer_profile }}"
+  when: _bk_layer_profile_found | bool

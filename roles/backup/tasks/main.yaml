@@ -2,7 +2,8 @@
 # =============================================================================
 # backup — Entry point
 # =============================================================================
-# Not a registered component: the solution that owns a profile includes the task
+# Not a registered component: playbooks/backup.yaml includes layer.yaml for a
+# layer's backup and restore, a solution's own playbook may include the task
 # files directly (load_profile.yaml, preflight.yaml, backup.yaml, restore.yaml),
 # and its upgrade path includes verify.yaml as a gate. This dispatcher exists so
 # `validate backup` and any component-style invocation still land somewhere

@@ -1,0 +1,27 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# backup | The recorded version of backup_layer's deployment
+# =============================================================================
+# Shared by layer.yaml (backup) and restore.yaml (restore): both need the
+# version lift_layer_record reports from backup_layer's own deployment-manifest
+# ConfigMap, in upgrade_record_namespace. Caller sets backup_layer and includes
+# this guarded by its own `when`. Output: _bk_layer_record, _bk_recorded_version
+# ('' when there is no record).
+# =============================================================================
+
+- name: "backup | Read the {{ backup_layer }} deployment record"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ backup_layer }}-deployment-manifest"
+    namespace: "{{ upgrade_record_namespace | default('default') }}"
+  register: _bk_layer_record
+
+- name: "backup | Note the recorded {{ backup_layer }} version"
+  ansible.builtin.set_fact:
+    _bk_recorded_version: >-
+      {{ (_record.data['manifest.yaml'] | from_yaml | lift_layer_record).version | default('') if _record else '' }}
+  vars:
+    _record: "{{ _bk_layer_record.resources | default([]) | first | default({}) }}"

@@ -1,0 +1,42 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# A Completed, readable backup of the recorded version, at most
+# upgrade_backup_max_age_hours old, else blocking; with Velero absent and
+# upgrade_without_velero set, blocking but bypassed (filter_plugins/upgrade_checks.py).
+# Core's own layers (upgrade_installer_layers) have no backup profile.
+- name: "upgrade_checks | backup-freshness | Leave out the installer's layers"
+  ansible.builtin.set_fact:
+    _bk_check_layers: "{{ _check_layers | reject('in', upgrade_installer_layers) | list }}"
+
+- name: "upgrade_checks | backup-freshness | Find the Velero server"
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: velero_server.yaml
+  when: _bk_check_layers | length > 0
+
+- name: "upgrade_checks | backup-freshness | Stop when the Velero server pods cannot be listed"
+  ansible.builtin.fail:
+    msg: >-
+      Upgrade blocked: listing the Velero server pods failed:
+      {{ _bk_velero_server_error }}. Check the cluster connection and retry.
+  when: _bk_check_layers | length > 0 and _bk_velero_server_error | length > 0
+
+- name: "upgrade_checks | backup-freshness | Look up each layer's backups"
+  ansible.builtin.include_role:
+    name: backup
+    tasks_from: freshness.yaml
+  vars:
+    backup_layer: "{{ _bk_check_layer }}"
+    backup_source_version: "{{ _layer_records[_bk_check_layer].version }}"
+  loop: "{{ _bk_check_layers }}"
+  loop_control:
+    loop_var: _bk_check_layer
+
+- name: "upgrade_checks | backup-freshness"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: >-
+      {{ _upgrade_verdicts + [_bk_freshness[item] | backup_freshness_verdict(item, _layer_records[item].version,
+                                                                              upgrade_without_velero | bool,
+                                                                              env_name | default('local'))] }}
+  loop: "{{ _bk_check_layers }}"

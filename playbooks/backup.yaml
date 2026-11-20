@@ -1,0 +1,80 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Backup / Restore Playbook — back up or restore one layer with Velero
+# =============================================================================
+# Usage: target names one layer; backup_action is backup, restore or list.
+# run_backup.sh runs it with the env's configs and kubeconfig:
+#
+#   ./run_backup.sh backup|restore|list <layer> [--env <env>] [--from <name>] [--force]
+#
+# or run it directly:
+#
+#   .venv/bin/ansible-playbook -i env/<env>/inventory/hosts.yaml \
+#     -e env_dir=$(pwd)/env/<env> -e @env/<env>/global_config.yaml \
+#     playbooks/backup.yaml -e target=<layer> -e backup_action=backup|restore|list \
+#     [-e backup_confirm=yes] [-e velero_restore_from=<name>] [-e backup_force=true]
+#
+# A layer's profile is backup_profile.yaml beside the components.yaml that
+# declares it (roles/backup/tasks/layer.yaml locates it; configs/backup.yaml is
+# the profile contract). restore refuses without backup_confirm=yes: it deletes
+# the Helm releases and PersistentVolumeClaims the profile lists, then replays
+# the chosen backup over them — which also replaces any object in the profile's
+# namespaces that carries no toolkit-manager.intel.com/layer label (a profile may exclude
+# customer-owned kinds from that with exclude_resources). backup refuses a
+# checkout at another version than the one recorded as installed, since the
+# profile is read from the checkout; backup_force=true takes it anyway,
+# labelled as taken from a checkout-version bypass.
+# =============================================================================
+
+- name: "AI-solutions backup/restore"
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    component_action: "{{ backup_action | default('') }}"
+    log_dir: "{{ env_dir | default(playbook_dir + '/../env/local') }}/logs"
+    tmp_dir: "{{ log_dir }}/tmp"
+    # The wrapper's kubeconfig; on a direct call, a BYO cluster's when global_config.yaml names one, else the env's own.
+    _backup_kubeconfig: >-
+      {{ kubernetes_kubeconfig | default((existing_kubernetes | default('', true) | expanduser)
+         or (env_dir | default(playbook_dir + '/../env/local')) ~ '/kubeconfig.yaml', true) }}
+  environment:
+    KUBECONFIG: "{{ _backup_kubeconfig }}"
+    K8S_AUTH_KUBECONFIG: "{{ _backup_kubeconfig }}"
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('') }}"
+    HTTP_PROXY: "{{ http_proxy | default('') }}"
+    HTTPS_PROXY: "{{ https_proxy | default('') }}"
+    NO_PROXY: "{{ no_proxy | default('') }}"
+    K8S_AUTH_NO_PROXY: "{{ no_proxy | default('') }}"
+
+  pre_tasks:
+    - name: "Preflight"
+      ansible.builtin.include_tasks: includes/preflight.yaml
+
+    - name: "Validate backup_action"
+      ansible.builtin.fail:
+        msg: >-
+          backup_action must be 'backup', 'restore' or 'list' (got '{{ backup_action | default('') }}').
+          Pass -e backup_action=backup, restore or list.
+      when: backup_action | default('') not in ['backup', 'restore', 'list']
+
+    - name: "Validate target is a layer"
+      ansible.builtin.fail:
+        msg: >-
+          target must name one layer (got '{{ target | default('') }}'). Layers:
+          {{ layers | default([]) | map(attribute='name') | list | join(', ') }}
+      when: >-
+        (target | default('') | trim | length == 0)
+        or (target | trim not in (layers | default([]) | map(attribute='name') | list))
+
+  tasks:
+    - name: "{{ backup_action | capitalize }} {{ target }}"
+      ansible.builtin.include_role:
+        name: backup
+        tasks_from: layer.yaml
+      vars:
+        backup_layer: "{{ target }}"

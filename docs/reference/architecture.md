@@ -521,7 +521,8 @@ A file-level map of this repository and the external inference repo it composes 
 
 | File | Purpose |
 |------|---------|
-| `es_auto_installer.sh` | CLI wrapper. Actions: `configure`, `show`, `init <layer>`, `install`, `teardown`, `validate`, `status`. Flags: `--env <name>`, `--flavour <name>` (init only), `--upgrade` (init only), `--only` (skip dep auto-inclusion), `--skip <names>` (comma-separated layers/components to exclude), `--force` (skip confirmation), `--` (pass remaining args to ansible-playbook). |
+| `es_auto_installer.sh` | CLI wrapper. Actions: `configure`, `show`, `init <layer>`, `install`, `teardown`, `validate`, `status`. Flags: `--env <name>`, `--flavour <name>` (init only), `--upgrade` (init only), `--only` (skip dep auto-inclusion), `--skip <names>` (comma-separated layers/components to exclude), `--force` (skip confirmation; on `install`, run past a refusing upgrade check), `--` (pass remaining args to ansible-playbook). |
+| `run_backup.sh` | Back up, restore or list one layer's backups with Velero: actions `backup`, `restore`, `list`, each with a `<layer>`; flags `--env <name>`, `--from <backup>` (restore), `--force`, `--`. Sources `es_auto_installer.sh` for its playbook arguments and runs `playbooks/backup.yaml`. |
 | `ansible.cfg` | Ansible configuration. `roles_path` is overridden at runtime by composed `ANSIBLE_ROLES_PATH`. Uses default stdout callback with yaml result format, `timer` + `profile_tasks` callbacks. |
 | `env/<name>/global_config.yaml` | Main config for environment: component versions, TLS settings, proxy, auth. Overrides ext repo and role defaults. Single place to change versions per environment. |
 | `env/<name>/inventory/hosts.yaml` | Kubespray-compatible inventory. Defines control-plane, workers, etcd groups. Copied from `inventory/hosts.yaml` by `init`. |
