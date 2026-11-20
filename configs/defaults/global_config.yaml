@@ -2,172 +2,132 @@
 # SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
-# Global Configuration — Default Template
+# Toolkit Manager — global configuration
 # =============================================================================
-# Copy to the repo root and edit before deploying. Deployment targets → nodes.yaml
-# Override any value: ./toolkit_manager.sh install -e key=value
+# `init` copies this file to env/<name>/global_config.yaml: edit that copy.
+# The nodes to install on go in env/<name>/nodes.yaml.
+#
+# Active lines are the defaults. "# key: value" lines are optional settings:
+# remove the "# " to use one.
+# One-off override:  ./toolkit_manager.sh install <target> -- -e key=value
+#
+#   1. Kubernetes             5. Storage
+#   2. Networking and proxy   6. Sign-in
+#   3. Domain and access      7. Advanced
+#   4. Components             8. Hardware and platform specific
 # =============================================================================
 
-# --- Kubernetes ---
+
+# ─── 1. Kubernetes ───────────────────────────────────────────────────────────
+
 kubernetes_cluster_name: "cluster.local"
 kubernetes_kube_proxy_mode: "nftables"    # nftables | iptables | ipvs
-# existing_kubernetes: ""                 # BYO cluster: set to absolute path of your kubeconfig.
-#                                         # Skips all Kubespray phases. Leave commented for managed install.
+# existing_kubernetes: ""                 # your own cluster: its kubeconfig path (skips Kubespray)
 
-# --- Storage ---
-# ceph and netapp-trident each need their own settings block: see Optional
-# Features at the bottom of this file.
-storage_backend: local-path               # local-path (single-node) | nfs | ceph | netapp-trident(available only with customer specific HW) | custom
 
-# custom = your cluster already has a CSI driver; the installer installs no
-# provisioner and only checks the class below. It must be the cluster's default
-# StorageClass — every component provisions without naming one:
-#   kubectl annotate storageclass <name> storageclass.kubernetes.io/is-default-class=true --overwrite
-# storage_custom_storageclass: ""         # required when storage_backend=custom
-# storage_custom_rwx: true                # false = the class is RWO-only (single-node only:
-#                                         # the shared model store needs ReadWriteMany)
+# ─── 2. Networking and proxy ─────────────────────────────────────────────────
 
-# --- Ceph (only used when storage_backend=ceph) ---
-# Raw block devices for OSDs, keyed by node name. Listed nodes run all Ceph daemons.
+# kubernetes_service_cidr: "10.233.0.0/18"    # ClusterIP range
+# kubernetes_cluster_cidr: "10.233.64.0/18"   # pod range
+# metallb_ip_range: ""                        # LoadBalancer IP range (a-b); auto-detected when unset
+
+# Behind a corporate proxy: no_proxy must list both CIDRs above and the node subnets (ip route).
+# http_proxy: "http://your-proxy:8080"
+# https_proxy: "http://your-proxy:8080"
+# no_proxy: "localhost,127.0.0.1,.svc,.cluster.local,.monitoring,10.233.0.0/18,10.233.64.0/18,<node-subnet>"
+
+
+# ─── 3. Domain and access ────────────────────────────────────────────────────
+
+base_domain_name: "solutions.ai"          # all URLs: grafana.<domain>, keycloak.<domain>, ...
+
+routing_mode: "subdomain"                 # subdomain: a host per service | path: <domain>/<service>
+# Path mode puts the apps on one browser origin; Langfuse and the vLLM-SR dashboard keep subdomains.
+# gateway_landing_path: "/grafana/"       # path mode: where the bare domain goes (default: Headlamp when on)
+
+gateway_tls_mode: "selfsigned"            # selfsigned | custom
+# selfsigned: import env/<name>/logs/ai-solutions-ca.crt into your browser or OS to drop the warnings.
+# gateway_tls_cert_file: "/path/to/cert.pem"   # custom only
+# gateway_tls_key_file: "/path/to/key.pem"     # custom only
+# gateway_tls_ca_file: "/path/to/ca.pem"       # custom only, optional: private CA, stored as ca.crt
+
+gateway_request_timeout: "600s"           # Envoy's 15s default is too short for LLM responses
+
+
+# ─── 4. Components ───────────────────────────────────────────────────────────
+# Keycloak and the gateway always install; these switch the rest on or off.
+
+istio_enabled: true                       # Istio ambient mesh: mTLS between services
+observability_enabled: true               # Grafana, Prometheus, Loki, Tempo
+# observability_prometheus_retention: "30d"
+# observability_prometheus_storage_size: "50Gi"
+metrics_server_enabled: true              # kubectl top, Headlamp CPU/memory; skipped if the cluster has one
+headlamp_enabled: false                   # Kubernetes web UI, Keycloak sign-in (platform realm)
+keda_enabled: false                       # event-driven autoscaling (Custom Metrics Autoscaler on OpenShift)
+velero_enabled: false                     # backup and restore; needs CSI-snapshot storage
+kata_containers_enabled: false            # microVM runtime for the Agent Sandbox (agent-toolkit)
+kata_runtime: "kata-fc"                   # kata-fc | kata-qemu | both
+
+
+# ─── 5. Storage ──────────────────────────────────────────────────────────────
+
+storage_backend: local-path               # local-path (single node) | nfs | ceph | netapp-trident | custom
+# ceph and netapp-trident (NetApp ONTAP hardware) take the settings in section 8.
+# custom: your own CSI driver, whose class must be the cluster's default StorageClass.
+# storage_custom_storageclass: ""         # custom only, required
+# storage_custom_rwx: true                # custom only; false: RWO-only class (single node only)
+
+object_store_backend: "seaweedfs"         # S3 store for Loki, Tempo and Langfuse: seaweedfs | external
+seaweedfs_volume_storage_size: "10Gi"
+
+
+# ─── 6. Sign-in ──────────────────────────────────────────────────────────────
+# Keycloak signs people in. LiteLLM and Langfuse are set in config.inference.yaml.
+# Keycloak and Grafana admin passwords are generated and kept in Secrets: docs/customize/configuration.md.
+
+# API auth: jwt (default) | litellm_vkey (the Agent Toolkit's default). Uncomment only to
+# force one for every layer: an active value here overrides the layer configs.
+# auth_type: "jwt"
+# keycloak_platform_bootstrap_admin_mfa: true    # platform-admin enrols OTP at first login
+# headlamp_byo_apiserver_trusted: true           # your own cluster's API server trusts the platform realm
+
+
+# ─── 7. Advanced (most installs keep these) ──────────────────────────────────
+
+node_topology_enabled: true               # platform pods on control-plane nodes, inference on workers (soft)
+enforce_pss: true                         # Pod Security labels on every namespace the installer creates
+kubernetes_cpu_policy: "nri-balloons"     # keep: model-manager and inference need NRI CPU pinning
+kubernetes_accelerator: "cpu"             # cpu: the kubelet CPU/NUMA tuning for Xeon
+rack_scale_enabled: false                 # rack-scale fabric; needs env/<name>/rack-profile.yaml
+# envoy_gateway_upgrade: false            # true: Envoy Gateway 1.9.3 instead of 1.7.5; never downgrades
+
+
+# ─── 8. Hardware and platform specific ───────────────────────────────────────
+
+# Ceph (storage_backend: ceph): raw OSD devices per node; the nodes listed run the Ceph daemons.
 # rook_ceph_devices:
 #   node-1: [/dev/nvme1n1]
 #   node-2: [/dev/nvme1n1]
+# rook_ceph_teardown_wipe_devices: false          # true: teardown wipes them; else blkdiscard -f first
 
-# true = teardown wipes every device above, no confirmation. Off means wiping them by hand (blkdiscard -f) before any re-install, or Ceph creates 0 OSDs.
-# rook_ceph_teardown_wipe_devices: false
-
-# --- Proxy (uncomment if behind corporate proxy) ---
-# kubernetes_service_cidr: "10.233.0.0/18"    # ClusterIP range
-# kubernetes_cluster_cidr: "10.233.64.0/18"   # pod range
-# http_proxy: "http://your-proxy:8080"
-# https_proxy: "http://your-proxy:8080"
-# no_proxy must list both CIDRs above + node subnets: ip route | grep -v default | awk '{print $1}' | grep '/'
-# no_proxy: "localhost,127.0.0.1,.svc,.cluster.local,.monitoring,10.233.0.0/18,10.233.64.0/18,<node-subnet>"
-
-# --- TLS ---
-# selfsigned: an internal root CA is created and exported to
-#   env/<name>/logs/ai-solutions-ca.crt — import that file into your browser or
-#   OS trust store to drop the certificate warnings.
-gateway_tls_mode: "selfsigned"            # selfsigned | custom
-base_domain_name: "solutions.ai"
-gateway_request_timeout: "600s"           # Envoy default is 15s — too short for LLM
-
-# --- Routing ---
-# subdomain: each service on its own host (keycloak.<base>, grafana.<base>, ...)
-# path:      one host, each service under its path (<base>/keycloak, ...);
-#            Langfuse and the vLLM-SR dashboard stay on their own subdomains.
-#            The services then share one browser origin (cookies, storage):
-#            choose subdomain where the apps must be isolated from each other.
-routing_mode: "subdomain"                 # subdomain | path
-# gateway_landing_path: "/grafana/"        # path mode: where the bare domain redirects (default: Headlamp when on; an app publishing / takes over)
-
-# --- Custom TLS (only used when gateway_tls_mode=custom) ---
-# gateway_tls_cert_file: "/path/to/cert.pem"
-# gateway_tls_key_file: "/path/to/key.pem"
-# gateway_tls_ca_file: "/path/to/ca.pem"     # optional: private CA, stored as ca.crt
-
-# --- Components ---
-istio_enabled: true
-observability_enabled: true
-metrics_server_enabled: true              # resource metrics (kubectl top, Headlamp CPU/memory); skipped when the cluster already has one
-velero_enabled: false                     # opt-in: backup/restore. Requires CSI-snapshot storage
-headlamp_enabled: false                   # opt-in: Kubernetes web UI, Keycloak sign-in (platform realm)
-keda_enabled: false                       # opt-in: event-driven autoscaling (KEDA); Custom Metrics Autoscaler on OpenShift
-# headlamp_byo_apiserver_trusted: true    # BYO cluster: its API server already trusts the platform realm
-
-# --- Authentication ---
-# Keycloak is always deployed: people sign in through it and the gateway
-# requires its JWT unless a route authenticates itself. API client auth
-# (auth_type) and the LiteLLM/Langfuse add-ons are set in config.inference.yaml.
-
-# --- Rack-Scale Fabric ---
-# Set to true for rack-scale deployments with high-speed fabric networking.
-# Requires a rack-profile.yaml in the env directory. When false (default),
-# all fabric components are skipped and the stack behaves identically to a
-# standard deployment. GPU operator auto-enables when the rack-profile
-# defines nodes with an accelerator: field — no separate flag needed.
-rack_scale_enabled: false
-
-# =============================================================================
-# Advanced Options (most users won't need to change these)
-# =============================================================================
-
-# --- Workload Placement ---
-# Soft affinity to separate platform pods (masters) from inference pods (workers).
-# Single-node: no-op. Set false to let all pods land anywhere.
-node_topology_enabled: true
-
-# --- Pod Security Standards (PSS) ---
-# Stamps pod-security.kubernetes.io/{enforce,audit,warn} on every installer-created namespace;
-# each role picks its own profile (privileged / baseline / restricted).
-enforce_pss: true
-
-# --- CPU Policy ---
-# NRI balloons is the only supported CPU policy for production deployments.
-# It provides NUMA-aware CPU pinning via the NRI resource policy plugin.
-# Do NOT change this value — the model-manager and inference stack require NRI.
-# (Reserved for future use: additional policies may be added in later releases.)
-kubernetes_cpu_policy: "nri-balloons"
-
-kubernetes_accelerator: "cpu"
-
-# --- Object Store ---
-# Backend for Loki, Tempo, Langfuse blob storage.
-# Options: seaweedfs (default) | rustfs | external
-object_store_backend: "seaweedfs"
-seaweedfs_volume_storage_size: "10Gi"
-
-# --- Keycloak ---
-# keycloak_admin_password: set via KEYCLOAK_ADMIN_PASSWORD env var or prompted
-# keycloak_platform_bootstrap_admin_mfa: true   # platform-admin must enrol OTP at first login
-
-# --- Observability ---
-# observability_grafana_admin_password: set via GRAFANA_ADMIN_PASSWORD env var
-# observability_prometheus_retention: "30d"
-# observability_prometheus_storage_size: "50Gi"
-
-# --- OpenShift prerequisite check (preflight_openshift.yaml; read on OpenShift only) ---
-# openshift_prereq_check: true                 # false skips the check (not recommended)
-# openshift_prereq_strict: false               # true: an operator newer than tested fails too
-# openshift_prereq_storage_probe: true         # false: no probe PVC when StorageClasses are unreadable
-# openshift_prereq_probe_namespace: "ai-solutions-preflight"
-# openshift_prereq_probe_timeout: 30           # seconds
-
-# Envoy Gateway 1.7.5 by default; true installs 1.9.3 (ListenerSets) and
-# upgrades this platform's own older release. Never downgrades.
-# envoy_gateway_upgrade: false
-
-# --- Kata Containers (microVM runtime for Agent Sandbox — requires agent-toolkit) ---
-kata_containers_enabled: false
-kata_runtime: "kata-fc"                   # kata-fc | kata-qemu | both
-
-# =============================================================================
-# Optional Features (only read when the matching option above selects them)
-# =============================================================================
-
-# --- NetApp ONTAP (requires storage_backend: netapp-trident) ---
-# Prerequisites, troubleshooting and the ONTAP S3 flow: docs/NETAPP_ONTAP.md.
+# NetApp ONTAP (storage_backend: netapp-trident): see docs/deploy/netapp_ontap.md.
 # ontap_management_lif: "10.0.0.100"      # cluster/SVM management LIF, TCP 443
 # ontap_data_lif: "10.0.0.101"            # NFS data LIF, TCP 2049 + 111
 # ontap_svm: "svm_ai"                     # SVM that owns the LIFs above
 # ontap_username: "vsadmin"               # ONTAP user with http/ontapi application access
-# ontap_password: ""                      # goes into a K8s Secret; keep this file mode 0600
+# ontap_password: ""                      # goes into a Kubernetes Secret; keep this file mode 0600
 # ontap_driver: "ontap-nas"               # ontap-nas | ontap-nas-economy | ontap-nas-flexgroup
-#
-# The StorageClass uses reclaimPolicy: Retain, matching the nfs backend: deleting
-# a PVC leaves the ONTAP FlexVol and its data in place. Teardown prints every
-# FlexVol left behind plus the ONTAP command to remove them; it cannot delete
-# them itself once the CSI driver is gone.
-# ontap_teardown_delete_pvcs: false       # true = teardown deletes Trident PVCs first
-# ontap_preflight_online: true            # false = validate config/nodes only, never contact the array
-#
-# ontap_s3_data_lif: "10.0.0.102"         # object-store server data LIF (NOT the NFS one)
-# ontap_s3_port: 443                      # TCP port of the ONTAP S3 server. Unset = the
-#                                         # consuming layer assumes 443 and preflight does NOT probe it
-# ontap_s3_tls: true                      # false = plaintext HTTP to the S3 port
+# ontap_teardown_delete_pvcs: false       # true: teardown deletes Trident PVCs first (volumes are Retain)
+# ontap_preflight_online: true            # false: validate config and nodes only, never contact the array
+# ontap_s3_data_lif: "10.0.0.102"         # object-store data LIF (not the NFS one)
+# ontap_s3_port: 443                      # ONTAP S3 port; unset: 443 assumed and not probed
+# ontap_s3_tls: true                      # false: plain HTTP to the S3 port
 # ontap_s3_ca_cert_file: ""               # PEM on the installer host that signed the S3 certificate
-#
-# Subdomain the S3 API is published under, as <subdomain>.<base_domain_name>. The
-# gateway names its dedicated S3 listener after it, and a solution layer that
-# publishes an S3 API reads the same value, so both agree by construction.
-# gateway_s3_subdomain: "s3"
+# gateway_s3_subdomain: "s3"              # S3 API host: <subdomain>.<base_domain_name>
+
+# OpenShift (detected; set cluster_distribution: openshift | kubernetes to skip detection).
+# openshift_prereq_check: true                 # false skips the operator check (not recommended)
+# openshift_prereq_strict: false               # true: an operator newer than tested fails too
+# openshift_prereq_storage_probe: true         # false: no probe PVC when StorageClasses are unreadable
+# openshift_prereq_probe_namespace: "ai-solutions-preflight"
+# openshift_prereq_probe_timeout: 30           # seconds
