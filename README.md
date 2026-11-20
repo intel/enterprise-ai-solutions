@@ -70,21 +70,26 @@ One machine, default settings. Allow up to an hour for the first install: most o
 
    `init` creates the folder `env/local/` with your settings files, and downloads the Intel® Inference Toolkit into `ext/`.
 
-3. Choose the model to deploy during the install. The model catalog is `env/local/models.yaml`; `qwen3-0-6b` is a small public model that runs on any Intel® Xeon® machine.
+3. Choose the model to deploy during the install. You can pick any model in the catalog, `env/local/models.yaml`.
 
-   a. Open `env/local/models.yaml`, find the model's entry, and add `autodeploy: true` to it:
+   a. Open `env/local/models.yaml`, find the entry of the model you want, and add `autodeploy: true` as its last line. For example, for `qwen3-0-6b`:
 
       ```yaml
         - name: qwen3-0-6b
           model_id: Qwen/Qwen3-0.6B
-          ...
-          autodeploy: true          # deploy this model during install
+          category: llm
+          servers:
+            vllm: { versions: ["0.24.0", "0.19.1"], default: "0.24.0" }
+          default_server: vllm
+          cpu: 8
+          memory: 16Gi
+          autodeploy: true          # ◀── add this line
       ```
 
-   b. Turn on model deployment for the install: in `env/local/config.inference.yaml`, change `llm_services_deploy_models: false` to
+   b. Turn on model deployment for the install: open `env/local/config.inference.yaml` and change `false` to `true` on this line:
 
       ```yaml
-      llm_services_deploy_models: true
+      llm_services_deploy_models: true          # ◀── was false
       ```
 
    Mark more entries `autodeploy: true` to deploy several. If a model fails to deploy, the install still finishes and prints a warning that names the model; deploy it again with `model-manager` (Step 3). Skip this step to install without a model.
