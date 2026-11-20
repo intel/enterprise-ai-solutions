@@ -283,6 +283,17 @@
       Must be one of: nri-balloons (default), kubelet-static, best-effort.
     quiet: true
 
+- name: "Preflight - TDX: require best-effort CPU policy"
+  ansible.builtin.assert:
+    that:
+      - (kubernetes_cpu_policy | default('nri-balloons')) == 'best-effort'
+    fail_msg: >-
+      tdx_enabled=true requires kubernetes_cpu_policy='best-effort'.
+      Set kubernetes_cpu_policy: "best-effort" in your environment's global_config.yaml.
+      Current policy: '{{ kubernetes_cpu_policy | default('nri-balloons') }}'.
+    quiet: true
+  when: tdx_enabled | default(false) | bool
+
 # GPU clusters do no CPU pinning at all — the device plugin and GPU scheduler
 # own placement. Downgrade to best-effort rather than half-configuring kubelet.
 - name: "Preflight - CPU policy: force best-effort on non-CPU accelerators"

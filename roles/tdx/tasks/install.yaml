@@ -1,0 +1,175 @@
+---
+
+- name: "tdx | Banner"
+  ansible.builtin.debug:
+    msg:
+      - "================================================================="
+      - "TDX"
+      - "================================================================="
+
+- name: "tdx | Ensure namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: tdx-system
+
+- name: "tdx | Remove legacy support-check pod"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: one-td-support-checks
+    namespace: tdx-system
+
+- name: "tdx | Remove previous support-check DaemonSet"
+  kubernetes.core.k8s:
+    state: absent
+    definition: "{{ lookup('template', 'tdx-check.yaml.j2') | from_yaml }}"
+
+- name: "tdx | Run attestation"
+  when: tdx_attestation_enabled | default(false) | bool
+  block:
+    - name: "tdx | Require KBS address"
+      ansible.builtin.assert:
+        that:
+          - kbs_address | default('') | trim | length > 0
+        fail_msg: "kbs_address must be set to a non-empty URL in the environment config before deploying TDX."
+        success_msg: "KBS address is configured."
+
+    - name: "tdx | Remove legacy attestation pod"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Pod
+        name: tdx-attestation
+        namespace: tdx-system
+
+    - name: "tdx | Start attestation DaemonSet"
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('template', 'attest.yaml.j2') | from_yaml }}"
+
+    - name: "tdx | Wait for attestation readiness"
+      block:
+        - name: "tdx | Wait for attestation DaemonSet scheduling"
+          kubernetes.core.k8s_info:
+            api_version: apps/v1
+            kind: DaemonSet
+            name: tdx-attestation
+            namespace: tdx-system
+          register: _tdx_attestation_status
+          no_log: true
+          until: >-
+            (_tdx_attestation_status.resources | length > 0) and
+            ((_tdx_attestation_status.resources[0].status.desiredNumberScheduled | default(0) | int) > 0) and
+            ((_tdx_attestation_status.resources[0].status.currentNumberScheduled | default(0) | int) >=
+             (_tdx_attestation_status.resources[0].status.desiredNumberScheduled | default(0) | int))
+          retries: 5
+          delay: 30
+
+        - name: "tdx | Wait for attestation pods to run"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: tdx-system
+            label_selectors:
+              - app.kubernetes.io/name=tdx-attestation
+          register: _tdx_attestation_pods
+          no_log: true
+          vars:
+            _tdx_attestation_container_statuses: >-
+              {{
+                (_tdx_attestation_pods.resources | default([])
+                 | map(attribute='status.initContainerStatuses', default=[]) | flatten)
+                +
+                (_tdx_attestation_pods.resources | default([])
+                 | map(attribute='status.containerStatuses', default=[]) | flatten)
+              }}
+          until: >-
+            ((_tdx_attestation_pods.resources | default([])
+              | rejectattr('metadata.deletionTimestamp', 'defined') | list | length)
+             >= (_tdx_attestation_status.resources[0].status.desiredNumberScheduled | default(0) | int))
+            and
+            ((_tdx_attestation_pods.resources | default([])
+              | rejectattr('metadata.deletionTimestamp', 'defined')
+              | selectattr('status.conditions', 'defined')
+              | map(attribute='status.conditions') | flatten
+              | selectattr('type', 'equalto', 'Ready')
+              | selectattr('status', 'equalto', 'True') | list | length)
+             >= (_tdx_attestation_status.resources[0].status.desiredNumberScheduled | default(0) | int))
+            or
+            ((_tdx_attestation_pods.resources | default([])
+              | selectattr('status.phase', 'equalto', 'Failed') | list | length) > 0)
+            or
+            (_tdx_attestation_container_statuses
+             | selectattr('state.terminated.exitCode', 'defined')
+             | rejectattr('state.terminated.exitCode', 'equalto', 0)
+             | list | length) > 0
+            or
+            (_tdx_attestation_container_statuses
+             | selectattr('state.waiting.reason', 'defined')
+             | selectattr('state.waiting.reason', 'in', ['CrashLoopBackOff', 'ErrImagePull', 'ImagePullBackOff', 'CreateContainerConfigError', 'CreateContainerError', 'RunContainerError', 'InvalidImageName'])
+             | list | length) > 0
+          failed_when: >-
+            ((_tdx_attestation_pods.resources | default([])
+              | selectattr('status.phase', 'equalto', 'Failed') | list | length) > 0)
+            or
+            (_tdx_attestation_container_statuses
+             | selectattr('state.terminated.exitCode', 'defined')
+             | rejectattr('state.terminated.exitCode', 'equalto', 0)
+             | list | length) > 0
+            or
+            (_tdx_attestation_container_statuses
+             | selectattr('state.waiting.reason', 'defined')
+             | selectattr('state.waiting.reason', 'in', ['CrashLoopBackOff', 'ErrImagePull', 'ImagePullBackOff', 'CreateContainerConfigError', 'CreateContainerError', 'RunContainerError', 'InvalidImageName'])
+             | list | length) > 0
+          retries: 5
+          delay: 30
+
+      rescue:
+        - name: "tdx | Get attestation pods for failure logs"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: Pod
+            namespace: tdx-system
+            label_selectors:
+              - app.kubernetes.io/name=tdx-attestation
+          register: _tdx_failure_pods
+          no_log: true
+          failed_when: false
+
+        - name: "tdx | Collect init and attestation container logs"
+          kubernetes.core.k8s_log:
+            namespace: tdx-system
+            name: "{{ item.0 }}"
+            container: "{{ item.1 }}"
+            tail_lines: 100
+          loop: >-
+            {{ (_tdx_failure_pods.resources | default([])
+                | map(attribute='metadata.name') | list)
+               | product(['one-td-support-checks', 'tdx-attestation']) | list }}
+          loop_control:
+            label: "{{ item.0 }}/{{ item.1 }}"
+          register: _tdx_failure_logs
+          no_log: true
+          changed_when: false
+          failed_when: false
+          check_mode: false
+
+        - name: "tdx | Fail attestation readiness"
+          ansible.builtin.fail:
+            msg: |-
+              {% set ns = namespace(has_logs=false) %}
+              {% for entry in _tdx_failure_logs.results | default([]) %}
+              {% if entry.log is defined and entry.log | trim %}
+              {% set ns.has_logs = true %}
+              --- {{ entry.item.0 }} / {{ entry.item.1 }} ---
+              {{ entry.log | trim }}
+              {% endif %}
+              {% endfor %}
+              {% if not ns.has_logs %}
+              No container logs are available.
+              {% endif %}

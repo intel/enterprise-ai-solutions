@@ -1,0 +1,5 @@
+---
+- name: "nri_device_injector | Render NRI device-injector manifests"
+  ansible.builtin.command:
+    cmd: kubectl kustomize "https://github.com/containerd/nri/contrib/kustomize/device-injector?ref={{ nri_device_injector_version }}"
+  register: nri_device_injector_manifest
