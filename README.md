@@ -62,49 +62,40 @@ One machine, default settings. Allow up to an hour for the first install: most o
 
    `configure` uses `sudo` to install Python 3.11+, `yq`, `kubectl` and `helm`, and creates the installer's Python environment in `.venv/`. It asks before changing anything. Skip it if those tools are already installed.
 
-2. Install the layers you need. Pick one of the options below; each one also installs every layer underneath it.
-
-   If you want **only the infrastructure** (Kubernetes and storage):
-
-   ```bash
-   ./toolkit_manager.sh init infrastructure
-   ./toolkit_manager.sh install infrastructure
-   ```
-
-   If you want **the infrastructure and the platform** (adds the gateway, Keycloak, observability and the other platform services):
-
-   ```bash
-   ./toolkit_manager.sh init platform
-   ./toolkit_manager.sh install platform
-   ```
-
-   If you want **model serving** (adds the Intel® Inference Toolkit and an OpenAI-compatible endpoint):
+2. Create the environment for model serving:
 
    ```bash
    ./toolkit_manager.sh init inference
+   ```
+
+   `init` creates the folder `env/local/` with your settings files, and downloads the Intel® Inference Toolkit into `ext/`.
+
+3. Choose the model to deploy during the install. The catalog of models is `env/local/models.yaml`; `qwen3-0-6b` is a small public model that runs on any Intel® Xeon® machine:
+
+   ```bash
+   yq -i '.llm_services_autodeploy_models = ["qwen3-0-6b"]' env/local/config.inference.yaml
+   ```
+
+   List more than one name to deploy several. If a listed model fails to deploy, the install stops and says why. Skip this step to install without a model and deploy one later (Step 3).
+
+4. Install. This builds the Kubernetes cluster, then the platform, then model serving, and deploys your model:
+
+   ```bash
    ./toolkit_manager.sh install inference
    ```
 
-   If you want **a RAG application** (adds the Intel® Chatbot Toolkit on top of model serving):
+   A successful run ends with an `INSTALLATION COMPLETE` banner that names the log file under `env/local/logs/`.
 
-   ```bash
-   ./toolkit_manager.sh init erag
-   ./toolkit_manager.sh install erag
-   ```
+**Other layers.** The two commands work the same way for every layer, and each one also installs every layer below it. Use the target you need in place of `inference`:
 
-   If you want **agents** (adds the Intel® Agent Toolkit on top of model serving):
+| You want | Run `init` and `install` with |
+|---|---|
+| Only Kubernetes and storage | `infrastructure` |
+| Kubernetes, storage and the platform services (gateway, Keycloak, observability, ...) | `platform` |
+| A RAG application on top of model serving (Intel® Chatbot Toolkit) | `erag` |
+| Agents on top of model serving (Intel® Agent Toolkit) | `agent-toolkit` |
 
-   ```bash
-   ./toolkit_manager.sh init agent-toolkit
-   ./toolkit_manager.sh install agent-toolkit
-   ```
-
-   In each option:
-
-   - `init` creates the environment folder `env/local/` with your settings files, and downloads the repositories the target needs into `ext/`.
-   - `install` builds the Kubernetes cluster and installs every layer up to the target. A successful run ends with an `INSTALLATION COMPLETE` banner that names the log file under `env/local/logs/`.
-
-   To add more layers later, run the two commands of a higher option. What is already installed stays.
+To add a layer later, run `init` and `install` with the higher target. What is already installed stays.
 
 ### Step 2 - Check the cluster
 
@@ -120,7 +111,7 @@ Settings live in `env/local/global_config.yaml` and, for the inference layer (in
 
 ### Step 3 - Serve a model and call it
 
-This step needs the `inference`, `erag` or `agent-toolkit` target. `model-manager` downloads the weights, picks serving parameters, and creates the pod. No YAML is needed:
+This step needs the `inference`, `erag` or `agent-toolkit` target. If you chose a model in Step 1, it is already serving. To deploy one now, or add another, use `model-manager`: it downloads the weights, picks serving parameters, and creates the pod. No YAML is needed:
 
 ```bash
 ./model-manager deploy qwen3-0-6b --wait
