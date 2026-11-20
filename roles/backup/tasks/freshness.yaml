@@ -1,0 +1,91 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# backup | What the backup-freshness upgrade check needs about one layer
+# =============================================================================
+# Included by roles/upgrade_checks/tasks/checks/backup_freshness.yaml with
+# backup_layer and backup_source_version (the recorded version), after
+# velero_server.yaml. Fails only when the cluster does not answer (an API error
+# must not read as "Velero absent"); otherwise it only adds _bk_freshness[backup_layer], which backup_freshness_verdict
+# (filter_plugins/upgrade_checks.py) turns into the verdict. The steps are
+# verify.yaml's: Velero present, Completed backups of this version, within
+# upgrade_backup_max_age_hours, contents readable from the store.
+# =============================================================================
+
+- name: "backup | freshness | Find the {{ backup_layer }} profile"
+  ansible.builtin.include_tasks: layer_profile.yaml
+
+- name: "backup | freshness | Start the {{ backup_layer }} facts"
+  ansible.builtin.set_fact:
+    _bk_fresh:
+      profile: "{{ _bk_layer_profile }}"
+      namespace: "{{ velero_namespace }}"
+      max_age_hours: "{{ upgrade_backup_max_age_hours }}"
+
+- name: "backup | freshness | Check that Velero is deployed"
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ velero_namespace }}"
+  register: _bk_fresh_ns
+  failed_when: false
+
+# failed_when: false keeps the failed flag clear; an API error leaves no resources key.
+- name: "backup | freshness | Stop when the Velero namespace cannot be read"
+  ansible.builtin.fail:
+    msg: >-
+      Upgrade blocked: reading Namespace {{ velero_namespace }} failed:
+      {{ _bk_fresh_ns.msg | default('no answer') }}. Check the cluster connection and retry.
+  when: "'resources' not in _bk_fresh_ns"
+
+- name: "backup | freshness | Note the profile and Velero"
+  ansible.builtin.set_fact:
+    _bk_fresh: >-
+      {{ _bk_fresh | combine({
+           'found': _found | bool,
+           'enabled': _found | bool and backup_profile_active | bool,
+           'version_label': backup_profile.version_label | default('') if _found | bool else '',
+           'velero': _bk_fresh_ns.resources | default([]) | length > 0}) }}
+  vars:
+    _found: "{{ _bk_layer_profile_found }}"
+
+- name: "backup | freshness | List the {{ backup_layer }} backups"
+  kubernetes.core.k8s_info:
+    api_version: velero.io/v1
+    kind: Backup
+    namespace: "{{ velero_namespace }}"
+    label_selectors:
+      - "{{ backup_profile_label_key }}={{ backup_profile.name }}"
+  register: _bk_fresh_list
+  failed_when: false
+  when: _bk_fresh.velero and _bk_fresh.enabled and _bk_fresh.version_label | length > 0
+
+- name: "backup | freshness | Stop when the {{ backup_layer }} backups cannot be listed"
+  ansible.builtin.fail:
+    msg: >-
+      Upgrade blocked: listing the Velero backups in {{ velero_namespace }} failed:
+      {{ _bk_fresh_list.msg | default('no answer') }}. Check the cluster connection and retry.
+  when: _bk_fresh_list is not skipped and 'resources' not in _bk_fresh_list
+
+- name: "backup | freshness | Keep the fresh backups of {{ backup_layer }} {{ backup_source_version }}"
+  ansible.builtin.set_fact:
+    _bk_fresh: >-
+      {{ _bk_fresh | combine({'fresh': _bk_fresh_list.resources | default([])
+                                       | fresh_backups(_bk_fresh.version_label, backup_source_version, now(utc=True).isoformat(),
+                                                       upgrade_backup_max_age_hours, backup_checkout_bypass_label_key)}) }}
+  when: _bk_fresh_list.resources is defined
+
+- name: "backup | freshness | Read the newest backup's resource list"
+  ansible.builtin.include_tasks: readable.yaml
+  vars:
+    backup_readable_name: "{{ _bk_fresh.fresh[0].name }}"
+  when: _bk_fresh.fresh | default([]) | length > 0
+
+- name: "backup | freshness | Note what was found for {{ backup_layer }}"
+  ansible.builtin.set_fact:
+    _bk_freshness: >-
+      {{ _bk_freshness | default({}) | combine({backup_layer: _bk_fresh | combine({
+           'server': _bk_velero_server | length > 0,
+           'readable': _details.get('status', {}).get('resourceList', {}) | length > 0})}) }}
+  vars:
+    _details: "{{ _bk_backup_details if _bk_fresh.fresh | default([]) | length > 0 else {} }}"

@@ -9,6 +9,7 @@
 upgrade_checks:
   - version_change
   - upgrade_path
+  - backup_freshness
   - compatibility
   - config_tracking
 
@@ -36,6 +37,10 @@ upgrade_checks_also_classes:
 upgrade_installer_layers:
   - infrastructure
   - platform
+
+# backup_freshness: with no Velero deployed there is no backup to find. true lets an
+# upgrade of such a layer run with no restore point, recorded as forced.
+upgrade_without_velero: false
 
 # ConfigMap/<namespace>/<layer>-deployment-manifest
 upgrade_record_namespace: "default"
