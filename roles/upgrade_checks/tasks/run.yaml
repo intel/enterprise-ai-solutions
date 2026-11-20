@@ -1,0 +1,203 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Included from preflight after the plan is resolved, before anything mutates.
+# Notes whether the cluster holds records; on install, reads them, classifies
+# each planned layer against the version of this release and runs the checks.
+- name: "upgrade_checks | Note the planned layers and where each layer's repository is"
+  ansible.builtin.set_fact:
+    _upgrade_layers: "{{ _active_components | map(attribute='layer') | unique | list }}"
+    _installer_version: "{{ lookup('ansible.builtin.file', role_path ~ '/../../VERSION') | trim }}"
+    _layer_dirs: {}
+    _layer_records: {}
+    _layer_release: {}
+    _layer_version_data: {}
+    _layer_class: {}
+    _layer_requires: {}
+    _upgrade_verdicts: []
+    _layer_check_files: []
+    _config_tracking_facts: {}
+
+- name: "upgrade_checks | Note the installer commit"
+  ansible.builtin.command:
+    argv: ["git", "-C", "{{ role_path }}", "rev-parse", "HEAD"]
+  register: _installer_commit_cmd
+  changed_when: false
+  failed_when: false
+
+- name: "upgrade_checks | Note the installer commit as a fact"
+  ansible.builtin.set_fact:
+    _installer_commit: "{{ _installer_commit_cmd.stdout | default('') if _installer_commit_cmd.rc | default(1) == 0 else '' }}"
+
+# No cluster yet (first pass of a cold install) or none any more (last pass of
+# an infrastructure teardown): every layer is fresh and nothing is recorded.
+# A list of the deployment-manifest ConfigMaps, not a get of the namespace itself: it needs
+# exactly the permission that writing the record needs, and it returns an empty list rather
+# than an error when the namespace does not exist yet.
+- name: "upgrade_checks | Check that the cluster answers"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ upgrade_record_namespace }}"
+    label_selectors:
+      - "toolkit-manager.intel.com/record={{ upgrade_record_labels['toolkit-manager.intel.com/record'] }}"
+  register: _record_probe
+  # Not failed_when: false, which on ansible-core 2.19 drops the module's msg from the result.
+  ignore_errors: true
+
+# Coerced once: a templated declaration renders as the string "False", which
+# the gate, the record write and the consistency verdict must all read as false.
+- name: "upgrade_checks | Note which layers declare supports.upgrade"
+  ansible.builtin.set_fact:
+    _layer_supports_upgrade: >-
+      {{ dict(layers | map(attribute='name') | zip(layers | map(attribute='supports.upgrade', default=false) | map('bool'))) }}
+
+- name: "upgrade_checks | Warn that the cluster of an existing kubeconfig did not answer"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: the kubeconfig {{ kubernetes_kubeconfig }} exists, but the cluster did not answer
+      ({{ _record_probe.msg | default('no error text') }}). Every layer is treated as fresh: no
+      record is read or written.{{ ' A planned layer that declares supports.upgrade still refuses
+      this run; --force is the way through.' if _active_components | map(attribute='layer') | unique
+      | map('extract', _layer_supports_upgrade) | select | list else '' }}
+  # A teardown's last pass runs after the cluster reset, with the kubeconfig still on disk.
+  when:
+    - component_action == 'install'
+    - _record_probe.resources is not defined
+    - kubernetes_kubeconfig | default('') is file
+
+- name: "upgrade_checks | Note whether records are read and written"
+  ansible.builtin.set_fact:
+    _record_cluster: "{{ _record_probe.resources is defined }}"
+
+- name: "upgrade_checks | Classify and check the install"
+  when: component_action == 'install'
+  block:
+    # A verdict per planned layer, the same shape a check produces: the gate below already
+    # refuses it for a layer that declares supports.upgrade, and --force already bypasses it.
+    - name: "upgrade_checks | Note that the cluster probe failed"
+      ansible.builtin.set_fact:
+        _upgrade_verdicts: >-
+          {{ _upgrade_verdicts + [item | cluster_probe_verdict(_record_probe.msg | default('no error text'))] }}
+      loop: "{{ _upgrade_layers }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - not _record_cluster
+        - kubernetes_kubeconfig | default('') is file
+
+    - name: "upgrade_checks | Find each layer's repository"
+      ansible.builtin.set_fact:
+        _layer_dirs: "{{ _layer_dirs | claim_layer_dirs(_manifest, item.path | dirname) }}"
+      vars:
+        _manifest: "{{ lookup('ansible.builtin.template', item.path) | from_yaml }}"
+      loop: "{{ (_ext_manifests.files | default([])) | sort(attribute='path') }}"
+      loop_control:
+        label: "{{ item.path | dirname }}"
+
+    - name: "upgrade_checks | Read the deployment records"
+      block:
+        - name: "upgrade_checks | Read the deployment records"
+          kubernetes.core.k8s_info:
+            api_version: v1
+            kind: ConfigMap
+            name: "{{ item }}-deployment-manifest"
+            namespace: "{{ upgrade_record_namespace }}"
+          loop: "{{ layers | map(attribute='name') | list }}"
+          register: _record_reads
+      rescue:
+        - name: "upgrade_checks | Fail the deployment record read with a recovery hint"
+          ansible.builtin.fail:
+            msg: >-
+              Could not read a deployment record: check the cluster connection and retry.
+              This stops the run outright; --force does not pass it.
+      when: _record_cluster
+
+    - name: "upgrade_checks | Lift the deployment records"
+      ansible.builtin.set_fact:
+        _layer_records: >-
+          {{ _layer_records | combine({item.item: item.resources[0].data['manifest.yaml'] | from_yaml | lift_layer_record}) }}
+      loop: "{{ _record_reads.results | default([]) | selectattr('resources', 'defined') | selectattr('resources') | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: "upgrade_checks | Resolve each planned layer's release version"
+      ansible.builtin.set_fact:
+        _layer_release: "{{ _layer_release | combine({item: _release}) }}"
+        _layer_version_data: "{{ _layer_version_data | combine({item: _version_data}) }}"
+        _layer_class: >-
+          {{ _layer_class | combine({item: _layer_records[item] | default({}) | classify_run(_release, item)}) }}
+      vars:
+        _version_file: "{{ _layer_dirs[item] | default('') }}/version.yaml"
+        _version_data: >-
+          {{ {} if item in upgrade_installer_layers
+             else (lookup('ansible.builtin.file', _version_file) | from_yaml) if _version_file is file else {} }}
+        _release: >-
+          {{ _installer_version if item in upgrade_installer_layers
+             else _version_data | layer_release_version }}
+      loop: "{{ _upgrade_layers }}"
+
+    - name: "upgrade_checks | Run the checks"
+      ansible.builtin.include_tasks: "checks/{{ check }}.yaml"
+      vars:
+        _check_layers: "{{ _layer_class | check_layers(check, upgrade_checks_every_class, upgrade_checks_also_classes.get(check, [])) }}"
+      loop: "{{ upgrade_checks }}"
+      loop_control:
+        loop_var: check
+
+    # The contract for these files is in docs/reference/adding_solutions.md (Upgrades).
+    - name: "upgrade_checks | Find each layer's own pre-run checks"
+      ansible.builtin.set_fact:
+        _layer_check_files: >-
+          {{ _layer_check_files +
+             ([item] | product(lookup('ansible.builtin.fileglob',
+                                       (_layer_dirs[item] | default('')) + '/upgrade_checks/*.yaml',
+                                       wantlist=True) | sort) | list) }}
+      loop: "{{ _upgrade_layers }}"
+      loop_control:
+        label: "{{ item }}"
+      when: (_layer_dirs[item] | default('')) | length > 0
+
+    - name: "upgrade_checks | Run each layer's own pre-run checks"
+      ansible.builtin.include_tasks: run_layer_check.yaml
+      vars:
+        upgrade_check_layer: "{{ _layer_check[0] }}"
+        _layer_check_path: "{{ _layer_check[1] }}"
+      loop: "{{ _layer_check_files }}"
+      loop_control:
+        loop_var: _layer_check  # a layer's check file may loop with item itself
+        label: "{{ _layer_check[0] }} ({{ _layer_check[1] | basename }})"
+
+    # On every class, so a broken file fails before anything changes, not at the save after the run;
+    # config_tracking_capture raises on a broken file and otherwise returns a mapping or None.
+    - name: "upgrade_checks | Validate each layer's config_tracking.yaml and tracked files"
+      ansible.builtin.assert:
+        that: (_layer_dirs[item] | config_tracking_capture(env_dir, config_tracking_deny) | default({}, true)) is mapping
+        quiet: true
+      loop: "{{ _upgrade_layers }}"
+      when: (_layer_dirs[item] | default('')) | length > 0
+
+    - name: "upgrade_checks | Decide which verdicts gate the run"
+      ansible.builtin.set_fact:
+        _upgrade_gate: >-
+          {{ _upgrade_verdicts | upgrade_gate(_layer_supports_upgrade, _upgrade_force | default(false) | bool, _layer_class) }}
+
+    - name: "upgrade_checks | Show the run class and the checks"
+      ansible.builtin.debug:
+        msg: |-
+          {% for layer in _upgrade_layers %}
+          {{ layer }}: {{ _layer_class[layer] }} ({{ _layer_records.get(layer, {}).version | default('none', true) }} -> {{ _layer_release[layer] or 'unversioned' }})
+          {% for check in _upgrade_gate.checks | selectattr('layer', 'equalto', layer) %}
+            {{ check.check }}: {{ check.verdict }}{{ ' (gating)' if check.gating else ' (advisory)' if check.verdict == 'blocking' else '' }} — {{ check.reason }}
+          {% endfor %}
+          {% endfor %}
+
+    - name: "upgrade_checks | Refuse a run a gating check blocks"
+      ansible.builtin.fail:
+        msg: |-
+          Upgrade checks refuse this install; nothing was changed.
+          {% for check in _upgrade_gate.checks | selectattr('gating') %}
+            - {{ check.layer }} {{ check.check }}: {{ check.reason }}. Resolve: {{ check.resolve }}
+          {% endfor %}
+          To run anyway, add --force; the run is then recorded as forced.
+      when: _upgrade_gate.refused | length > 0

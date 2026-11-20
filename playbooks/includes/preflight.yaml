@@ -120,18 +120,19 @@
   loop_control:
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
 
-# ── Rack scale: no node scaling ──────────────────────────────────────────────
-# Same refusal as es_auto_installer.sh, for a run that sets rack_scale_enabled
-# with -e. Before the fabric roles load: they have no add-node/remove-node.
+# ── Node scaling: rack_scale_enabled as the installer read it ────────────────
+# es_auto_installer.sh works out the node changes (and refuses a rack's
+# unsupported ones) from global_config.yaml; a run that overrides it, or does
+# not come through the installer, would render the inventory from another source.
 
-- name: "Preflight - Rack scale: refuse add-node/remove-node"
+- name: "Preflight - Node scaling: refuse a rack_scale_enabled the installer did not read"
   ansible.builtin.fail:
     msg: >-
-      {{ component_action }} is not supported in rack-scale mode
-      (rack_scale_enabled: true). See docs/customize/node_scaling.md.
+      {{ component_action }} takes rack_scale_enabled from global_config.yaml, as es_auto_installer.sh
+      reads it: run it through the installer, and do not override rack_scale_enabled with -e or a vars file.
   when:
-    - rack_scale_enabled | default(false) | bool
     - component_action | default('install') in ['add-node', 'remove-node']
+    - (rack_scale_enabled | default(false) | bool) != (_node_scaling_rack | default(false) | bool)
 
 # ── Rack scale: profile facts (every action) ─────────────────────────────────
 # The GPU and fabric_validate roles gate on these facts in validate and
@@ -483,6 +484,13 @@
       Either provision them   ./es_auto_installer.sh init {{ _unprovisioned | first }} --env {{ env_name | default('local') }}
       or take them off disk    mv ext/<repo> elsewhere, so no plan can reach them.
   when: _unprovisioned | length > 0
+
+# Records, run class and upgrade checks (roles/upgrade_checks/tasks/run.yaml).
+- name: "Preflight - Upgrade checks"
+  ansible.builtin.include_role:
+    name: upgrade_checks
+    tasks_from: run.yaml
+  when: component_action in ['install', 'teardown']
 
 - name: "Preflight - Show skipped components"
   when: _disabled_components | length > 0

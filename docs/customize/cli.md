@@ -98,6 +98,8 @@ Deploy components. Dependencies are resolved automatically.
 
 Remove components in reverse dependency order. Configuration files and environment state are preserved.
 
+Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `ai-solutions.intel.com/component`, and nothing else (see [Ownership labels](../reference/adding_solutions.md#ownership-labels)). The cluster itself and host changes (`kubernetes`, `storage`, rack-scale networking) are removed by their roles. In an env installed before ownership labels existed, each component's own teardown runs as well, until it has run once (see the link above). `ownership_enabled: false` in `global_config.yaml` runs only the roles' own teardowns.
+
 ```bash
 # Remove everything (cluster included)
 ./es_auto_installer.sh teardown infrastructure --env local
@@ -138,7 +140,7 @@ Scale worker node(s) into an already-provisioned cluster. No node name is passed
 ./es_auto_installer.sh add-node --env local              # apply
 ```
 
-Control-plane node additions are refused. See [Node Scaling](node_scaling.md).
+Control-plane node additions are refused. See [Node Scaling](node_scaling.md). On a rack-scale env, edit `rack-profile.yaml` instead of `nodes.yaml`: see [Rack-scale](node_scaling.md#rack-scale).
 
 ---
 
@@ -152,7 +154,7 @@ Remove worker node(s) from an already-provisioned cluster. As with `add-node`, n
 ./es_auto_installer.sh remove-node --node-lost --env local   # node already NotReady: drain given up after 60 s, no reset
 ```
 
-Removing a control-plane node is refused — see [Node Scaling](node_scaling.md#control-plane-nodes-are-not-removed). Both `add-node` and `remove-node` refuse on a cluster with ERAG deployed. Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these, and a check that can't run refuses the removal. After the node is gone, it runs the same checks as `status --health` and fails the command on a problem the removal introduced. See [Node Scaling](node_scaling.md).
+Removing a control-plane node is refused — see [Node Scaling](node_scaling.md#control-plane-nodes-are-not-removed). Both `add-node` and `remove-node` refuse on a cluster with ERAG deployed. Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these, and a check that can't run refuses the removal. After the node is gone, it runs the same checks as `status --health` and fails the command on a problem the removal introduced. See [Node Scaling](node_scaling.md); on a rack-scale env, [Rack-scale](node_scaling.md#rack-scale).
 
 ---
 
