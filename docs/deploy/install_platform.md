@@ -24,7 +24,7 @@ You run **one command** and everything is installed.
 component installs the [Intel GPU device plugin](https://github.com/intel/intel-device-plugins-for-kubernetes)
 (v0.37.1) when Node Feature Discovery labels a node with an Intel GPU
 (`feature.node.kubernetes.io/pci-0300_8086.present` or `pci-0380_8086.present`). It runs
-only on those nodes (in `kube-system`, tolerating their taints), waits until they advertise
+only on those nodes (in its own `intel-gpu-plugin` namespace, tolerating their taints), waits until they advertise
 `gpu.intel.com/xe`, and is skipped on CPU-only clusters — so the inference layer's GPU runtimes
 (SGLang, vLLM XPU) can schedule right after. Set `intel_gpu_plugin_enabled: false` to turn it off.
 
