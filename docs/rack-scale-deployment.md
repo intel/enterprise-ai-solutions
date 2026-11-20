@@ -21,7 +21,7 @@ automatically configures:
 - **Hub forwarding** (star) or **ECMP + BGP** (Clos) — topology-appropriate routing
 - **Ceph on fabric** — OSD traffic binds to the high-speed network
 - **NVIDIA GPU operator** — auto-installs when an NVIDIA `accelerator:` is declared (no separate flag)
-- **Node labels** — silicon family, GPU vendor/model/form applied to K8s nodes
+- **Node labels** — CPU family, GPU vendor/model/form applied to K8s nodes
 
 Four topologies are supported from the same `rack-profile.yaml` schema:
 
@@ -189,7 +189,7 @@ Every node is reached over SSH at its `mgmt_ip`, the one the installer runs on i
 
 ### Node Profiles (optional)
 
-Define silicon once, reference from nodes via `profile:`. A profile can set `node_family`, `sku`, `accelerator` and `gpu_count`; the same keys can also be set directly on a node, and a node's own value wins:
+Define the node hardware once, reference from nodes via `profile:`. A profile can set `node_family`, `sku`, `accelerator` and `gpu_count`; the same keys can also be set directly on a node, and a node's own value wins:
 
 ```yaml
 node_profiles:
@@ -435,7 +435,7 @@ master1:
 ## None Topology
 
 No fabric network at all. `rack-profile.yaml` is used purely for inventory
-generation, node labels (silicon family, GPU vendor/model), and GPU Operator
+generation, node labels (CPU family, GPU vendor/model), and GPU Operator
 auto-enablement. All traffic runs on the management network.
 
 **When to use:** existing network is sufficient, but you want rack-profile.yaml
@@ -637,7 +637,7 @@ kubernetes → storage
 
 | File | Purpose |
 |------|---------|
-| `inventory/hosts.yaml` | Kubespray inventory with fabric NICs, silicon metadata, GPU info |
+| `inventory/hosts.yaml` | Kubespray inventory with fabric NICs, CPU and GPU metadata |
 | `inventory/metadata/k8s-net-calico.yml` | Calico CNI config (BGP or VXLAN) |
 | `inventory/metadata/k8s-net-fabric.yml` | Rack metadata (site, topology, CIDRs) |
 | `inventory/netplan/<hostname>.yaml` | Per-node fabric NIC config |

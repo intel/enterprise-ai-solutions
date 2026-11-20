@@ -60,9 +60,9 @@ Solutions  (Intel® Chatbot Toolkit or Intel® Agent Toolkit — opt-in)
 
 Applications and frameworks connect through a familiar API — the same `base_url` + `api_key` pattern used by the OpenAI SDK, LangChain, LlamaIndex, Cursor, n8n, and thousands of other tools.
 
-### GPU-Free Inference on Intel® Silicon
+### GPU-Free Inference on Intel® Xeon®
 
-The platform is designed for AI inference on Intel® silicon, with NUMA-aware CPU placement (NRI Balloons) and AMX instruction acceleration on Intel® Xeon® — delivering high-throughput, GPU-free inference without a specialized accelerator supply chain.
+The platform is designed for AI inference on Intel® Xeon® processors, with NUMA-aware CPU placement (NRI Balloons) and AMX instruction acceleration — delivering high-throughput, GPU-free inference without a specialized accelerator supply chain.
 
 ### Modular by design
 

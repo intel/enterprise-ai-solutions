@@ -7,7 +7,7 @@
 [![Gateway: Envoy](https://img.shields.io/badge/Gateway-Envoy%20AI%20Gateway-orange)](https://gateway.envoyproxy.io)
 [![API: OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-green)](https://platform.openai.com/docs/api-reference)
 
-**The fast path to deploying AI on Intel® Xeon® silicon. Go from bare metal to a working AI stack in minutes.**
+**The fast path to deploying AI on Intel® Xeon® processors. Go from bare metal to a working AI stack in minutes.**
 
 > Deploy and connect LLM inference, RAG, and agentic workflows in a customizable Kubernetes-based platform — with a GenAI gateway, security, intelligent routing, observability, model serving, and infrastructure automation built in.
 

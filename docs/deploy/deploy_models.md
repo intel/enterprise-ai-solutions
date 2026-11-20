@@ -1,4 +1,4 @@
-# Deploy an LLM on Intel® Silicon with model-manager
+# Deploy an LLM on Intel® Xeon® with model-manager
 
 [← Docs Index](../README.md)
 
