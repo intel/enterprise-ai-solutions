@@ -153,6 +153,11 @@ def _layer_order(layers, resolved):
     return ordered + unresolved  # cycle: _resolve_layers already warned
 
 
+def layer_order(layers):
+    """Every declared layer name, dependencies first (the order the installer runs them in)."""
+    return _layer_order(layers, [layer["name"] for layer in layers])
+
+
 def _component_order(comps):
     """Order one layer's components dependencies-first, registry order breaking ties.
 
@@ -337,4 +342,5 @@ class FilterModule(object):
             "disabled_components": disabled_components,
             "kept_components": kept_components,
             "component_deps": component_deps,
+            "layer_order": layer_order,
         }

@@ -14,6 +14,7 @@
       {{ component_action == 'install' and _layer_class[layer] | default('') | report_due(_layer_records[layer] | default({})) }}
     _layer_outcome: complete
     _running_component: null
+    _layer_tracking_save: false
 
 - name: "Note what the {{ layer }} run records"
   ansible.builtin.set_fact:
@@ -61,6 +62,24 @@
         upgrade_record_status: "{{ 'absent' if component_action == 'teardown' else 'complete' }}"
       when: _layer_recorded
 
+    # After the record end: a failed save then leaves the record halted (rescue), so the resume
+    # still judges against the last saved state.
+    - name: "Note that the {{ layer }} tracked configuration is being saved"
+      ansible.builtin.set_fact:
+        _layer_tracking_save: "{{ _layer_recorded }}"
+
+    - name: "Save or delete the {{ layer }} tracked configuration"
+      ansible.builtin.include_role:
+        name: upgrade_checks
+        tasks_from: config_tracking.yaml
+      vars:
+        config_tracking_layer: "{{ layer }}"
+      when: _layer_recorded
+
+    - name: "Clear the {{ layer }} tracked-configuration step"
+      ansible.builtin.set_fact:
+        _layer_tracking_save: false
+
   # A failed teardown keeps its deleting record, so a later install sees it.
   rescue:
     - name: "Note the {{ layer }} run as halted"
@@ -78,7 +97,12 @@
 
     - name: "Stop after the {{ layer }} failure"
       ansible.builtin.fail:
-        msg: "{{ layer }} {{ component_action }} failed in {{ _running_component or 'its deployment record write' }}; the failing task is reported above."
+        msg: "{{ layer }} {{ component_action }} failed in {{ _failed_step }}; the failing task is reported above."
+      vars:
+        _failed_step: >-
+          {{ _running_component
+             or ('its tracked configuration ' ~ ('delete' if component_action == 'teardown' else 'save') if _layer_tracking_save
+                 else 'its deployment record write') }}
 
   always:
     - name: "Report the {{ layer }} run"
