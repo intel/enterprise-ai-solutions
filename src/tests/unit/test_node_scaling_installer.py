@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
-# Unit tests for es_auto_installer.sh add-node/remove-node: the checks that
+# Unit tests for toolkit_manager.sh add-node/remove-node: the checks that
 # run before any Ansible. The installer is sourced in bash with a stand-in
 # kubectl that serves hand-built Node/Pod lists, so no cluster is needed.
 #
@@ -21,7 +21,7 @@ import yaml
 
 from plugin_loader import CLOS_PROFILE as CLOS, EXAMPLE_PROFILE, write_rack_inventory
 
-INSTALLER = pathlib.Path(__file__).resolve().parents[3] / "es_auto_installer.sh"
+INSTALLER = pathlib.Path(__file__).resolve().parents[3] / "toolkit_manager.sh"
 
 pytestmark = pytest.mark.skipif(shutil.which("yq") is None, reason="the installer's helpers need yq v4")
 

@@ -45,7 +45,7 @@
   changed_when: false
 
 # ─── Helm ─────────────────────────────────────────────────────────────────
-# helm is an operator prerequisite installed by './es_auto_installer.sh configure'
+# helm is an operator prerequisite installed by './toolkit_manager.sh configure'
 # (into /usr/local/bin). We only verify it here — the installer never mutates
 # host tooling.
 

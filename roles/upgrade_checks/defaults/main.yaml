@@ -50,7 +50,7 @@ upgrade_record_labels:
 
 upgrade_report_dir: "{{ env_dir }}/reports"
 # Keep the most recent reports per layer, the same rule ENV_LOG_DIR applies to its logs
-# (es_auto_installer.sh): the oldest is the only record of why a run was forced or halted.
+# (toolkit_manager.sh): the oldest is the only record of why a run was forced or halted.
 upgrade_report_keep: 30
 
 # Secret/<namespace>/<layer>-config-tracking: the env files a layer's

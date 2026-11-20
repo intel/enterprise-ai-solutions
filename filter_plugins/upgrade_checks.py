@@ -119,7 +119,7 @@ def version_change_verdict(run_class, layer, record, release, env="<env>"):
                        resolve="install %s from a release at %s or later" % (layer, record.get("version")))
     elif run_class == "conflict" and record.get("status") == "deleting":
         verdict.update(verdict="blocking", reason="a teardown of %s did not finish" % layer,
-                       resolve="./es_auto_installer.sh teardown %s --env %s" % (layer, env))
+                       resolve="./toolkit_manager.sh teardown %s --env %s" % (layer, env))
     elif run_class == "conflict":
         verdict.update(verdict="blocking",
                        reason="a run towards %s is %s; this release is %s"
@@ -330,7 +330,7 @@ def backup_freshness_verdict(facts, layer, version, without_velero=False, env="<
                         reason="Velero is not deployed and upgrade_without_velero is set: no restore point")
         return dict(verdict, reason="Velero is not deployed, so no backup of %s %s exists" % (layer, version),
                     resolve="set velero_enabled: true in env/%s/global_config.yaml, run "
-                            "./es_auto_installer.sh install velero --env %s --only, then %s, "
+                            "./toolkit_manager.sh install velero --env %s --only, then %s, "
                             "or set upgrade_without_velero: true" % (env, env, backup))
     if not facts.get("found"):
         return dict(verdict, reason="%s has no backup profile%s" % (
@@ -445,7 +445,7 @@ def compatibility_dependants(layer, layer_requires, layer_records, release, env,
                 "dependant": dependant,
                 "reason": "%s (installed %s; range from its checkout) requires %s %s, %s is now %s"
                          % (dependant, installed, layer, expr, layer, release),
-                "resolve": "install %s within %s, or upgrade %s first: ./es_auto_installer.sh init %s"
+                "resolve": "install %s within %s, or upgrade %s first: ./toolkit_manager.sh init %s"
                           " --upgrade --env %s" % (layer, expr, dependant, dependant, env),
             })
     return found
@@ -479,7 +479,7 @@ def compatibility_verdict(layer, layer_class, layer_requires, layer_records, ver
     requires = layer_requires.get(layer) or {}
     if not isinstance(requires, dict):
         raise ValueError("layer %s: requires is not a mapping" % layer)
-    install = "./es_auto_installer.sh install %s --env " + env
+    install = "./toolkit_manager.sh install %s --env " + env
     blocking, advisory, resolve, subjects = _forward_findings(layer, requires, layer_class, layer_records,
                                                                versions, depends_on, install)
     release = versions.get(layer)

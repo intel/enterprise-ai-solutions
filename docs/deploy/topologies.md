@@ -29,8 +29,8 @@ Once the above are met, configure the node list and SSH credentials using [Optio
 ### Step 1 — Create the environment
 
 ```bash
-./es_auto_installer.sh configure
-./es_auto_installer.sh init inference --env prod
+./toolkit_manager.sh configure
+./toolkit_manager.sh init inference --env prod
 ```
 
 ---
@@ -44,7 +44,7 @@ Open `env/prod/global_config.yaml` and set the following before installing:
 storage_backend: nfs
 
 # Set your base domain (applies to all service URLs)
-base_domain_name: "solutions.ai"
+base_domain_name: "inteltoolkits.ai"
 
 # If behind a corporate proxy, uncomment and fill in:
 # http_proxy:  "http://proxy.example.com:8080"
@@ -135,7 +135,7 @@ all:
 ### Step 4 — Install
 
 ```bash
-./es_auto_installer.sh install inference --env prod
+./toolkit_manager.sh install inference --env prod
 ```
 
 The installer SSHes into the nodes, provisions Kubernetes across them via Kubespray, then deploys platform and inference layers.
@@ -208,7 +208,7 @@ observability_enabled: false    # skip Prometheus/Grafana stack
 Then install as normal:
 
 ```bash
-./es_auto_installer.sh install inference --env myenv
+./toolkit_manager.sh install inference --env myenv
 ```
 
 > **BYO with Headlamp:** the installer does not change your API server. See
@@ -227,7 +227,7 @@ Then install as normal:
 ## Teardown
 
 ```bash
-./es_auto_installer.sh teardown infrastructure --env prod
+./toolkit_manager.sh teardown infrastructure --env prod
 ```
 
 Runs Kubespray `reset.yml` across all nodes. Configuration files under `env/prod/` are preserved. The kubeconfig is removed.

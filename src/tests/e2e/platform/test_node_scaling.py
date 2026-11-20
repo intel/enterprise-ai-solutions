@@ -31,12 +31,12 @@ def _run_cli(request, *args):
     build_config_dir = request.config.getoption("--build-config-dir")
     root = _installer_root(build_config_dir)
     env = _env_name(build_config_dir)
-    cmd = ["./es_auto_installer.sh", *args, "--env", env]
+    cmd = ["./toolkit_manager.sh", *args, "--env", env]
     return subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=300)
 
 
 _REFUSES_WITH_APP_LAYER = "is not supported on a cluster with"
-_NO_TOOLING = "missing. Run './es_auto_installer.sh configure'"
+_NO_TOOLING = "missing. Run './toolkit_manager.sh configure'"
 
 
 def _assert_dry_run_leaves_the_cluster_alone(result, verb):

@@ -631,7 +631,7 @@
 # is a convenience for operators plus the deep backup-readability check.
 # It writes to /usr/local/bin, which needs privilege the component loop may not
 # have — failure is reported, not fatal. The durable home for this is
-# `es_auto_installer.sh configure`.
+# `toolkit_manager.sh configure`.
 
 - name: "velero | Install client"
   when: velero_install_client
@@ -687,7 +687,7 @@
               (needs write access to /usr/local/bin). Backup and restore still
               work — they use the Kubernetes API — but
               `velero backup describe --details` will not be available. Install
-              it by hand, or re-run ./es_auto_installer.sh configure.
+              it by hand, or re-run ./toolkit_manager.sh configure.
 
 # =============================================================================
 # CLI environment snippet (external store only)

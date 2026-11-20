@@ -20,10 +20,10 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 **One kind of change per edit.** `add-node` refuses while `nodes.yaml` is missing a node that is in the cluster, and `remove-node` refuses while it lists a node that has not joined, so an edit that both adds and removes nodes is refused by both. Revert one half, run that command, then reapply the other half and run the other one.
 
 ```bash
-./es_auto_installer.sh add-node --dry-run     # preview after editing nodes.yaml
-./es_auto_installer.sh add-node                # scale in the new worker(s)
-./es_auto_installer.sh remove-node --dry-run   # preview after deleting entries
-./es_auto_installer.sh remove-node             # remove the dropped node(s)
+./toolkit_manager.sh add-node --dry-run     # preview after editing nodes.yaml
+./toolkit_manager.sh add-node                # scale in the new worker(s)
+./toolkit_manager.sh remove-node --dry-run   # preview after deleting entries
+./toolkit_manager.sh remove-node             # remove the dropped node(s)
 ```
 
 ## Before you start
@@ -67,8 +67,8 @@ The workflow is always: **edit `nodes.yaml`, then run the action**. The installe
 2. Preview, then apply:
 
    ```bash
-   ./es_auto_installer.sh add-node --dry-run --env <name>
-   ./es_auto_installer.sh add-node --env <name>
+   ./toolkit_manager.sh add-node --dry-run --env <name>
+   ./toolkit_manager.sh add-node --env <name>
    ```
 
 3. What `add-node` does:
@@ -107,8 +107,8 @@ On a rack-scale env (`rack_scale_enabled: true`) the nodes come from `env/<name>
 2. Preview, then apply:
 
    ```bash
-   ./es_auto_installer.sh remove-node --dry-run --env <name>
-   ./es_auto_installer.sh remove-node --env <name>
+   ./toolkit_manager.sh remove-node --dry-run --env <name>
+   ./toolkit_manager.sh remove-node --env <name>
    ```
 3. Before anything runs, the installer lists any real workload pods (excluding DaemonSets and static/mirror pods) running on the node(s) about to be removed — so you know what the drain is about to evict before you confirm. Then Kubespray's `remove-node.yml` drains, resets, and removes the node from the cluster before the installer deletes its stale per-node `host_vars` file.
 
@@ -132,7 +132,7 @@ On a rack-scale env (`rack_scale_enabled: true`) the nodes come from `env/<name>
 For a node that is unreachable or `NotReady`, use:
 
 ```bash
-./es_auto_installer.sh remove-node --node-lost --env <name>
+./toolkit_manager.sh remove-node --node-lost --env <name>
 ```
 
 This skips the PodDisruptionBudget check, gives the drain up after 60 seconds instead of waiting for pods that can no longer stop, and does not reset the node's OS (`allow_ungraceful_removal=true`, `drain_timeout=60s`, `reset_nodes=false`). Every target must actually be `NotReady`, so the flag can't be used to skip the drain on a healthy node. The capacity simulation still runs.
@@ -171,7 +171,7 @@ Not checked, and each would currently only surface as a Kubespray failure partwa
 4. **OS reset by default** (`reset_nodes=true`) — stops kubelet and containerd and removes `/etc/kubernetes` and the CNI state. It does not leave the node fully clean: `cali-*`/`KUBE-*` iptables chains and their ipsets remain, and containerd is stopped with its binary gone. Re-adding the machine as it is works; flush the chains before reusing it for anything else. The reset can be skipped (`reset_nodes=false`) for an unreachable node, but only paired with an explicit `allow_ungraceful_removal=true` — a second, deliberate opt-out.
 5. **Inventory is untouched by the play itself** — the node stays listed during/after the run; removing the entry is left to the caller, as a deliberate checkpoint.
 
-### Built into `es_auto_installer.sh`
+### Built into `toolkit_manager.sh`
 
 - **`--dry-run`** prints the computed node diff and the exact Kubespray invocation, and changes nothing.
 - A `confirm()` gate (y/N or `--force`) — separate from Kubespray's own `skip_confirmation`, which we pass through specifically so Kubespray's prompt doesn't block a non-interactive run; ours is the one that actually gates the destructive action.

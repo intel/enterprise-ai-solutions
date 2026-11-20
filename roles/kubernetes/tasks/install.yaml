@@ -7,7 +7,7 @@
 #   _kubespray_skip_cluster_yml=true  → post-kubespray fast path (kubeconfig + validation)
 #   otherwise                         → prep phase: prereqs + kubespray prep → end_role
 #
-# The role never runs cluster.yml itself. es_auto_installer.sh runs kubespray
+# The role never runs cluster.yml itself. toolkit_manager.sh runs kubespray
 # directly from bash between the two passes so the operator gets live output.
 #
 # Deployment modes:
@@ -83,7 +83,7 @@
   when: _k8s_phase | trim == 'post-kubespray'
   block:
     # kubectl and helm are operator prerequisites (installed by
-    # './es_auto_installer.sh configure'), verified in ensure_deps before any
+    # './toolkit_manager.sh configure'), verified in ensure_deps before any
     # playbook runs. The role does not provision host tooling.
     - name: "kubernetes | Setup kubeconfig"
       ansible.builtin.include_tasks: setup_kubeconfig.yaml
@@ -202,7 +202,7 @@
       ansible.builtin.include_tasks: install_kubespray.yaml
 
     # ── Always end here after prep ──
-    # es_auto_installer.sh runs kubespray cluster.yml directly from bash
+    # toolkit_manager.sh runs kubespray cluster.yml directly from bash
     # so the operator gets live streaming output. Ansible-in-ansible
     # swallows all progress. After kubespray completes, the installer
     # re-invokes this role with _kubespray_skip_cluster_yml=true to run

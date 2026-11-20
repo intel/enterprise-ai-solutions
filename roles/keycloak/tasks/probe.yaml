@@ -11,7 +11,7 @@
       - keycloak_hostname | default('') | length > 0
     fail_msg: >-
       keycloak_hostname is not set. Set it in global_config.yaml or defaults
-      (e.g. "keycloak.inference-example.com").
+      (e.g. "keycloak.inteltoolkits.ai").
     success_msg: "Keycloak hostname: {{ keycloak_hostname }}"
 
 - name: "keycloak | Check for existing operator deployment"

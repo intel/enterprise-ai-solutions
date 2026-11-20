@@ -19,9 +19,9 @@ scratch — `init` generates both for you with working defaults.
 ### How it fits together
 
 ```
-./es_auto_installer.sh init inference  # 1. creates env/local/global_config.yaml with defaults
+./toolkit_manager.sh init inference    # 1. creates env/local/global_config.yaml with defaults
 vi env/local/global_config.yaml        # 2. (optional) change what you need
-./es_auto_installer.sh install inference # 3. reads the file and deploys
+./toolkit_manager.sh install inference # 3. reads the file and deploys
 ```
 
 Step 2 is optional. The defaults deploy a complete, working stack on a single
@@ -50,7 +50,7 @@ env/prod/global_config.yaml      # the real cluster
 ### Do I Need to Change global_config.yaml Before My First Deploy?
 
 Not for a single-node trial. The defaults assume: one node (localhost), the
-`solutions.ai` domain, a self-signed TLS CA, Keycloak authentication, node-local
+`inteltoolkits.ai` domain, a self-signed TLS CA, Keycloak authentication, node-local
 storage, and Intel® Xeon® CPU inference.
 
 You need to edit the file when one of these is true:
@@ -68,7 +68,7 @@ You need to edit the file when one of these is true:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `base_domain_name` | `solutions.ai` | Every service URL derives from this — `grafana.<domain>`, `keycloak.<domain>`, `inference.<domain>` |
+| `base_domain_name` | `inteltoolkits.ai` | Every service URL derives from this — `grafana.<domain>`, `keycloak.<domain>`, `inference.<domain>` |
 | `auth_type` | `jwt` | Credential API clients send (Keycloak JWT or LiteLLM virtual key). Set in `env/<name>/config.inference.yaml` — see [API authentication](#api-authentication) |
 | `storage_backend` | `local-path` | Where persistent data lives — see [Storage](#storage) |
 | `gateway_tls_mode` | `selfsigned` | Auto-generated CA, or bring your own — see [TLS](#tls) |
@@ -92,7 +92,7 @@ storage_backend: "nfs"
 **Or** override at install time without editing anything:
 
 ```bash
-./es_auto_installer.sh install inference --env local -- -e auth_type=litellm_vkey
+./toolkit_manager.sh install inference --env local -- -e auth_type=litellm_vkey
 ```
 
 Anything after the bare `--` is passed straight to Ansible, so any variable in
@@ -108,71 +108,20 @@ CLI -e override  >  global_config.yaml  >  config.<solution>.yaml  >  role defau
 
 ## Full template
 
-The complete `global_config.yaml` as `init` generates it. Every value shown is
-the default, so this doubles as a reference for what you can set:
+`init` copies [`configs/defaults/global_config.yaml`](../../configs/defaults/global_config.yaml)
+to `env/<name>/global_config.yaml`. Its active lines are the defaults; its `# key: value`
+lines are optional settings (remove the `# ` to use one). It has eight sections:
 
-```yaml
-# =============================================================================
-# global_config.yaml — Main configuration for your deployment
-# =============================================================================
-
-# --- Networking & Domain ---
-base_domain_name: "solutions.ai"          # Base domain for all service URLs
-                                           # (e.g. grafana.solutions.ai, litellm.solutions.ai)
-
-# --- TLS ---
-gateway_tls_mode: "selfsigned"            # "selfsigned" = auto-generated CA
-                                           # "custom"     = provide your own cert/key below
-# gateway_tls_cert_file: "/path/to/cert.pem"   # Only needed when gateway_tls_mode: custom
-# gateway_tls_key_file:  "/path/to/key.pem"    # Must cover *.<base_domain_name>
-
-# --- Authentication ---
-# Keycloak is always deployed. API client auth (auth_type) and the
-# LiteLLM/Langfuse add-ons are set in config.inference.yaml.
-
-# --- Storage ---
-storage_backend: "local-path"             # "local-path" = node-local (single-node only)
-                                           # "nfs"        = shared NFS (required for multi-node)
-                                           # "ceph"       = replicated block via Rook-Ceph
-                                           # "custom"     = use your cluster's own StorageClass
-# storage_custom_storageclass: ""          # required when storage_backend=custom
-
-# --- Compute ---
-kubernetes_accelerator: "cpu"             # "cpu" = Intel® Xeon® (default)
-kubernetes_cpu_policy: "nri-balloons"     # "nri-balloons"   = NUMA-aware pinning (recommended)
-                                           # "kubelet-static" = kubelet static CPU manager
-                                           # "best-effort"    = no pinning
-
-# --- Observability ---
-observability_enabled: true               # Deploy Prometheus, Grafana, Loki, Tempo
-
-# --- Backup ---
-velero_enabled: false                     # Deploy Velero + CSI snapshots (needs nfs or ceph)
-
-# --- Networking ---
-gateway_request_timeout: "600s"           # Envoy timeout for long LLM responses
-kubernetes_cluster_name: "cluster.local"  # Kubernetes DNS suffix
-kubernetes_kube_proxy_mode: "nftables"    # "nftables" | "iptables" | "ipvs"
-node_topology_enabled: true               # Soft affinity for platform vs inference pods
-
-# --- Object Store (for Loki, Tempo, Langfuse) ---
-object_store_backend: "seaweedfs"         # "seaweedfs" | "rustfs" | "external"
-seaweedfs_volume_storage_size: "10Gi"
-
-# --- BYO Cluster (skip Kubernetes provisioning) ---
-# existing_kubernetes: "/path/to/kubeconfig"
-
-# --- Proxy (uncomment if behind corporate proxy) ---
-# http_proxy:  "http://proxy.example.com:8080"
-# https_proxy: "http://proxy.example.com:8080"
-# no_proxy: "localhost,127.0.0.1,10.233.0.0/18,10.233.64.0/18,.svc,.cluster.local,<node-subnet>"
-
-# --- Component toggles (set false to skip) ---
-# cert_manager_enabled: true
-# metallb_enabled: true
-# istio_enabled: true
-# postgresql_enabled: true
-```
+| Section | What it sets |
+|---|---|
+| 1. Kubernetes | cluster name, kube-proxy mode, `existing_kubernetes` (your own cluster) |
+| 2. Networking and proxy | service and pod CIDRs, `metallb_ip_range`, `http_proxy` / `https_proxy` / `no_proxy` |
+| 3. Domain and access | `base_domain_name`, `routing_mode`, TLS (`gateway_tls_mode`, custom certificate files), `gateway_request_timeout` |
+| 4. Components | `istio_enabled`, `observability_enabled`, `metrics_server_enabled`, `headlamp_enabled`, `keda_enabled`, `velero_enabled`, `kata_containers_enabled` |
+| 5. Storage | `storage_backend` and its `custom` settings, `object_store_backend` |
+| 6. Sign-in | `auth_type` (API auth: `jwt` by default, `litellm_vkey` with the Agent Toolkit; set here only to force it for every layer), platform-admin MFA |
+| 7. Advanced | `node_topology_enabled`, `enforce_pss`, CPU policy, `rack_scale_enabled`, `envoy_gateway_upgrade` |
+| 8. Hardware and platform specific | Ceph devices, NetApp ONTAP, OpenShift checks |
 
 ### Field summary
 
@@ -404,7 +353,7 @@ observability_grafana_admin_password: "your-password"
 or as install-time overrides:
 
 ```bash
-./es_auto_installer.sh install inference -- \
+./toolkit_manager.sh install inference -- \
   -e keycloak_admin_password=your-password \
   -e observability_grafana_admin_password=your-password
 ```
@@ -457,7 +406,7 @@ module entry stay on the nodes.
 Component versions are set in `global_config.yaml` and can be overridden at runtime:
 
 ```bash
-./es_auto_installer.sh install envoy_gateway --env local \
+./toolkit_manager.sh install envoy_gateway --env local \
   -- -e envoy_gateway_version=1.4.0
 ```
 

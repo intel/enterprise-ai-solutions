@@ -1,6 +1,6 @@
 ---
 # =============================================================================
-# Component Registry — ai-solutions' own layers and components
+# Component Registry — Toolkit Manager's own layers and components
 # =============================================================================
 # Execution order is derived from depends_on, not from the order of this file:
 # layers in dependency order, then components within each layer.

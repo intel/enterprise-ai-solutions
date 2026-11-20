@@ -6,7 +6,7 @@
 #
 # FALLBACK ONLY. The storage component installs both itself, so a cluster whose
 # storage was installed by this repo needs nothing from this script — run
-# `./es_auto_installer.sh install storage --env <env>` instead, and
+# `./toolkit_manager.sh install storage --env <env>` instead, and
 # `validate storage` to check the result.
 #
 # Use it on a cluster whose CSI driver was installed some other way and predates

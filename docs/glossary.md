@@ -6,7 +6,7 @@ Terms used across this documentation, in alphabetical order.
 
 ---
 
-**Action.** What `es_auto_installer.sh` does to a target: `configure`, `init`, `install`, `teardown`, `validate`, `status`, or `show`. Each role implements the actions that apply to it.
+**Action.** What `toolkit_manager.sh` does to a target: `configure`, `init`, `install`, `teardown`, `validate`, `status`, or `show`. Each role implements the actions that apply to it.
 
 **Ambient mesh.** Istio's sidecar-free mode. Traffic between pods is encrypted with mutual TLS by a per-node proxy (ztunnel) rather than by a proxy container injected into every pod.
 

@@ -20,11 +20,11 @@ Deploy the Agent Toolkit on a single localhost machine — Kubernetes, platform 
 git clone https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
 
-./es_auto_installer.sh configure
-./es_auto_installer.sh init agent-toolkit
+./toolkit_manager.sh configure
+./toolkit_manager.sh init agent-toolkit
 vim env/local/global_config.yaml          # set base_domain_name, proxy if needed
 
-./es_auto_installer.sh install agent-toolkit
+./toolkit_manager.sh install agent-toolkit
 ```
 
 > [!Note]
@@ -67,8 +67,8 @@ Switches without a file named live in `env/<name>/config.agent-toolkit.yaml`. Co
 
 ```bash
 # Remove the agent layer only (keeps cluster, platform and inference intact)
-./es_auto_installer.sh teardown agent-toolkit
+./toolkit_manager.sh teardown agent-toolkit
 
 # Remove the cluster (and everything on it)
-./es_auto_installer.sh teardown infrastructure
+./toolkit_manager.sh teardown infrastructure
 ```

@@ -94,7 +94,7 @@ done
 
 ## Tooling
 
-`./es_auto_installer.sh configure` installs the following pinned versions into `/usr/local/bin`. Run it once per machine before anything else. If these tools are already installed at compatible versions, `configure` skips them.
+`./toolkit_manager.sh configure` installs the following pinned versions into `/usr/local/bin`. Run it once per machine before anything else. If these tools are already installed at compatible versions, `configure` skips them.
 
 | Tool | Version | Notes |
 |---|---|---|

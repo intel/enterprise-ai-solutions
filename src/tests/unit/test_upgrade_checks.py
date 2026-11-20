@@ -264,7 +264,7 @@ def test_version_change_verdict(run_class, verdict):
 
 def test_conflict_on_deleting_names_the_teardown():
     v = version_change_verdict("conflict", "erag", record(status="deleting"), "3.0.0", "dev")
-    assert v["resolve"] == "./es_auto_installer.sh teardown erag --env dev"
+    assert v["resolve"] == "./toolkit_manager.sh teardown erag --env dev"
 
 
 def test_an_always_gates_verdict_gates_a_plain_install():
@@ -729,7 +729,7 @@ def test_upgrade_path_blocks_a_conflict_whose_recorded_version_does_not_parse(st
 
 
 def test_old_upgrade_reports_are_pruned_like_env_log_dir():
-    # Same rule as ENV_LOG_DIR's logs (es_auto_installer.sh): keep the most recent, drop the rest.
+    # Same rule as ENV_LOG_DIR's logs (toolkit_manager.sh): keep the most recent, drop the rest.
     path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
                         "roles", "upgrade_checks", "tasks", "report.yaml")
     with open(path) as f:
@@ -825,7 +825,7 @@ def test_backup_freshness_resolve_names_the_backup_command():
     assert resolve == "./run_backup.sh backup erag --env prod"
     assert "upgrade_without_velero: true" in _freshness(velero=False)["resolve"]
     assert _freshness(velero=False)["resolve"].startswith(
-        "set velero_enabled: true in env/prod/global_config.yaml, run ./es_auto_installer.sh install velero")
+        "set velero_enabled: true in env/prod/global_config.yaml, run ./toolkit_manager.sh install velero")
 
 
 def test_backup_freshness_without_velero_flag_is_bypassed():
@@ -911,7 +911,7 @@ def test_compatibility_lower_bound_blocks_upper_bound_advises(dep, version, verd
     v = compat({"erag": "upgrade"}, records=dict(INSTALLED, **{dep: record(version=version)}))
     assert v["verdict"] == verdict
     assert v["reason"] == "erag 3.1.0 requires %s >=1.1.0,<1.2.0, %s is %s" % (dep, dep, version)
-    assert v["resolve"] == "./es_auto_installer.sh install %s --env dev from a release within >=1.1.0,<1.2.0" % dep
+    assert v["resolve"] == "./toolkit_manager.sh install %s --env dev from a release within >=1.1.0,<1.2.0" % dep
 
 
 @pytest.mark.parametrize("installer, verdict", [("1.0.0", "blocking"), ("2.0.0", "advisory"), ("1.9.3", "pass")])
@@ -939,7 +939,7 @@ def test_compatibility_missing_dependency_versions_block():
     v = compat({"erag": "upgrade"}, records=no_inference)
     assert v["verdict"] == "blocking"
     assert v["reason"] == "inference has no version (no deployment record)"
-    assert v["resolve"] == "./es_auto_installer.sh install inference --env dev"
+    assert v["resolve"] == "./toolkit_manager.sh install inference --env dev"
     v = compat({"erag": "upgrade"}, records=dict(INSTALLED, inference={"layer": "inference", "version": None}))
     assert v["reason"] == "inference has no version (its record has no version)"
     # planned in the same run, without a version.yaml
@@ -962,7 +962,7 @@ def test_compatibility_reverse_direction_is_advisory():
     assert v["reason"] == ("erag (installed 3.0.0; range from its checkout) requires platform >=1.1.0,<1.2.0,"
                            " platform is now 1.2.0")
     assert v["resolve"] == ("install platform within >=1.1.0,<1.2.0, or upgrade erag first:"
-                            " ./es_auto_installer.sh init erag --upgrade --env dev")
+                            " ./toolkit_manager.sh init erag --upgrade --env dev")
     # a planned dependant judges itself; an uninstalled one does not count; a reinstall changes nothing
     assert compat({"platform": "upgrade", "erag": "upgrade"}, release={"platform": "1.2.0", "erag": "3.1.0"},
                   layer="platform", depends_on=["infrastructure"])["verdict"] == "pass"
@@ -979,22 +979,22 @@ def test_compatibility_resolve_orders_bottom_up_on_mixed_input():
     v = compat({"erag": "upgrade"}, records=no_versions,
                requires={"erag": {"inference": ">=1.1.0", "infrastructure": ">=1.1.0"}},
                depends_on=(), layer_order=order)
-    assert v["resolve"] == ("1. ./es_auto_installer.sh install infrastructure --env dev"
-                            " 2. ./es_auto_installer.sh install inference --env dev")
+    assert v["resolve"] == ("1. ./toolkit_manager.sh install infrastructure --env dev"
+                            " 2. ./toolkit_manager.sh install inference --env dev")
     # without a layer_order nothing is reordered: requires's own key order comes through
     assert compat({"erag": "upgrade"}, records=no_versions,
                   requires={"erag": {"inference": ">=1.1.0", "infrastructure": ">=1.1.0"}},
-                  depends_on=())["resolve"] == ("1. ./es_auto_installer.sh install inference --env dev"
-                                                " 2. ./es_auto_installer.sh install infrastructure --env dev")
+                  depends_on=())["resolve"] == ("1. ./toolkit_manager.sh install inference --env dev"
+                                                " 2. ./toolkit_manager.sh install infrastructure --env dev")
 
 
 def test_compatibility_resolve_forward_and_reverse_combined_order():
     requires = {"platform": {"infrastructure": ">=1.1.0"}, **ERAG_REQUIRES}
     kwargs = dict(records=dict(INSTALLED, infrastructure=record(version="1.0.0")), requires=requires,
                  release={"platform": "1.2.0"}, layer="platform", depends_on=["infrastructure"])
-    forward_fix = "./es_auto_installer.sh install infrastructure --env dev from a release within >=1.1.0"
+    forward_fix = "./toolkit_manager.sh install infrastructure --env dev from a release within >=1.1.0"
     reverse_fix = ("install platform within >=1.1.0,<1.2.0, or upgrade erag first:"
-                   " ./es_auto_installer.sh init erag --upgrade --env dev")
+                   " ./toolkit_manager.sh init erag --upgrade --env dev")
 
     v = compat({"platform": "upgrade"}, layer_order=["infrastructure", "platform", "inference", "erag"], **kwargs)
     assert v["resolve"] == "1. %s 2. %s" % (forward_fix, reverse_fix)
@@ -1016,7 +1016,7 @@ def test_compatibility_dependants_filter():
         "reason": "erag (installed 3.0.0; range from its checkout) requires platform >=1.1.0,<1.2.0,"
                  " platform is now 1.2.0",
         "resolve": "install platform within >=1.1.0,<1.2.0, or upgrade erag first:"
-                  " ./es_auto_installer.sh init erag --upgrade --env dev",
+                  " ./toolkit_manager.sh init erag --upgrade --env dev",
     }]
     # within range: nothing found
     assert compatibility_dependants("platform", {"erag": {"platform": ">=1.1.0,<1.2.0"}},

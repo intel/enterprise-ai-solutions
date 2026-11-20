@@ -20,18 +20,18 @@ Deploy the full RAG application stack on a single localhost machine — Kubernet
 git clone https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
 
-./es_auto_installer.sh configure
-./es_auto_installer.sh init erag
+./toolkit_manager.sh configure
+./toolkit_manager.sh init erag
 vim env/local/global_config.yaml          # set base_domain_name, proxy if needed
 
-./es_auto_installer.sh install erag
+./toolkit_manager.sh install erag
 ```
 
 > [!Note]
 > `--env local` is the default — if your environment is named `local` you can omit it from all commands.
 > `init erag` clones every repo in `configs/repos/repos.erag.yaml` (inference first, then erag) and seeds a `config.<layer>.yaml` per layer.
 > `install erag` auto-pulls its dependencies (infrastructure → platform → inference); `--only` runs the target alone.
-> Component resolving works with traversal, so you can also target individual components directly: `./es_auto_installer.sh install app_pipeline`.
+> Component resolving works with traversal, so you can also target individual components directly: `./toolkit_manager.sh install app_pipeline`.
 
 After install, add the gateway IP to `/etc/hosts`:
 
@@ -58,10 +58,10 @@ Log in with **erag-admin** and the decoded password.
 
 ```bash
 # Remove erag layer only (keeps cluster, platform and inference intact)
-./es_auto_installer.sh teardown erag
+./toolkit_manager.sh teardown erag
 
 # Remove the cluster (and everything on it)
-./es_auto_installer.sh teardown infrastructure
+./toolkit_manager.sh teardown infrastructure
 ```
 
 ---
@@ -88,16 +88,16 @@ You don't have to deploy everything at once. Target individual layers:
 
 ```bash
 # Install up to inference (skip erag) — deps are pulled in automatically
-./es_auto_installer.sh install inference
+./toolkit_manager.sh install inference
 
 # Add erag later
-./es_auto_installer.sh install erag
+./toolkit_manager.sh install erag
 
 # Tear down only erag
-./es_auto_installer.sh teardown erag
+./toolkit_manager.sh teardown erag
 
 # Tear down inference (removes models, KServe) but keep platform
-./es_auto_installer.sh teardown inference
+./toolkit_manager.sh teardown inference
 ```
 
 Node Feature Discovery belongs to the platform layer (`node_feature_discovery`), so
@@ -108,14 +108,14 @@ comes from its operator, and teardown leaves it.
 You can also target individual components directly — component resolving traverses the dependency tree automatically:
 
 ```bash
-./es_auto_installer.sh install app_pipeline
+./toolkit_manager.sh install app_pipeline
 ```
 
 ### Listing Available Components and Current State
 
 ```bash
-./es_auto_installer.sh show      # all layers and their components, including opt-in ones
-./es_auto_installer.sh status    # namespaces, pods, helm releases, endpoints of what is deployed
+./toolkit_manager.sh show      # all layers and their components, including opt-in ones
+./toolkit_manager.sh status    # namespaces, pods, helm releases, endpoints of what is deployed
 ```
 
 ### Pipeline Flavours (`init --flavour`)
@@ -125,7 +125,7 @@ directories under `ext/enterprise.ai-erag/deployment/pipelines/` — `chatqna` (
 `docsum`, `translation`, `audioqna`, `pl_chatqna`:
 
 ```bash
-./es_auto_installer.sh init erag --flavour docsum
+./toolkit_manager.sh init erag --flavour docsum
 ```
 
 Passing an unknown name lists what is available. `--flavour` applies to `init` only, and only
@@ -138,16 +138,16 @@ overwriting your edits: use a fresh `--env`, or delete `env/<name>/config.erag.y
 The installer supports multiple named environments side by side. The `local` environment is used by default when `--env` is omitted.
 
 ```bash
-./es_auto_installer.sh init erag --env dev
-./es_auto_installer.sh init erag --env staging
+./toolkit_manager.sh init erag --env dev
+./toolkit_manager.sh init erag --env staging
 
 # Each has independent config under env/<name>/
 vim env/dev/global_config.yaml
 vim env/staging/global_config.yaml
 
 # Deploy into a specific env (--env required for non-local envs)
-./es_auto_installer.sh install erag --env dev
-./es_auto_installer.sh install erag --env staging
+./toolkit_manager.sh install erag --env dev
+./toolkit_manager.sh install erag --env staging
 ```
 
 All envs share one `ext/` checkout, so they cannot be pinned to different repo revisions —
@@ -174,15 +174,15 @@ For remote nodes edit `env/<name>/inventory/hosts.yaml` directly in kubespray fo
 Pass extra variables or increase verbosity via `--`:
 
 ```bash
-./es_auto_installer.sh install erag -- -vvv -e edp_enabled=false
+./toolkit_manager.sh install erag -- -vvv -e edp_enabled=false
 ```
 
-Or set `ES_LOG_LEVEL=debug` (verbose logs + ansible `-vvv`) / `trace` (+ bash xtrace).
+Or set `TKM_LOG_LEVEL=debug` (verbose logs + ansible `-vvv`) / `trace` (+ bash xtrace).
 
 ### Validation
 
 ```bash
-./es_auto_installer.sh validate erag
+./toolkit_manager.sh validate erag
 ```
 
 Runs validation playbooks against deployed components to verify health.
@@ -252,7 +252,7 @@ upload_pipelines: false      # enable document upload pipelines
 | `ImagePullBackOff` from `localhost:5000` | Registry down or untrusted — check `systemctl status local-registry.service` and that `/etc/containerd/certs.d/<host>:5000/hosts.toml` exists; on multi-node use `--registry <node-ip>:5000`, not `localhost` |
 | MetalLB no external IP | Verify `metallb_ip_range` in `nodes.yaml` or let auto-detect handle it |
 | Keycloak unreachable | Confirm `/etc/hosts` has `keycloak.<base_domain_name>` pointing to gateway IP |
-| Installer fails at "yq missing" | Run `./es_auto_installer.sh configure` first |
+| Installer fails at "yq missing" | Run `./toolkit_manager.sh configure` first |
 | Installer prompts for sudo password | Add `NOPASSWD` to sudoers to avoid repeated prompts |
 
 ### Useful Commands

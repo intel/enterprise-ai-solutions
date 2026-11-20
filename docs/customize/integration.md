@@ -229,8 +229,8 @@ agent = Agent(
 Any MCP host (Claude Desktop, Cursor, Continue, etc.) that lets you set a custom OpenAI-compatible endpoint can target the gateway. Configure:
 
 ```
-Base URL: https://litellm.inference-example.com/v1  (litellm mode)
-      or: https://inference.inference-example.com/llm-inference/<model>/v1  (keycloak mode)
+Base URL: https://litellm.inteltoolkits.ai/v1  (litellm mode)
+      or: https://inference.inteltoolkits.ai/llm-inference/<model>/v1  (keycloak mode)
 API Key:  <LiteLLM virtual key or Keycloak JWT>
 ```
 
@@ -322,7 +322,7 @@ Behind the scenes it creates a KServe `InferenceService` (or `LLMInferenceServic
 To declare models in Git instead, drop CRDs into your role/values and run:
 
 ```bash
-./es_auto_installer.sh install inference_services --env <name>
+./toolkit_manager.sh install inference_services --env <name>
 ```
 
 ---
@@ -655,7 +655,7 @@ These are the rare cases:
 | **Non-OpenAI inference protocol** (raw gRPC, Triton v2 without predictor) | Custom `HTTPRoute` + `Backend` resource pointing to the service |
 | **mTLS-only auth** | Replace the JWT `SecurityPolicy` with a client-cert policy and provision certs via cert-manager |
 | **Cross-namespace gateway exposure** | Add `ReferenceGrant` from your namespace to `envoy-gateway-system` |
-| **Add a new persistent service to the installer** | Write a role under `roles/<name>/`, register it in `playbooks/site.yaml` and `es_auto_installer.sh` |
+| **Add a new persistent service to the installer** | Write a role under `roles/<name>/`, register it in `playbooks/site.yaml` and `toolkit_manager.sh` |
 
 ---
 

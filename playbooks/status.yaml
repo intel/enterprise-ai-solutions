@@ -2,7 +2,7 @@
 # =============================================================================
 # Status Playbook — Show what is currently installed
 # =============================================================================
-# Usage:  ./es_auto_installer.sh status [--env <name>]
+# Usage:  ./toolkit_manager.sh status [--env <name>]
 # =============================================================================
 
 - name: "Deployment Status"
@@ -10,7 +10,7 @@
   connection: local
   gather_facts: false
   vars:
-    base_domain_name: "{{ base_domain_name | default('solutions.ai') }}"
+    base_domain_name: "{{ base_domain_name | default('inteltoolkits.ai') }}"
   environment:
     http_proxy: "{{ http_proxy | default('') }}"
     https_proxy: "{{ https_proxy | default('') }}"
@@ -73,7 +73,7 @@
       ansible.builtin.debug:
         msg: |
           ══════════════════════════════════════════════════════════════════════════
-           Intel AI Enterprise Solutions — Deployment Status
+           Toolkit Manager — Deployment Status
           ══════════════════════════════════════════════════════════════════════════
 
           Cluster Nodes: {{ _st_nodes_info.resources | length }}

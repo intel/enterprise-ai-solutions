@@ -9,7 +9,7 @@
 # read the result.
 #
 # Only a BYO cluster (existing_kubernetes set) is probed:
-#   - A cluster ai-solutions builds itself is upstream Kubernetes by definition.
+#   - A cluster Toolkit Manager builds itself is upstream Kubernetes by definition.
 #   - On the first install, that cluster does not exist yet when preflight runs.
 #
 # Published facts (repo-wide, no prefix):

@@ -46,7 +46,7 @@
         msg: >-
           {{ _gpu_added | join(', ') }} joined without its GPU stack: the NVIDIA GPU operator is not
           installed (the rack had no NVIDIA GPU node at install, or the platform layer is not installed).
-          Install it with ./es_auto_installer.sh install --env {{ env_name }} platform.
+          Install it with ./toolkit_manager.sh install --env {{ env_name }} platform.
       when: not _gpu_operator_found
 
     # The driver container builds on the node first: allow 30 minutes.
@@ -75,7 +75,7 @@
           {{ item.item }} is in the cluster, but {{ _allocatable }} of its {{ _wanted }} GPU(s)
           are allocatable after 30 minutes. Check the operator's pods on it:
           kubectl -n {{ nvidia_gpu_operator_namespace }} get pods -o wide --field-selector spec.nodeName={{ item.item }}.
-          They keep reconciling; re-check with ./es_auto_installer.sh validate --env {{ env_name }} nvidia_gpu_operator.
+          They keep reconciling; re-check with ./toolkit_manager.sh validate --env {{ env_name }} nvidia_gpu_operator.
       loop: "{{ _gpu_node.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"

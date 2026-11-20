@@ -352,7 +352,7 @@
         {{ line }}
       {% endfor %}
       {% endif %}
-      Re-run ./es_auto_installer.sh validate storage after fixing the cause.
+      Re-run ./toolkit_manager.sh validate storage after fixing the cause.
     success_msg: >-
       Backend {{ trident_backend_name }} is Bound
       (backendUUID {{ _status.backendInfo.backendUUID | default('n/a') }}).
@@ -382,7 +382,7 @@
       (configured {{ ontap_driver }}). A StorageClass is immutable in these
       fields, so changing trident_reclaim_policy, trident_volume_binding_mode or
       ontap_driver requires deleting and recreating it:
-      ./es_auto_installer.sh teardown storage && ./es_auto_installer.sh install storage
+      ./toolkit_manager.sh teardown storage && ./toolkit_manager.sh install storage
       Existing volumes keep the policy they were created with, so under
       reclaimPolicy Retain check the array residue report teardown prints first.
     success_msg: "Existing StorageClass {{ trident_storage_class }} matches the configuration."
@@ -453,4 +453,4 @@
       - "  StorageClass: {{ trident_storage_class }} (default={{ trident_storageclass_default }})"
       - "  reclaim:      {{ trident_reclaim_policy }}{{ ' - deleting a PVC leaves the ONTAP FlexVol in place' if trident_reclaim_policy == 'Retain' else ' - deleting a PVC destroys the ONTAP FlexVol' }}"
       - "  images:       {{ trident_image_registry if (trident_image_registry | default('', true) | string | trim | length > 0) else 'chart defaults (Docker Hub)' }}"
-      - "  verify:       ./es_auto_installer.sh validate storage"
+      - "  verify:       ./toolkit_manager.sh validate storage"

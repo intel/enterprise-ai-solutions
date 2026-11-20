@@ -10,9 +10,9 @@ and either proceeds or refuses with the command that fixes the problem.
 Upgrade one layer at a time, bottom up — there is no single command that upgrades the whole stack:
 
 ```bash
-./es_auto_installer.sh install platform  --env prod
-./es_auto_installer.sh install inference --env prod
-./es_auto_installer.sh install erag      --env prod
+./toolkit_manager.sh install platform  --env prod
+./toolkit_manager.sh install inference --env prod
+./toolkit_manager.sh install erag      --env prod
 ```
 
 ---
@@ -158,7 +158,7 @@ own layers have none.
 ./run_backup.sh restore erag --env prod --from <backup-name>
 ```
 
-`run_backup.sh` passes the env's configs and kubeconfig the way `es_auto_installer.sh` does, logs to
+`run_backup.sh` passes the env's configs and kubeconfig the way `toolkit_manager.sh` does, logs to
 `env/<env>/logs/backup-<layer>-<timestamp>.log`, and passes anything after `--` to ansible-playbook.
 It runs `playbooks/backup.yaml`, which can also be called directly:
 
@@ -189,12 +189,12 @@ solution layer the env holds, as `run_backup.sh` does. `restore` refuses without
   layers' records are not touched. **Unlabelled objects in the profile's namespaces are replaced** by
   their backed-up copy, including objects you created there yourself; a profile can leave known kinds
   out with `exclude_resources`.
-- `restore` does not run `validate`; run `./es_auto_installer.sh validate <layer>` afterwards.
+- `restore` does not run `validate`; run `./toolkit_manager.sh validate <layer>` afterwards.
 - **Shared Keycloak (Intel® Chatbot Toolkit).** Its backup covers the `keycloak` and `postgresql`
   namespaces, which the platform layer shares: the platform realm is kept in the same Keycloak
   database. A restore puts that database back as it was when the backup was taken, so restoring a
   backup taken before the platform realm was imported removes that realm. After such a restore, run
-  `./es_auto_installer.sh install platform --env <env>`. If it fails with a 404 on `realms/platform`,
+  `./toolkit_manager.sh install platform --env <env>`. If it fails with a 404 on `realms/platform`,
   delete `KeycloakRealmImport platform-realm`, Secret `keycloak-platform-realm` and ConfigMap
   `platform-realm-imported` (namespace `keycloak`), then run it again.
 
@@ -204,7 +204,7 @@ solution layer the env holds, as `run_backup.sh` does. `restore` refuses without
 
 There is no automatic rollback. The procedure has three steps, in this order:
 
-1. **Clean (mandatory):** `./es_auto_installer.sh teardown <layer> --env <env> --force`. This also
+1. **Clean (mandatory):** `./toolkit_manager.sh teardown <layer> --env <env> --force`. This also
    deletes the layer's deployment record. Do not restore over the failed
    upgrade: the backup does not hold everything the newer release created.
 2. **Reinstall the previous release:** move the checkout back to it (`repos.<layer>.yaml` pin, then
@@ -230,10 +230,10 @@ and users; its 3.0.0 record is in the solution's own shape.
 ./run_backup.sh backup erag --env prod
 
 # 2. Move the checkout to the new release
-./es_auto_installer.sh init erag --env prod --upgrade
+./toolkit_manager.sh init erag --env prod --upgrade
 
 # 3. Upgrade
-./es_auto_installer.sh install erag --env prod
+./toolkit_manager.sh install erag --env prod
 ```
 
 Step 3 prints, before anything changes:

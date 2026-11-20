@@ -5,7 +5,7 @@
 #
 # add-node/remove-node on a rack-scale env: the nodes the edited
 # rack-profile.yaml declares, and what the edit changes for the nodes already
-# in the inventory. es_auto_installer.sh runs it on the controller before
+# in the inventory. toolkit_manager.sh runs it on the controller before
 # anything is written, so --dry-run sees the same result.
 #
 # Usage: rack_scale_nodes.py <rack-profile.yaml> <env inventory dir>

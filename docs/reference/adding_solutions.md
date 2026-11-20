@@ -489,7 +489,7 @@ Reuse what the platform runs instead of rebuilding it. The points that bite:
 - **Call models in-cluster** at `http://ai-gateway.envoy-gateway-system.svc/v1` (OpenAI-compatible,
   no token).
 - **Deploy a model you need** with `{{ playbook_dir }}/../model-manager deploy <model> --label
-  <owner>`, setting `ES_ENV: "{{ env_dir | basename }}"` (the wrapper otherwise prompts, and there
+  <owner>`, setting `TKM_ENV: "{{ env_dir | basename }}"` (the wrapper otherwise prompts, and there
   is no tty). Skip it when the model is already served, and in teardown undeploy only what
   carries your label. Example: `deployment/roles/app_inference_models` in enterprise-rag.
 
@@ -498,16 +498,16 @@ Reuse what the platform runs instead of rebuilding it. The points that bite:
 ## 8. Running it
 
 ```bash
-./es_auto_installer.sh init mylayer                     # clone + seed env/local/
-./es_auto_installer.sh init mylayer --flavour docsum     # with a preset
-./es_auto_installer.sh init mylayer --env prod           # a different environment
-./es_auto_installer.sh show                             # merged layers + components
-./es_auto_installer.sh install mylayer                  # layer + every layer below it
-./es_auto_installer.sh install my_api                   # component + its same-layer deps
-./es_auto_installer.sh install my_api --only            # exactly that component
-./es_auto_installer.sh validate mylayer                 # read-only checks
-./es_auto_installer.sh teardown mylayer                 # layer + everything above it
-./es_auto_installer.sh status                           # what is installed
+./toolkit_manager.sh init mylayer                     # clone + seed env/local/
+./toolkit_manager.sh init mylayer --flavour docsum     # with a preset
+./toolkit_manager.sh init mylayer --env prod           # a different environment
+./toolkit_manager.sh show                             # merged layers + components
+./toolkit_manager.sh install mylayer                  # layer + every layer below it
+./toolkit_manager.sh install my_api                   # component + its same-layer deps
+./toolkit_manager.sh install my_api --only            # exactly that component
+./toolkit_manager.sh validate mylayer                 # read-only checks
+./toolkit_manager.sh teardown mylayer                 # layer + everything above it
+./toolkit_manager.sh status                           # what is installed
 ```
 
 There is no `all` target - name the topmost layer you want and its closure follows.
@@ -521,7 +521,7 @@ teardown resolves **upward** (a target's dependants go first) and reverses the o
 `install mylayer` re-runs every layer below yours - idempotent, but slow; while iterating on
 a running cluster, `install my_api --only` runs just that component.
 
-Ansible flags go after `--`: `install mylayer -- --check -vvv`. Set `ES_LOG_LEVEL=debug` for
+Ansible flags go after `--`: `install mylayer -- --check -vvv`. Set `TKM_LOG_LEVEL=debug` for
 verbose output plus `ansible -vvv`, or `trace` to add bash xtrace. Per-run logs land in
 `env/<env>/logs/`.
 
@@ -610,14 +610,14 @@ Migrations of stored data belong in your charts; the installer never migrates da
 > kubeconfig to `env/dev/kubeconfig.yaml`.
 
 ```bash
-./es_auto_installer.sh init mylayer --env dev
-./es_auto_installer.sh show                          # your layer + components appear?
-./es_auto_installer.sh install mylayer -- --check    # resolves and orders, applies nothing
-./es_auto_installer.sh install mylayer
-./es_auto_installer.sh validate mylayer
-./es_auto_installer.sh install mylayer               # second run: zero changed
-./es_auto_installer.sh teardown mylayer
-./es_auto_installer.sh teardown mylayer              # second run: still succeeds
+./toolkit_manager.sh init mylayer --env dev
+./toolkit_manager.sh show                          # your layer + components appear?
+./toolkit_manager.sh install mylayer -- --check    # resolves and orders, applies nothing
+./toolkit_manager.sh install mylayer
+./toolkit_manager.sh validate mylayer
+./toolkit_manager.sh install mylayer               # second run: zero changed
+./toolkit_manager.sh teardown mylayer
+./toolkit_manager.sh teardown mylayer              # second run: still succeeds
 ```
 
 The `--check` run executes preflight, so it confirms the merge, the resolution and the

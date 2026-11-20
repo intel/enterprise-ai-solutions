@@ -85,7 +85,7 @@
     - cluster_distribution == 'openshift'
     - istio_enabled | default(false) | bool
 
-# Captured before the ext merge. ai-solutions' own layers are always in scope; a
+# Captured before the ext merge. Toolkit Manager's own layers are always in scope; a
 # solution's layer is in scope only when this env was inited for it, which
 # env/<env>/.solutions.yaml records and the installer passes as _env_layers.
 - name: "Preflight - Note which layers ai-solutions declares itself"
@@ -130,14 +130,14 @@
     label: "{{ item.path | basename }} ({{ item.path | dirname | basename }})"
 
 # ── Node scaling: rack_scale_enabled as the installer read it ────────────────
-# es_auto_installer.sh works out the node changes (and refuses a rack's
+# toolkit_manager.sh works out the node changes (and refuses a rack's
 # unsupported ones) from global_config.yaml; a run that overrides it, or does
 # not come through the installer, would render the inventory from another source.
 
 - name: "Preflight - Node scaling: refuse a rack_scale_enabled the installer did not read"
   ansible.builtin.fail:
     msg: >-
-      {{ component_action }} takes rack_scale_enabled from global_config.yaml, as es_auto_installer.sh
+      {{ component_action }} takes rack_scale_enabled from global_config.yaml, as toolkit_manager.sh
       reads it: run it through the installer, and do not override rack_scale_enabled with -e or a vars file.
   when:
     - component_action | default('install') in ['add-node', 'remove-node']
@@ -255,7 +255,7 @@
       Fix your env/{{ env_name | default('<name>') }}/global_config.yaml:
         - Replace `object_store_backend: "minio"` with `object_store_backend: "seaweedfs"`.
         - Rename `minio_storage_size` → `seaweedfs_volume_storage_size`.
-      Or regenerate the env from scratch: ./es_auto_installer.sh init <layer> --env {{ env_name | default('<new-env>') }}.
+      Or regenerate the env from scratch: ./toolkit_manager.sh init <layer> --env {{ env_name | default('<new-env>') }}.
     quiet: true
 
 - name: "Preflight - Object store: validate backend value"

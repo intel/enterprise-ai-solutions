@@ -4,7 +4,7 @@
 # =============================================================================
 # Kubernetes — add-node (Kubespray scale.yml, worker nodes only)
 # =============================================================================
-# es_auto_installer.sh (do_add_node) finds the new node(s) (_added_nodes) and runs:
+# toolkit_manager.sh (do_add_node) finds the new node(s) (_added_nodes) and runs:
 #   prep (_scale_phase=prep): the inventory from nodes.yaml, pre-flight on the
 #        new node(s) (rack-scale: then the inventory from rack-profile.yaml and
 #        their fabric), their kubelet CPU reservation;
@@ -214,7 +214,7 @@
 
 # After the refusals above, and before the API check: the new node(s) join over
 # their fabric. The nodes already in the cluster get the files they have
-# (es_auto_installer.sh refuses an edit that changes theirs), so netplan and
+# (toolkit_manager.sh refuses an edit that changes theirs), so netplan and
 # sysctl change nothing there.
 - name: "kubernetes | add-node | Rack-scale fabric"
   when: rack_scale_enabled | default(false) | bool
@@ -282,7 +282,7 @@
   ansible.builtin.debug:
     msg: >-
       Inventory regenerated at {{ kubespray_custom_inventory }}.
-      es_auto_installer.sh now runs Kubespray scale.yml for the new worker node(s).
+      toolkit_manager.sh now runs Kubespray scale.yml for the new worker node(s).
 
 - name: "kubernetes | add-node | End role (prep complete — scale.yml runs from caller)"
   ansible.builtin.meta: end_role

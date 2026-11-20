@@ -2,13 +2,15 @@
 
 [← Docs Index](../README.md)
 
-All `es_auto_installer.sh` and `model-manager` commands for Toolkit Manager run from the repo root.
+All `toolkit_manager.sh` and `model-manager` commands for Toolkit Manager run from the repo root.
 
 ```
-./es_auto_installer.sh <action> [target] [--env <name>] [options]
+./toolkit_manager.sh <action> [target] [--env <name>] [options]
 ```
 
 `--env` defaults to `local` when not specified.
+
+> **Former names:** `toolkit_manager.sh` was called `es_auto_installer.sh`, and `TKM_LOG_LEVEL` / `TKM_ENV` were `ES_LOG_LEVEL` / `ES_ENV`. The old names still work, so existing scripts and pipelines keep running; new ones should use the names on this page.
 
 ---
 
@@ -19,7 +21,7 @@ All `es_auto_installer.sh` and `model-manager` commands for Toolkit Manager run 
 One-time machine setup. Installs Python 3.11+, yq, kubectl, and helm into `/usr/local/bin`. Skips tools already present. Requires sudo. Run once per machine.
 
 ```bash
-./es_auto_installer.sh configure
+./toolkit_manager.sh configure
 ```
 
 ---
@@ -29,12 +31,12 @@ One-time machine setup. Installs Python 3.11+, yq, kubectl, and helm into `/usr/
 Create a new environment directory and seed it with configuration for the specified layer. The layer name (e.g., `inference`, `erag`, `agent-toolkit`) determines which repositories are cloned and which configs are seeded.
 
 ```bash
-./es_auto_installer.sh init inference                    # standard inference stack
-./es_auto_installer.sh init erag                         # inference + Intel® Chatbot Toolkit (default chatqna flavour)
-./es_auto_installer.sh init erag --flavour docsum        # Intel® Chatbot Toolkit with docsum pipeline preset
-./es_auto_installer.sh init agent-toolkit                # inference + Intel® Agent Toolkit
-./es_auto_installer.sh init erag --env prod              # seed env/prod/ instead of env/local/
-./es_auto_installer.sh init inference --upgrade          # move already-cloned repos to pinned revs
+./toolkit_manager.sh init inference                    # standard inference stack
+./toolkit_manager.sh init erag                         # inference + Intel® Chatbot Toolkit (default chatqna flavour)
+./toolkit_manager.sh init erag --flavour docsum        # Intel® Chatbot Toolkit with docsum pipeline preset
+./toolkit_manager.sh init agent-toolkit                # inference + Intel® Agent Toolkit
+./toolkit_manager.sh init erag --env prod              # seed env/prod/ instead of env/local/
+./toolkit_manager.sh init inference --upgrade          # move already-cloned repos to pinned revs
 ```
 
 Creates:
@@ -53,35 +55,35 @@ Deploy components. Dependencies are resolved automatically.
 
 ```bash
 # Infrastructure + platform + inference (via dependency auto-pull)
-./es_auto_installer.sh install inference --env local
+./toolkit_manager.sh install inference --env local
 
 # A single layer
-./es_auto_installer.sh install platform --env local
-./es_auto_installer.sh install inference --env local
+./toolkit_manager.sh install platform --env local
+./toolkit_manager.sh install inference --env local
 
 # A single component (with auto-pulled dependencies)
-./es_auto_installer.sh install kserve --env local
+./toolkit_manager.sh install kserve --env local
 
 # A single component, skipping dependencies
-./es_auto_installer.sh install metallb --only --env local
+./toolkit_manager.sh install metallb --only --env local
 
 # Opt-in Intel® Chatbot Toolkit (requires init erag first)
-./es_auto_installer.sh install erag --env local
+./toolkit_manager.sh install erag --env local
 
 # Opt-in Intel® Agent Toolkit (requires init agent-toolkit first)
-./es_auto_installer.sh install agent-toolkit --env local
+./toolkit_manager.sh install agent-toolkit --env local
 
 # Override a config value at runtime (no file edit needed)
-./es_auto_installer.sh install kserve --env local -- -e kserve_version=0.15.0
+./toolkit_manager.sh install kserve --env local -- -e kserve_version=0.15.0
 
 # Dry run — show what would happen without making changes
-./es_auto_installer.sh install inference --env local -- --check
+./toolkit_manager.sh install inference --env local -- --check
 
 # Pass additional Ansible flags (use -- to separate)
-./es_auto_installer.sh install inference --env local -- -vvv
+./toolkit_manager.sh install inference --env local -- -vvv
 
 # Run past a refusing upgrade check (recorded as forced)
-./es_auto_installer.sh install erag --env local --force
+./toolkit_manager.sh install erag --env local --force
 ```
 
 Installing a newer release over a deployed layer upgrades it. Before anything changes, `install`
@@ -110,16 +112,16 @@ Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `
 
 ```bash
 # Remove everything (cluster included)
-./es_auto_installer.sh teardown infrastructure --env local
+./toolkit_manager.sh teardown infrastructure --env local
 
 # Remove a single component
-./es_auto_installer.sh teardown keycloak --env local
+./toolkit_manager.sh teardown keycloak --env local
 
 # Remove the Intel® Chatbot Toolkit (keeps platform and inference)
-./es_auto_installer.sh teardown erag --env local
+./toolkit_manager.sh teardown erag --env local
 
 # Remove a layer but skip dependencies (e.g., tear down cluster without uninstalling erag first)
-./es_auto_installer.sh teardown infrastructure --skip erag --env local
+./toolkit_manager.sh teardown infrastructure --skip erag --env local
 ```
 
 ---
@@ -129,9 +131,9 @@ Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `
 Run post-install health checks.
 
 ```bash
-./es_auto_installer.sh validate inference --env local
-./es_auto_installer.sh validate kserve --env local
-./es_auto_installer.sh validate erag --env local
+./toolkit_manager.sh validate inference --env local
+./toolkit_manager.sh validate kserve --env local
+./toolkit_manager.sh validate erag --env local
 ```
 
 Checks are implemented per-component as `tasks/validate.yaml` (asserts, connectivity, replica counts).
@@ -144,8 +146,8 @@ Scale worker node(s) into an already-provisioned cluster. No node name is passed
 
 ```bash
 # 1. Add an entry to nodes_workers in env/<name>/nodes.yaml, then:
-./es_auto_installer.sh add-node --dry-run --env local   # preview
-./es_auto_installer.sh add-node --env local              # apply
+./toolkit_manager.sh add-node --dry-run --env local   # preview
+./toolkit_manager.sh add-node --env local              # apply
 ```
 
 Control-plane node additions are refused. See [Node Scaling](node_scaling.md). On a rack-scale env, edit `rack-profile.yaml` instead of `nodes.yaml`: see [Rack-scale](node_scaling.md#rack-scale).
@@ -157,9 +159,9 @@ Control-plane node additions are refused. See [Node Scaling](node_scaling.md). O
 Remove worker node(s) from an already-provisioned cluster. As with `add-node`, no node name is passed on the command line — delete the entry from `nodes_workers` in `nodes.yaml` first, and the removed node(s) are found the same way (diffing `nodes.yaml` against the live cluster), just in the opposite direction: nodes present in the cluster but missing from `nodes.yaml`.
 
 ```bash
-./es_auto_installer.sh remove-node --dry-run --env local
-./es_auto_installer.sh remove-node --env local
-./es_auto_installer.sh remove-node --node-lost --env local   # node already NotReady: drain given up after 60 s, no reset
+./toolkit_manager.sh remove-node --dry-run --env local
+./toolkit_manager.sh remove-node --env local
+./toolkit_manager.sh remove-node --node-lost --env local   # node already NotReady: drain given up after 60 s, no reset
 ```
 
 Removing a control-plane node is refused — see [Node Scaling](node_scaling.md#control-plane-nodes-are-not-removed). Both `add-node` and `remove-node` refuse on a cluster with ERAG deployed. Before anything runs, a preflight simulates capacity, required anti-affinity/topology spread, node-local volumes, and whether the node is the last one able to run a given workload (e.g. the only GPU node) — no flag skips these, and a check that can't run refuses the removal. After the node is gone, it runs the same checks as `status --health` and fails the command on a problem the removal introduced. See [Node Scaling](node_scaling.md); on a rack-scale env, [Rack-scale](node_scaling.md#rack-scale).
@@ -171,13 +173,13 @@ Removing a control-plane node is refused — see [Node Scaling](node_scaling.md#
 Print a component status table.
 
 ```bash
-./es_auto_installer.sh status --env local
+./toolkit_manager.sh status --env local
 ```
 
 `status --health` prints a green/red verdict instead (node Readiness, no crash-looping/image-pull-failing/unschedulable pods cluster-wide) and exits with that verdict:
 
 ```bash
-./es_auto_installer.sh status --health --env local
+./toolkit_manager.sh status --health --env local
 ```
 
 ---
@@ -187,12 +189,12 @@ Print a component status table.
 List all available layers and components, including which are opt-in.
 
 ```bash
-./es_auto_installer.sh show
+./toolkit_manager.sh show
 ```
 
 ---
 
-Backing up and restoring a layer are not `es_auto_installer.sh` actions; `run_backup.sh` runs them,
+Backing up and restoring a layer are not `toolkit_manager.sh` actions; `run_backup.sh` runs them,
 with the same `--env` and `--` conventions:
 
 ```bash

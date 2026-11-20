@@ -4,7 +4,7 @@
 # =============================================================================
 # Kubernetes — remove-node (Kubespray remove-node.yml)
 # =============================================================================
-# es_auto_installer.sh (do_remove_node) finds the removed node(s) and runs:
+# toolkit_manager.sh (do_remove_node) finds the removed node(s) and runs:
 #   prep (_scale_phase=prep): the Kubespray stack only. The inventory is not
 #        regenerated yet: remove-node.yml reaches the node(s) through it, and
 #        its -e node= only selects among hosts the inventory defines;
@@ -90,7 +90,7 @@
 - name: "kubernetes | remove-node | Prep complete"
   ansible.builtin.debug:
     msg: >-
-      es_auto_installer.sh now runs Kubespray remove-node.yml for the removed
+      toolkit_manager.sh now runs Kubespray remove-node.yml for the removed
       node(s), against the current inventory (unregenerated on purpose).
 
 - name: "kubernetes | remove-node | End role (prep complete — remove-node.yml runs from caller)"

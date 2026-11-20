@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(shutil.which("yq") is None, reason="needs yq")
 
 @pytest.fixture
 def tree(tmp_path):
-    for name in ("run_backup.sh", "es_auto_installer.sh", "VERSION"):
+    for name in ("run_backup.sh", "toolkit_manager.sh", "VERSION"):
         if (REPO / name).exists():
             shutil.copy2(REPO / name, tmp_path / name)
     shutil.copytree(REPO / "configs", tmp_path / "configs")
@@ -120,4 +120,4 @@ def test_installer_hints_name_the_installer(tree):
     (tree / "env" / "t" / ".solutions.yaml").write_text("schema: 1\nlayers: []\n")
     proc, argv = run(tree, "backup", "platform", "--env", "t")
     assert proc.returncode != 0 and argv is None
-    assert "./es_auto_installer.sh init" in proc.stderr
+    assert "./toolkit_manager.sh init" in proc.stderr

@@ -59,7 +59,7 @@
                                           include_deps=_include_deps | default(true) | bool,
                                           skip=_skip_components | default('')) }}
 
-# Teardown around the kubespray reset (es_auto_installer.sh). What kubernetes
+# Teardown around the kubespray reset (toolkit_manager.sh). What kubernetes
 # depends on (on rack-scale, the fabric that carries the node IPs) has to outlive
 # the reset: the pass before it leaves those components out, the pass after it
 # runs only them.
@@ -90,7 +90,7 @@
       env/{{ env_name | default('?') }} was not provisioned for layer(s): {{ _unprovisioned | join(', ') }}
       The plan for target '{{ target }}' reaches them because they are declared by a repo in
       ext/, but env/{{ env_name | default('?') }}/.solutions.yaml does not list them.
-      Either provision them   ./es_auto_installer.sh init {{ _unprovisioned | first }} --env {{ env_name | default('local') }}
+      Either provision them   ./toolkit_manager.sh init {{ _unprovisioned | first }} --env {{ env_name | default('local') }}
       or take them off disk    mv ext/<repo> elsewhere, so no plan can reach them.
   when: _unprovisioned | length > 0
 

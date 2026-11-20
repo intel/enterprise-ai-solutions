@@ -4,12 +4,12 @@
 
 # run_backup.sh — back up, restore or list one layer's backups with Velero.
 # A thin front end to playbooks/backup.yaml: it assembles the same playbook
-# arguments es_auto_installer.sh does (env configs in record order, kubeconfig),
+# arguments toolkit_manager.sh does (env configs in record order, kubeconfig),
 # from the installer's own functions, so the two cannot drift.
 set -euo pipefail
 
-# shellcheck source=es_auto_installer.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/es_auto_installer.sh"
+# shellcheck source=toolkit_manager.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolkit_manager.sh"
 
 backup_usage() {
     local me; me=$(basename "$0")
@@ -36,7 +36,7 @@ backup_usage() {
     -- <args...>           pass remaining args verbatim to ansible-playbook
 
   Environment:
-    ES_LOG_LEVEL           info (default) | debug | trace, as for es_auto_installer.sh
+    TKM_LOG_LEVEL          info (default) | debug | trace, as for toolkit_manager.sh
 
   Examples:
     $me backup erag --env prod

@@ -179,14 +179,14 @@ import httpx
 
 # litellm mode
 client = OpenAI(
-    base_url="https://litellm.solutions.ai/v1",
+    base_url="https://litellm.inteltoolkits.ai/v1",
     api_key="<TOKEN>",
     http_client=httpx.Client(verify=False),   # for self-signed TLS
 )
 
 # keycloak mode
 # client = OpenAI(
-#     base_url="https://inference.solutions.ai/llm-inference/qwen3-0-6b/v1",
+#     base_url="https://inference.inteltoolkits.ai/llm-inference/qwen3-0-6b/v1",
 #     api_key="<JWT_TOKEN>",
 #     http_client=httpx.Client(verify=False),
 # )

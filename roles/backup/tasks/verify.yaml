@@ -86,7 +86,7 @@
           Either:
             1. install Velero, then take a backup through the solution's
                backup playbook:
-                 ./es_auto_installer.sh install velero --env <env> --only
+                 ./toolkit_manager.sh install velero --env <env> --only
             2. or accept the risk for this run:
                  -e allow_upgrade_without_backup=true
       when:
