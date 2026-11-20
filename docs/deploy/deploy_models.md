@@ -209,10 +209,13 @@ The examples below use subdomain mode, the default.
    your DNS or to `/etc/hosts`, pointing at the gateway IP.
 
 3. Trust the certificate. With the default self-signed TLS, the installer saves its CA
-   certificate to `env/<env>/logs/ai-solutions-ca.crt`. Use
-   `curl --cacert env/<env>/logs/ai-solutions-ca.crt` instead of `-k`, set
-   `SSL_CERT_FILE` for Python clients, or import the file into your browser or OS.
-   The examples below use `-k` (skip the check) only to stay short.
+   certificate to `env/<env>/logs/ai-solutions-ca.crt`. The `curl` commands below pass it
+   with `--cacert`; set `SSL_CERT_FILE` to it for Python clients, or import it into your
+   browser or OS:
+
+   ```bash
+   CA=$(pwd)/env/<env>/logs/ai-solutions-ca.crt
+   ```
 
 ### 2a. Keycloak mode (`auth_type: jwt`)
 
@@ -242,7 +245,7 @@ token, with no user password.
    CLIENT_SECRET=$(kubectl get secret keycloak-client-secret -n keycloak \
      -o jsonpath='{.data.client-secret}' | base64 -d)
 
-   TOKEN=$(curl -sk --noproxy '*' \
+   TOKEN=$(curl -s --cacert "$CA" --noproxy '*' \
      --resolve "${KEYCLOAK_DOMAIN}:443:${GATEWAY_IP}" \
      "https://${KEYCLOAK_DOMAIN}/realms/inference/protocol/openid-connect/token" \
      -d "grant_type=client_credentials" \
@@ -255,7 +258,7 @@ token, with no user password.
 2. Call the model:
 
    ```bash
-   curl -sk --noproxy '*' \
+   curl -s --cacert "$CA" --noproxy '*' \
      --resolve "${GATEWAY_DOMAIN}:443:${GATEWAY_IP}" \
      "https://${GATEWAY_DOMAIN}/v1/chat/completions" \
      -H "Authorization: Bearer ${TOKEN}" \
@@ -269,7 +272,7 @@ token, with no user password.
 3. List the models the gateway serves:
 
    ```bash
-   curl -sk --noproxy '*' --resolve "${GATEWAY_DOMAIN}:443:${GATEWAY_IP}" \
+   curl -s --cacert "$CA" --noproxy '*' --resolve "${GATEWAY_DOMAIN}:443:${GATEWAY_IP}" \
      "https://${GATEWAY_DOMAIN}/v1/models" -H "Authorization: Bearer ${TOKEN}"
    ```
 
@@ -289,7 +292,7 @@ tracks spend. `model-manager deploy` registers every model with it.
 2. Call the model:
 
    ```bash
-   curl -sk --noproxy '*' \
+   curl -s --cacert "$CA" --noproxy '*' \
      --resolve "${LITELLM_DOMAIN}:443:${GATEWAY_IP}" \
      "https://${LITELLM_DOMAIN}/v1/chat/completions" \
      -H "Authorization: Bearer ${MASTER_KEY}" \
