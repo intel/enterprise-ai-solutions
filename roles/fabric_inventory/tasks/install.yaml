@@ -200,50 +200,9 @@
   when: item.path | basename not in _expected_bgp_peers
 
 # ── Register parsed nodes into the running inventory ────────────────────────
-# The UR playbook runs on localhost.  Downstream pre-K8s roles (fabric_netplan,
-# fabric_sysctl) need to delegate_to cluster nodes, but groups like
-# kube_control_plane don't exist until kubespray runs with the generated
-# hosts.yaml.  We bridge the gap by loading the generated inventory and
-# registering every host with add_host so Ansible groups are available
-# immediately for delegate_to in the same play.
-
-- name: "fabric_inventory | Load generated inventory for in-play registration"
-  ansible.builtin.include_vars:
-    file: "{{ rack_scale_inventory_path }}"
-    name: _generated_inv
 
 - name: "fabric_inventory | Register cluster nodes into running inventory"
-  ansible.builtin.add_host:
-    name: "{{ item.key }}"
-    groups: >-
-      {{ (_generated_inv.all.children | dict2items
-          | selectattr('value.hosts', 'defined')
-          | selectattr('value.hosts', 'contains', item.key)
-          | map(attribute='key') | list)
-         + ['all']
-         + (['k8s_cluster'] if (item.key in (_generated_inv.all.children.get('kube_control_plane', {}).get('hosts', {}).keys() | list
-                                             + _generated_inv.all.children.get('kube_node', {}).get('hosts', {}).keys() | list)) else []) }}
-    ansible_host: "{{ item.value.ansible_host | default(omit) }}"
-    ansible_connection: ssh
-    ansible_user: "{{ item.value.ansible_user | default(omit) }}"
-    ansible_ssh_private_key_file: "{{ item.value.ansible_ssh_private_key_file | default(omit) }}"
-    ansible_become: "{{ item.value.ansible_become | default(true) }}"
-    ip: "{{ item.value.ip | default(omit) }}"
-    access_ip: "{{ item.value.access_ip | default(omit) }}"
-    node_hostname: "{{ item.value.node_hostname | default(item.key) }}"
-    node_fabric_nics: "{{ item.value.node_fabric_nics | default(omit) }}"
-    node_family: "{{ item.value.node_family | default(omit) }}"
-    node_sku: "{{ item.value.node_sku | default(omit) }}"
-    node_accelerator: "{{ item.value.node_accelerator | default(omit) }}"
-    node_gpu_vendor: "{{ item.value.node_gpu_vendor | default(omit) }}"
-    node_gpu_model: "{{ item.value.node_gpu_model | default(omit) }}"
-    node_gpu_form: "{{ item.value.node_gpu_form | default(omit) }}"
-    node_gpu_count: "{{ item.value.node_gpu_count | default(omit) }}"
-    devices: "{{ item.value.devices | default(omit) }}"
-  loop: "{{ _generated_inv.all.hosts | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-  changed_when: false
+  ansible.builtin.include_tasks: register_hosts.yaml
 
 - name: "fabric_inventory | Report registered groups"
   ansible.builtin.debug:

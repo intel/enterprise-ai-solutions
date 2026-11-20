@@ -88,26 +88,6 @@
       delegate_to: "{{ item }}"
       loop: "{{ groups['kube_control_plane'] | default(['localhost'], true) }}"
 
-# ─── Patch Kubespray template for reservedSystemCPUs ────────────────────────
-
-- name: "kubernetes | kubespray | Check if kubelet template already patched"
-  ansible.builtin.command:
-    cmd: grep -q "ANSIBLE MANAGED - reservedSystemCPUs support" "{{ kubespray_dir }}/roles/kubernetes/node/templates/kubelet-config.v1beta1.yaml.j2"
-  register: _kubelet_template_check
-  changed_when: false
-  failed_when: false
-
-- name: "kubernetes | kubespray | Patch kubelet template for reservedSystemCPUs"
-  when: _kubelet_template_check.rc != 0
-  ansible.builtin.blockinfile:
-    path: "{{ kubespray_dir }}/roles/kubernetes/node/templates/kubelet-config.v1beta1.yaml.j2"
-    marker: "# {mark} ANSIBLE MANAGED - reservedSystemCPUs support"
-    insertafter: "topologyManagerPolicy"
-    block: |
-      {% raw %}{% if kubelet_reserved_cpus is defined %}
-      reservedSystemCPUs: {{ kubelet_reserved_cpus }}
-      {% endif %}{% endraw %}
-
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 - name: "kubernetes | kubespray | Prep summary"

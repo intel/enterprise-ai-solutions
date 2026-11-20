@@ -299,6 +299,17 @@ postgresql_enabled: false       # using an external PostgreSQL
 
 ---
 
+## Node preflight
+
+Read-only checks on every node before Kubespray runs, on a fresh install. The checks are listed in [Prerequisites](../quickstart/prerequisites.md#node-checks-before-install).
+
+| Setting | Default | Description |
+|---|---|---|
+| `kubernetes_node_preflight` | `true` | `false` turns all the checks off |
+| `kubernetes_node_preflight_skip` | `[]` | Check IDs to skip, e.g. `[N8]` for nodes that download from a mirror instead of the internet |
+
+---
+
 ## Object store
 
 Backend for Loki log storage, Tempo traces, and Langfuse blobs. The platform

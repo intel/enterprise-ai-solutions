@@ -35,15 +35,34 @@ def _run_cli(request, *args):
     return subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=300)
 
 
-@allure.testcase("DSPTV-T420")
-def test_add_node_dry_run_noop(request):
-    result = _run_cli(request, "add-node", "--dry-run")
+_REFUSES_WITH_APP_LAYER = "is not supported on a cluster with"
+_NO_TOOLING = "missing. Run './toolkit_manager.sh configure'"
+
+
+def _assert_dry_run_leaves_the_cluster_alone(result, verb):
+    """A dry run either reports nothing to do, or refuses for a reason the installer states.
+
+    On a CI cluster the application layer is installed by the time this suite runs, so the
+    refusal is the outcome that gets exercised here rather than the no-op.
+    """
+    if _NO_TOOLING in result.stderr:
+        pytest.skip(f"the installer in this checkout is missing a tool it needs, so {verb} "
+                    f"--dry-run cannot run: {result.stderr.strip()}")
+    if _REFUSES_WITH_APP_LAYER in result.stderr:
+        assert result.returncode != 0, \
+            f"{verb} --dry-run reported the application-layer refusal but exited 0:\n{result.stderr}"
+        assert "Tear it down first" in result.stderr, \
+            f"{verb} --dry-run refused without telling the operator what to do:\n{result.stderr}"
+        return
     assert result.returncode == 0, result.stderr
     assert "nothing to do" in result.stdout, result.stdout
+
+
+@allure.testcase("DSPTV-T420")
+def test_add_node_dry_run_noop(request):
+    _assert_dry_run_leaves_the_cluster_alone(_run_cli(request, "add-node", "--dry-run"), "add-node")
 
 
 @allure.testcase("DSPTV-T421")
 def test_remove_node_dry_run_noop(request):
-    result = _run_cli(request, "remove-node", "--dry-run")
-    assert result.returncode == 0, result.stderr
-    assert "nothing to do" in result.stdout, result.stdout
+    _assert_dry_run_leaves_the_cluster_alone(_run_cli(request, "remove-node", "--dry-run"), "remove-node")

@@ -1,0 +1,32 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Below a lower bound of requires, or without a version, is blocking; above an
+# upper bound and an installed dependant's requires are advisory
+# (filter_plugins/upgrade_checks.py). The runner never refuses a plain install on it.
+- name: "upgrade_checks | compatibility: read the requires of each layer's checkout"
+  ansible.builtin.set_fact:
+    _layer_requires: >-
+      {{ _layer_requires | combine({item.key: ((lookup('ansible.builtin.file', _version_file)
+                                                              | from_yaml) or {}).requires | default({}, true)}) }}
+  vars:
+    _version_file: "{{ item.value }}/version.yaml"
+  loop: "{{ _layer_dirs | dict2items | rejectattr('key', 'in', upgrade_installer_layers) | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: _version_file is file
+
+- name: "upgrade_checks | compatibility: resolve the versions and layer order once"
+  ansible.builtin.set_fact:
+    _versions: "{{ _layer_records | versions_after_run(_layer_release, _installer_version) }}"
+    _layer_order: "{{ layers | layer_order }}"
+
+- name: "upgrade_checks | compatibility"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: >-
+      {{ _upgrade_verdicts + [item | compatibility_verdict(_layer_class, _layer_requires, _layer_records,
+                                                           _versions, _depends_on, env_name | default('local'),
+                                                           layer_order=_layer_order)] }}
+  vars:
+    _depends_on: "{{ (layers | selectattr('name', 'equalto', item) | first).depends_on | default([]) }}"
+  loop: "{{ _check_layers }}"

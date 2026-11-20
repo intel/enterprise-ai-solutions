@@ -7,8 +7,15 @@
 # Component depends_on is SAME-LAYER only — cross-layer ordering comes from the
 # layer graph.
 #
-# `used_by` names the components a component exists for: it is installed only
-# while one of them is enabled, and torn down with them.
+# Teardown deletes the objects the ownership role labelled during install
+# (roles/ownership). `teardown: role` runs the component's own teardown instead, and
+# `teardown: both` runs it after the labelled objects are gone: for components that
+# also change hosts. `teardown_tasks` names the role's tasks file that takes back what
+# the component changed in other components' objects (the gateway's portal and routes),
+# run before the labelled objects go. `ownership_declared` lists objects the component
+# creates that no task result names (a Job's, a subchart's CRDs), matched by any of kind,
+# namespace, name and labels. `used_by` names the components a component exists for: it is
+# installed only while one of them is enabled, and torn down with them.
 #
 # Adding a component here: add an entry and create roles/<name>/.
 # Adding a whole solution (its own layer, in its own repo): see
@@ -37,16 +44,19 @@ components:
   # before kubespray can SSH to worker nodes through it.
   - name: fabric_inventory
     layer: infrastructure
+    teardown: role
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: []
 
   - name: fabric_netplan
     layer: infrastructure
+    teardown: role
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [fabric_inventory]
 
   - name: fabric_sysctl
     layer: infrastructure
+    teardown: role
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [fabric_netplan]
 
@@ -54,28 +64,35 @@ components:
   # always BYO (existing_kubernetes), and the kubernetes role skips a BYO cluster.
   - name: kubernetes
     layer: infrastructure
+    teardown: role
     enabled: true
     depends_on: [fabric_sysctl]
 
   # Post-K8s fabric: BGP needs kubectl, validate needs the cluster up.
   - name: fabric_bgp
     layer: infrastructure
+    teardown: role
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [kubernetes]
 
   - name: fabric_validate
     layer: infrastructure
+    teardown: role
     enabled: "{{ rack_scale_enabled | default(false) | bool }}"
     depends_on: [kubernetes, fabric_bgp]
 
+  # Rook keeps the CephCluster and its pools while Ceph volumes exist: its own
+  # teardown sets the cleanup policy first.
   - name: storage
     layer: infrastructure
+    teardown: role
     enabled: true
     depends_on: [kubernetes]
 
   # Prepares the nodes over SSH, so it runs with the host-level layer.
   - name: kata_containers
     layer: infrastructure
+    teardown: both
     enabled: "{{ kata_containers_enabled | default(false) | bool }}"
     depends_on: [kubernetes]
 
@@ -85,9 +102,11 @@ components:
   # the Node Feature Discovery Operator on OpenShift (vars/openshift.yaml). First in
   # the platform layer, ahead of the GPU operator so the operator does not bring its
   # own. Preflight leaves the inference layer's former nfd component out of the plan,
-  # for every action; nfd_enabled turns NFD off.
+  # for every action; nfd_enabled turns NFD off. teardown_tasks: the chart's prune
+  # hook takes NFD's labels off the nodes on helm uninstall only.
   - name: node_feature_discovery
     layer: platform
+    teardown_tasks: release_remove.yaml
     enabled: "{{ nfd_enabled | default(true) | bool }}"
     depends_on: []
 
@@ -152,6 +171,7 @@ components:
 
   - name: keycloak
     layer: platform
+    teardown_tasks: expose_remove.yaml
     # Both auth modes: people sign in through Keycloak; the gateway trusts its JWTs.
     enabled: "{{ keycloak_enabled | default(true) | bool }}"
     depends_on: [cert_manager, gateway, postgresql]
@@ -159,8 +179,10 @@ components:
   # Kubernetes web UI; people sign in through Keycloak (platform realm). Skipped on
   # OpenShift, whose console covers it.
   # Right after keycloak: its API server restart then hits few running components.
+  # Its teardown also resets the API server's OIDC settings and /etc/hosts.
   - name: headlamp
     layer: platform
+    teardown: both
     enabled: "{{ headlamp_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [cert_manager, gateway, keycloak]
 
@@ -182,7 +204,21 @@ components:
   # monitoring. See roles/observability/tasks/install_olm.yaml.
   - name: observability
     layer: platform
+    teardown_tasks: grafana_route_remove.yaml
     enabled: "{{ observability_enabled | default(true) | bool }}"
+    # kube-prometheus-stack's CRDs come from its `crds` subchart, which the Helm release
+    # does not keep (only the top-level chart's crds/ can be read back). Its 85.3.3 set:
+    ownership_declared:
+      - {kind: CustomResourceDefinition, name: alertmanagerconfigs.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: alertmanagers.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: podmonitors.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: probes.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: prometheusagents.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: prometheuses.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: prometheusrules.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: scrapeconfigs.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: servicemonitors.monitoring.coreos.com}
+      - {kind: CustomResourceDefinition, name: thanosrulers.monitoring.coreos.com}
     # keycloak: Grafana sign-in (observability_grafana_sso).
     depends_on: [cert_manager, metallb, seaweedfs, keycloak]
 
@@ -201,7 +237,9 @@ components:
     enabled: "{{ (rack_scale_enabled | default(false) | bool) and (observability_enabled | default(true) | bool) and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: [observability, nvidia_gpu_operator]
 
+  # Its teardown keeps the backups unless velero_teardown_delete_backup_data is set.
   - name: velero
     layer: platform
+    teardown: role
     enabled: "{{ velero_enabled | default(false) | bool and cluster_distribution | default('kubernetes') != 'openshift' }}"
     depends_on: []

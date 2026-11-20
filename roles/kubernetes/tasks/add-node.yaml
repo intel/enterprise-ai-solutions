@@ -6,10 +6,12 @@
 # =============================================================================
 # toolkit_manager.sh (do_add_node) finds the new node(s) (_added_nodes) and runs:
 #   prep (_scale_phase=prep): the inventory from nodes.yaml, pre-flight on the
-#        new node(s), their kubelet CPU reservation;
+#        new node(s) (rack-scale: then the inventory from rack-profile.yaml and
+#        their fabric), their kubelet CPU reservation;
 #   Kubespray scale.yml for the new node(s) and the control plane;
-#   post (_scale_phase=post): labels, NFS export, wait for Ready and the pod
-#        network, the node's NRI balloons policy, then lift the pending taint.
+#   post (_scale_phase=post): labels (rack-scale: BGP peers too), NFS export,
+#        wait for Ready and the pod network, the node's NRI balloons policy,
+#        then lift the pending taint. Rack-scale: then a new GPU node's GPU stack.
 # =============================================================================
 
 - name: "kubernetes | add-node | Resolve newly added node list"
@@ -29,6 +31,23 @@
     - name: "kubernetes | add-node | Re-apply node topology labels (idempotent)"
       ansible.builtin.include_tasks: apply_node_topology.yaml
       when: node_topology_enabled | default(false) | bool
+
+    # Every node's BGP peers and rack-profile.yaml labels, the new node(s')
+    # among them; the others' are unchanged. The peers come before the
+    # calico-node wait below: on a BGP rack calico-node is Ready once its
+    # sessions with the leaves are up.
+    - name: "kubernetes | add-node | Rack-scale | BGP peers and node labels"
+      when: rack_scale_enabled | default(false) | bool
+      block:
+        - name: "kubernetes | add-node | Rack-scale | BGP peers"
+          ansible.builtin.include_role:
+            name: fabric_bgp
+            tasks_from: install.yaml
+
+        - name: "kubernetes | add-node | Rack-scale | Node labels from rack-profile.yaml"
+          ansible.builtin.include_role:
+            name: fabric_validate
+            tasks_from: install.yaml
 
     # storage_backend, not _resolved_storage_backend: preflight skips
     # storage/resolve.yaml for add-node and remove-node.
@@ -80,7 +99,8 @@
           {{ ('not Ready: ' ~ (_ds | unready_pods | join(', '))) if _ds else 'no DaemonSet pod has started' }}.
           It keeps the {{ _add_node_pending_taint }} taint, so no workload lands on it.
           Check those pods (kubectl describe pod -n kube-system); a large node can need a higher
-          calico_node_memory_limit in env/{{ env_name | default('ENV') }}/kubespray_extra.yml.
+          calico_node_memory_limit in env/{{ env_name | default('ENV') }}/kubespray_extra.yml{{
+          ', and on a BGP rack the leaf must accept a BGP session from the node' if (rack_scale_calico_mode | default('')) == 'bgp' else '' }}.
           Then re-run add-node: it runs scale.yml again for the node, then this phase.
       loop: "{{ _add_node_ds_pods.results }}"
       loop_control:
@@ -116,6 +136,13 @@
         - "'not found' not in (_add_node_untaint.msg | default('') | lower)"
       loop: "{{ _added_nodes_list }}"
 
+    # After the taint is lifted: the GPU operator's DaemonSets do not tolerate it.
+    - name: "kubernetes | add-node | Rack-scale | GPU stack for new GPU node(s)"
+      ansible.builtin.include_role:
+        name: nvidia_gpu_operator
+        tasks_from: add-node.yaml
+      when: rack_scale_enabled | default(false) | bool
+
     - name: "kubernetes | add-node | New node(s) ready"
       ansible.builtin.debug:
         msg: "Added and Ready: {{ _added_nodes_list | join(', ') }}"
@@ -133,14 +160,27 @@
 
 - name: "kubernetes | add-node | Regenerate inventory from nodes.yaml"
   ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+  when: not (rack_scale_enabled | default(false) | bool)
 
-# The play loaded the inventory before it was rewritten: without a reload,
-# delegate_to resolves a new node by DNS instead of its ansible_host.
+# The play loaded the inventory before nodes.yaml rewrote it: without a reload,
+# delegate_to resolves a new node by DNS instead of its ansible_host. (A rack's
+# inventory is written further down, and fabric_inventory registers its nodes.)
 - name: "kubernetes | add-node | Reload inventory to pick up newly added node(s)"
   ansible.builtin.meta: refresh_inventory
 
 - name: "kubernetes | add-node | Detect SSH requirement from the new inventory"
   ansible.builtin.include_tasks: needs_ssh.yaml
+
+# A rack's inventory is written only after the refusals below: a refused node
+# left in it would read to remove-node as an unfinished removal. Until then the
+# new node(s) are registered in memory from the parsed rack-profile.yaml.
+- name: "kubernetes | add-node | Rack-scale | Reach the new node(s) over SSH"
+  ansible.builtin.include_role:
+    name: fabric_inventory
+    tasks_from: register_hosts.yaml
+  vars:
+    _fabric_register_hosts: "{{ _added_nodes_list }}"
+  when: rack_scale_enabled | default(false) | bool
 
 # ─── Pre-flight for the new node(s), over SSH ────────────────────────────────
 
@@ -172,9 +212,33 @@
   vars:
     _docker_check_hosts: "{{ _added_nodes_list }}"
 
+# After the refusals above, and before the API check: the new node(s) join over
+# their fabric. The nodes already in the cluster get the files they have
+# (toolkit_manager.sh refuses an edit that changes theirs), so netplan and
+# sysctl change nothing there.
+- name: "kubernetes | add-node | Rack-scale fabric"
+  when: rack_scale_enabled | default(false) | bool
+  block:
+    - name: "kubernetes | add-node | Rack-scale | Inventory and fabric files from rack-profile.yaml"
+      ansible.builtin.include_role:
+        name: fabric_inventory
+        tasks_from: install.yaml
+
+    - name: "kubernetes | add-node | Rack-scale | Fabric netplan"
+      ansible.builtin.include_role:
+        name: fabric_netplan
+        tasks_from: install.yaml
+
+    - name: "kubernetes | add-node | Rack-scale | Fabric sysctls"
+      ansible.builtin.include_role:
+        name: fabric_sysctl
+        tasks_from: install.yaml
+
+# access_ip: on a rack with control_plane_on_fabric, nodes reach the API
+# server over the fabric.
 - name: "kubernetes | add-node | SSH pre-flight | Check control-plane API server reachability from new node(s)"
   ansible.builtin.wait_for:
-    host: "{{ hostvars[groups['kube_control_plane'][0]].ansible_host }}"
+    host: "{{ hostvars[groups['kube_control_plane'][0]].access_ip | default(hostvars[groups['kube_control_plane'][0]].ansible_host) }}"
     port: 6443
     timeout: 10
   delegate_to: "{{ item }}"

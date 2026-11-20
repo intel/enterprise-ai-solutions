@@ -1,0 +1,51 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Compares the env files a layer's config_tracking.yaml lists with the state its
+# last successful install saved (tasks/config_tracking.yaml) and evaluates the
+# layer's rules (filter_plugins/upgrade_checks.py).
+- name: "upgrade_checks | config-tracking | Read the saved configuration"
+  when: _record_cluster
+  block:
+    - name: "upgrade_checks | config-tracking | Read the saved configuration of each layer"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ item }}-config-tracking"
+        namespace: "{{ upgrade_record_namespace }}"
+      loop: "{{ _check_layers }}"
+      register: _config_tracking_reads
+      no_log: true  # the Secret may hold a value under a key name the deny list misses
+  rescue:
+    - name: "upgrade_checks | config-tracking | Stop when the saved configuration cannot be read"
+      ansible.builtin.fail:
+        msg: >-
+          Could not read the saved configuration (Secret/{{ upgrade_record_namespace }}/<layer>-config-tracking):
+          {{ ansible_failed_result.msg | default(ansible_failed_result) }}. Check the cluster connection and retry.
+
+- name: "upgrade_checks | config-tracking"
+  ansible.builtin.set_fact:
+    _upgrade_verdicts: "{{ _upgrade_verdicts + [_result.check] }}"
+    _config_tracking_facts: "{{ _config_tracking_facts | config_tracking_merge_facts(item, _result.facts) }}"
+  vars:
+    _saved: "{{ (_config_tracking_reads.results | selectattr('item', 'equalto', item) | first).resources | default([]) }}"
+    _result: >-
+      {{ _layer_dirs.get(item) | config_tracking_verdict(env_dir, _saved[0].data['config.yaml'] | b64decode if _saved else none,
+                                                         config_tracking_deny, item, env_name | default('local'),
+                                                         _layer_supports_upgrade.get(item, false)) }}
+  loop: "{{ _check_layers }}"
+
+- name: "upgrade_checks | config-tracking | Refuse a fact name the run already uses"
+  ansible.builtin.fail:
+    msg: "config_tracking.yaml of {{ item.value.layer }} sets {{ item.key }}, a variable the run already has"
+  loop: "{{ _config_tracking_facts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.layer }}: {{ item.key }}"
+  when: q('ansible.builtin.varnames', '^' ~ item.key ~ '$') | length > 0
+
+- name: "upgrade_checks | config-tracking | Set the facts the fired rules declare"
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ item.value.value }}"
+  loop: "{{ _config_tracking_facts | dict2items }}"
+  loop_control:
+    label: "{{ item.value.layer }}: {{ item.key }}={{ item.value.value }}"

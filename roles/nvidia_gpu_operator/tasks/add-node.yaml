@@ -1,0 +1,84 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# NVIDIA GPU Operator — add-node (from roles/kubernetes/tasks/add-node.yaml)
+# =============================================================================
+# Runs after the add-node taint is lifted: the operator's DaemonSets do not
+# tolerate it. The operator takes a new GPU node by itself, and this waits
+# until the new node(s)' GPUs are allocatable. Install skips the operator on a
+# rack without NVIDIA GPU nodes: then this says to run install platform.
+# =============================================================================
+
+- name: "nvidia_gpu_operator | add-node | New GPU node(s)"
+  ansible.builtin.set_fact:
+    _gpu_added: "{{ _added_nodes_list | select('in', groups.get('gpu_nodes', [])) | list }}"
+
+- name: "nvidia_gpu_operator | add-node | GPU node(s) of another vendor"
+  ansible.builtin.debug:
+    msg: >-
+      {{ _gpu_added | join(', ') }} joined without a GPU stack: add-node sets one up for NVIDIA GPUs,
+      and this rack's GPU vendor is '{{ rack_scale_gpu_vendor | default('') }}'.
+  when:
+    - _gpu_added | length > 0
+    - (rack_scale_gpu_vendor | default('')) != 'nvidia'
+
+- name: "nvidia_gpu_operator | add-node | GPU stack for new GPU node(s)"
+  when:
+    - _gpu_added | length > 0
+    - (rack_scale_gpu_vendor | default('')) == 'nvidia'
+  environment:
+    KUBECONFIG: "{{ kubernetes_kubeconfig }}"
+  block:
+    - name: "nvidia_gpu_operator | add-node | Find the operator release"
+      kubernetes.core.helm_info:
+        name: "{{ nvidia_gpu_operator_release_name }}"
+        release_namespace: "{{ nvidia_gpu_operator_namespace }}"
+      register: _gpu_operator_release
+
+    - name: "nvidia_gpu_operator | add-node | Operator found"
+      ansible.builtin.set_fact:
+        _gpu_operator_found: "{{ _gpu_operator_release.status is defined and _gpu_operator_release.status is not none }}"
+
+    - name: "nvidia_gpu_operator | add-node | No GPU operator yet"
+      ansible.builtin.debug:
+        msg: >-
+          {{ _gpu_added | join(', ') }} joined without its GPU stack: the NVIDIA GPU operator is not
+          installed (the rack had no NVIDIA GPU node at install, or the platform layer is not installed).
+          Install it with ./toolkit_manager.sh install --env {{ env_name }} platform.
+      when: not _gpu_operator_found
+
+    # The driver container builds on the node first: allow 30 minutes.
+    - name: "nvidia_gpu_operator | add-node | Wait for the GPUs on new node(s)"
+      kubernetes.core.k8s_info:
+        kind: Node
+        name: "{{ item }}"
+      register: _gpu_node
+      until: >-
+        (_gpu_node.resources | default([]) | length) > 0
+        and (_gpu_node.resources[0].status.allocatable['nvidia.com/gpu'] | default(0) | int)
+            >= (hostvars[item].node_gpu_count | default(1) | int)
+      retries: 60
+      delay: 30
+      failed_when: false
+      loop: "{{ _gpu_added }}"
+      when: _gpu_operator_found
+
+    - name: "nvidia_gpu_operator | add-node | Fail if a new node's GPUs are not allocatable"
+      vars:
+        _node: "{{ item.resources | default([]) | first | default({}) }}"
+        _allocatable: "{{ ((_node.status | default({})).allocatable | default({}))['nvidia.com/gpu'] | default(0) | int }}"
+        _wanted: "{{ hostvars[item.item].node_gpu_count | default(1) | int }}"
+      ansible.builtin.fail:
+        msg: >-
+          {{ item.item }} is in the cluster, but {{ _allocatable }} of its {{ _wanted }} GPU(s)
+          are allocatable after 30 minutes. Check the operator's pods on it:
+          kubectl -n {{ nvidia_gpu_operator_namespace }} get pods -o wide --field-selector spec.nodeName={{ item.item }}.
+          They keep reconciling; re-check with ./toolkit_manager.sh validate --env {{ env_name }} nvidia_gpu_operator.
+      loop: "{{ _gpu_node.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - not (item.skipped | default(false))
+        - _allocatable | int < _wanted | int
