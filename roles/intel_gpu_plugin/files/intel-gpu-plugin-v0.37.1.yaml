@@ -1,7 +1,8 @@
 # Vendored from intel/intel-device-plugins-for-kubernetes v0.37.1
 # (deployments/gpu_plugin/base/intel-gpu-plugin.yaml, Apache-2.0), so installs do
 # not fetch from GitHub. Differences from upstream:
-#   - metadata.namespace: kube-system (upstream leaves it to kustomize)
+#   - its own namespace, intel-gpu-plugin, created here with the privileged Pod Security
+#     label (upstream leaves the namespace to kustomize)
 #   - the image is pinned by digest (the role overrides it from intel_gpu_plugin_image)
 #   - a pod-level seccompProfile
 #   - the NetworkPolicy at the end: the plugin talks to the kubelet over a unix socket only
@@ -10,11 +11,21 @@
 # kubelet's device-plugin directory, and it serves no port, so it has no probes.
 # Bumping: replace this file and intel_gpu_plugin_version/_image_digest in defaults/main.yaml.
 ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: intel-gpu-plugin
+  labels:
+    # hostPath volumes and root are refused by the baseline and restricted levels.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: intel-gpu-plugin
-  namespace: kube-system
+  namespace: intel-gpu-plugin
   labels:
     app: intel-gpu-plugin
 spec:
@@ -97,7 +108,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: intel-gpu-plugin
-  namespace: kube-system
+  namespace: intel-gpu-plugin
 spec:
   podSelector:
     matchLabels:

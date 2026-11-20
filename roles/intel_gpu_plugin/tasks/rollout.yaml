@@ -10,7 +10,7 @@
     api_version: apps/v1
     kind: DaemonSet
     name: intel-gpu-plugin
-    namespace: kube-system
+    namespace: intel-gpu-plugin
   register: _intel_gpu_ds_state
   until:
     - _intel_gpu_ds_state.resources | default([]) | length > 0

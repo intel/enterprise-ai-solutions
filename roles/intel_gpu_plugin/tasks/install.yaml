@@ -49,7 +49,7 @@
               fight over the kubelet's device-plugin socket. Delete it (or its GpuDevicePlugin resource),
               then re-run: install intel_gpu_plugin
           vars:
-            _intel_gpu_elsewhere: "{{ _intel_gpu_existing.resources | rejectattr('metadata.namespace', 'equalto', 'kube-system') | list }}"
+            _intel_gpu_elsewhere: "{{ _intel_gpu_existing.resources | rejectattr('metadata.namespace', 'equalto', 'intel-gpu-plugin') | list }}"
           when: _intel_gpu_elsewhere | length > 0
 
         - name: "intel_gpu_plugin | Load the vendored manifests"
@@ -108,5 +108,5 @@
         - name: "intel_gpu_plugin | ━━━ DONE ━━━"
           ansible.builtin.debug:
             msg: >-
-              Intel GPU plugin {{ intel_gpu_plugin_version }} in kube-system:
+              Intel GPU plugin {{ intel_gpu_plugin_version }} in the intel-gpu-plugin namespace:
               {% for node, adv in _intel_gpu_adv.items() %}{{ node }} {{ adv.resources }}{{ '; ' if not loop.last }}{% endfor %}

@@ -5,8 +5,9 @@
 # Advertises Intel GPUs (Arc Pro B-Series / B70, other Xe GPUs) as the gpu.intel.com/xe
 # (or i915) extended resource that the GPU model runtimes (SGLang, vLLM XPU) request.
 # Intel only; NVIDIA is nvidia_gpu_operator. Installs only where NFD labelled a node
-# with an Intel GPU, in kube-system (the plugin needs hostPath volumes, which only a
-# privileged Pod Security namespace allows).
+# with an Intel GPU, in its own intel-gpu-plugin namespace, which the role creates with the privileged
+# Pod Security label (the plugin needs hostPath volumes). The name is fixed in the
+# vendored manifest, not a variable.
 
 intel_gpu_plugin_version: "0.37.1"
 intel_gpu_plugin_manifest: "intel-gpu-plugin-v{{ intel_gpu_plugin_version }}.yaml"   # in files/
