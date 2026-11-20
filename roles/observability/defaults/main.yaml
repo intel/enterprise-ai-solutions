@@ -45,27 +45,21 @@ observability_grafana_url: >-
   {{ 'https://' ~ base_domain_name ~ observability_grafana_path if _obs_grafana_path_mode | bool
      else 'https://' ~ observability_grafana_hostname }}
 
-# Sign-in through Keycloak (platform realm), first at the gateway, then by
-# Grafana on the same session: keycloak_platform_admin_group members are
-# Grafana admins, everyone else Viewer. The local admin stays for break-glass
-# at <grafana url>/login?disableAutoLogin=true, behind the gateway sign-in, or
-# through a port-forward when Keycloak is down.
+# Adds "Sign in with Keycloak" (platform realm) to Grafana's login form, beside
+# the local admin: keycloak_platform_admin_group members are Admin, others Viewer.
 observability_grafana_sso: "{{ keycloak_enabled | default(true) | bool }}"
 observability_grafana_oidc_client_id: "grafana"
-# Groups the gateway admits; empty admits every signed-in realm user.
+# Groups Grafana admits through Keycloak; empty admits every realm user.
 observability_grafana_allowed_groups: []
 # Grafana's settings for it, on both stacks (strings: the Grafana CR takes no others).
 # The browser goes to Keycloak's public URL; Grafana's own calls stay in-cluster.
 _obs_grafana_oidc: "{{ keycloak_client_issuer | default('') }}/protocol/openid-connect"
 _obs_grafana_oidc_internal: "{{ keycloak_client_issuer_internal | default('') }}/protocol/openid-connect"
 _obs_grafana_ini_sso:
-  auth:
-    # The gateway clears its cookies and ends the Keycloak session.
-    signout_redirect_url: "{{ observability_grafana_url }}/oauth2/logout"
   auth.generic_oauth:
     enabled: "true"
     name: Keycloak
-    auto_login: "true"
+    auto_login: "false"
     allow_sign_up: "true"
     client_id: "{{ observability_grafana_oidc_client_id }}"
     scopes: openid profile email
@@ -76,6 +70,8 @@ _obs_grafana_ini_sso:
     api_url: "{{ _obs_grafana_oidc_internal }}/userinfo"
     login_attribute_path: preferred_username
     name_attribute_path: name
+    groups_attribute_path: groups
+    allowed_groups: "{{ observability_grafana_allowed_groups | join(',') }}"
     # Re-evaluated at every login, so leaving the group removes admin.
     role_attribute_path: >-
       contains(groups[*], '{{ keycloak_client_admin_group | default('') }}') && 'Admin' || 'Viewer'

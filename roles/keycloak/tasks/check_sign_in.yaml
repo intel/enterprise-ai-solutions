@@ -7,6 +7,7 @@
 #     url       URL that starts sign-in (through the gateway)
 #     nextauth  NextAuth provider id: sign-in starts with a CSRF-protected POST
 #               to <url>/api/auth/signin/<id> (optional)
+#     form_url  the app's own login form, which must answer 200, not redirect (optional)
 # Fails unless the answer is a redirect to the realm's authorization endpoint.
 # Skipped, with a notice, when the app's host does not resolve here.
 
@@ -54,6 +55,16 @@
             dest: "{{ _kc_si_ca.path }}"
             mode: "0600"
           when: _kc_si_ca is not skipped
+
+        - name: "keycloak | sign-in check | {{ keycloak_sign_in.name }} login form"
+          ansible.builtin.uri:
+            url: "{{ keycloak_sign_in.form_url }}"
+            ca_path: "{{ _kc_si_ca.path | default(omit) }}"
+            use_proxy: false
+            timeout: 20
+            follow_redirects: none
+            status_code: [200]
+          when: keycloak_sign_in.form_url is defined
 
         - name: "keycloak | sign-in check | NextAuth CSRF token"
           ansible.builtin.uri:

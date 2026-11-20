@@ -283,7 +283,6 @@ rook_ceph_devices:
   node-1: [/dev/nvme1n1]
   node-2: [/dev/nvme1n1]
 # rook_ceph_teardown_wipe_devices: false   # set true to auto-wipe on teardown
-# rook_ceph_teardown_wipe_seconds_per_device: 300   # how long teardown waits for each device's wipe
 ```
 
 On rack-scale (`rack_scale_enabled: true`), leave `rook_ceph_devices` out: the devices come only from `storage.nodes` in `rack-profile.yaml`, and install and teardown stop if `rook_ceph_devices` here lists different ones (see [Rack-scale deployment](../rack-scale-deployment.md)).
@@ -351,6 +350,17 @@ postgresql_enabled: false       # using an external PostgreSQL
 
 ---
 
+## Node preflight
+
+Read-only checks on every node before Kubespray runs, on a fresh install. The checks are listed in [Prerequisites](../quickstart/prerequisites.md#node-checks-before-install).
+
+| Setting | Default | Description |
+|---|---|---|
+| `kubernetes_node_preflight` | `true` | `false` turns all the checks off |
+| `kubernetes_node_preflight_skip` | `[]` | Check IDs to skip, e.g. `[N8]` for nodes that download from a mirror instead of the internet |
+
+---
+
 ## Object store
 
 Backend for Loki log storage, Tempo traces, and Langfuse blobs. The platform
@@ -370,7 +380,8 @@ Keycloak and Grafana admin passwords are **auto-generated** (24 random
 characters) on first install and stored in Kubernetes secrets. Re-running the
 install preserves the existing password rather than rotating it.
 
-Retrieve them after install — the username is `admin` in both cases:
+Retrieve them after install — the username is `admin` in both cases. Grafana's
+admin signs in on Grafana's login form; see [Observability](../deploy/observability.md#sign-in):
 
 ```bash
 # Grafana

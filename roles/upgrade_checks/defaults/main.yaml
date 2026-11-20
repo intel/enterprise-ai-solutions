@@ -1,0 +1,38 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Upgrade checks, in run order. Each is tasks/checks/<name>.yaml and appends
+# {layer, check, verdict, reason, resolve} to _upgrade_verdicts for every
+# layer in _check_layers; verdict is pass | advisory | blocking | baseline |
+# skipped. The runner (tasks/run.yaml) decides what refuses the run.
+upgrade_checks:
+  - version_change
+  - upgrade_path
+
+# Checks that judge every planned layer: version_change is what refuses a
+# downgrade or a conflict. The others judge only layers classed upgrade or downgrade.
+upgrade_checks_every_class:
+  - version_change
+
+# Run classes a check judges besides upgrade and downgrade: upgrade_path also
+# judges a conflict, so a forced run knows whether this release supports its path.
+upgrade_checks_also_classes:
+  upgrade_path:
+    - conflict
+
+# Layers whose version comes from the installer's own VERSION file, never from a version.yaml:
+# no ext repository claims infrastructure or platform today.
+upgrade_installer_layers:
+  - infrastructure
+  - platform
+
+# ConfigMap/<namespace>/<layer>-deployment-manifest
+upgrade_record_namespace: "default"
+upgrade_record_labels:
+  toolkit-manager.intel.com/layer: "{{ upgrade_record_layer | default('') }}"
+  toolkit-manager.intel.com/record: "deployment-manifest"
+
+upgrade_report_dir: "{{ env_dir }}/reports"
+# Keep the most recent reports per layer, the same rule ENV_LOG_DIR applies to its logs
+# (es_auto_installer.sh): the oldest is the only record of why a run was forced or halted.
+upgrade_report_keep: 30
