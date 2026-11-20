@@ -12,7 +12,10 @@
     _layer_release: {}
     _layer_version_data: {}
     _layer_class: {}
+    _layer_requires: {}
     _upgrade_verdicts: []
+    _layer_check_files: []
+    _config_tracking_facts: {}
 
 - name: "upgrade_checks | Note the installer commit"
   ansible.builtin.command:
@@ -132,10 +135,42 @@
       loop_control:
         loop_var: check
 
+    # The contract for these files is in docs/reference/adding_solutions.md (Upgrades).
+    - name: "upgrade_checks | Find each layer's own pre-run checks"
+      ansible.builtin.set_fact:
+        _layer_check_files: >-
+          {{ _layer_check_files +
+             ([item] | product(lookup('ansible.builtin.fileglob',
+                                       (_layer_dirs[item] | default('')) + '/upgrade_checks/*.yaml',
+                                       wantlist=True) | sort) | list) }}
+      loop: "{{ _upgrade_layers }}"
+      loop_control:
+        label: "{{ item }}"
+      when: (_layer_dirs[item] | default('')) | length > 0
+
+    - name: "upgrade_checks | Run each layer's own pre-run checks"
+      ansible.builtin.include_tasks: run_layer_check.yaml
+      vars:
+        upgrade_check_layer: "{{ _layer_check[0] }}"
+        _layer_check_path: "{{ _layer_check[1] }}"
+      loop: "{{ _layer_check_files }}"
+      loop_control:
+        loop_var: _layer_check  # a layer's check file may loop with item itself
+        label: "{{ _layer_check[0] }} ({{ _layer_check[1] | basename }})"
+
+    # On every class, so a broken file fails before anything changes, not at the save after the run;
+    # config_tracking_capture raises on a broken file and otherwise returns a mapping or None.
+    - name: "upgrade_checks | Validate each layer's config_tracking.yaml and tracked files"
+      ansible.builtin.assert:
+        that: (_layer_dirs[item] | config_tracking_capture(env_dir, config_tracking_deny) | default({}, true)) is mapping
+        quiet: true
+      loop: "{{ _upgrade_layers }}"
+      when: (_layer_dirs[item] | default('')) | length > 0
+
     - name: "upgrade_checks | Decide which verdicts gate the run"
       ansible.builtin.set_fact:
         _upgrade_gate: >-
-          {{ _upgrade_verdicts | upgrade_gate(_layer_supports_upgrade, _upgrade_force | default(false) | bool) }}
+          {{ _upgrade_verdicts | upgrade_gate(_layer_supports_upgrade, _upgrade_force | default(false) | bool, _layer_class) }}
 
     - name: "upgrade_checks | Show the run class and the checks"
       ansible.builtin.debug:

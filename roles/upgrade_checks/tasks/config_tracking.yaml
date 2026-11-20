@@ -1,0 +1,39 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# Parameters, set by the caller (playbooks/includes/run_layer.yaml):
+#   config_tracking_layer:  layer whose tracked configuration is saved (install) or deleted (teardown)
+# Saved after every successful install of the whole layer, whatever its run class,
+# so the next upgrade compares against what last ran.
+- name: "upgrade_checks | Save the {{ config_tracking_layer }} tracked configuration"
+  vars:
+    _current: "{{ _layer_dirs.get(config_tracking_layer) | config_tracking_capture(env_dir, config_tracking_deny) }}"
+  no_log: true  # the result echoes the definition, which may hold a value the deny list misses
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: "{{ config_tracking_layer }}-config-tracking"
+        namespace: "{{ upgrade_record_namespace }}"
+        labels: "{{ config_tracking_labels }}"
+      data:
+        config.yaml: >-
+          {{ {'layer': config_tracking_layer,
+              'savedAt': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'files': _current} | to_nice_yaml(indent=2, sort_keys=false) | b64encode }}
+  # Not on _current: ansible-core 2.17 renders a None var as a string.
+  when: >-
+    component_action == 'install' and
+    (_layer_dirs.get(config_tracking_layer) | config_tracking_capture(env_dir, config_tracking_deny)) is not none
+
+- name: "upgrade_checks | Delete the {{ config_tracking_layer }} tracked configuration"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    name: "{{ config_tracking_layer }}-config-tracking"
+    namespace: "{{ upgrade_record_namespace }}"
+  when: component_action == 'teardown'
