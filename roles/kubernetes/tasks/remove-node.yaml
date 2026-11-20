@@ -9,15 +9,55 @@
 #        regenerated yet: remove-node.yml reaches the node(s) through it, and
 #        its -e node= only selects among hosts the inventory defines;
 #   Kubespray remove-node.yml (drain, reset, remove);
-#   post (_scale_phase=post, _removed_nodes): regenerate the inventory from
-#        nodes.yaml, refresh the NFS exports, delete the node(s)' BalloonsPolicy.
+#   post (_scale_phase=post, _removed_nodes): rack-scale: take down the
+#        node(s)' fabric and BGP peers. Delete the node(s)' BalloonsPolicy, then
+#        regenerate the inventory from nodes.yaml (rack-scale: rack-profile.yaml)
+#        and refresh the NFS exports. The cleanup comes before the inventory
+#        loses the node(s): a re-run of remove-node finds them there.
 # =============================================================================
 
 - name: "kubernetes | remove-node | Post phase — drop removed node(s) from inventory"
   when: _scale_phase | default('prep') == 'post'
   block:
+    - name: "kubernetes | remove-node | Resolve removed node list"
+      ansible.builtin.set_fact:
+        _removed_nodes_list: "{{ _removed_nodes | split(',') | reject('equalto', '') | list }}"
+
+    # While the inventory still has the removed node(s): their address and
+    # netplan file. Not for --node-lost, whose node cannot be reached.
+    - name: "kubernetes | remove-node | Rack-scale | Fabric netplan of the removed node(s)"
+      ansible.builtin.include_role:
+        name: fabric_netplan
+        tasks_from: teardown.yaml
+      vars:
+        _fabric_scope_nodes: "{{ _removed_nodes_list }}"
+      when:
+        - rack_scale_enabled | default(false) | bool
+        - not (_node_lost | default(false) | bool)
+
+    - name: "kubernetes | remove-node | Rack-scale | BGP peers of the removed node(s)"
+      ansible.builtin.include_role:
+        name: fabric_bgp
+        tasks_from: remove-node.yaml
+      when: rack_scale_enabled | default(false) | bool
+
+    - name: "kubernetes | remove-node | Delete the removed node(s)' NRI balloon policies"
+      ansible.builtin.include_role:
+        name: nri_cpu_balloons
+        tasks_from: node_policies.yaml
+      vars:
+        _nri_removed_nodes: "{{ _removed_nodes_list }}"
+
     - name: "kubernetes | remove-node | Regenerate inventory from nodes.yaml"
       ansible.builtin.include_tasks: generate_hosts_from_nodes.yaml
+      when: not (rack_scale_enabled | default(false) | bool)
+
+    # Also drops the removed node(s)' netplan and BGP peer files.
+    - name: "kubernetes | remove-node | Rack-scale | Regenerate inventory from rack-profile.yaml"
+      ansible.builtin.include_role:
+        name: fabric_inventory
+        tasks_from: install.yaml
+      when: rack_scale_enabled | default(false) | bool
 
     - name: "kubernetes | remove-node | Reload inventory without the removed node(s)"
       ansible.builtin.meta: refresh_inventory
@@ -31,13 +71,6 @@
       vars:
         _nfs_exports_only: true
       when: (storage_backend | default('local-path') | string | trim | lower) == 'nfs'
-
-    - name: "kubernetes | remove-node | Delete the removed node(s)' NRI balloon policies"
-      ansible.builtin.include_role:
-        name: nri_cpu_balloons
-        tasks_from: node_policies.yaml
-      vars:
-        _nri_removed_nodes: "{{ _removed_nodes | split(',') | reject('equalto', '') | list }}"
 
     - name: "kubernetes | remove-node | Post phase complete"
       ansible.builtin.debug:

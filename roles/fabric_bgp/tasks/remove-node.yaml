@@ -1,0 +1,30 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# fabric_bgp — remove-node (from roles/kubernetes/tasks/remove-node.yaml)
+#
+# Deletes the removed node(s)' BGPPeers, found by spec.node rather than by
+# file: a re-run after the files were regenerated still finds them.
+
+- name: "fabric_bgp | remove-node | List BGPPeers"
+  kubernetes.core.k8s_info:
+    api_version: crd.projectcalico.org/v1
+    kind: BGPPeer
+    kubeconfig: "{{ kubernetes_kubeconfig }}"
+  register: _bgp_peers
+
+- name: "fabric_bgp | remove-node | Delete the removed node(s)' BGPPeers"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: crd.projectcalico.org/v1
+    kind: BGPPeer
+    name: "{{ item.metadata.name }}"
+    kubeconfig: "{{ kubernetes_kubeconfig }}"
+  loop: >-
+    {{ _bgp_peers.resources | default([])
+       | selectattr('spec.node', 'defined')
+       | selectattr('spec.node', 'in', _removed_nodes_list)
+       | list }}
+  loop_control:
+    label: "{{ item.metadata.name }}"

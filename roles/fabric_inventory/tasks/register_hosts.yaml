@@ -1,0 +1,56 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# =============================================================================
+# fabric_inventory | register_hosts
+# =============================================================================
+# The UR playbook runs on localhost. Downstream pre-K8s roles (fabric_netplan,
+# fabric_sysctl) need to delegate_to cluster nodes, but groups like
+# kube_control_plane don't exist until kubespray runs with the generated
+# hosts.yaml. This registers the parsed rack-profile.yaml's hosts with add_host,
+# with their groups and node vars, so they are available for delegate_to in the
+# same play. _fabric_register_hosts limits it to some hosts: add-node registers
+# the new node(s) before the inventory is written.
+# =============================================================================
+
+# A fact, parsed once: install.yaml's NIC MTU check (topology none) reads it too.
+- name: "fabric_inventory | Generated inventory"
+  ansible.builtin.set_fact:
+    _generated_inv: "{{ _rack_parsed.hosts_yaml | from_yaml }}"
+
+- name: "fabric_inventory | Register cluster nodes into running inventory"
+  ansible.builtin.add_host:
+    name: "{{ item.key }}"
+    groups: >-
+      {{ (_generated_inv.all.children | dict2items
+          | selectattr('value.hosts', 'defined')
+          | selectattr('value.hosts', 'contains', item.key)
+          | map(attribute='key') | list)
+         + ['all']
+         + (['k8s_cluster'] if (item.key in (_generated_inv.all.children.get('kube_control_plane', {}).get('hosts', {}).keys() | list
+                                             + _generated_inv.all.children.get('kube_node', {}).get('hosts', {}).keys() | list)) else []) }}
+    ansible_host: "{{ item.value.ansible_host | default(omit) }}"
+    ansible_connection: ssh
+    ansible_user: "{{ item.value.ansible_user | default(omit) }}"
+    ansible_ssh_private_key_file: "{{ item.value.ansible_ssh_private_key_file | default(omit) }}"
+    ansible_become: "{{ item.value.ansible_become | default(true) }}"
+    ip: "{{ item.value.ip | default(omit) }}"
+    access_ip: "{{ item.value.access_ip | default(omit) }}"
+    node_hostname: "{{ item.value.node_hostname | default(item.key) }}"
+    node_fabric_nics: "{{ item.value.node_fabric_nics | default(omit) }}"
+    node_family: "{{ item.value.node_family | default(omit) }}"
+    node_sku: "{{ item.value.node_sku | default(omit) }}"
+    node_accelerator: "{{ item.value.node_accelerator | default(omit) }}"
+    node_gpu_vendor: "{{ item.value.node_gpu_vendor | default(omit) }}"
+    node_gpu_model: "{{ item.value.node_gpu_model | default(omit) }}"
+    node_gpu_form: "{{ item.value.node_gpu_form | default(omit) }}"
+    node_gpu_count: "{{ item.value.node_gpu_count | default(omit) }}"
+    devices: "{{ item.value.devices | default(omit) }}"
+  loop: >-
+    {{ _generated_inv.all.hosts | dict2items
+       | selectattr('key', 'in', _fabric_register_hosts | default(_generated_inv.all.hosts.keys() | list))
+       | list }}
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false

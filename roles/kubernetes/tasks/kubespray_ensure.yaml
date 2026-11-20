@@ -1,10 +1,10 @@
 ---
 # =============================================================================
-# Kubespray Ensure — Clone, venv, collections
+# Kubespray Ensure — Clone, patches, venv
 # =============================================================================
-# Ensures kubespray is cloned and the venv is ready. Imported by both
-# install_kubespray.yaml and teardown.yaml so that teardown works even
-# when install was never run.
+# Ensures kubespray is cloned at the pinned version, patched, and the venv is
+# ready. Included by install, add-node, remove-node and teardown, so teardown
+# works even when install was never run.
 # =============================================================================
 
 # ─── Clone & Pin Kubespray ───────────────────────────────────────────────────
@@ -30,6 +30,29 @@
     version: "{{ kubespray_version }}"
     force: true
   when: _kubespray_exists.stat.exists
+
+# ─── Patches ─────────────────────────────────────────────────────────────────
+# Here, not in install: the pinned version above discards them on every action,
+# and add-node's scale.yml renders the kubelet config too.
+
+- name: "kubernetes | kubespray | Patch kubelet template for reservedSystemCPUs"
+  ansible.builtin.blockinfile:
+    path: "{{ kubespray_dir }}/roles/kubernetes/node/templates/kubelet-config.v1beta1.yaml.j2"
+    marker: "# {mark} ANSIBLE MANAGED - reservedSystemCPUs support"
+    insertafter: "topologyManagerPolicy"
+    block: |
+      {% raw %}{% if kubelet_reserved_cpus is defined %}
+      reservedSystemCPUs: {{ kubelet_reserved_cpus }}
+      {% endif %}{% endraw %}
+
+# Kubespray's Calico reset deletes BIRD's routes one output line at a time, and
+# `ip route` prints an ECMP route as one line per next hop, so the reset fails
+# on a dual-homed node (remove-node on Clos). Flushing by protocol removes them all.
+- name: "kubernetes | kubespray | Patch the Calico reset for ECMP routes"
+  ansible.builtin.replace:
+    path: "{{ kubespray_dir }}/roles/network_plugin/calico/tasks/reset.yml"
+    regexp: 'ip route show proto bird \| xargs .*$'
+    replace: "ip route flush proto bird"
 
 # ─── Python Virtual Environment ─────────────────────────────────────────────
 
