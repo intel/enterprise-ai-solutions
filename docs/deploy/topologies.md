@@ -18,7 +18,7 @@ The stack itself is the same either way. What changes is who builds the cluster,
 
 ## Multi-node deployment
 
-### Before you start
+### Prerequisites
 
 Check these on every machine that will join the cluster:
 
@@ -65,7 +65,7 @@ For replicated block storage instead, use `ceph`. See [Configuration](../customi
 
 ---
 
-### Step 3 — Describe the nodes
+### Step 3 — Configure nodes
 
 Choose one option.
 

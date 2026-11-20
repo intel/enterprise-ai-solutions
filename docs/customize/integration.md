@@ -31,17 +31,36 @@ The stack is built on open standards. Anything that speaks them works:
 
 Run these from the Toolkit Manager checkout, on a machine that can reach the cluster.
 
-### Step 1 — Point kubectl at the cluster
+### 1. Get the gateway address and a token
+
+First point `kubectl` at the cluster and find the gateway:
 
 ```bash
 ENV=local                                   # the --env you installed with
 export KUBECONFIG=$(pwd)/env/$ENV/kubeconfig.yaml
 CA=$(pwd)/env/$ENV/logs/ai-solutions-ca.crt # the installer's CA (selfsigned TLS)
+
+# Gateway LoadBalancer IP (from MetalLB)
+GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
+DOMAIN=$(yq '.base_domain_name' env/$ENV/global_config.yaml)
 ```
 
-### Step 2 — Get the gateway address and a token
+#### With `auth_type=litellm_vkey`
 
-#### With `auth_type: jwt` (default)
+```bash
+GATEWAY_DOMAIN="litellm.${DOMAIN}"          # path mode: GATEWAY_DOMAIN=$DOMAIN
+GATEWAY_URL="https://${GATEWAY_DOMAIN}"     # path mode: https://$DOMAIN/litellm
+
+# The master key has full admin rights: use it to try things out, then give apps a virtual key
+TOKEN=$(kubectl get secret litellm-master-key -n litellm \
+  -o jsonpath='{.data.master_key}' | base64 -d)
+```
+
+To create a scoped virtual key (its own models, budget and expiry), see [Virtual keys](../../ext/enterprise.ai-inference/docs/deploy/accessing_models.md#virtual-keys).
+
+#### With `auth_type=jwt` (default)
 
 The inference repo ships a helper that finds the gateway, reads the Keycloak client credentials from the cluster, and fetches a token:
 
@@ -56,12 +75,6 @@ Tokens last 15 minutes by default. Run the `source` line again for a new one, or
 <summary>What the helper does (subdomain mode), if you want to do it by hand</summary>
 
 ```bash
-# Gateway LoadBalancer IP (from MetalLB)
-GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
-  -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway \
-  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
-
-DOMAIN=$(yq '.base_domain_name' env/$ENV/global_config.yaml)
 KEYCLOAK_DOMAIN="keycloak.${DOMAIN}"
 GATEWAY_DOMAIN="inference.${DOMAIN}"
 GATEWAY_URL="https://${GATEWAY_DOMAIN}"
@@ -82,29 +95,11 @@ TOKEN=$(curl -s --noproxy '*' --cacert "$CA" --resolve ${KEYCLOAK_DOMAIN}:443:${
 
 </details>
 
-#### With `auth_type: litellm_vkey`
-
-```bash
-GATEWAY_IP=$(kubectl get svc -n envoy-gateway-system \
-  -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway \
-  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')
-
-DOMAIN=$(yq '.base_domain_name' env/$ENV/global_config.yaml)
-GATEWAY_DOMAIN="litellm.${DOMAIN}"          # path mode: GATEWAY_DOMAIN=$DOMAIN
-GATEWAY_URL="https://${GATEWAY_DOMAIN}"     # path mode: https://$DOMAIN/litellm
-
-# The master key has full admin rights: use it to try things out, then give apps a virtual key
-TOKEN=$(kubectl get secret litellm-master-key -n litellm \
-  -o jsonpath='{.data.master_key}' | base64 -d)
-```
-
-To create a scoped virtual key (its own models, budget and expiry), see [Virtual keys](../../ext/enterprise.ai-inference/docs/deploy/accessing_models.md#virtual-keys).
-
 > **Behind a corporate proxy?** `--noproxy '*'` makes curl ignore `$http_proxy` / `$https_proxy` for these calls. Without it, curl sends the request to the proxy and you get the proxy's error page back.
 
-### Step 3 — Call the model
+### 2. Call the model
 
-The same command works in both modes, because the variables above already hold the right host and URL:
+#### With `auth_type=litellm_vkey`
 
 ```bash
 curl -s --noproxy '*' --cacert "$CA" --resolve ${GATEWAY_DOMAIN}:443:${GATEWAY_IP} \
@@ -118,11 +113,31 @@ curl -s --noproxy '*' --cacert "$CA" --resolve ${GATEWAY_DOMAIN}:443:${GATEWAY_I
   }'
 ```
 
+LiteLLM routes by model name: all models share the same base URL (`/v1/...`), and the `"model"` field in the body picks one.
+
+#### With `auth_type=jwt` (default)
+
+The command is the same, because `GATEWAY_DOMAIN` and `GATEWAY_URL` already point at `inference.<domain>` (path mode: `<domain>/inference`):
+
+```bash
+curl -s --noproxy '*' --cacert "$CA" --resolve ${GATEWAY_DOMAIN}:443:${GATEWAY_IP} \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  ${GATEWAY_URL}/v1/chat/completions \
+  -d '{
+    "model": "qwen3-0-6b",
+    "messages": [{"role":"user","content":"Hello!"}],
+    "max_tokens": 50
+  }'
+```
+
+URL pattern: `https://inference.<domain>/v1/...`. The AI gateway picks the model from the `"model"` field, so every model shares one base URL.
+
 - **Success:** a JSON answer with `choices[0].message.content`.
 - `"model"` is the name you deployed with `./model-manager deploy <name>`. To list them: `curl ... ${GATEWAY_URL}/v1/models`.
 - `--resolve` sends the request to the gateway IP without a DNS entry. Once DNS points at the gateway ([External access](../deploy/networking.md#external-access-configuration)), drop it.
 
-Every framework below uses this same base URL (`${GATEWAY_URL}/v1`) and token.
+That same endpoint + token is what every framework below uses (`${GATEWAY_URL}/v1`).
 
 ---
 
@@ -235,7 +250,7 @@ agent = Agent(
 )
 ```
 
-### MCP hosts and other OpenAI-compatible apps
+### MCP (Model Context Protocol)
 
 Any app (an MCP host such as Claude Desktop, Cursor or Continue, among others) that lets you set a custom OpenAI-compatible endpoint can use the stack:
 
@@ -304,7 +319,7 @@ Pick the option that fits your client:
 
 | Option | Status | When to use | How |
 |---|---|---|---|
-| **Client-credentials JWT** (default) | Set up by the installer | Service-to-service, batch jobs, agents | `grant_type=client_credentials` against the Keycloak token endpoint ([Step 2](#step-2--get-the-gateway-address-and-a-token)) |
+| **Client-credentials JWT** (default) | Set up by the installer | Service-to-service, batch jobs, agents | `grant_type=client_credentials` against the Keycloak token endpoint ([Step 2](#1-get-the-gateway-address-and-a-token)) |
 | **Password JWT** | Keycloak supports it; you configure it | Scripts that sign in as a user | `grant_type=password`. Turn on Direct Access Grants on the client first. |
 | **Authorization Code flow** | Keycloak supports it; you configure it | Web apps with single sign-on | Standard OIDC redirect flow against Keycloak; set the client's redirect URIs |
 | **LiteLLM virtual key** | Set up by the installer in `litellm_vkey` mode | Many teams or apps, each with its own budget and limits | Set `auth_type: litellm_vkey` in `env/<env>/config.inference.yaml`. Each key has its own model list, budget, rate limit and expiry. Langfuse tracing is on. |
@@ -347,7 +362,7 @@ Scikit-learn, XGBoost, PyTorch, TensorFlow, ONNX, Triton, and custom servers.
 
 KServe is a **general-purpose model server**: LLMs are just one kind of workload. You can run classic ML models on the same cluster, behind the same gateway and the same auth.
 
-### What's available
+### What's supported out of the box
 
 The inference layer installs KServe's standard serving runtimes (`kserve-runtime-configs`). They speak the **Open Inference Protocol** (KServe v2) at `/v2/models/<model>/infer`. To see which runtimes your cluster has:
 
@@ -481,7 +496,7 @@ The same stack serves:
 
 The stack uses the **Kubernetes Gateway API** (implemented by Envoy Gateway). Every `HTTPRoute` can match on **host**, **path**, **headers**, **method** and **query parameters** at the same time.
 
-### Gateway listeners (already deployed)
+### Gateway listener (already deployed)
 
 `roles/gateway/templates/gateway.yaml.j2` creates the `eg-gateway` listeners your routes attach to:
 
@@ -497,7 +512,7 @@ listeners:
     hostname: "<base_domain_name>"
 ```
 
-Each `HTTPRoute` then claims the exact hostnames and paths it serves. The `*.<base_domain_name>` listener speaks HTTP/1.1 only. Platform services publish their own hosts with ListenerSets on Envoy Gateway 1.9+ ([How services attach](../deploy/networking.md#how-services-attach-to-the-gateway)).
+Each `HTTPRoute` then claims the exact hostnames and paths it serves. The `*.<base_domain_name>` listener speaks HTTP/1.1 only. Platform services publish their own hosts with ListenerSets on Envoy Gateway 1.9+ ([How services attach](../deploy/networking.md#gateway-resource)).
 
 ### What's running today
 
@@ -507,9 +522,7 @@ Each `HTTPRoute` then claims the exact hostnames and paths it serves. The `*.<ba
 | Inference API (`jwt`) | `inference.<base>`, path `/v1/...` | `<base>/inference/v1/...` |
 | LiteLLM API (`litellm_vkey`) | `litellm.<base>`, path `/v1/...` | `<base>/litellm/v1/...` |
 
-### Before you add a route
-
-Two rules apply to every route you attach to `eg-gateway`:
+Two rules apply to every route you add to `eg-gateway`:
 
 1. **It needs a Keycloak JWT by default.** The gateway-wide `gateway-auth` policy covers your route too. To use another credential, or none, attach your own `SecurityPolicy` to the route.
 2. **Some hostnames are reserved.** A namespace's `gateway.enterprise-ai/hostnames` annotation (comma-separated) grants it hostnames, and an admission policy then rejects any route from another namespace that claims them. So pick a hostname no other namespace has been granted (the platform ones, like `inference.<base>`, are taken). In path mode, only namespaces labelled `gateway.enterprise-ai/allow-apex-routes: "true"` may attach to the apex host, under paths granted in the `gateway-path-grants` ConfigMap. Grants are set by cluster operators.
@@ -517,7 +530,7 @@ Two rules apply to every route you attach to `eg-gateway`:
 > [!IMPORTANT]
 > The Gateway API decides between two routes for the same hostname by how specific their match is, not by namespace. The hostname grants are what stop a route in one namespace from taking over another's traffic with a more specific match.
 
-### Patterns you can add with `kubectl apply` (no stack changes)
+### Patterns you can add with `kubectl apply` — no stack changes
 
 #### 1. Subdomain per tenant
 

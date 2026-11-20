@@ -2,20 +2,9 @@
 
 [← Docs Index](../README.md)
 
-Toolkit Manager has three command-line tools. Run all of them from the root of the
-repository (the folder that holds `toolkit_manager.sh`).
-
-| Tool | What it does |
-|---|---|
-| `./toolkit_manager.sh` | Sets up the machine, creates environments, installs and removes the stack |
-| `./run_backup.sh` | Backs up, restores and lists the backups of one layer |
-| `./model-manager` | Deploys and removes AI models on a running cluster |
-
-> **Former names:** `toolkit_manager.sh` was called `es_auto_installer.sh`, and `TKM_LOG_LEVEL` / `TKM_ENV` were `ES_LOG_LEVEL` / `ES_ENV`. The old names still work, so existing scripts and pipelines keep running; new ones should use the names on this page.
-
----
-
-## toolkit_manager.sh
+All `toolkit_manager.sh` and `model-manager` commands for Toolkit Manager run from the repo root
+(the folder that holds `toolkit_manager.sh`). A third script, `run_backup.sh`, backs up and
+restores one layer; it is described at the end of [Actions](#actions).
 
 ```
 ./toolkit_manager.sh <action> [target] [--env <name>] [options] [-- ansible-playbook args]
@@ -24,13 +13,19 @@ repository (the folder that holds `toolkit_manager.sh`).
 - **action**: what to do, for example `install`.
 - **target**: what to do it to: a layer (such as `inference`) or a single component (such as
   `kserve`). Only `install`, `teardown` and `validate` take a target.
-- **`--env <name>`**: which environment (`env/<name>/`) to act on. The default is `local`.
 - Anything after a bare `--` goes straight to `ansible-playbook`.
 
-Options can come in any order. `./toolkit_manager.sh install --env prod platform` works. An option
-the action does not accept is refused with an error, never silently ignored.
+`--env` defaults to `local` when not specified. Options can come in any order
+(`./toolkit_manager.sh install --env prod platform` works). An option the action does not accept
+is refused with an error, never silently ignored.
 
-### The usual order
+> **Former names:** `toolkit_manager.sh` was called `es_auto_installer.sh`, and `TKM_LOG_LEVEL` / `TKM_ENV` were `ES_LOG_LEVEL` / `ES_ENV`. The old names still work, so existing scripts and pipelines keep running; new ones should use the names on this page.
+
+---
+
+## Actions
+
+The usual order:
 
 1. `configure` — once per machine.
 2. `init <layer>` — once per environment.
@@ -38,26 +33,21 @@ the action does not accept is refused with an error, never silently ignored.
 4. `install <layer>` — deploy.
 5. `status` and `validate <layer>` — check it.
 
-### All actions at a glance
-
 | Action | Takes a target | What it does |
 |---|---|---|
 | [`configure`](#configure) | no | Installs the tools the installer needs on this machine |
 | [`init <layer>`](#init-layer) | a layer | Creates an environment and its config files |
-| [`show`](#show) | no | Lists every layer and component |
 | [`install <target>`](#install) | yes | Deploys a layer or component |
 | [`teardown <target>`](#teardown) | yes | Removes a layer or component |
 | [`validate <target>`](#validate) | yes | Runs health checks on what is installed |
-| [`status`](#status) | no | Shows what is installed |
 | [`add-node`](#add-node) | no | Adds worker nodes you added to `nodes.yaml` |
 | [`remove-node`](#remove-node) | no | Removes worker nodes you deleted from `nodes.yaml` |
-
----
+| [`status`](#status) | no | Shows what is installed |
+| [`show`](#show) | no | Lists every layer and component |
 
 ### `configure`
 
-Prepares this machine to run the installer. Run it once per machine; skip it if the tools below
-are already installed.
+One-time machine setup. Run it once per machine; skip it if the tools below are already installed.
 
 ```bash
 ./toolkit_manager.sh configure
@@ -81,8 +71,11 @@ hand.
 
 ### `init <layer>`
 
-Creates an environment: a folder `env/<name>/` that holds everything one deployment needs. It also
-downloads (clones) the repositories the layer comes from into `ext/`.
+Create a new environment directory (`env/<name>/`, everything one deployment needs) and seed it
+with configuration for the specified layer. It also downloads (clones) the repositories the layer
+comes from into `ext/`. The layer name (`inference`, `erag`, `agent-toolkit`: the ones with a
+manifest in `configs/repos/`) determines which repositories are cloned and which configs are
+seeded; an unknown name is refused with the list of valid ones.
 
 ```bash
 ./toolkit_manager.sh init inference                    # standard inference stack
@@ -93,20 +86,14 @@ downloads (clones) the repositories the layer comes from into `ext/`.
 ./toolkit_manager.sh init inference --upgrade          # move already-cloned repos to the revisions pinned now
 ```
 
-The layers you can pass are the ones with a manifest in `configs/repos/` (`inference`, `erag`,
-`agent-toolkit`); an unknown name is refused with the list of valid ones.
-
-What it creates (a file that already exists is never overwritten; you see `exists, skipping`):
-
-| File | What it is |
-|---|---|
-| `env/<name>/global_config.yaml` | Main settings. Edit this before installing |
-| `env/<name>/nodes.yaml` | The machines to install on (IPs, SSH user and key). Edit it for more than one node |
-| `env/<name>/inventory/hosts.yaml` | Ansible inventory; points at this machine by default |
-| `env/<name>/config.<layer>.yaml` | One per layer the environment holds (for example `config.inference.yaml`, `config.erag.yaml`) |
-| `env/<name>/models.yaml` | The model catalog `model-manager` reads, copied from the inference repository |
-| `env/<name>/.solutions.yaml` | A record of which layers this environment was created for. Do not edit it |
-| `env/<name>/logs/` | Where every later command writes its log |
+Creates (a file that already exists is never overwritten; you see `exists, skipping`):
+- `env/<name>/global_config.yaml` — main settings; edit this before installing
+- `env/<name>/nodes.yaml` — the machines to install on (IPs, SSH user and key); edit it for more than one node
+- `env/<name>/inventory/hosts.yaml` — Ansible inventory; points at this machine by default
+- `env/<name>/config.<layer>.yaml` — one per layer the environment holds (for example `config.inference.yaml`, `config.erag.yaml`, `config.agent-toolkit.yaml`)
+- `env/<name>/models.yaml` — the model catalog `model-manager` reads, copied from the inference repository
+- `env/<name>/.solutions.yaml` — records which layers this env was created for; do not edit it
+- `env/<name>/logs/` — where every later command writes its log
 
 Running `init` again for another layer adds that layer to the same environment. `--flavour` picks a
 preset for the layer you name; once a config file was seeded from one flavour, asking for another
@@ -119,20 +106,9 @@ config files: it only reports what changed upstream, so you can copy what you ne
 
 ---
 
-### `show`
-
-Lists every layer and the components in it. Layers that are off until you install them are marked
-`(opt-in: install <layer>)`.
-
-```bash
-./toolkit_manager.sh show
-```
-
----
-
 ### `install`
 
-Deploys a layer or a component, and whatever it depends on.
+Deploy components. Dependencies are resolved automatically.
 
 ```bash
 # Infrastructure + platform + inference (dependencies are pulled in automatically)
@@ -147,16 +123,16 @@ Deploys a layer or a component, and whatever it depends on.
 # A single component on its own, nothing else
 ./toolkit_manager.sh install metallb --only --env local
 
-# Intel® Chatbot Toolkit (run `init erag` first)
+# Opt-in Intel® Chatbot Toolkit (run `init erag` first)
 ./toolkit_manager.sh install erag --env local
 
-# Intel® Agent Toolkit (run `init agent-toolkit` first)
+# Opt-in Intel® Agent Toolkit (run `init agent-toolkit` first)
 ./toolkit_manager.sh install agent-toolkit --env local
 
 # Change a setting for this run only, without editing a file
 ./toolkit_manager.sh install inference --env local -- -e routing_mode=path
 
-# Show more Ansible detail
+# Pass additional Ansible flags (use -- to separate)
 ./toolkit_manager.sh install inference --env local -- -vvv
 
 # Run past a refusing upgrade check (the run is recorded as forced)
@@ -175,14 +151,15 @@ What happens:
    the service addresses.
 
 `install` does not ask for confirmation. Running it again is safe: it brings the deployment back
-in line with your config.
+in line with your config. There is no reliable dry run: not every role supports Ansible check
+mode (`-- --check`).
 
 Installing a newer release over a deployed layer upgrades it. Before anything changes, `install`
 prints each layer's run class (`fresh`, `reinstall`, `resume`, `upgrade`, `downgrade`, `conflict`,
 `unversioned`) and the verdict of each upgrade check; a layer that declares `supports.upgrade`
 refuses a blocking verdict. See [Upgrade a Layer](../deploy/upgrade.md).
 
-**Targets for `install`, `teardown` and `validate`:**
+**Targets for `install` / `teardown`:**
 
 | Target | What it covers |
 |---|---|
@@ -193,28 +170,31 @@ refuses a blocking verdict. See [Upgrade a Layer](../deploy/upgrade.md).
 | `agent-toolkit` | The Intel® Agent Toolkit components (agent sandboxes, memory stores, …). Comes from its repository; opt-in |
 | `<component>` | Any single component name, for example `kserve`, `observability` or `metallb` |
 
-Some components are skipped on OpenShift (for example `istio`, `metallb`, `headlamp`). Run
-`./toolkit_manager.sh show` for the exact list your checkout and environment hold.
+The same targets work for `validate`. Some components are skipped on OpenShift (for example
+`istio`, `metallb`, `headlamp`). Run `./toolkit_manager.sh show` for the exact list your checkout
+and environment hold.
 
 ---
 
 ### `teardown`
 
-Removes a layer or a component, newest first. Your files in `env/<name>/` stay; only what is
-running in the cluster is removed.
+Remove components in reverse dependency order (newest first). Configuration files and environment
+state in `env/<name>/` are preserved; only what is running in the cluster is removed.
+
+Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `ai-solutions.intel.com/component`, and nothing else (see [Ownership labels](../reference/adding_solutions.md#ownership-labels)). The cluster itself and host changes (`kubernetes`, `storage`, rack-scale networking) are removed by their roles. In an env installed before ownership labels existed, each component's own teardown runs as well, until it has run once (see the link above). `ownership_enabled: false` in `global_config.yaml` runs only the roles' own teardowns.
 
 ```bash
 # Remove everything, including the Kubernetes cluster
 ./toolkit_manager.sh teardown infrastructure --env local
-
-# Remove the Intel® Chatbot Toolkit (keeps platform and inference)
-./toolkit_manager.sh teardown erag --env local
 
 # Remove Keycloak and everything that depends on it
 ./toolkit_manager.sh teardown keycloak --env local
 
 # Remove only Keycloak, nothing that depends on it
 ./toolkit_manager.sh teardown keycloak --only --env local
+
+# Remove the Intel® Chatbot Toolkit (keeps platform and inference)
+./toolkit_manager.sh teardown erag --env local
 
 # Destroy the cluster without uninstalling erag from it first
 ./toolkit_manager.sh teardown infrastructure --skip erag --env local
@@ -231,14 +211,12 @@ What to expect:
    (Kubespray reset). It then also deletes `env/<name>/kubeconfig.yaml`. A bring-your-own cluster
    (`existing_kubernetes`) is never destroyed.
 
-Teardown deletes what `install` labelled with `ai-solutions.intel.com/env` and `ai-solutions.intel.com/component`, and nothing else (see [Ownership labels](../reference/adding_solutions.md#ownership-labels)). The cluster itself and host changes (`kubernetes`, `storage`, rack-scale networking) are removed by their roles. In an env installed before ownership labels existed, each component's own teardown runs as well, until it has run once (see the link above). `ownership_enabled: false` in `global_config.yaml` runs only the roles' own teardowns.
-
 ---
 
 ### `validate`
 
-Runs the health checks of each component in the target: deployments ready, endpoints answering,
-expected objects present. It changes nothing.
+Run post-install health checks: deployments ready, endpoints answering, expected objects present.
+It changes nothing.
 
 ```bash
 ./toolkit_manager.sh validate inference --env local
@@ -246,30 +224,33 @@ expected objects present. It changes nothing.
 ./toolkit_manager.sh validate erag --env local
 ```
 
-A failed check stops the run with the reason. The checks live in each component's
-`tasks/validate.yaml`.
+Checks are implemented per-component as `tasks/validate.yaml` (asserts, connectivity, replica
+counts). A failed check stops the run with the reason.
 
 ---
 
 ### `add-node`
 
-Adds worker nodes to a cluster that is already running. You do not name the node on the command
-line: you add it to `nodes.yaml`, and the installer finds what is new.
+Scale worker node(s) into an already-provisioned cluster. No node name is passed on the command
+line: you add the node to `nodes.yaml`, and the installer finds what is new by comparing it with
+the live cluster.
 
-1. Add an entry under `nodes_workers` in `env/<name>/nodes.yaml`.
-2. Preview: `./toolkit_manager.sh add-node --dry-run --env local`
-3. Apply: `./toolkit_manager.sh add-node --env local` (asks before it runs Kubespray).
+```bash
+# 1. Add an entry to nodes_workers in env/<name>/nodes.yaml, then:
+./toolkit_manager.sh add-node --dry-run --env local   # 2. preview
+./toolkit_manager.sh add-node --env local              # 3. apply (asks before it runs Kubespray)
+```
 
-Adding a control-plane node is refused. On a rack-scale env, edit `rack-profile.yaml` instead of
-`nodes.yaml`: see [Rack-scale](node_scaling.md#rack-scale). Full guide: [Node Scaling](node_scaling.md).
+Control-plane node additions are refused. See [Node Scaling](node_scaling.md). On a rack-scale env,
+edit `rack-profile.yaml` instead of `nodes.yaml`: see [Rack-scale](node_scaling.md#rack-scale).
 
 ---
 
 ### `remove-node`
 
-Removes worker nodes from a cluster that is already running. As with `add-node`, you delete the
-node from `nodes_workers` in `nodes.yaml`, and the installer removes the nodes that are in the
-cluster but no longer in the file.
+Remove worker node(s) from an already-provisioned cluster. As with `add-node`, no node name is
+passed on the command line: delete the entry from `nodes_workers` in `nodes.yaml`, and the
+installer removes the nodes that are in the cluster but no longer in the file.
 
 ```bash
 ./toolkit_manager.sh remove-node --dry-run --env local     # preview, including where each pod would move
@@ -285,21 +266,21 @@ cannot run refuses the removal. After the node is gone, the same checks as `stat
 and the command fails on any problem the removal caused.
 
 `add-node` and `remove-node` both refuse on a bring-your-own cluster and on a cluster with the
-Intel® Chatbot Toolkit deployed. On a rack-scale env, see [Rack-scale](node_scaling.md#rack-scale).
+Intel® Chatbot Toolkit deployed. See [Node Scaling](node_scaling.md); on a rack-scale env,
+[Rack-scale](node_scaling.md#rack-scale).
 
 ---
 
 ### `status`
 
-Shows what is installed: namespaces, pods, Helm releases and service addresses.
+Print a component status table: namespaces, pods, Helm releases and service addresses. With no
+cluster yet, it says nothing is installed and exits.
 
 ```bash
 ./toolkit_manager.sh status --env local
 ```
 
-With no cluster yet, it says nothing is installed and exits.
-
-`--health` prints a short `green` or `red` verdict instead: every node `Ready`, and no pod
+`status --health` prints a short `green` or `red` verdict instead: every node `Ready`, and no pod
 crash-looping, failing to pull its image or unschedulable. It exits `0` for green and `1` for red,
 so scripts can use it:
 
@@ -309,46 +290,20 @@ so scripts can use it:
 
 ---
 
-## Options
+### `show`
 
-| Option | Works with | What it does |
-|---|---|---|
-| `--env <name>` | every action except `configure` and `show` | The environment to act on, `env/<name>/` (default: `local`) |
-| `--flavour <name>` | `init` | The preset for the layer being created (for example `chatqna`, `docsum`) |
-| `--upgrade` | `init` | Move already-cloned `ext/` repositories onto the revisions the manifests pin now. Refuses on local changes; never rewrites your configs |
-| `--only` | `install`, `teardown`, `validate` | Act on the target alone, without the components it depends on (install) or that depend on it (teardown) |
-| `--skip <names>` | `install`, `teardown`, `validate` | Comma-separated layers or components to leave out (for example `--skip erag`) |
-| `--force` | `install`, `teardown`, `add-node`, `remove-node` | Answer yes to the confirmation prompt (needed in CI). On `install`, also run past a refusing upgrade check; the run is recorded as forced |
-| `--dry-run` | `add-node`, `remove-node` | Print the node changes and the Kubespray command, then exit. `remove-node` also prints where each pod would move |
-| `--node-lost` | `remove-node` | For a node that is already `NotReady`: no PodDisruptionBudget check, the drain is given up after 60 s, and the node is not reset over SSH. The capacity check still runs. Refused if the node is still `Ready` |
-| `--health` | `status` | Print a green/red verdict and exit with it |
-| `-h`, `--help` | — | Print the built-in help |
-| `-v`, `--version` | — | Print the installer version |
-| `-- <args>` | `install`, `teardown`, `validate`, `status` | Pass the rest to `ansible-playbook` (for example `-- -vvv`, `-- -e key=value`) |
+List all available layers and the components in each. Layers that are off until you install them
+are marked `(opt-in: install <layer>)`.
+
+```bash
+./toolkit_manager.sh show
+```
 
 ---
 
-## Environment variables
-
-| Variable | Read by | What it does |
-|---|---|---|
-| `TKM_LOG_LEVEL` | `toolkit_manager.sh`, `run_backup.sh` | `info` (default), `debug` (more output and `ansible-playbook -vvv`) or `trace` (also shell tracing and `ANSIBLE_DEBUG`) |
-| `TKM_ENV` | `./model-manager` | The environment to use, for example `TKM_ENV=prod ./model-manager list`. Not needed when there is only one environment |
-| `HF_TOKEN` | `./model-manager`, `install` (models it deploys) | Hugging Face token, needed for gated models such as Llama |
-
-The installer sets `KUBECONFIG` itself, to `env/<name>/kubeconfig.yaml`, or to the
-`existing_kubernetes` path for your own cluster. A `KUBECONFIG` set in your shell is not used. To
-point it at your own cluster, set `existing_kubernetes` (see [BYO cluster](configuration.md#byo-cluster)).
-
-The Keycloak and Grafana admin passwords are not taken from the environment. See
-[Admin passwords](configuration.md#admin-passwords).
-
----
-
-## run_backup.sh
-
-Backs up and restores one layer with Velero. It takes the same `--env` and `--` options as
-`toolkit_manager.sh`, and needs Velero installed (`velero_enabled: true`).
+Backing up and restoring a layer are not `toolkit_manager.sh` actions; `run_backup.sh` runs them
+with Velero, with the same `--env` and `--` conventions. It needs Velero installed
+(`velero_enabled: true`):
 
 ```bash
 ./run_backup.sh backup  <layer> [--env <name>] [--force] [-- ansible-playbook args]
@@ -356,16 +311,52 @@ Backs up and restores one layer with Velero. It takes the same `--env` and `--` 
 ./run_backup.sh list    <layer> [--env <name>] [-- args]
 ```
 
-| Option | Works with | What it does |
-|---|---|---|
-| `--env <name>` | all | The environment (default: `local`) |
-| `--from <backup>` | `restore` | Restore this backup instead of the one picked automatically (`list` marks that one) |
-| `--force` | `restore` | Answer yes to the confirmation prompt (needed where there is no terminal) |
-| `--force` | `backup` | Take the backup even though the checkout is at another version than the one installed. Such a backup is labelled forced: `restore` uses it only when you name it with `--from` |
+| Flag | Description |
+|---|---|
+| `--env <name>` | Target environment (default: `local`) |
+| `--from <backup>` | (`restore` only) restore this backup instead of the one picked automatically (`list` marks that one) |
+| `--force` | On `restore`: answer yes to the confirmation prompt (needed where there is no terminal). On `backup`: take the backup even though the checkout is at another version than the one installed; such a backup is labelled forced, and `restore` uses it only when you name it with `--from` |
 
-`restore` deletes data before it replays the backup, so it always asks first. See
-[Upgrade a Layer](../deploy/upgrade.md#backup-and-restore) for the full procedure. Its log is
-`env/<name>/logs/backup-<layer>-<timestamp>.log`.
+`restore` deletes data before it replays the backup, so it always asks first; a run with no
+terminal and no `--force` is refused. Its log is `env/<name>/logs/backup-<layer>-<timestamp>.log`.
+See [Upgrade a Layer](../deploy/upgrade.md#backup-and-restore).
+
+---
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--env <name>` | Target environment, `env/<name>/` (default: `local`). Every action except `configure` and `show` |
+| `--flavour <name>` | (init only) Select a preset for the layer being inited (e.g., `chatqna`, `docsum`) |
+| `--upgrade` | (init only) Move already-cloned `ext/` repos onto the revisions the manifests pin now. Refuses on local changes; never rewrites your configs |
+| `--only` | (`install`, `teardown`, `validate`) Act on the target alone, without the components it depends on (install) or that depend on it (teardown) |
+| `--skip <names>` | (`install`, `teardown`, `validate`) Comma-separated layers or components to leave out of the plan (e.g., `--skip erag` to tear down the cluster without uninstalling erag first) |
+| `--force` | (`install`, `teardown`, `add-node`, `remove-node`) Skip the confirmation prompt (required in CI, where there is no terminal to answer it). On `install`, also run past a refusing upgrade check, recorded as forced |
+| `--dry-run` | (`add-node`/`remove-node` only) Print the computed node changes and the Kubespray command, then exit. `remove-node` also prints where each pod would move |
+| `--node-lost` | (`remove-node` only) For a node that is already `NotReady`: no PodDisruptionBudget check, the drain is given up after 60 s, and the node is not reset over SSH. The capacity check still runs. Refused if the node is still `Ready` |
+| `--health` | (`status` only) Print a green/red cluster health verdict and exit with it, instead of the full status table |
+| `-h`, `--help` | Print the built-in help |
+| `-v`, `--version` | Print the installer version |
+| `-- <ansible-flags>` | (`install`, `teardown`, `validate`, `status`) Pass remaining args directly to `ansible-playbook` (e.g. `-- -vvv`, `-- -e key=value`) |
+
+---
+
+## Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `TKM_LOG_LEVEL` | Output detail for `toolkit_manager.sh` and `run_backup.sh`: `info` (default), `debug` (more output and `ansible-playbook -vvv`) or `trace` (also shell tracing and `ANSIBLE_DEBUG`) |
+| `TKM_ENV` | The environment `./model-manager` uses, for example `TKM_ENV=prod ./model-manager list`. Not needed when there is only one environment |
+| `HF_TOKEN` | Hugging Face token for gated models (such as Llama), read by `./model-manager` and by the models `install` deploys |
+
+The installer sets `KUBECONFIG` itself, to `env/<name>/kubeconfig.yaml`, or to the
+`existing_kubernetes` path for your own cluster. A `KUBECONFIG` set in your shell is not used. To
+point it at your own cluster, set `existing_kubernetes` (see
+[BYO cluster](configuration.md#byo-cluster)).
+
+The Keycloak and Grafana admin passwords are not taken from the environment. See
+[Admin passwords](configuration.md#admin-passwords).
 
 ---
 
@@ -379,32 +370,32 @@ and asks you to set `TKM_ENV`).
 ./model-manager <command> [options]
 ```
 
-| Command | What it does |
+| Command | Description |
 |---|---|
 | `list` | The catalog (`env/<name>/models.yaml`) with each model's status, plus deployed models that are not in it. `--catalog` shows only the catalog, `--deployed` only what is running |
 | `deploy <name>` | Download a catalog model's weights and start serving it |
-| `deploy --id <hf/repo>` | Deploy any Hugging Face model that is not in the catalog |
-| `undeploy <name>` | Stop serving a model. The downloaded weights stay, so a later deploy is quick |
+| `deploy --hfid <hf/repo>` | Deploy any Hugging Face model that is not in the catalog (`--id` still works, deprecated) |
+| `undeploy <name>` | Stop serving a model. The downloaded weights stay on the volume, so a later deploy is quick |
 | `undeploy all` | Stop every model |
 | `cpu-collisions-check` | Report CPU pinning and NUMA layout, and flag models sharing cores |
 
-Main options for `deploy`:
+Key flags for `deploy`:
 
-| Option | What it does |
+| Flag | Description |
 |---|---|
-| `--server vllm\|openvino` | The serving engine (default `vllm`; `--runtime` is accepted too) |
+| `--server vllm\|openvino\|vllm-cuda` | The serving engine (default `vllm`; `--runtime` is accepted too) |
 | `--cpu <n>` | CPU cores |
 | `--memory <n>Gi` | Memory, for example `32Gi` |
-| `--replicas <n>` | Number of copies serving the model (default 1) |
-| `--tp <n>` | Tensor parallelism: split the model across `n` NUMA nodes |
+| `--replicas <n>` | Fixed number of copies serving the model (default 1) |
+| `--tp <n>` | Tensor parallelism: split the model across `n` NUMA nodes (on a GPU runtime, also `n` GPUs) |
 | `--as <name>` | Deploy under another name, to run two variants of one model side by side |
-| `--node <name>` | Run it on this node |
+| `--node <name>` | Pin the model to this node |
 | `--env KEY=VAL` | Set an environment variable in the model's container (repeatable). This is **not** the environment name: use `TKM_ENV` for that |
 | `--wait` | Wait until the model is ready (`--wait-timeout <s>`, default 900) |
 | `--dry-run` | Print the manifest without applying it |
 
 `./model-manager --help` lists every option. See [Deploy a Model](../deploy/deploy_models.md) for
-step-by-step examples.
+usage examples.
 
 ---
 
@@ -417,11 +408,11 @@ Every `toolkit_manager.sh` run (except `configure`, `init` and `show`) writes a 
 |---|---|
 | `env/<name>/logs/<action>-<target>-<YYYYMMDD-HHMMSS>.log` | One run, for example `install-inference-20261120-091522.log`. `status`, `add-node` and `remove-node` use `cluster` as the target |
 | `env/<name>/logs/backup-<layer>-<YYYYMMDD-HHMMSS>.log` | One `run_backup.sh` run |
-| `env/<name>/logs/ai-solutions-ca.crt` | The self-signed CA certificate (import it into your browser; see [TLS](configuration.md#tls)) |
+| `env/<name>/logs/ai-solutions-ca.crt` | Self-signed CA certificate (import it into your browser; see [TLS](configuration.md#tls)) |
 | `env/<name>/reports/<layer>-upgrade-report-<UTC>.yaml` | One per layer of each install that upgrades or downgrades it |
 
-When a run fails, the last lines on screen name its log. For more detail, add `-- -vvv`, or set
-`TKM_LOG_LEVEL=debug`.
+When a run fails, the last lines on screen name its log. For more Ansible detail, append `-- -vvv`
+to any command, or set `TKM_LOG_LEVEL=debug`.
 
 ---
 

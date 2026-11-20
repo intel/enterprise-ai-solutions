@@ -18,7 +18,7 @@ When `node_topology_enabled: true` (the default) on a multi-node cluster:
 - **The preference is soft.** If no preferred node can take the pod, the scheduler places it elsewhere. Nothing fails because of it.
 - **No taints are added** by this feature. A *taint* is a hard "keep out" mark on a node; see [why soft affinity](#why-does-toolkit-manager-use-soft-affinity-instead-of-taints).
 
-What decides where **models** run is different, see [Where models run](#where-models-run).
+What decides where **models** run is different, see [Inference Workloads](#inference-workloads-prefer-workers).
 
 ## Configuration
 
@@ -29,7 +29,7 @@ What decides where **models** run is different, see [Where models run](#where-mo
 node_topology_enabled: true  # default: true
 ```
 
-Set to `false` to turn off the platform preference (all pods can land anywhere). See [Turn it off](#turn-it-off) for what to run afterwards.
+Set to `false` to turn off the platform preference (all pods can land anywhere). See [Disable Topology](#disable-topology-emergency-override) for what to run afterwards.
 
 ### Behavior by Deployment Mode
 
@@ -41,7 +41,7 @@ Set to `false` to turn off the platform preference (all pods can land anywhere).
 
 ## How It Works
 
-### 1. Node labels
+### 1. Node Labeling (Kubernetes Role)
 
 At the end of `install kubernetes` on a multi-node cluster, the installer labels every node. A node with the `node-role.kubernetes.io/control-plane` label gets `workload-class=platform`; every other node gets `workload-class=inference`. It is the same as running:
 
@@ -58,11 +58,15 @@ A control-plane node that is also listed under `nodes_workers` still counts as c
 
 **File**: [`roles/kubernetes/tasks/apply_node_topology.yaml`](../../roles/kubernetes/tasks/apply_node_topology.yaml)
 
-### 2. Platform affinity
+### 2. Pod Affinity (Component Roles)
 
 The rule is defined **once**, in [`playbooks/includes/preflight.yaml`](../../playbooks/includes/preflight.yaml), as the shared fact `_platform_affinity`, and every platform chart or manifest uses it. Changing the rule there changes it for every component.
 
 When `node_topology_enabled: false`, the fact is `{}` and the charts get no affinity.
+
+#### Platform Components (prefer control-plane)
+
+All platform charts reference `_platform_affinity`:
 
 ```yaml
 # Example: roles/metallb/tasks/install.yaml
@@ -89,26 +93,39 @@ nodeAffinity:
 > [!IMPORTANT]
 > On a multi-node cluster built with workers, Kubernetes puts a `NoSchedule` taint on the control-plane node, and these components do not tolerate it. They then run on the workers, and the preference only matters on clusters whose control plane accepts pods (one listed under `nodes_workers` too, or with the taint removed).
 
-### 3. The Envoy data plane
+> **Envoy data-plane pinning**: The Envoy proxy pods that receive outside HTTPS traffic are
+> placed by a hard rule, not by the preference above. On Kubernetes, Envoy Gateway's
+> `EnvoyProxy` resource `eg-proxy-config` (referenced from the `GatewayClass`) runs them as a
+> DaemonSet on the control-plane nodes only: a `nodeSelector` on
+> `node-role.kubernetes.io/control-plane` with a toleration for its taint. On OpenShift they
+> are a plain Deployment that any node can run.
 
-The Envoy proxy pods that receive outside HTTPS traffic are placed by a hard rule, not by the preference above. On Kubernetes, Envoy Gateway's `EnvoyProxy` resource `eg-proxy-config` (referenced from the `GatewayClass`) runs them as a DaemonSet on the control-plane nodes only: a `nodeSelector` on `node-role.kubernetes.io/control-plane` with a toleration for its taint. On OpenShift they are a plain Deployment that any node can run.
+#### Inference Workloads (prefer workers)
 
-### Where models run
-
-`model-manager` does not add a `workload-class` preference to model pods. What decides their node:
+`model-manager` does not add a `workload-class` preference to model pods, so they have no "prefer workers" rule of their own. What decides their node:
 
 1. **The control-plane taint.** On a cluster built with workers, models cannot land on the tainted control plane, so they run on the workers.
 2. **`--node <name>`.** `model-manager deploy <model> --node <name>` is optional, but when you give it, it is a *hard* rule: the pod runs on that node or stays `Pending`.
 3. **AMX.** A catalog that requires Intel AMX (`require_amx`) only places a CPU model on nodes labelled `feature.node.kubernetes.io/cpu-cpuid.AMXBF16=true`.
 4. **Resources.** Otherwise the scheduler picks any node with enough free CPU, memory or GPUs.
 
-The `workload-class=inference` label is applied to workers, but no component currently selects on it.
+The `workload-class=inference` label is applied to workers, and `preflight.yaml` defines a matching `_inference_affinity` fact, but no component currently uses either.
 
 ## Benefits
 
-- **Resource isolation**: platform services and models do not compete for the same cores where the control plane can take the platform pods.
-- **Control plane stability**: the control plane is not loaded with models.
-- **Flexible scheduling**: soft preferences never block a pod; draining or cordoning a node works as usual.
+### Resource Isolation
+- Platform services and models do not compete for the same CPU and memory, where the control plane can take the platform pods
+
+### NUMA Optimization
+- Workers can be given over to model serving, with CPU pinning per NUMA domain (see [NRI CPU Balloons](nri_cpu_balloons.md))
+
+### Control Plane Stability
+- The control plane is not loaded with models
+- Cluster operations stay responsive
+
+### Flexible Scheduling
+- Soft preferences never block a pod
+- Draining or cordoning a node works as usual
 
 ## Verification
 
@@ -140,7 +157,7 @@ kubectl get pods -n envoy-gateway-system -o wide
 kubectl get pods -n llm-inference -o wide
 ```
 
-### Verify the Affinity Rule
+### Verify Affinity Rules
 
 ```bash
 kubectl get pods -n keycloak -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.affinity}{"\n"}{end}'
@@ -181,7 +198,9 @@ On an existing cluster the installer does not label nodes. The platform charts s
    kubectl rollout restart deployment -n metallb-system
    ```
 
-### Turn it off
+### Disable Topology (Emergency Override)
+
+No teardown is needed:
 
 1. Set `node_topology_enabled: false` in `env/<name>/global_config.yaml`.
 2. Re-run the install of each installed layer, so the charts are applied again without the affinity:
@@ -209,9 +228,11 @@ On an existing cluster the installer does not label nodes. The platform charts s
 
 **Soft affinity** balances separation with flexibility — the scheduler respects the preference but can override it when needed.
 
-### Weight
+### Weight Values
 
-The platform rule has weight `100`, the highest a preference can have. The scheduler adds up the weights of the preferences each node satisfies and favours the node with the highest score.
+- **100**: the platform preference (`workload-class=platform`), the highest weight a preference can have. There is no second rule: model pods carry no preference.
+
+Higher weight = stronger preference. The scheduler adds up the weights of the preferences each node satisfies and favours the node with the highest score.
 
 ### Label Stability
 

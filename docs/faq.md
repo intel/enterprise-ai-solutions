@@ -64,9 +64,9 @@ The override surface is flat. Solution config files are passed with `-e @file`, 
 
 Yes: `./toolkit_manager.sh install <target> -- -e key=value`. Everything after `--` goes to `ansible-playbook`, so you can also pass `-vvv` for verbose output. A value given this way wins over every config file.
 
-### How do I see what is there before I change it?
+### How do I see what would change before it runs?
 
-`./toolkit_manager.sh show` lists layers and components, and `./toolkit_manager.sh status` shows what is currently deployed. For node changes, `add-node --dry-run` and `remove-node --dry-run` print the plan without running it.
+There is no full dry run for `install`: not every role supports Ansible check mode, so `-- --check` is not a reliable preview. Instead, `./toolkit_manager.sh show` lists layers and components, `./toolkit_manager.sh status` shows what is currently deployed, and `install` itself prints its plan (the components it will run, and each layer's upgrade-check verdict) before it changes anything. For node changes, `add-node --dry-run` and `remove-node --dry-run` print the plan without running it.
 
 ---
 

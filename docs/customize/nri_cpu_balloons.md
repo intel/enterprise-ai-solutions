@@ -67,7 +67,7 @@ pool.
 
 ---
 
-## 2. Enable and tune the policy
+## 2. Enable the policy
 
 The policy is on by default. The settings, in `env/<name>/global_config.yaml`:
 

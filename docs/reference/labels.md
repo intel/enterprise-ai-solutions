@@ -13,7 +13,7 @@ The values below come from the roles that create each namespace (the `Label name
 kubectl get namespaces -L pod-security.kubernetes.io/enforce,istio.io/dataplane-mode
 ```
 
-## When the labels are applied
+**When the labels are applied:**
 
 | Label | Applied when | Default |
 |---|---|---|
@@ -35,7 +35,9 @@ On OpenShift, Istio is not installed, and the `keycloak`, `postgresql`, `cnpg-sy
 
 ---
 
-## Platform and infrastructure layers (this repo)
+## Platform layer (`toolkit-manager`)
+
+Includes the infrastructure-layer storage namespaces (`csi-driver-nfs`, `rook-ceph`).
 
 | Namespace | PSA enforce | PSA audit | PSA warn | Istio | Role | Created when |
 |---|---|---|---|---|---|---|
@@ -61,7 +63,7 @@ The NRI CPU balloons and Kata Containers components install into `kube-system`, 
 
 ---
 
-## Inference layer (inference-toolkit repo)
+## Inference layer (`inference-toolkit`)
 
 | Namespace | PSA enforce | PSA audit | PSA warn | Istio | Role | Created when |
 |---|---|---|---|---|---|---|
@@ -78,7 +80,7 @@ The NRI CPU balloons and Kata Containers components install into `kube-system`, 
 
 ---
 
-## Intel® Chatbot Toolkit (enterprise-rag repo)
+## Intel® Chatbot Toolkit (`enterprise-rag`)
 
 These namespaces only exist once `install erag` has run; `install inference` does not create them. The eRAG repo sets their labels, so check that repo for the current values.
 
@@ -102,7 +104,7 @@ These namespaces only exist once `install erag` has run; `install inference` doe
 
 ---
 
-## Namespaces the installer does not label
+## Unlabeled (not managed by installer)
 
 | Namespace | Notes |
 |---|---|
@@ -112,7 +114,7 @@ These namespaces only exist once `install erag` has run; `install inference` doe
 
 ---
 
-## Why each PSA profile
+## PSA profile rationale
 
 | Profile | Used for |
 |---|---|
@@ -120,7 +122,7 @@ These namespaces only exist once `install erag` has run; `install inference` doe
 | `baseline` | Upstream operators and controllers whose charts do not declare a full restricted security context: the Keycloak operator, the KServe and LeaderWorkerSet controllers, Velero, and the vLLM Semantic Router dashboard. `baseline` still blocks privilege escalation and host access. |
 | `restricted` | Workloads that declare a full security context (non-root, all capabilities dropped, a seccomp profile): cert-manager, the PostgreSQL operator and database, Envoy Gateway (its proxies listen on unprivileged ports), metrics-server, Headlamp, KEDA, the model namespaces, LiteLLM and Langfuse. |
 
-## Namespaces kept out of the mesh
+## Istio ambient exclusions
 
 | Namespace | Reason |
 |---|---|

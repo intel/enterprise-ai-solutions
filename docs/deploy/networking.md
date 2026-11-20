@@ -33,8 +33,6 @@ In LiteLLM mode (`auth_type: litellm_vkey`) clients call `litellm.<base_domain_n
 
 The layers below follow that path, one component at a time.
 
-### Service addresses
-
 `routing_mode` in `global_config.yaml` decides how services are told apart:
 
 | Service | `routing_mode: subdomain` (default) | `routing_mode: path` |
@@ -50,6 +48,10 @@ The layers below follow that path, one component at a time.
 ---
 
 ## Layer 1: MetalLB — LoadBalancer IP Assignment
+
+MetalLB is the component that gives the stack LoadBalancer IPs on bare-metal clusters that have no cloud load balancer to call.
+
+### Purpose
 
 On a cloud, the provider hands out an external IP for a Kubernetes Service of type `LoadBalancer`. Bare-metal clusters have no such provider. [MetalLB](../glossary.md) fills that gap: it gives the gateway its external IP and makes that IP reachable on your local network.
 
@@ -105,7 +107,11 @@ Good to know:
 
 ## Layer 2: Envoy Gateway — Ingress & Routing
 
-[Envoy Gateway](../glossary.md) is the single entry point. It implements the Kubernetes **Gateway API** and:
+[Envoy Gateway](../glossary.md) is the single entry point and the auth-enforcement point for every request the stack serves.
+
+### Purpose
+
+It implements the Kubernetes **Gateway API** and:
 
 - terminates TLS: `gateway_tls_mode: selfsigned` (default, an internal CA) or `custom` (your certificate files);
 - checks a Keycloak JWT on every request, unless the route has its own policy (deny by default);
@@ -114,7 +120,7 @@ Good to know:
 
 In selfsigned mode the CA certificate is saved as `env/<env>/logs/ai-solutions-ca.crt`. Give it to clients (`curl --cacert ...`) instead of turning certificate checks off.
 
-### How Envoy Gateway gets its IP
+### How Envoy Gateway Gets Its IP
 
 Envoy Gateway runs its proxy as a **DaemonSet on every control-plane node** and puts a Service of type `LoadBalancer` in front of it. MetalLB gives that Service its IP. To see it:
 
@@ -126,7 +132,7 @@ kubectl get svc -n envoy-gateway-system \
 
 On OpenShift there is no MetalLB: the OpenShift router owns ports 80/443 and forwards to Envoy, which then runs as a normal Deployment. See [Deploy on OpenShift](openshift.md).
 
-### Gateway resource
+### Gateway Resource
 
 The installer creates one Gateway, `eg-gateway` in `envoy-gateway-system` (simplified):
 
@@ -160,9 +166,7 @@ spec:
           - name: gateway-tls
 ```
 
-### How services attach to the gateway
-
-Each service publishes its own host. How it does so depends on the Envoy Gateway version:
+**How services attach to the gateway.** Each service publishes its own host. How it does so depends on the Envoy Gateway version:
 
 - **Envoy Gateway 1.9 or newer** (`envoy_gateway_upgrade: true` installs 1.9.3): each service adds a **ListenerSet** in its own namespace, with a listener and certificate for its hostname. The Gateway accepts ListenerSets only from namespaces labelled `gateway.enterprise-ai/allow-listenersets: "true"`. An admission policy accepts a hostname only if it is listed in that namespace's `gateway.enterprise-ai/hostnames` annotation.
 - **Envoy Gateway 1.7.5** (the default) has no ListenerSets. Services attach their routes to the shared `*.<domain>` listener, and the same hostname grants decide which namespace may serve which host.
@@ -170,7 +174,7 @@ Each service publishes its own host. How it does so depends on the Envoy Gateway
 
 Grants live on namespaces or in the gateway namespace, so only cluster operators can hand out hostnames and paths.
 
-### SecurityPolicy (JWT authentication)
+### SecurityPolicy (JWT Authentication)
 
 One gateway-wide policy, `gateway-auth`, requires a Keycloak token on every request:
 
@@ -200,17 +204,19 @@ Routes that sign users in or check their own credential (UI logins, the LiteLLM 
 
 ---
 
-## Layer 3: Model Serving — AI Gateway and KServe
+## Layer 3: KServe — Model Serving
 
-The inference layer (from the inference repo) adds a second, internal gateway and the model pods.
+KServe is the model-serving layer the stack uses to run vLLM and OpenVINO™ Model Server workloads on Kubernetes. The inference layer (from the inference repo) also puts a second, internal gateway in front of the models: the AI gateway.
 
-In `jwt` mode:
+### HTTPRoute Auto-Creation
 
-1. The inference layer publishes `inference.<domain>` and creates the HTTPRoute `inference-external` in `envoy-gateway-system`. It sends every request for that host to the AI gateway's Service on port 80.
-2. The **AI gateway** (`ai-gateway`, Envoy AI Gateway, internal only) reads the `"model"` field from the JSON body and picks that model's backend.
-3. **KServe** runs each model as its own workload. For an `LLMInferenceService` the backend is an `InferencePool`: a scheduler picks the least-loaded replica. Other models are reached through their Service on port 8000.
+There is no route per model. In `jwt` mode the inference layer publishes `inference.<domain>` once, with the HTTPRoute `inference-external` in `envoy-gateway-system`. It sends every request for that host to the AI gateway's Service on port 80. The **AI gateway** (`ai-gateway`, Envoy AI Gateway, internal only) then reads the `"model"` field from the JSON body and picks that model's backend. Deploying a model adds it to the AI gateway's routing; clients keep the same URL.
 
 In `litellm_vkey` mode `inference.<domain>` is not published at all (requests there get `404`). LiteLLM calls the AI gateway over the cluster network instead.
+
+### Predictor Service
+
+**KServe** runs each model as its own workload in the `llm-inference` namespace. For an `LLMInferenceService` the AI gateway's backend is an `InferencePool`: a scheduler picks the least-loaded replica. Other models are reached through their Service on port 8000.
 
 For every resource name and the full detail, see the inference repo's request flow guide (after `init`: `ext/enterprise.ai-inference/docs/reference/request_flow.md`) and its [Accessing Models](../../ext/enterprise.ai-inference/docs/deploy/accessing_models.md) guide.
 
@@ -236,7 +242,11 @@ The mesh doesn't change the request path described here. It adds a small encrypt
 
 ## Complete Request Flow
 
-Every hop of one inference request in the default `jwt` mode, on a cluster with one control-plane node (`10.1.1.1`) and two workers:
+Here is every hop an inference request takes through the stack, from the client to the model pod and back.
+
+### Scenario: Client Requests Inference
+
+One request in the default `jwt` mode, on a cluster with one control-plane node (`10.1.1.1`) and two workers:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -280,13 +290,28 @@ Every hop of one inference request in the default `jwt` mode, on a cluster with 
           The response goes back the same way to the client
 ```
 
-The network hops add a few milliseconds at most, mostly for TLS and the JWT check. Generating the answer takes from tens of milliseconds to many seconds, depending on the model and prompt.
+### Latency Breakdown
+
+| Layer | Operation | What its cost depends on |
+|-------|-----------|--------------------------|
+| **NAT/Firewall** | Port forwarding (only for clients outside the node network) | Your firewall or router |
+| **MetalLB** | ARP answer for the gateway IP | Nothing measurable: Layer 2 switching |
+| **kube-proxy** | Hands the packet to the local Envoy proxy | Rule matching; nftables (the default) is fast |
+| **Envoy Gateway** | TLS + JWT check + routing | TLS handshakes; Keycloak keys are cached after the first request |
+| **AI gateway** | Picks the model and replica | Reading the request body |
+| **Calico CNI + Istio** | Pod-to-pod network with mTLS | A small encryption cost per hop |
+| **Model server** | Generating the answer | The model, the prompt and the answer length |
+
+The network hops add a few milliseconds at most. Generating the answer takes from tens of milliseconds to many seconds, so it is nearly all of the request's time.
 
 ---
 
 ## Multi-Node Network Topology
 
-### Example: 1 control-plane node + 2 workers
+A typical multi-node stack that Toolkit Manager installs looks like this at the network layer.
+
+### Example: 1 Master + 2 Workers
+
 
 ```
                          Clients
@@ -315,7 +340,8 @@ The network hops add a few milliseconds at most, mostly for TLS and the JWT chec
 - The Envoy proxy runs on the control-plane node. Platform pods prefer it and model pods prefer the workers ([Node Topology](../customize/node_topology.md)).
 - The pod and Service ranges are the defaults, `kubernetes_cluster_cidr` and `kubernetes_service_cidr`. Change them in `global_config.yaml` if they overlap your network.
 
-### Traffic flow
+### Traffic Flow Detail
+
 
 1. The client connects to `10.1.1.1:443` (directly, or through NAT at your network edge).
 2. The packet arrives at the control-plane node, where the Envoy proxy runs.
@@ -328,7 +354,8 @@ The network hops add a few milliseconds at most, mostly for TLS and the JWT chec
 
 With three control-plane nodes, every one of them runs an Envoy proxy, and MetalLB can move the gateway IP between them.
 
-### Example: 3 control-plane nodes + 2 workers
+### Example: 3 Masters + 2 Workers
+
 
 ```
                     Clients
@@ -364,9 +391,8 @@ An external load balancer is not needed. If you put one in front anyway, point i
 
 ## External Access Configuration
 
-To reach the cluster from outside the node network, give clients a name that resolves to the gateway, and, if needed, forward traffic to it.
+To reach the cluster from outside the node network, give clients a name that resolves to the gateway, and, if needed, forward traffic to it. First find the gateway IP:
 
-### Step 1 — Find the gateway IP
 
 ```bash
 export KUBECONFIG=$(pwd)/env/<env>/kubeconfig.yaml
@@ -375,7 +401,8 @@ kubectl get svc -n envoy-gateway-system \
   -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
 ```
 
-### Step 2 — Set up DNS
+### DNS Setup
+
 
 **Option 1: wildcard record (recommended).** One record covers every subdomain:
 ```
@@ -400,9 +427,9 @@ grafana.inteltoolkits.ai.    IN  A  203.0.113.50
 
 Use the gateway IP from step 1 if clients are on the node network, or your public IP if they come through NAT.
 
-### Step 3 — Forward traffic (only if clients are outside the node network)
+### Firewall Configuration
 
-Forward TCP ports 443 and 80 from your public IP to the gateway IP. On a dedicated firewall or router, add a port-forwarding rule. On a Linux host acting as the router:
+Only needed if clients are outside the node network. Forward TCP ports 443 and 80 from your public IP to the gateway IP. On a dedicated firewall or router, add a port-forwarding rule. On a Linux host acting as the router:
 
 ```bash
 # Let the host forward packets
@@ -425,7 +452,10 @@ iptables-save > /etc/iptables/rules.v4
 
 Don't run these on a cluster node: Kubernetes manages the firewall rules there.
 
-### Step 4 — Check it works
+With several control-plane nodes, forward to the MetalLB IP (for example `10.1.1.240`), not to the node IPs, so a node failure doesn't break access. An external load balancer such as HAProxy is not needed; if you use one, point it at the MetalLB IP too.
+
+To check that it works:
+
 
 ```bash
 curl --cacert env/<env>/logs/ai-solutions-ca.crt https://inference.inteltoolkits.ai/v1/models
@@ -434,15 +464,20 @@ curl --cacert env/<env>/logs/ai-solutions-ca.crt https://inference.inteltoolkits
 
 ---
 
-## Performance Notes
+## Performance Optimization
 
-The defaults already keep network overhead small:
+The networking defaults Toolkit Manager applies already keep network overhead small.
+
+### Zero-Overhead Pattern
+
 
 - **A node IP as the MetalLB IP where it is safe** (a single node, or one control-plane node with nftables or iptables), so no extra router hop. See [IP Allocation Strategy](#ip-allocation-strategy).
 - **kube-proxy in nftables mode** (the default, `kubernetes_kube_proxy_mode: nftables`): fast rule matching, and unlike IPVS it never binds LoadBalancer IPs to the nodes.
 - **NAT on a dedicated firewall or router** rather than on a cluster node.
 
-MetalLB runs in Layer 2 mode only: the installer does not configure BGP peering.
+### BGP Mode (Advanced)
+
+The installer configures MetalLB in **Layer 2 mode only** (one `L2Advertisement`); it does not set up BGP peering. Layer 2 mode needs no router configuration, and one node receives all traffic for the gateway IP at a time. If your network needs BGP (several nodes announcing the same IP to a router), that is MetalLB configuration you add and maintain yourself; the installer neither creates nor tests it.
 
 ---
 
@@ -450,21 +485,21 @@ MetalLB runs in Layer 2 mode only: the installer does not configure BGP peering.
 
 Commands for each hop, in the order a request travels.
 
-### 1. Does the gateway have an IP?
+### Check MetalLB IP allocation
 ```bash
 kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway
 # EXTERNAL-IP should be an address from the MetalLB pool, not <pending>
 kubectl get ipaddresspool -n metallb-system   # the pool the installer created
 ```
 
-### 2. Does the network see the IP?
+### Verify ARP announcement
 ```bash
 # From another machine on the same subnet
 arping -c 3 10.1.1.1
 # Replies should come from one node's MAC address
 ```
 
-### 3. Does the gateway answer?
+### Test connectivity
 ```bash
 curl --cacert env/<env>/logs/ai-solutions-ca.crt \
   --resolve inference.inteltoolkits.ai:443:10.1.1.1 \
@@ -472,13 +507,13 @@ curl --cacert env/<env>/logs/ai-solutions-ca.crt \
 # 401 = gateway reached, token needed. 404 = no route for that host
 ```
 
-### 4. Is the route there?
+### Check HTTPRoute
 ```bash
 kubectl get httproute -A
 kubectl describe httproute inference-external -n envoy-gateway-system
 ```
 
-### 5. Follow a request through Envoy
+### Trace request path
 ```bash
 kubectl logs -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway -f
 # Then, in another terminal, send a request with a token
@@ -490,6 +525,8 @@ curl --cacert env/<env>/logs/ai-solutions-ca.crt -H "Authorization: Bearer $TOKE
 ---
 
 ## Summary
+
+Networking in a stack Toolkit Manager installs follows a small set of principles.
 
 1. **One IP, one gateway.** MetalLB gives Envoy Gateway one address; every service is reached through it by hostname or path.
 2. **Auth at the edge.** Envoy Gateway checks the Keycloak JWT before a request reaches any model (or LiteLLM checks the key, in LiteLLM mode).

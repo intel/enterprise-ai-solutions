@@ -65,7 +65,7 @@ When making changes, follow the [coding guidelines](#coding-guidelines) and the 
 > Never commit credentials, secrets, or confidential information. Do not include unexplained binary or generated files.
 
 
-### 4. Sign your work
+#### 4. Sign your work
 Every commit requires a Developer Certificate of Origin sign-off:
 
 ```bash
@@ -210,7 +210,7 @@ Include additional context that may help reviewers assess the change, when appli
  - Any other information requested by the repository's pull request template.
 
 
-## Contributing across the toolkit portfolio
+## Contributing across the Toolkit portfolio
 
 The toolkits are separate projects, each in its own repository. Each repository owns one layer or capability, while [`toolkit-manager`][ai-solutions] (this repository) is the parent integration repository that assembles and releases the complete solution.
 
