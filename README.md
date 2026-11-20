@@ -25,10 +25,10 @@ You get a secured, load-balanced stack where you can serve LLMs, run RAG pipelin
 
 The stack is built in layers. You install one **target**, and the installer adds every layer below it for you.
 
-| # | Layer | What it adds | Install target | Code |
+| # | Layer | What it adds | Install target | Links |
 | --- | --- | --- | --- | --- |
-| 1 | **Infrastructure** | Kubernetes (via Kubespray) and storage (local-path, NFS, Ceph, NetApp ONTAP, or your own CSI driver) | `infrastructure` | this repository |
-| 2 | **Platform** | cert-manager, Istio ambient mesh, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability (Grafana, Prometheus, Loki, Tempo) | `platform` | this repository |
+| 1 | **Infrastructure** | Kubernetes (via Kubespray) and storage (local-path, NFS, Ceph, NetApp ONTAP, or your own CSI driver) | `infrastructure` | [Quick Start](#quick-start) |
+| 2 | **Platform** | cert-manager, Istio ambient mesh, MetalLB, Envoy Gateway, PostgreSQL, Keycloak, SeaweedFS, observability (Grafana, Prometheus, Loki, Tempo) | `platform` | [Quick Start](#quick-start) |
 | 3 | **Intel® Inference Toolkit** | Envoy AI Gateway, KServe, vLLM / OpenVINO™ Model Server, optional LiteLLM and Langfuse: the model endpoint that RAG and agents build on | `inference` | [inference-toolkit](https://github.com/intel/inference-toolkit) |
 | 4 | **Intel® Chatbot Toolkit** *(optional)* | Vector database, document ingestion (EDP), RAG pipeline orchestration (GMC), MCP gateway, chat history, web UI | `erag` | [chatbot-toolkit](https://github.com/intel/chatbot-toolkit) |
 | 4 | **Intel® Agent Toolkit** *(optional)* | Agent Sandbox (optional Kata microVMs), OpenShell, Redis Stack, pgvector, KubeRay, LiteLLM virtual keys, guardrail and hybrid router | `agent-toolkit` | [agent-toolkit](https://github.com/intel/agent-toolkit) |
