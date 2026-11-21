@@ -148,6 +148,9 @@ observability_openshift_thanos_url: "https://thanos-querier.openshift-monitoring
 # <name>-sa, <name>-deployment.
 observability_openshift_grafana_name: "grafana-platform"
 observability_openshift_grafana_storage_size: "5Gi"
+# Where the admin installed the Grafana Operator (OperatorHub's default). It calls
+# Grafana's API from outside the mesh.
+observability_openshift_grafana_operator_namespace: "openshift-operators"
 # Loads the grafana_dashboard="1" ConfigMaps from every namespace, as the Grafana
 # of kube-prometheus-stack does on K8s, and OpenShift's own Kubernetes dashboards.
 observability_openshift_sidecar_image: "quay.io/kiwigrid/k8s-sidecar:2.7.3"

@@ -51,6 +51,46 @@
     - istio_enabled | default(false) | bool
     - not _postgresql_from_olm | bool
 
+# The marketplace operator, outside the mesh, polls each instance's status port (8000);
+# under STRICT ztunnel refuses it and the Cluster never becomes ready. Only that port
+# accepts plain TCP, and the NetworkPolicy lets in only the operator's namespace.
+# Meshed traffic arrives on HBONE (15008); 169.254.7.127 is the address ztunnel gives
+# the kubelet's probes.
+- name: "postgresql | Open the instance status port to the marketplace operator"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: "{{ postgresql_cluster_name }}-status"
+        namespace: "{{ postgresql_namespace }}"
+      spec:
+        selector: {matchLabels: "{{ _pg_instance_labels }}"}
+        mtls: {mode: STRICT}
+        portLevelMtls: {"8000": {mode: PERMISSIVE}}
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: "{{ postgresql_cluster_name }}-status"
+        namespace: "{{ postgresql_namespace }}"
+      spec:
+        podSelector: {matchLabels: "{{ _pg_instance_labels }}"}
+        policyTypes: [Ingress]
+        ingress:
+          - ports: [{port: 15008, protocol: TCP}]
+          - from: [{ipBlock: {cidr: 169.254.7.127/32}}]
+          - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: "{{ cnpg_olm_namespace }}"}}}]
+            ports: [{port: 8000, protocol: TCP}]
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+  vars:
+    _pg_instance_labels: {cnpg.io/cluster: "{{ postgresql_cluster_name }}", cnpg.io/podRole: instance}
+  when:
+    - istio_enabled | default(false) | bool
+    - _postgresql_from_olm | bool
+
 - name: "postgresql | Label namespace — PSS"
   kubernetes.core.k8s:
     state: present

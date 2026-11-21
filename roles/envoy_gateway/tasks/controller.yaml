@@ -156,10 +156,42 @@
             control-plane: envoy-gateway
         mtls:
           mode: STRICT
-        portLevelMtls: "{{ {'9443': {'mode': 'PERMISSIVE'}} }}"
+        portLevelMtls: >-
+          {{ dict((['9443'] + _envoy_gateway_ctrl_out_of_mesh | map(attribute='port') | map('string') | list)
+                  | product([{'mode': 'PERMISSIVE'}])) }}
   when:
     - gateway_platform.controller_managed | bool or gateway_platform.configure_existing | bool
     - istio_enabled | default(false) | bool
+
+# With a NetworkPolicy the controller admits only its out-of-mesh callers' ports, from
+# their namespaces. Meshed traffic arrives on HBONE (15008); 169.254.7.127 is the
+# address ztunnel gives the kubelet's probes.
+- name: "envoy_gateway | Admit only the controller's out-of-mesh callers"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: envoy-gateway-ingress
+        namespace: "{{ envoy_gateway_namespace }}"
+      spec:
+        podSelector:
+          matchLabels:
+            control-plane: envoy-gateway
+        policyTypes: [Ingress]
+        ingress: >-
+          {%- set out = [{'ports': [{'port': 15008, 'protocol': 'TCP'}]},
+                         {'from': [{'ipBlock': {'cidr': '169.254.7.127/32'}}]}] -%}
+          {%- for c in _envoy_gateway_ctrl_out_of_mesh -%}
+          {%- set _ = out.append({'from': [{'namespaceSelector': {'matchLabels': c.namespace_labels}}],
+                                  'ports': [{'port': c.port, 'protocol': 'TCP'}]}) -%}
+          {%- endfor -%}
+          {{ out }}
+  when:
+    - gateway_platform.controller_managed | bool or gateway_platform.configure_existing | bool
+    - istio_enabled | default(false) | bool
+    - _envoy_gateway_ctrl_out_of_mesh | length > 0
 
 - name: "envoy_gateway | Label envoy-gateway-system namespace — PSS"
   kubernetes.core.k8s:

@@ -17,3 +17,9 @@ _envoy_gateway_openshift_routes: true
 _envoy_gateway_oidc_login_patches: false
 # No PSS labels: OpenShift syncs them from the SCCs.
 _envoy_gateway_pss_labels: false
+# The controller's callers outside the mesh, besides the API server's webhook calls
+# (9443, open on both platforms): the user-workload Prometheus scrapes its metrics.
+# On OpenShift a NetworkPolicy admits only these, the webhook from the host network.
+_envoy_gateway_ctrl_out_of_mesh:
+  - {port: 9443, namespace_labels: {policy-group.network.openshift.io/host-network: ""}}
+  - {port: 19001, namespace_labels: {network.openshift.io/policy-group: monitoring}}

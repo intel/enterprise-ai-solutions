@@ -5,3 +5,5 @@ _keycloak_operator_deployment: keycloak-operator
 _keycloak_pss_labels: "{{ enforce_pss | default(false) | bool }}"
 # The role installs the upstream operator and its CRDs.
 _keycloak_from_olm: false
+# Every caller is in the mesh.
+_keycloak_out_of_mesh_callers: []

@@ -28,3 +28,52 @@
           pod-security.kubernetes.io/audit: "restricted"
           pod-security.kubernetes.io/warn: "restricted"
   when: _keycloak_pss_labels | bool
+
+# Under STRICT mTLS ztunnel refuses plain TCP: only the ports of
+# _keycloak_out_of_mesh_callers accept it, and the NetworkPolicy lets in only their
+# namespaces. Meshed traffic arrives on HBONE (15008); 169.254.7.127 is the address
+# ztunnel gives the kubelet's probes.
+- name: "keycloak | Open Keycloak's ports to its out-of-mesh callers"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: keycloak
+        namespace: "{{ keycloak_namespace }}"
+      spec:
+        selector: {matchLabels: "{{ _kc_pod_labels }}"}
+        mtls: {mode: STRICT}
+        portLevelMtls: "{{ _kc_ports }}"
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: keycloak-ingress
+        namespace: "{{ keycloak_namespace }}"
+      spec:
+        podSelector: {matchLabels: "{{ _kc_pod_labels }}"}
+        policyTypes: [Ingress]
+        ingress: "{{ _kc_ingress }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+  vars:
+    _kc_pod_labels: {app: keycloak, app.kubernetes.io/managed-by: keycloak-operator}
+    _kc_ports: >-
+      {%- set out = {} -%}
+      {%- for c in _keycloak_out_of_mesh_callers -%}
+      {%- set _ = out.update({c.port | string: {'mode': 'PERMISSIVE'}}) -%}
+      {%- endfor -%}
+      {{ out }}
+    _kc_ingress: >-
+      {%- set out = [{'ports': [{'port': 15008, 'protocol': 'TCP'}]},
+                     {'from': [{'ipBlock': {'cidr': '169.254.7.127/32'}}]}] -%}
+      {%- for c in _keycloak_out_of_mesh_callers -%}
+      {%- set _ = out.append({'from': [{'namespaceSelector': {'matchLabels': c.namespace_labels}}],
+                              'ports': [{'port': c.port, 'protocol': 'TCP'}]}) -%}
+      {%- endfor -%}
+      {{ out }}
+  when:
+    - istio_enabled | default(false) | bool
+    - _keycloak_out_of_mesh_callers | length > 0

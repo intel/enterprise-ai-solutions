@@ -5,3 +5,9 @@ _keycloak_operator_deployment: rhbk-operator
 _keycloak_pss_labels: false
 # The operator is the admin's (OLM): the role only creates the instance.
 _keycloak_from_olm: true
+# Out-of-mesh callers the STRICT mesh must let in, port by port: Authorino (Red Hat
+# Connectivity Link) reads the inference realm's keys, the user-workload Prometheus
+# scrapes the management port.
+_keycloak_out_of_mesh_callers:
+  - {port: 8080, namespace_labels: {kubernetes.io/metadata.name: kuadrant-system}}
+  - {port: 9000, namespace_labels: {network.openshift.io/policy-group: monitoring}}
